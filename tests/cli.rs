@@ -3891,6 +3891,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("Project profile"));
     assert!(html.contains("policy decisions"));
     assert!(html.contains("Memory QA"));
+    assert!(html.contains("/ops-status"));
     assert!(html.contains("/upgrade-project"));
 
     let memory = http_once(
@@ -3993,6 +3994,14 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(qa.contains("\"qa\""));
     assert!(qa.contains("\"score\""));
+
+    let ops = http_once(
+        &db,
+        "GET /ops-status?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(ops.contains("\"ops\""));
+    assert!(ops.contains("\"effectiveness\""));
+    assert!(ops.contains("\"multi_device\""));
 
     let contract = http_once(
         &db,
@@ -4315,6 +4324,18 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let qa_json: Value = serde_json::from_str(&qa).unwrap();
     assert!(qa_json["score"].as_f64().unwrap() >= 0.0);
     assert!(qa_json["active_memories"].as_u64().unwrap() >= 1);
+
+    let ops = stdout(
+        cmd(&db)
+            .arg("ops-status")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    );
+    let ops_json: Value = serde_json::from_str(&ops).unwrap();
+    assert!(ops_json["score"].as_f64().unwrap() >= 0.0);
+    assert!(ops_json["effectiveness"]["reads"].as_u64().unwrap() >= 1);
+    assert_eq!(ops_json["multi_device"]["local_first"], true);
 
     let contract = stdout(
         cmd(&db)

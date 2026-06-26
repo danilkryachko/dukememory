@@ -177,6 +177,75 @@ pub(crate) struct MemoryQaReport {
     pub(crate) recommendations: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct OpsStatusReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) score: f64,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) effectiveness: OpsEffectivenessStatus,
+    pub(crate) quality_loop: OpsQualityLoopStatus,
+    pub(crate) embeddings: OpsEmbeddingStatus,
+    pub(crate) autonomous: OpsAutonomousStatus,
+    pub(crate) multi_device: OpsMultiDeviceStatus,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct OpsEffectivenessStatus {
+    pub(crate) reads: usize,
+    pub(crate) writes: usize,
+    pub(crate) unique_memory_ids: usize,
+    pub(crate) semantic_read_rate: f64,
+    pub(crate) useful_rate: f64,
+    pub(crate) token_saving_estimate: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct OpsQualityLoopStatus {
+    pub(crate) average_score: f64,
+    pub(crate) total_cards: usize,
+    pub(crate) weakest_cards: usize,
+    pub(crate) unused_cards: usize,
+    pub(crate) stale_cards: usize,
+    pub(crate) too_long_cards: usize,
+    pub(crate) duplicate_candidates: usize,
+    pub(crate) reversible_cleanup_ready: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct OpsEmbeddingStatus {
+    pub(crate) provider: String,
+    pub(crate) endpoint: String,
+    pub(crate) model: String,
+    pub(crate) eligible: usize,
+    pub(crate) indexed: usize,
+    pub(crate) missing: usize,
+    pub(crate) stale: usize,
+    pub(crate) current: bool,
+    pub(crate) background_sync_ready: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct OpsAutonomousStatus {
+    pub(crate) installed: bool,
+    pub(crate) ok: Option<bool>,
+    pub(crate) status_file: String,
+    pub(crate) rollback_ready: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct OpsMultiDeviceStatus {
+    pub(crate) ready: bool,
+    pub(crate) local_first: bool,
+    pub(crate) export_command: String,
+    pub(crate) import_command: String,
+    pub(crate) blockers: Vec<String>,
+}
+
 pub(crate) struct ReadEventInput<'a> {
     pub(crate) command: &'a str,
     pub(crate) query: &'a str,
@@ -1229,6 +1298,208 @@ pub(crate) fn memory_qa_report(
         embedding_stale: embedding.as_ref().map(|item| item.stale).unwrap_or(0),
         autonomous_ok: autonomous.map(|status| status.ok),
         token_saving_estimate,
+        issues,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_ops_status(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = ops_status_report(conn, db, root, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("dukememory. ops: {}", report.status);
+        println!("score: {:.1}", report.score);
+        println!("root: {}", report.root);
+        println!(
+            "effectiveness: reads={} unique={} semantic={:.0}% useful={:.0}% saved_tokens={}",
+            report.effectiveness.reads,
+            report.effectiveness.unique_memory_ids,
+            report.effectiveness.semantic_read_rate * 100.0,
+            report.effectiveness.useful_rate * 100.0,
+            report.effectiveness.token_saving_estimate
+        );
+        println!(
+            "quality: avg={:.1} weak={} duplicates={} reversible_cleanup={}",
+            report.quality_loop.average_score,
+            report.quality_loop.weakest_cards,
+            report.quality_loop.duplicate_candidates,
+            report.quality_loop.reversible_cleanup_ready
+        );
+        println!(
+            "embeddings: {}/{} current={} missing={} stale={}",
+            report.embeddings.provider,
+            report.embeddings.model,
+            report.embeddings.current,
+            report.embeddings.missing,
+            report.embeddings.stale
+        );
+        println!(
+            "autonomous: installed={} ok={} rollback_ready={}",
+            report.autonomous.installed,
+            report
+                .autonomous
+                .ok
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            report.autonomous.rollback_ready
+        );
+        println!(
+            "multi_device: ready={} local_first={}",
+            report.multi_device.ready, report.multi_device.local_first
+        );
+        for issue in &report.issues {
+            println!("issue: {issue}");
+        }
+        for recommendation in &report.recommendations {
+            println!("recommendation: {recommendation}");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn ops_status_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+) -> Result<OpsStatusReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let qa = memory_qa_report(conn, &root, since_days)?;
+    let usage = usage_report(conn, since_days, 20)?;
+    let quality = quality_report(conn, since_days, 20)?;
+    let usefulness = usefulness_report(conn, since_days, 30, 3)?;
+    let (provider, endpoint, model) = read_project_embedding_config(&root);
+    let embedding = embeddings::embed_status(conn, &provider, &endpoint, &model)?;
+    let status_file = root.join(".agent/autonomous-status.json");
+    let rollback_dir = root.join(".agent/autonomous-rollbacks");
+    let autonomous = read_autonomous_status(&status_file).ok();
+    let embedding_current = embedding.missing == 0 && embedding.stale == 0;
+    let rollback_ready = rollback_dir.is_dir();
+
+    let quality_loop = OpsQualityLoopStatus {
+        average_score: quality.average_score,
+        total_cards: quality.total,
+        weakest_cards: quality.weakest.len(),
+        unused_cards: usefulness.unused.len(),
+        stale_cards: usefulness.stale.len(),
+        too_long_cards: usefulness.too_long.len(),
+        duplicate_candidates: usefulness.duplicate_candidates.len(),
+        reversible_cleanup_ready: rollback_ready || status_file.exists(),
+    };
+
+    let mut issues = qa.issues.clone();
+    let mut recommendations = qa.recommendations.clone();
+    if autonomous.is_none() {
+        issues.push("autonomous maintenance has not written a status report".to_string());
+        recommendations.push("run dukememory autonomous run-once --level normal".to_string());
+    }
+    if !rollback_ready {
+        recommendations.push(
+            "run one autonomous cycle to create rollback metadata before unattended cleanup"
+                .to_string(),
+        );
+    }
+    if !embedding_current {
+        recommendations.push("run dukememory embed-index before cross-device sync".to_string());
+    }
+
+    let mut blockers = Vec::new();
+    if qa.active_memories == 0 {
+        blockers.push("no active project memories to sync".to_string());
+    }
+    if !embedding_current {
+        blockers.push(format!(
+            "embedding index not current: missing={} stale={}",
+            embedding.missing, embedding.stale
+        ));
+    }
+    if quality_loop.duplicate_candidates > 8 {
+        blockers.push(format!(
+            "{} duplicate candidates should be resolved before sharing",
+            quality_loop.duplicate_candidates
+        ));
+    }
+    if !qa.ok {
+        blockers.push("memory QA score is below ready threshold".to_string());
+    }
+
+    recommendations.sort();
+    recommendations.dedup();
+    issues.sort();
+    issues.dedup();
+
+    let mut score = qa.score;
+    if autonomous.is_none() {
+        score -= 8.0;
+    }
+    if !rollback_ready {
+        score -= 4.0;
+    }
+    if !blockers.is_empty() {
+        score -= blockers.len().min(5) as f64 * 3.0;
+    }
+    score = score.clamp(0.0, 100.0);
+
+    let ok = score >= 70.0 && blockers.len() <= 2;
+    let status = if ok {
+        "ready"
+    } else if score >= 50.0 {
+        "needs-attention"
+    } else {
+        "blocked"
+    }
+    .to_string();
+
+    Ok(OpsStatusReport {
+        version: 1,
+        ok,
+        status,
+        score,
+        root: root.display().to_string(),
+        since_days,
+        effectiveness: OpsEffectivenessStatus {
+            reads: usage.read_count,
+            writes: usage.write_count,
+            unique_memory_ids: usage.unique_memory_ids,
+            semantic_read_rate: qa.semantic_read_rate,
+            useful_rate: qa.useful_rate,
+            token_saving_estimate: qa.token_saving_estimate,
+        },
+        quality_loop,
+        embeddings: OpsEmbeddingStatus {
+            provider: embedding.provider,
+            endpoint: embedding.endpoint,
+            model: embedding.model,
+            eligible: embedding.eligible,
+            indexed: embedding.indexed,
+            missing: embedding.missing,
+            stale: embedding.stale,
+            current: embedding_current,
+            background_sync_ready: embedding_current,
+        },
+        autonomous: OpsAutonomousStatus {
+            installed: autonomous.is_some(),
+            ok: autonomous.as_ref().map(|report| report.ok),
+            status_file: status_file.display().to_string(),
+            rollback_ready,
+        },
+        multi_device: OpsMultiDeviceStatus {
+            ready: blockers.is_empty(),
+            local_first: true,
+            export_command: format!(
+                "dukememory --db {} sync export memory-sync.json",
+                db.display()
+            ),
+            import_command: "dukememory sync import memory-sync.json".to_string(),
+            blockers,
+        },
         issues,
         recommendations,
     })

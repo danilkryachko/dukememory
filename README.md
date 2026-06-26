@@ -132,6 +132,15 @@ Open `http://127.0.0.1:8765/`.
 Use it to search memory, inspect evidence, review inbox items, watch usage, and
 check autonomous health.
 
+For one compact health view:
+
+```bash
+dukememory ops-status --json
+```
+
+It combines usage, usefulness, quality, embeddings, autonomous maintenance, and
+local-first multi-device readiness.
+
 ## MCP And Codex
 
 ```bash

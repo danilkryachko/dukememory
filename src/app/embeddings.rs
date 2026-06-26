@@ -394,10 +394,10 @@ pub(crate) fn print_vector_bench(
 
 #[derive(Debug, Serialize)]
 pub(crate) struct EmbedStatusReport {
-    provider: String,
-    endpoint: String,
-    model: String,
-    eligible: usize,
+    pub(crate) provider: String,
+    pub(crate) endpoint: String,
+    pub(crate) model: String,
+    pub(crate) eligible: usize,
     pub(crate) indexed: usize,
     pub(crate) stale: usize,
     pub(crate) missing: usize,

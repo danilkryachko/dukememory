@@ -743,6 +743,11 @@ pub(crate) fn run() -> Result<()> {
             json,
         )?,
         Command::Dashboard { json } => print_dashboard(&cli.db, json)?,
+        Command::OpsStatus {
+            root,
+            since_days,
+            json,
+        } => print_ops_status(&conn, &cli.db, &root, since_days, json)?,
         Command::InboxV2 { command } => handle_inbox_v2(&conn, command)?,
         Command::PolicyTune {
             output,
@@ -2732,6 +2737,7 @@ fn print_completions(shell: CompletionShell) {
         "recall",
         "onboard",
         "dashboard",
+        "ops-status",
         "inbox-v2",
         "policy-tune",
         "memory-qa",
@@ -2826,6 +2832,7 @@ fn print_manpage() {
     println!("  project-profile --json        structured project memory profile");
     println!("  recall QUERY --max-chars 1200 compressed token-light recall");
     println!("  dashboard --json              multi-project memory health dashboard");
+    println!("  ops-status --json             one UI/autonomy/effectiveness/sync status");
     println!("  onboard --root DIR            initialize memory/profile/embeddings");
     println!("  inbox-v2 report|auto-apply    group and process pending suggestions");
     println!("  policy-tune --json            tune autonomous policy from feedback");

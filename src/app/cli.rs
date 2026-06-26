@@ -690,6 +690,15 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print one operational readiness report for UI, autonomy, embeddings, and sync.
+    OpsStatus {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Group and safely process inbox suggestions.
     InboxV2 {
         #[command(subcommand)]

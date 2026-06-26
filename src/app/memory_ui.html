@@ -509,6 +509,7 @@
         usefulness: "Полезность", embeddings: "Эмбеддинги", reindex: "Переиндексировать",
         autonomous: "Автономная память", autonomousRun: "Автоцикл", rollback: "Откатить",
         inlineEdit: "Быстрая правка", timeline: "История", savedInline: "быстро сохранено",
+        opsStatus: "Состояние памяти", multiDevice: "Несколько устройств", readyForSync: "готово к переносу",
         typeLabels: { decision: "решение", constraint: "ограничение", task_state: "состояние задачи", known_issue: "известная проблема", command: "команда", note: "заметка", product_goal: "цель продукта", design_note: "дизайн-заметка", user_preference: "предпочтение", domain_fact: "факт" },
         statusLabels: { active: "активно", uncertain: "неуверенно", superseded: "заменено", rejected: "отклонено" }
       },
@@ -534,6 +535,7 @@
         usefulness: "Usefulness", embeddings: "Embeddings", reindex: "Reindex",
         autonomous: "Autonomous memory", autonomousRun: "Autonomous run", rollback: "Rollback",
         inlineEdit: "Inline edit", timeline: "Timeline", savedInline: "inline saved",
+        opsStatus: "Memory status", multiDevice: "Multi-device", readyForSync: "ready to sync",
         typeLabels: {}, statusLabels: {}
       }
     };
@@ -543,7 +545,7 @@
       selected: null, evidence: null, memories: [], project: saved.project || null,
       projects: [], selectedIds: new Set(), tab: saved.tab || "detail",
       lang: savedLang === "en" ? "en" : "ru", activity: [], usefulness: null, embedding: null, autonomous: null,
-      quality: null, profile: null, budget: null, dashboard: null, qa: null, contract: null
+      quality: null, profile: null, budget: null, dashboard: null, qa: null, contract: null, ops: null
     };
     const $ = (id) => document.getElementById(id);
     const t = (key) => i18n[state.lang][key] || i18n.en[key] || key;
@@ -783,6 +785,15 @@
       renderProjectsPanel();
     }
 
+    async function loadOpsStatus() {
+      const params = new URLSearchParams({ since_days: "7" });
+      if (state.project) params.set("project", state.project);
+      const data = await api(`/ops-status?${params.toString()}`);
+      state.ops = data.ops;
+      renderSettings();
+      renderProjectsPanel();
+    }
+
     async function loadMemoryContract() {
       const params = new URLSearchParams();
       if (state.project) params.set("project", state.project);
@@ -804,7 +815,7 @@
       state.activity.unshift(...(data.upgrade?.actions || []).slice(0, 5));
       state.activity = state.activity.slice(0, 20);
       renderActivity();
-      await Promise.all([loadMemoryQa(), loadMemoryContract(), loadDashboard()]);
+      await Promise.all([loadMemoryQa(), loadOpsStatus(), loadMemoryContract(), loadDashboard()]);
     }
 
     async function loadEvidence(id) {
@@ -996,7 +1007,23 @@
       const budget = state.budget || {};
       const qa = state.qa || {};
       const contract = state.contract || {};
-      $("settingsPanel").innerHTML = `<div class="kv">
+      const ops = state.ops || {};
+      const effectiveness = ops.effectiveness || {};
+      const opsEmbeddings = ops.embeddings || {};
+      const opsAutonomous = ops.autonomous || {};
+      const multiDevice = ops.multi_device || {};
+      $("settingsPanel").innerHTML = `<h2>${escapeHtml(t("opsStatus"))}</h2>
+      <div class="stat-grid">
+        <div class="stat"><strong>${Number(ops.score || 0).toFixed(1)}</strong><span>${escapeHtml(ops.status || "-")}</span></div>
+        <div class="stat"><strong>${Number(effectiveness.reads || 0)}</strong><span>reads</span></div>
+        <div class="stat"><strong>${Number((effectiveness.useful_rate || 0) * 100).toFixed(0)}%</strong><span>useful</span></div>
+        <div class="stat"><strong>${opsEmbeddings.current ? "ok" : "warn"}</strong><span>${escapeHtml(t("embeddings"))}</span></div>
+        <div class="stat"><strong>${opsAutonomous.ok == null ? "-" : opsAutonomous.ok ? "ok" : "warn"}</strong><span>${escapeHtml(t("autonomous"))}</span></div>
+        <div class="stat"><strong>${multiDevice.ready ? "ok" : "warn"}</strong><span>${escapeHtml(t("multiDevice"))}</span></div>
+      </div>
+      <div class="card"><div class="title">${escapeHtml(t("multiDevice"))}</div><div class="body">${escapeHtml(t("readyForSync"))}: ${multiDevice.ready ? "yes" : "no"}<br>${multiDevice.blockers?.length ? multiDevice.blockers.map(escapeHtml).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">recommendations</div><div class="body">${ops.recommendations?.length ? ops.recommendations.slice(0, 6).map(escapeHtml).join("<br>") : "-"}</div></div>
+      <div class="kv">
         <b>Language</b><span>${escapeHtml(state.lang.toUpperCase())}</span>
         <b>Project</b><span>${escapeHtml(state.project || "-")}</span>
         <b>Status</b><span>${escapeHtml($("status").value)}</span>
@@ -1132,7 +1159,7 @@
         await loadProjects();
         restoreFilters();
         clearDetail();
-        await Promise.all([loadMemories(), loadInbox(), loadAutopilot(), loadAutonomous(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadEmbeddingStatus(), loadMemoryQa(), loadMemoryContract()]);
+        await Promise.all([loadMemories(), loadInbox(), loadAutopilot(), loadAutonomous(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadEmbeddingStatus(), loadMemoryQa(), loadOpsStatus(), loadMemoryContract()]);
         setToast(t("ready"));
       } catch (error) {
         setToast(error.message);
@@ -1145,14 +1172,14 @@
       localStorage.setItem("dukememory_lang", state.lang);
       applyLanguage();
       persistUi();
-      await Promise.all([loadMemories(), loadInbox(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadEmbeddingStatus(), loadMemoryQa(), loadMemoryContract(), loadAutonomous()]);
+      await Promise.all([loadMemories(), loadInbox(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadEmbeddingStatus(), loadMemoryQa(), loadOpsStatus(), loadMemoryContract(), loadAutonomous()]);
     });
     $("project").addEventListener("change", async () => {
       state.project = $("project").value;
       state.selectedIds.clear();
       clearDetail();
       persistUi();
-      await Promise.all([loadMemories(), loadInbox(), loadAutopilot(), loadAutonomous(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadEmbeddingStatus(), loadMemoryQa(), loadMemoryContract()]);
+      await Promise.all([loadMemories(), loadInbox(), loadAutopilot(), loadAutonomous(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadEmbeddingStatus(), loadMemoryQa(), loadOpsStatus(), loadMemoryContract()]);
     });
     $("search").addEventListener("click", () => { persistUi(); loadMemories(); });
     $("q").addEventListener("keydown", (event) => { if (event.key === "Enter") { persistUi(); loadMemories(); } });
@@ -1206,7 +1233,7 @@
       $("project").value = state.project;
       clearDetail();
       persistUi();
-      await Promise.all([loadMemories(), loadInbox(), loadAutopilot(), loadAutonomous(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadEmbeddingStatus(), loadMemoryQa(), loadMemoryContract()]);
+      await Promise.all([loadMemories(), loadInbox(), loadAutopilot(), loadAutonomous(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadEmbeddingStatus(), loadMemoryQa(), loadOpsStatus(), loadMemoryContract()]);
       setTab("detail");
     });
 

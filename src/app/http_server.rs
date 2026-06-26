@@ -234,6 +234,22 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
             )
         }
         ("GET", "/dashboard") => HttpResponse::ok(json!({"dashboard": dashboard_report(db)?})),
+        ("GET", "/ops-status") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"ops": ops_status_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+            )?}))
+        }
         ("GET", "/eval-live") => {
             let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
