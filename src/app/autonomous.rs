@@ -1041,6 +1041,10 @@ enum AutonomousRollback {
     RejectInboxItem {
         inbox_id: String,
     },
+    RestoreInboxStatus {
+        inbox_id: String,
+        status: String,
+    },
     RestoreInboxPending {
         inbox_id: String,
         memory_id: String,
@@ -1315,6 +1319,7 @@ pub(crate) fn autonomous_run_once(
             autonomous_compact_operational(conn, effective_level, request.scope, &mut report)?;
             autonomous_supersede_duplicates(conn, effective_level, &mut report)?;
             autonomous_slim_long_memories(conn, effective_level, request.scope, &mut report)?;
+            autonomous_resolve_quality_inbox(conn, effective_level, request.scope, &mut report)?;
         }
         let quality_level = if matches!(request.level, AutonomousLevel::Conservative) {
             request.level
@@ -1556,14 +1561,7 @@ fn autonomous_create_quality_inbox(
     let candidates = quality
         .weakest
         .iter()
-        .filter(|item| {
-            item.score <= 45.0
-                && !item.title.starts_with("Autonomous compacted ")
-                && (item.negative_feedback > 0
-                    || item.body_chars > 1200
-                    || item.links == 0
-                    || item.request_count == 0)
-        })
+        .filter(|item| is_weak_quality_candidate(item))
         .take(max)
         .cloned()
         .collect::<Vec<_>>();
@@ -1613,6 +1611,114 @@ fn autonomous_create_quality_inbox(
         } else {
             format!("created {} quality inbox suggestion(s)", created.len())
         },
+        memory_id: None,
+    });
+    Ok(())
+}
+
+fn is_weak_quality_candidate(item: &MemoryQuality) -> bool {
+    item.score <= 45.0
+        && !item.title.starts_with("Autonomous compacted ")
+        && (item.negative_feedback > 0
+            || item.body_chars > 1200
+            || item.links == 0
+            || item.request_count == 0)
+}
+
+fn quality_inbox_target_id(item: &InboxItem) -> Option<String> {
+    let marker = "memory ";
+    let text = if let Some(index) = item.body.find(marker) {
+        &item.body[index + marker.len()..]
+    } else if let Some(index) = item.title.find(marker) {
+        &item.title[index + marker.len()..]
+    } else {
+        return None;
+    };
+    let id = text
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .collect::<String>();
+    if id.is_empty() { None } else { Some(id) }
+}
+
+fn autonomous_resolve_quality_inbox(
+    conn: &Connection,
+    level: AutonomousLevel,
+    scope: &str,
+    report: &mut AutonomousReport,
+) -> Result<()> {
+    let pending = list_inbox(conn, "pending", 100)?
+        .into_iter()
+        .filter(|item| item.scope == scope && item.source.as_deref() == Some("autonomous_quality"))
+        .collect::<Vec<_>>();
+    let quality = quality_report(conn, 30, 100)?;
+    let weak_ids = quality
+        .items
+        .iter()
+        .filter(|item| is_weak_quality_candidate(item))
+        .map(|item| item.id.clone())
+        .collect::<HashSet<_>>();
+    let resolved = pending
+        .into_iter()
+        .filter(|item| {
+            quality_inbox_target_id(item)
+                .map(|id| !weak_ids.contains(&id))
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    let decision = autonomous_policy_decision(AutonomousPolicyInput {
+        action: "resolve_quality_inbox",
+        level,
+        risk_score: 6.0,
+        usefulness_score: (resolved.len().min(10) as f64) * 8.0,
+        token_saving_score: (resolved.len().min(10) as f64) * 3.0,
+        confidence: if resolved.is_empty() { 0.0 } else { 0.9 },
+        rollback: true,
+        reason: format!("{} resolved quality inbox item(s)", resolved.len()),
+    });
+    report.policy.push(decision.clone());
+    if resolved.is_empty() {
+        report.actions.push(AutonomousAction {
+            kind: "resolve_quality_inbox".to_string(),
+            status: "skipped".to_string(),
+            detail: "no resolved quality inbox items".to_string(),
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    if !decision.allowed {
+        report.actions.push(AutonomousAction {
+            kind: "resolve_quality_inbox".to_string(),
+            status: "skipped".to_string(),
+            detail: decision.reason,
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    let mut changed = 0;
+    for item in resolved {
+        report
+            .rollback
+            .push(AutonomousRollback::RestoreInboxStatus {
+                inbox_id: item.id.clone(),
+                status: item.status.clone(),
+            });
+        conn.execute(
+            "UPDATE memory_inbox SET status = 'rejected', updated_at = ?1 WHERE id = ?2",
+            params![now_ms(), item.id],
+        )?;
+        log_event(
+            conn,
+            "autonomous_resolve_quality_inbox",
+            None,
+            &format!("rejected resolved quality inbox {}", item.id),
+        )?;
+        changed += 1;
+    }
+    report.actions.push(AutonomousAction {
+        kind: "resolve_quality_inbox".to_string(),
+        status: "ok".to_string(),
+        detail: format!("rejected {changed} resolved quality inbox item(s)"),
         memory_id: None,
     });
     Ok(())
@@ -2260,6 +2366,18 @@ pub(crate) fn autonomous_rollback(
                     kind: "rollback_reject_inbox".to_string(),
                     status: "ok".to_string(),
                     detail: format!("rejected autonomous-created inbox {inbox_id}"),
+                    memory_id: None,
+                });
+            }
+            AutonomousRollback::RestoreInboxStatus { inbox_id, status } => {
+                conn.execute(
+                    "UPDATE memory_inbox SET status = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![status, now_ms(), inbox_id],
+                )?;
+                out.actions.push(AutonomousAction {
+                    kind: "rollback_restore_inbox_status".to_string(),
+                    status: "ok".to_string(),
+                    detail: format!("restored inbox {inbox_id} to {status}"),
                     memory_id: None,
                 });
             }

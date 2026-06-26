@@ -4277,6 +4277,32 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     )
     .trim()
     .to_string();
+    let resolved_quality_target = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Healthy quality target")
+            .arg("This concise linked memory should not remain a quality review candidate.")
+            .arg("--scope")
+            .arg("project")
+            .arg("--link")
+            .arg("file:src/app.rs"),
+    )
+    .trim()
+    .to_string();
+    let resolved_quality_inbox = "resolved-quality-test";
+    Connection::open(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO memory_inbox (id, type, scope, title, body, source, confidence, status, created_at, updated_at)
+             VALUES (?1, 'task_state', 'project', ?2, ?3, 'autonomous_quality', 0.58, 'pending', 1, 1)",
+            params![
+                resolved_quality_inbox,
+                format!("Review memory quality: {resolved_quality_target} Healthy quality target"),
+                format!("Autonomous quality review candidate for memory {resolved_quality_target} (design_note). Score 35.0; requests=0; links=0; body_chars=80. Reasons: stale test.")
+            ],
+        )
+        .unwrap();
 
     let run = stdout(
         cmd(&db)
@@ -4337,6 +4363,11 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .any(|item| item["kind"] == "slim_long_memory" && item["status"] == "ok")
     );
     assert!(
+        actions
+            .iter()
+            .any(|item| item["kind"] == "resolve_quality_inbox" && item["status"] == "ok")
+    );
+    assert!(
         run_json["policy"]
             .as_array()
             .unwrap()
@@ -4364,9 +4395,25 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .iter()
             .any(|item| item["action"] == "slim_long_memory")
     );
+    assert!(
+        run_json["policy"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["action"] == "resolve_quality_inbox")
+    );
     assert!(status_file.exists());
 
     let conn = Connection::open(&db).unwrap();
+    let resolved_quality_status: String = conn
+        .query_row(
+            "SELECT status FROM memory_inbox WHERE id = ?1",
+            [resolved_quality_inbox],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(resolved_quality_status, "rejected");
+
     let slimmed_body: String = conn
         .query_row(
             "SELECT body FROM memories WHERE id = ?1",
@@ -4865,6 +4912,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_array()
             .unwrap()
             .iter()
+            .any(|item| item["kind"] == "rollback_restore_inbox_status")
+    );
+    assert!(
+        rollback_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|item| item["kind"] == "rollback_reject_inbox")
     );
     let restored_slim_body: String = Connection::open(&db)
@@ -4876,6 +4930,15 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         )
         .unwrap();
     assert_eq!(restored_slim_body, slim_body);
+    let restored_quality_inbox_status: String = Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT status FROM memory_inbox WHERE id = ?1",
+            [resolved_quality_inbox],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(restored_quality_inbox_status, "pending");
     let rejected_gap_inbox: i64 = Connection::open(&db)
         .unwrap()
         .query_row(
