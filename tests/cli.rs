@@ -5161,6 +5161,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(upgrade_json["dry_run"], true);
     assert!(upgrade_json["actions"].as_array().unwrap().len() >= 3);
 
+    insert_empty_read_event(&db, "brief", "fresh dashboard memory gap");
     let dashboard = stdout(cmd(&db).arg("dashboard").arg("--json"));
     let dashboard_json: Value = serde_json::from_str(&dashboard).unwrap();
     assert!(!dashboard_json["projects"].as_array().unwrap().is_empty());
@@ -5168,8 +5169,8 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(dashboard_json["status"].as_str().is_some());
     assert!(dashboard_json["total_projects"].as_u64().unwrap() >= 1);
     assert!(dashboard_json["attention_projects"].as_u64().is_some());
-    assert!(dashboard_json["memory_gap_projects"].as_u64().is_some());
-    assert!(dashboard_json["memory_gap_count"].as_u64().is_some());
+    assert!(dashboard_json["memory_gap_projects"].as_u64().unwrap() >= 1);
+    assert!(dashboard_json["memory_gap_count"].as_u64().unwrap() >= 1);
     assert!(dashboard_json["recommendations_count"].as_u64().is_some());
     assert!(
         dashboard_json["attention_reason_counts"]
@@ -5215,6 +5216,28 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .unwrap()
             .iter()
             .all(|item| item["recommendations"].as_array().is_some())
+    );
+    assert!(
+        dashboard_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["autonomous_inferred_missing"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 1
+                && item["attention_reasons"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|reason| reason == "memory_gaps_detected")
+                && item["repair_actions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|action| action["code"] == "run_autonomous"
+                        && action["reason"] == "memory_gaps_detected"
+                        && action["safe_auto"] == true))
     );
     assert!(
         dashboard_json["projects"]

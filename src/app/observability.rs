@@ -1917,6 +1917,22 @@ fn inbox_review_command(db: &Path) -> Vec<String> {
     ]
 }
 
+fn freshest_dashboard_live_eval(
+    status_live_eval: Option<LiveEvalReport>,
+    current_live_eval: Option<LiveEvalReport>,
+) -> Option<LiveEvalReport> {
+    match (status_live_eval, current_live_eval) {
+        (Some(status), Some(current))
+            if current.reads > status.reads
+                || current.inferred_missing > status.inferred_missing =>
+        {
+            Some(current)
+        }
+        (Some(status), _) => Some(status),
+        (None, current) => current,
+    }
+}
+
 pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
     let projects = discover_project_dbs(default_db)?
         .into_iter()
@@ -1935,9 +1951,11 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                 .as_ref()
                 .map(|status| ((now_ms() - status.updated_at).max(0)) / 1000);
             let autonomous_fresh = autonomous_age_secs.map(|age| age <= 86_400);
-            let live_eval = autonomous
+            let status_live_eval = autonomous
                 .as_ref()
-                .and_then(|status| status.live_eval.as_ref());
+                .and_then(|status| status.live_eval.clone());
+            let current_live_eval = live_eval_report(&conn, 7).ok();
+            let live_eval = freshest_dashboard_live_eval(status_live_eval, current_live_eval);
             let embedding = embeddings::embed_status(
                 &conn,
                 DEFAULT_EMBED_PROVIDER,
@@ -2014,6 +2032,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                 );
             }
             if live_eval
+                .as_ref()
                 .map(|live| live.inferred_missing)
                 .unwrap_or_default()
                 > 0
@@ -2084,11 +2103,12 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                 autonomous_ok: autonomous.as_ref().map(|status| status.ok),
                 autonomous_age_secs,
                 autonomous_fresh,
-                autonomous_live_reads: live_eval.map(|live| live.reads),
-                autonomous_useful_rate: live_eval.map(|live| live.useful_rate),
+                autonomous_live_reads: live_eval.as_ref().map(|live| live.reads),
+                autonomous_useful_rate: live_eval.as_ref().map(|live| live.useful_rate),
                 autonomous_useful_rate_source: live_eval
+                    .as_ref()
                     .map(|live| live.useful_rate_source.clone()),
-                autonomous_inferred_missing: live_eval.map(|live| live.inferred_missing),
+                autonomous_inferred_missing: live_eval.as_ref().map(|live| live.inferred_missing),
                 embedding_missing,
                 recommended_budget: profile.map(|profile| profile.recommended_budget),
                 repair_loop,
