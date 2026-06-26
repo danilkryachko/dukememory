@@ -1,6 +1,6 @@
 # dukememory.
 
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue.svg)](LICENSE)
 [![Rust 2024](https://img.shields.io/badge/rust-2024-orange.svg)](Cargo.toml)
 [![MCP server](https://img.shields.io/badge/MCP-server-0f766e.svg)](#mcp-and-codex)
 [![Local first](https://img.shields.io/badge/local--first-SQLite-0f766e.svg)](#core)
@@ -118,4 +118,6 @@ cargo build --release
 
 ## License
 
-Apache-2.0.
+PolyForm Noncommercial 1.0.0.
+
+Commercial use requires a separate commercial license from danilkryachko.
