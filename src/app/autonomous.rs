@@ -1324,6 +1324,13 @@ pub(crate) fn autonomous_run_once(
             autonomous_repair_compact_links(conn, effective_level, request.scope, &mut report)?;
             autonomous_supersede_duplicates(conn, effective_level, &mut report)?;
             autonomous_slim_long_memories(conn, effective_level, request.scope, &mut report)?;
+            autonomous_repair_explicit_file_links(
+                conn,
+                effective_level,
+                autonomous_project_root_for_db(request.db),
+                request.scope,
+                &mut report,
+            )?;
             autonomous_resolve_quality_inbox(conn, effective_level, request.scope, &mut report)?;
         }
         let quality_level = if matches!(request.level, AutonomousLevel::Conservative) {
@@ -1825,6 +1832,15 @@ fn inherited_memory_links(conn: &Connection, rows: &[Memory], max: usize) -> Res
     Ok(out)
 }
 
+fn autonomous_project_root_for_db(db: &Path) -> &Path {
+    let parent = db.parent().unwrap_or_else(|| Path::new("."));
+    if parent.file_name().and_then(|name| name.to_str()) == Some(".agent") {
+        parent.parent().unwrap_or(parent)
+    } else {
+        parent
+    }
+}
+
 fn raw_memory_links(conn: &Connection, memory_id: &str) -> Result<Vec<String>> {
     get_links(conn, memory_id).map(|links| {
         links
@@ -2045,6 +2061,147 @@ fn autonomous_repair_compact_links(
         kind: "repair_compact_links".to_string(),
         status: "ok".to_string(),
         detail: format!("repaired links on {changed} compact card(s)"),
+        memory_id: None,
+    });
+    Ok(())
+}
+
+fn explicit_file_link_candidates(root: &Path, memory: &Memory, max: usize) -> Vec<String> {
+    let mut links = Vec::new();
+    let mut seen = HashSet::new();
+    let text = format!("{} {}", memory.title, memory.body);
+    for raw in text.split_whitespace() {
+        let token = raw.trim_matches(|ch: char| {
+            matches!(
+                ch,
+                '`' | '"' | '\'' | ',' | ';' | ':' | ')' | '(' | '[' | ']' | '{' | '}'
+            )
+        });
+        if !token.contains('/') || token.contains("://") {
+            continue;
+        }
+        let token = token.trim_start_matches("./");
+        if token.starts_with('/')
+            || token.starts_with("../")
+            || token.contains("..")
+            || token.len() > 180
+        {
+            continue;
+        }
+        if !matches!(
+            token.rsplit('.').next(),
+            Some("rs" | "toml" | "md" | "json" | "html" | "js" | "ts" | "tsx" | "py")
+        ) {
+            continue;
+        }
+        if root.join(token).is_file() {
+            let link = format!("file:{token}");
+            if seen.insert(link.clone()) {
+                links.push(link);
+                if links.len() >= max {
+                    break;
+                }
+            }
+        }
+    }
+    links
+}
+
+fn autonomous_repair_explicit_file_links(
+    conn: &Connection,
+    level: AutonomousLevel,
+    root: &Path,
+    scope: &str,
+    report: &mut AutonomousReport,
+) -> Result<()> {
+    let max = match level {
+        AutonomousLevel::Conservative => 0,
+        AutonomousLevel::Normal => 2,
+        AutonomousLevel::Aggressive => 5,
+    };
+    if max == 0 {
+        return Ok(());
+    }
+    let memories = query_memories(
+        conn,
+        None,
+        &[
+            "design_note".to_string(),
+            "task_state".to_string(),
+            "known_issue".to_string(),
+            "command".to_string(),
+        ],
+        &["active".to_string(), "uncertain".to_string()],
+        Some(scope),
+        100,
+    )?;
+    let mut candidates = Vec::new();
+    for memory in memories {
+        let previous_links = raw_memory_links(conn, &memory.id)?;
+        if !previous_links.is_empty() {
+            continue;
+        }
+        let inferred_links = explicit_file_link_candidates(root, &memory, 5);
+        if !inferred_links.is_empty() {
+            candidates.push((memory, previous_links, inferred_links));
+        }
+        if candidates.len() >= max {
+            break;
+        }
+    }
+    let decision = autonomous_policy_decision(AutonomousPolicyInput {
+        action: "repair_explicit_file_links",
+        level,
+        risk_score: 7.0,
+        usefulness_score: (candidates.len().min(5) as f64) * 9.0,
+        token_saving_score: (candidates.len().min(5) as f64) * 2.0,
+        confidence: if candidates.is_empty() { 0.0 } else { 0.9 },
+        rollback: true,
+        reason: format!(
+            "{} memory card(s) with explicit existing file paths",
+            candidates.len()
+        ),
+    });
+    report.policy.push(decision.clone());
+    if candidates.is_empty() {
+        report.actions.push(AutonomousAction {
+            kind: "repair_explicit_file_links".to_string(),
+            status: "skipped".to_string(),
+            detail: "no no-link cards with explicit existing file paths".to_string(),
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    if !decision.allowed {
+        report.actions.push(AutonomousAction {
+            kind: "repair_explicit_file_links".to_string(),
+            status: "skipped".to_string(),
+            detail: decision.reason,
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    let mut changed = 0;
+    for (memory, previous_links, inferred_links) in candidates {
+        report
+            .rollback
+            .push(AutonomousRollback::RestoreMemoryLinks {
+                id: memory.id.clone(),
+                links: previous_links,
+            });
+        replace_memory_links(conn, &memory.id, &inferred_links)?;
+        log_event(
+            conn,
+            "autonomous_repair_explicit_file_links",
+            Some(&memory.id),
+            &format!("added {} explicit file link(s)", inferred_links.len()),
+        )?;
+        changed += 1;
+    }
+    report.actions.push(AutonomousAction {
+        kind: "repair_explicit_file_links".to_string(),
+        status: "ok".to_string(),
+        detail: format!("repaired explicit file links on {changed} card(s)"),
         memory_id: None,
     });
     Ok(())

@@ -4212,6 +4212,8 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let status_file = dir.path().join(".agent").join("autonomous-status.json");
     let rollback_dir = dir.path().join(".agent").join("autonomous-rollbacks");
     let backup_dir = dir.path().join(".agent").join("backups");
+    fs::create_dir_all(dir.path().join("src").join("app")).unwrap();
+    fs::write(dir.path().join("src").join("app").join("autonomous.rs"), "").unwrap();
 
     stdout(
         cmd(&db)
@@ -4314,6 +4316,17 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     )
     .trim()
     .to_string();
+    let explicit_link_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Explicit path link candidate")
+            .arg("This card explicitly references src/app/autonomous.rs and should receive a file link.")
+            .arg("--scope")
+            .arg("project"),
+    )
+    .trim()
+    .to_string();
     let resolved_quality_target = stdout(
         cmd(&db)
             .arg("add")
@@ -4407,6 +4420,11 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(
         actions
             .iter()
+            .any(|item| item["kind"] == "repair_explicit_file_links" && item["status"] == "ok")
+    );
+    assert!(
+        actions
+            .iter()
             .any(|item| item["kind"] == "resolve_quality_inbox" && item["status"] == "ok")
     );
     assert!(
@@ -4449,6 +4467,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_array()
             .unwrap()
             .iter()
+            .any(|item| item["action"] == "repair_explicit_file_links")
+    );
+    assert!(
+        run_json["policy"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|item| item["action"] == "resolve_quality_inbox")
     );
     assert!(status_file.exists());
@@ -4470,6 +4495,14 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         )
         .unwrap();
     assert_eq!(repaired_legacy_links, 1);
+    let repaired_explicit_links: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_links WHERE memory_id = ?1 AND target = 'src/app/autonomous.rs'",
+            [&explicit_link_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(repaired_explicit_links, 1);
 
     let slimmed_body: String = conn
         .query_row(
@@ -5039,6 +5072,15 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         )
         .unwrap();
     assert_eq!(restored_legacy_links, 0);
+    let restored_explicit_links: i64 = Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM memory_links WHERE memory_id = ?1",
+            [&explicit_link_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(restored_explicit_links, 0);
     let rejected_gap_inbox: i64 = Connection::open(&db)
         .unwrap()
         .query_row(
