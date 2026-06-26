@@ -148,6 +148,8 @@ pub(crate) struct DashboardReport {
     pub(crate) missing_live_eval_projects: usize,
     pub(crate) memory_gap_projects: usize,
     pub(crate) memory_gap_count: usize,
+    pub(crate) gap_inbox_pending_projects: usize,
+    pub(crate) gap_inbox_pending_count: usize,
     pub(crate) recommendations_count: usize,
     pub(crate) attention_reason_counts: BTreeMap<String, usize>,
     pub(crate) repair_actions_count: usize,
@@ -261,9 +263,18 @@ pub(crate) struct ProjectDashboardItem {
     pub(crate) embedding_missing: Option<usize>,
     pub(crate) recommended_budget: Option<String>,
     pub(crate) repair_loop: OpsRepairLoopStatus,
+    pub(crate) gap_inbox: DashboardGapInboxStatus,
     pub(crate) attention_reasons: Vec<String>,
     pub(crate) repair_actions: Vec<DashboardRepairAction>,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub(crate) struct DashboardGapInboxStatus {
+    pub(crate) total: usize,
+    pub(crate) pending: usize,
+    pub(crate) approved: usize,
+    pub(crate) rejected: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1266,7 +1277,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
     } else {
         println!("dukememory. Dashboard");
         println!(
-            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} memory_gap_projects={} memory_gap_count={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={} repair_loop_projects={} repair_loop_failed={} repair_loop_safe_skipped={}",
+            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} memory_gap_projects={} memory_gap_count={} gap_inbox_pending_projects={} gap_inbox_pending_count={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={} repair_loop_projects={} repair_loop_failed={} repair_loop_safe_skipped={}",
             report.status,
             report.total_projects,
             report.ready_projects,
@@ -1275,6 +1286,8 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
             report.missing_live_eval_projects,
             report.memory_gap_projects,
             report.memory_gap_count,
+            report.gap_inbox_pending_projects,
+            report.gap_inbox_pending_count,
             report.recommendations_count,
             report.attention_reason_counts.len(),
             report.repair_actions_count,
@@ -1300,7 +1313,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
                     .join(",")
             };
             println!(
-                "- {} status={} attention={} reasons={} repairs={} repair_runs={} repair_failed={} repair_safe_skipped={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
+                "- {} status={} attention={} reasons={} repairs={} repair_runs={} repair_failed={} repair_safe_skipped={} gap_inbox_pending={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
                 project.name,
                 project.status,
                 project.attention,
@@ -1309,6 +1322,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
                 project.repair_loop.runs,
                 project.repair_loop.failed_actions,
                 project.repair_loop.safe_skipped_actions,
+                project.gap_inbox.pending,
                 project.memories,
                 project.pending_inbox,
                 project
@@ -1484,6 +1498,7 @@ pub(crate) fn dashboard_repair_history_report(
             embedding_missing: None,
             recommended_budget: None,
             repair_loop: empty_repair_loop_status(),
+            gap_inbox: DashboardGapInboxStatus::default(),
             attention_reasons: Vec::new(),
             repair_actions: Vec::new(),
             recommendations: Vec::new(),
@@ -1977,6 +1992,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
             let embedding_missing = embedding.as_ref().map(|status| status.missing);
             let repair_loop =
                 ops_repair_loop_status(&conn, 30).unwrap_or_else(|_| empty_repair_loop_status());
+            let gap_inbox = dashboard_gap_inbox_status(&conn).unwrap_or_default();
             let mut recommendations = Vec::new();
             let mut attention_reasons = Vec::new();
             let mut repair_actions = Vec::new();
@@ -2122,6 +2138,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                 embedding_missing,
                 recommended_budget: profile.map(|profile| profile.recommended_budget),
                 repair_loop,
+                gap_inbox,
                 attention_reasons,
                 repair_actions,
                 recommendations,
@@ -2154,6 +2171,14 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
     let memory_gap_count = projects
         .iter()
         .map(|project| project.autonomous_inferred_missing.unwrap_or_default())
+        .sum();
+    let gap_inbox_pending_projects = projects
+        .iter()
+        .filter(|project| project.gap_inbox.pending > 0)
+        .count();
+    let gap_inbox_pending_count = projects
+        .iter()
+        .map(|project| project.gap_inbox.pending)
         .sum();
     let recommendations_count = projects
         .iter()
@@ -2201,6 +2226,8 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         missing_live_eval_projects,
         memory_gap_projects,
         memory_gap_count,
+        gap_inbox_pending_projects,
+        gap_inbox_pending_count,
         recommendations_count,
         attention_reason_counts,
         repair_actions_count,
@@ -2769,6 +2796,28 @@ fn empty_repair_loop_status() -> OpsRepairLoopStatus {
         last_action_count: None,
         actions_by_code: BTreeMap::new(),
     }
+}
+
+fn dashboard_gap_inbox_status(conn: &Connection) -> Result<DashboardGapInboxStatus> {
+    let mut status = DashboardGapInboxStatus::default();
+    let mut stmt = conn.prepare(
+        "SELECT status, COUNT(*) FROM memory_inbox WHERE source = 'autonomous_gap' GROUP BY status",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (state, count) = row?;
+        let count = count.max(0) as usize;
+        status.total += count;
+        match state.as_str() {
+            "pending" => status.pending += count,
+            "approved" => status.approved += count,
+            "rejected" => status.rejected += count,
+            _ => {}
+        }
+    }
+    Ok(status)
 }
 
 fn ops_agent_integration_status(db: &Path, root: &Path) -> OpsAgentIntegrationStatus {
