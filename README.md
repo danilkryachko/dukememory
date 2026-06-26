@@ -61,6 +61,7 @@ Transcript-based memory quickly turns into noise.
 - reversible auto-close for resolved autonomous gap inbox items
 - local ops-status gap inbox counters for single-project agents
 - oldest pending gap-inbox age in dashboard and ops status
+- stale gap-inbox recommendations for autonomous repair prioritization
 
 ## What It Remembers
 

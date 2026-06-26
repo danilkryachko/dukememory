@@ -1,6 +1,7 @@
 use super::*;
 
 const FRESH_MEMORY_GRACE_MS: i64 = 86_400_000;
+const GAP_INBOX_STALE_MS: i64 = 3_600_000;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct MemoryReadEvent {
@@ -2087,6 +2088,24 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                     autonomous_repair_command(&root, &db),
                 );
             }
+            if gap_inbox
+                .oldest_pending_age_secs
+                .is_some_and(|age| age >= GAP_INBOX_STALE_MS / 1000)
+            {
+                attention_reasons.push("gap_inbox_stale".to_string());
+                recommendations.push(format!(
+                    "run dukememory autonomous run-once --level normal to refresh stale gap inbox items older than {}s",
+                    GAP_INBOX_STALE_MS / 1000
+                ));
+                push_repair_action(
+                    &mut repair_actions,
+                    "run_autonomous",
+                    "gap_inbox_stale",
+                    true,
+                    "Refresh stale autonomous gap inbox suggestions.",
+                    autonomous_repair_command(&root, &db),
+                );
+            }
             if embedding_missing.unwrap_or(0) > 0 {
                 attention_reasons.push("embeddings_missing".to_string());
                 recommendations.push("run dukememory embed-index".to_string());
@@ -2598,6 +2617,17 @@ pub(crate) fn ops_status_report(
             "review {} pending autonomous gap inbox item(s)",
             gap_inbox.pending
         ));
+    }
+    if let Some(age) = gap_inbox.oldest_pending_age_secs
+        && age >= GAP_INBOX_STALE_MS / 1000
+    {
+        issues.push(format!(
+            "autonomous gap inbox has stale pending items: oldest_pending_age_secs={age}"
+        ));
+        recommendations.push(
+            "run dukememory autonomous run-once --level normal to refresh stale gap inbox items"
+                .to_string(),
+        );
     }
     if storage.pressure == "warn" {
         issues.push(format!(

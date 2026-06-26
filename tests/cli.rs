@@ -18,18 +18,21 @@ fn stdout(command: &mut Command) -> String {
     String::from_utf8(command.assert().success().get_output().stdout.clone()).unwrap()
 }
 
-fn insert_empty_read_event(db: &std::path::Path, command: &str, query: &str) {
-    let conn = Connection::open(db).unwrap();
-    let now = std::time::SystemTime::now()
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis()
-        .min(i64::MAX as u128) as i64;
+        .min(i64::MAX as u128) as i64
+}
+
+fn insert_empty_read_event(db: &std::path::Path, command: &str, query: &str) {
+    let conn = Connection::open(db).unwrap();
     conn.execute(
         "INSERT INTO memory_read_events \
          (command, query, memory_ids, semantic_used, result_count, budget, elapsed_ms, created_at) \
          VALUES (?1, ?2, '', 1, 0, 1200, 1, ?3)",
-        params![command, query, now],
+        params![command, query, now_ms()],
     )
     .unwrap();
 }
@@ -5212,6 +5215,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(upgrade_json["dry_run"], true);
     assert!(upgrade_json["actions"].as_array().unwrap().len() >= 3);
 
+    Connection::open(&db)
+        .unwrap()
+        .execute(
+            "UPDATE memory_inbox SET created_at = ?1 WHERE source = 'autonomous_gap' AND status = 'pending'",
+            params![now_ms() - 7_200_000],
+        )
+        .unwrap();
     insert_empty_read_event(&db, "brief", "fresh dashboard memory gap");
     let dashboard = stdout(cmd(&db).arg("dashboard").arg("--json"));
     let dashboard_json: Value = serde_json::from_str(&dashboard).unwrap();
@@ -5315,6 +5325,57 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_array()
             .unwrap()
             .iter()
+            .any(|item| item["gap_inbox"]["oldest_pending_age_secs"]
+                .as_i64()
+                .unwrap_or_default()
+                >= 3_600
+                && item["attention_reasons"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|reason| reason == "gap_inbox_stale")
+                && item["recommendations"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|recommendation| recommendation
+                        .as_str()
+                        .unwrap()
+                        .contains("refresh stale gap inbox items")))
+    );
+    let stale_ops = stdout(
+        cmd(&db)
+            .arg("ops-status")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    );
+    let stale_ops_json: Value = serde_json::from_str(&stale_ops).unwrap();
+    assert!(
+        stale_ops_json["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue
+                .as_str()
+                .unwrap()
+                .contains("autonomous gap inbox has stale pending items"))
+    );
+    assert!(
+        stale_ops_json["recommendations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|recommendation| recommendation
+                .as_str()
+                .unwrap()
+                .contains("refresh stale gap inbox items"))
+    );
+    assert!(
+        dashboard_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
             .all(|item| item["attention_reasons"].as_array().is_some())
     );
     assert!(
@@ -5361,6 +5422,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(dashboard_text.contains("gap_inbox_pending_count="));
     assert!(dashboard_text.contains("gap_inbox_oldest_age="));
     assert!(dashboard_text.contains("gap_inbox_pending="));
+    assert!(dashboard_text.contains("gap_inbox_stale"));
     assert!(dashboard_text.contains("auto_age="));
     assert!(dashboard_text.contains("reasons="));
     assert!(dashboard_text.contains("repairs="));
