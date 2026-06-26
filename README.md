@@ -4,6 +4,7 @@
 [![Rust 2024](https://img.shields.io/badge/rust-2024-orange.svg)](Cargo.toml)
 [![MCP server](https://img.shields.io/badge/MCP-server-0f766e.svg)](#mcp-and-codex)
 [![Local first](https://img.shields.io/badge/local--first-SQLite-0f766e.svg)](#local-first)
+[![Brand](https://img.shields.io/badge/brand-protected-6b7280.svg)](TRADEMARKS.md)
 ![Views](https://komarev.com/ghpvc/?username=danilkryachko-dukememory&label=views&color=0f766e&style=flat-square)
 
 **Project memory for AI coding agents.**
@@ -163,3 +164,9 @@ cargo build --release
 ## License
 
 Apache-2.0.
+
+## Brand
+
+The code is licensed under Apache-2.0, but the `dukememory` name, wordmark,
+screenshots, and project branding are not licensed for use in derivative
+products or services. See [TRADEMARKS.md](TRADEMARKS.md).

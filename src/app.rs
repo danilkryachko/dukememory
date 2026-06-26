@@ -2360,7 +2360,7 @@ Before the final response after substantial work:
 2. Include file/symbol links when they make future `impact` useful.
 3. Save validation commands that actually matter.
 4. Run `dukememory embed-index` once after a batch of memory writes.
-5. Include a short human-readable final receipt, for example: `Memory: read brief+impact; matched 6 cards; saved task_state abc123.` If nothing durable was saved, end with `saved nothing`. Do not paste long raw id lists.
+5. Include a short human-readable final receipt in the user's language. Example in English: `Memory: read brief+impact; matched 6 cards; saved task_state abc123.` Example in Russian: `Память: прочитал brief+impact по 6 карточкам; сохранил task_state abc123.` If nothing durable was saved, say that naturally in the user's language. Do not paste long raw id lists.
 6. If no durable outcome exists, do not write memory.
 
 Never assume the chat transcript is automatically durable memory. Write the small durable card explicitly when it matters.
