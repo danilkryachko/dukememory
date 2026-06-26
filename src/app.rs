@@ -752,6 +752,34 @@ pub(crate) fn run() -> Result<()> {
             json,
         )?,
         Command::Dashboard { json } => print_dashboard(&cli.db, json)?,
+        Command::DashboardRepair {
+            apply,
+            project,
+            provider,
+            endpoint,
+            model,
+            json,
+        } => print_dashboard_repair(
+            &cli.db,
+            apply,
+            project.as_deref(),
+            select_cli_or_config(
+                &provider,
+                DEFAULT_EMBED_PROVIDER,
+                &runtime.config.embeddings.provider,
+            ),
+            select_cli_or_config(
+                &endpoint,
+                DEFAULT_EMBED_ENDPOINT,
+                &runtime.config.embeddings.endpoint,
+            ),
+            select_cli_or_config(
+                &model,
+                DEFAULT_EMBED_MODEL,
+                &runtime.config.embeddings.model,
+            ),
+            json,
+        )?,
         Command::OpsStatus {
             root,
             since_days,
@@ -2873,6 +2901,7 @@ fn print_completions(shell: CompletionShell) {
         "recall",
         "onboard",
         "dashboard",
+        "dashboard-repair",
         "ops-status",
         "inbox-v2",
         "policy-tune",
@@ -2968,6 +2997,7 @@ fn print_manpage() {
     println!("  project-profile --json        structured project memory profile");
     println!("  recall QUERY --max-chars 1200 compressed token-light recall");
     println!("  dashboard --json              multi-project memory health dashboard");
+    println!("  dashboard-repair --apply      run safe dashboard repair actions");
     println!("  ops-status --json             one UI/autonomy/effectiveness/sync status");
     println!("  onboard --root DIR            initialize memory/profile/embeddings");
     println!("  inbox-v2 report|auto-apply    group and process pending suggestions");

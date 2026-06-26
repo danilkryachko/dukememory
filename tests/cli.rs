@@ -5192,6 +5192,64 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(dashboard_text.contains("repair_actions="));
     assert!(dashboard_text.contains("recommendations="));
 
+    let dashboard_repair = stdout(
+        cmd(&db)
+            .arg("dashboard-repair")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let dashboard_repair_json: Value = serde_json::from_str(&dashboard_repair).unwrap();
+    assert_eq!(dashboard_repair_json["apply"], false);
+    assert!(dashboard_repair_json["total_actions"].as_u64().is_some());
+    assert!(dashboard_repair_json["safe_actions"].as_u64().is_some());
+    assert!(dashboard_repair_json["applied_actions"].as_u64().is_some());
+    assert!(dashboard_repair_json["skipped_actions"].as_u64().is_some());
+    assert!(
+        dashboard_repair_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|project| project["actions"].as_array().unwrap().iter())
+            .all(|action| action["applied"] == false && action["skipped"] == true)
+    );
+    let dashboard_repair_apply = stdout(
+        cmd(&db)
+            .arg("dashboard-repair")
+            .arg("--apply")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let dashboard_repair_apply_json: Value = serde_json::from_str(&dashboard_repair_apply).unwrap();
+    assert_eq!(dashboard_repair_apply_json["apply"], true);
+    assert_eq!(dashboard_repair_apply_json["ok"], true);
+    assert!(
+        dashboard_repair_apply_json["applied_actions"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+    assert!(
+        dashboard_repair_apply_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|project| project["actions"].as_array().unwrap().iter())
+            .any(|action| action["safe_auto"] == true && action["applied"] == true)
+    );
+    let dashboard_repair_text = stdout(cmd(&db).arg("dashboard-repair"));
+    assert!(dashboard_repair_text.contains("dukememory. Dashboard Repair"));
+    assert!(dashboard_repair_text.contains("summary: apply=false"));
+
     let onboard_root = dir.path().join("onboarded");
     fs::create_dir_all(&onboard_root).unwrap();
     let onboard = stdout(

@@ -163,6 +163,39 @@ pub(crate) struct DashboardRepairAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct DashboardRepairReport {
+    pub(crate) version: u32,
+    pub(crate) apply: bool,
+    pub(crate) ok: bool,
+    pub(crate) total_actions: usize,
+    pub(crate) safe_actions: usize,
+    pub(crate) applied_actions: usize,
+    pub(crate) skipped_actions: usize,
+    pub(crate) failed_actions: usize,
+    pub(crate) projects: Vec<DashboardRepairProject>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct DashboardRepairProject {
+    pub(crate) name: String,
+    pub(crate) root: String,
+    pub(crate) db: String,
+    pub(crate) actions: Vec<DashboardRepairResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct DashboardRepairResult {
+    pub(crate) code: String,
+    pub(crate) reason: String,
+    pub(crate) safe_auto: bool,
+    pub(crate) applied: bool,
+    pub(crate) skipped: bool,
+    pub(crate) ok: bool,
+    pub(crate) detail: String,
+    pub(crate) command: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ProjectDashboardItem {
     pub(crate) name: String,
     pub(crate) status: String,
@@ -1238,6 +1271,261 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+pub(crate) fn print_dashboard_repair(
+    default_db: &Path,
+    apply: bool,
+    project_filter: Option<&str>,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+    json_out: bool,
+) -> Result<()> {
+    let report =
+        dashboard_repair_report(default_db, apply, project_filter, provider, endpoint, model)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("dukememory. Dashboard Repair");
+        println!(
+            "summary: apply={} ok={} total={} safe={} applied={} skipped={} failed={}",
+            report.apply,
+            report.ok,
+            report.total_actions,
+            report.safe_actions,
+            report.applied_actions,
+            report.skipped_actions,
+            report.failed_actions
+        );
+        for project in report.projects {
+            for action in project.actions {
+                println!(
+                    "- {} action={} reason={} safe={} applied={} skipped={} ok={} detail={}",
+                    project.name,
+                    action.code,
+                    action.reason,
+                    action.safe_auto,
+                    action.applied,
+                    action.skipped,
+                    action.ok,
+                    action.detail
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn dashboard_repair_report(
+    default_db: &Path,
+    apply: bool,
+    project_filter: Option<&str>,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> Result<DashboardRepairReport> {
+    let dashboard = dashboard_report(default_db)?;
+    let mut projects = Vec::new();
+    for project in dashboard.projects {
+        if !dashboard_project_matches(&project, project_filter) {
+            continue;
+        }
+        let mut actions = Vec::new();
+        for action in &project.repair_actions {
+            actions.push(run_dashboard_repair_action(
+                &project, action, apply, provider, endpoint, model,
+            ));
+        }
+        if !actions.is_empty() {
+            projects.push(DashboardRepairProject {
+                name: project.name,
+                root: project.root,
+                db: project.db,
+                actions,
+            });
+        }
+    }
+    let total_actions = projects
+        .iter()
+        .map(|project| project.actions.len())
+        .sum::<usize>();
+    let safe_actions = projects
+        .iter()
+        .flat_map(|project| project.actions.iter())
+        .filter(|action| action.safe_auto)
+        .count();
+    let applied_actions = projects
+        .iter()
+        .flat_map(|project| project.actions.iter())
+        .filter(|action| action.applied)
+        .count();
+    let skipped_actions = projects
+        .iter()
+        .flat_map(|project| project.actions.iter())
+        .filter(|action| action.skipped)
+        .count();
+    let failed_actions = projects
+        .iter()
+        .flat_map(|project| project.actions.iter())
+        .filter(|action| !action.ok)
+        .count();
+    Ok(DashboardRepairReport {
+        version: 1,
+        apply,
+        ok: failed_actions == 0,
+        total_actions,
+        safe_actions,
+        applied_actions,
+        skipped_actions,
+        failed_actions,
+        projects,
+    })
+}
+
+fn dashboard_project_matches(project: &ProjectDashboardItem, filter: Option<&str>) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+    project.name == filter || project.root == filter || project.db == filter
+}
+
+fn run_dashboard_repair_action(
+    project: &ProjectDashboardItem,
+    action: &DashboardRepairAction,
+    apply: bool,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> DashboardRepairResult {
+    if !action.safe_auto {
+        return DashboardRepairResult {
+            code: action.code.clone(),
+            reason: action.reason.clone(),
+            safe_auto: false,
+            applied: false,
+            skipped: true,
+            ok: true,
+            detail: "manual action skipped".to_string(),
+            command: action.command.clone(),
+        };
+    }
+    if !apply {
+        return DashboardRepairResult {
+            code: action.code.clone(),
+            reason: action.reason.clone(),
+            safe_auto: true,
+            applied: false,
+            skipped: true,
+            ok: true,
+            detail: "dry run".to_string(),
+            command: action.command.clone(),
+        };
+    }
+    let root = PathBuf::from(&project.root);
+    let db = PathBuf::from(&project.db);
+    let result = match action.code.as_str() {
+        "run_autonomous" => run_dashboard_autonomous_repair(&root, &db, provider, endpoint, model),
+        "embed_index" => run_dashboard_embed_repair(&root, &db, provider, endpoint, model),
+        other => Err(anyhow::anyhow!("unknown safe repair action: {other}")),
+    };
+    match result {
+        Ok(detail) => DashboardRepairResult {
+            code: action.code.clone(),
+            reason: action.reason.clone(),
+            safe_auto: true,
+            applied: true,
+            skipped: false,
+            ok: true,
+            detail,
+            command: action.command.clone(),
+        },
+        Err(err) => DashboardRepairResult {
+            code: action.code.clone(),
+            reason: action.reason.clone(),
+            safe_auto: true,
+            applied: false,
+            skipped: false,
+            ok: false,
+            detail: format!("{err:#}"),
+            command: action.command.clone(),
+        },
+    }
+}
+
+fn run_dashboard_autonomous_repair(
+    root: &Path,
+    db: &Path,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> Result<String> {
+    let conn = open_db(db)?;
+    let (provider, endpoint, model) =
+        project_embedding_or_fallback(root, provider, endpoint, model);
+    let status_file = root.join(".agent/autonomous-status.json");
+    let rollback_dir = root.join(".agent/autonomous-rollbacks");
+    let backup_dir = root.join(".agent/backups");
+    let report = autonomous_run_once(
+        &conn,
+        AutonomousRunRequest {
+            level: AutonomousLevel::Normal,
+            status_file: &status_file,
+            rollback_dir: &rollback_dir,
+            backup_dir: &backup_dir,
+            backup_keep: 10,
+            rollback_keep: 10,
+            db,
+            scope: "project",
+            provider: &provider,
+            endpoint: &endpoint,
+            model: &model,
+        },
+    )?;
+    Ok(format!("ok={} actions={}", report.ok, report.actions.len()))
+}
+
+fn run_dashboard_embed_repair(
+    root: &Path,
+    db: &Path,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> Result<String> {
+    let conn = open_db(db)?;
+    let (provider, endpoint, model) =
+        project_embedding_or_fallback(root, provider, endpoint, model);
+    let report = embeddings::embed_index(&conn, &provider, &endpoint, &model, &[], None, false)?;
+    Ok(format!(
+        "indexed={} skipped={}",
+        report.indexed, report.skipped
+    ))
+}
+
+fn project_embedding_or_fallback(
+    root: &Path,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> (String, String, String) {
+    let (project_provider, project_endpoint, project_model) = read_project_embedding_config(root);
+    (
+        if project_provider == DEFAULT_EMBED_PROVIDER {
+            provider.to_string()
+        } else {
+            project_provider
+        },
+        if project_endpoint == DEFAULT_EMBED_ENDPOINT {
+            endpoint.to_string()
+        } else {
+            project_endpoint
+        },
+        if project_model == DEFAULT_EMBED_MODEL {
+            model.to_string()
+        } else {
+            project_model
+        },
+    )
 }
 
 fn push_repair_action(
