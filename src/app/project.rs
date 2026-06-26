@@ -1,0 +1,592 @@
+use super::*;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct OnboardReport {
+    ok: bool,
+    root: String,
+    db: String,
+    actions: Vec<String>,
+    profile: ProjectProfileSnapshot,
+    embedding: Option<EmbeddingIndexReport>,
+    autonomous_plist: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemoryContractReport {
+    version: u32,
+    root: String,
+    path: String,
+    written: bool,
+    memory_id: Option<String>,
+    max_chars: usize,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct UpgradeProjectReport {
+    version: String,
+    ok: bool,
+    root: String,
+    dry_run: bool,
+    actions: Vec<String>,
+    install: Option<InstallUpdateReport>,
+    qa: Option<MemoryQaReport>,
+    contract: Option<MemoryContractReport>,
+    errors: Vec<String>,
+}
+
+pub(crate) fn print_onboard(
+    root: &Path,
+    install_autonomous: bool,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+    json_out: bool,
+) -> Result<()> {
+    let report = onboard_project(root, install_autonomous, provider, endpoint, model)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("onboard: {}", if report.ok { "ok" } else { "warn" });
+        println!("root: {}", report.root);
+        for action in report.actions {
+            println!("- {action}");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn onboard_project(
+    root: &Path,
+    install_autonomous: bool,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> Result<OnboardReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    fs::create_dir_all(root.join(".agent"))?;
+    let db = root.join(".agent").join("memory.db");
+    let conn = open_db(&db)?;
+    let mut actions = Vec::new();
+    write_project_config(
+        &root.join(".agent").join("config.toml"),
+        &db,
+        provider,
+        endpoint,
+        model,
+    )?;
+    actions.push("config".to_string());
+    write_workspace_rules(&root, true)?;
+    upsert_project_agents(&root)?;
+    actions.push("workspace_init".to_string());
+    let profile = project_profile_snapshot(&conn, &root, "project")?;
+    if profile.memory_count == 0 {
+        let title = format!(
+            "{} project memory profile",
+            root.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("Project")
+        );
+        add_memory(
+            &conn,
+            AddMemory {
+                id: None,
+                memory_type: "product_goal".to_string(),
+                title,
+                body: "Project memory was onboarded automatically; future agents should keep recall token-light and save only durable decisions, constraints, commands, risks, and task state.".to_string(),
+                scope: "project".to_string(),
+                status: "active".to_string(),
+                source: Some("onboard".to_string()),
+                supersedes: None,
+                confidence: 0.8,
+                links: Vec::new(),
+            },
+        )?;
+        actions.push("seed_project_goal".to_string());
+    }
+    let embedding =
+        embeddings::embed_index(&conn, provider, endpoint, model, &[], None, false).ok();
+    if embedding.is_some() {
+        actions.push("embed_index".to_string());
+    }
+    let autonomous_plist = if install_autonomous {
+        let output = expand_tilde("~/Library/LaunchAgents/com.dukememory.autonomous.plist");
+        write_autonomous_launchd_plist(AutonomousLaunchdRequest {
+            db: &db,
+            output: &output,
+            level: AutonomousLevel::Normal,
+            interval_secs: 300,
+            status_file: &root.join(".agent").join("autonomous-status.json"),
+            rollback_dir: &root.join(".agent").join("autonomous-rollbacks"),
+            backup_dir: &root.join(".agent").join("backups"),
+            provider,
+            endpoint,
+            model,
+            force: true,
+            dry_run: false,
+        })?;
+        actions.push("autonomous_install".to_string());
+        Some(output.display().to_string())
+    } else {
+        None
+    };
+    Ok(OnboardReport {
+        ok: true,
+        root: root.display().to_string(),
+        db: db.display().to_string(),
+        actions,
+        profile: project_profile_snapshot(&conn, &root, "project")?,
+        embedding,
+        autonomous_plist,
+    })
+}
+
+pub(crate) fn discover_project_dbs(default_db: &Path) -> Result<Vec<PathBuf>> {
+    let mut dbs = Vec::new();
+    app_push_unique_db(&mut dbs, default_db);
+    if let Some(root) = app_project_root_for_db(default_db)
+        && let Some(parent) = root.parent()
+    {
+        for entry in fs::read_dir(parent)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                let candidate = entry.path().join(".agent").join("memory.db");
+                if candidate.exists() {
+                    app_push_unique_db(&mut dbs, &candidate);
+                }
+            }
+        }
+    }
+    Ok(dbs)
+}
+
+pub(crate) fn print_memory_contract(
+    conn: &Connection,
+    root: &Path,
+    write: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_contract_report(conn, root, write)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("{}", report.content);
+        if report.written {
+            println!("written: {}", report.path);
+        }
+        if let Some(id) = &report.memory_id {
+            println!("memory_id: {id}");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_contract_report(
+    conn: &Connection,
+    root: &Path,
+    write: bool,
+) -> Result<MemoryContractReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let path = root.join(".agent").join("MEMORY_CONTRACT.md");
+    let content = render_memory_contract(conn, &root, 3600)?;
+    let mut memory_id = None;
+    if write {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        write_file(&path, content.as_bytes())?;
+        memory_id = Some(upsert_memory_contract_card(conn, &content)?);
+    }
+    Ok(MemoryContractReport {
+        version: 1,
+        root: root.display().to_string(),
+        path: path.display().to_string(),
+        written: write,
+        memory_id,
+        max_chars: 3600,
+        content,
+    })
+}
+
+fn render_memory_contract(conn: &Connection, root: &Path, max_chars: usize) -> Result<String> {
+    let profile = project_profile_snapshot(conn, root, "project")?;
+    let mut out = String::new();
+    out.push_str("# dukememory. Project Contract\n\n");
+    out.push_str(&format!("Root: {}\n", root.display()));
+    out.push_str(&format!(
+        "Memory: {} cards, {} decisions, {} constraints, {} commands, recommended budget: {}.\n",
+        profile.memory_count,
+        profile.decisions,
+        profile.constraints,
+        profile.commands,
+        profile.recommended_budget
+    ));
+    out.push_str(&format!(
+        "Embeddings: provider={}, model={}\n\n",
+        profile.embedding_provider, profile.embedding_model
+    ));
+    out.push_str("Rules:\n");
+    out.push_str("- Start coding tasks with `dukememory brief \"<task>\" --budget-profile tiny` or MCP `memory_brief`.\n");
+    out.push_str("- Use `dukememory impact <file-or-symbol> --budget-profile tiny` before editing known areas.\n");
+    out.push_str(
+        "- Save only durable decisions, constraints, commands, known issues, and task state.\n",
+    );
+    out.push_str("- Keep context small; use `dukememory recall \"<task>\" --max-chars 1200` instead of broad dumps.\n");
+    out.push_str("- Autonomous maintenance is allowed when reversible; use rollback instead of hard delete.\n\n");
+    append_contract_section(conn, &mut out, "Goals", &["product_goal".to_string()], 3)?;
+    append_contract_section(
+        conn,
+        &mut out,
+        "Decisions",
+        &["decision".to_string(), "constraint".to_string()],
+        8,
+    )?;
+    append_contract_section(conn, &mut out, "Commands", &["command".to_string()], 5)?;
+    append_contract_section(
+        conn,
+        &mut out,
+        "Known Risks",
+        &["known_issue".to_string()],
+        5,
+    )?;
+    Ok(truncate_chars(&out, max_chars))
+}
+
+fn append_contract_section(
+    conn: &Connection,
+    out: &mut String,
+    title: &str,
+    types: &[String],
+    limit: usize,
+) -> Result<()> {
+    let rows = query_memories(
+        conn,
+        None,
+        types,
+        &["active".to_string(), "uncertain".to_string()],
+        Some("project"),
+        limit,
+    )?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    out.push_str(title);
+    out.push_str(":\n");
+    for row in rows {
+        out.push_str(&format!(
+            "- {} [{}]: {}\n",
+            truncate_chars(&row.title, 96),
+            row.memory_type,
+            truncate_chars(&one_line_summary(&row.body), 220)
+        ));
+    }
+    out.push('\n');
+    Ok(())
+}
+
+fn upsert_memory_contract_card(conn: &Connection, content: &str) -> Result<String> {
+    let existing = query_memories(
+        conn,
+        None,
+        &["design_note".to_string()],
+        &["active".to_string(), "uncertain".to_string()],
+        Some("project"),
+        100,
+    )?
+    .into_iter()
+    .find(|memory| memory.title == "Project memory contract");
+    if let Some(memory) = existing {
+        conn.execute(
+            r#"
+            UPDATE memories SET
+                type = 'design_note',
+                scope = 'project',
+                title = 'Project memory contract',
+                body = ?1,
+                status = 'active',
+                source = 'memory_contract',
+                updated_at = ?2,
+                confidence = 0.95
+            WHERE id = ?3
+            "#,
+            params![content, now_ms(), memory.id],
+        )?;
+        conn.execute(
+            "DELETE FROM memory_links WHERE memory_id = ?1",
+            params![memory.id],
+        )?;
+        insert_links(
+            conn,
+            &memory.id,
+            &parse_links(&["file:.agent/MEMORY_CONTRACT.md".to_string()])?,
+        )?;
+        log_event(
+            conn,
+            "memory_updated",
+            Some(&memory.id),
+            "updated project memory contract",
+        )?;
+        Ok(memory.id)
+    } else {
+        add_memory(
+            conn,
+            AddMemory {
+                id: None,
+                memory_type: "design_note".to_string(),
+                title: "Project memory contract".to_string(),
+                body: content.to_string(),
+                scope: "project".to_string(),
+                status: "active".to_string(),
+                source: Some("memory_contract".to_string()),
+                supersedes: None,
+                confidence: 0.95,
+                links: vec!["file:.agent/MEMORY_CONTRACT.md".to_string()],
+            },
+        )
+    }
+}
+
+pub(crate) fn print_upgrade_project(
+    conn: &Connection,
+    root: &Path,
+    from: Option<&Path>,
+    to: &str,
+    backup_dir: &Path,
+    dry_run: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = upgrade_project_report(conn, root, from, to, backup_dir, dry_run)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("upgrade_project: {}", if report.ok { "ok" } else { "warn" });
+        for action in &report.actions {
+            println!("- {action}");
+        }
+        for error in &report.errors {
+            println!("error: {error}");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn upgrade_project_report(
+    conn: &Connection,
+    root: &Path,
+    from: Option<&Path>,
+    to: &str,
+    backup_dir: &Path,
+    dry_run: bool,
+) -> Result<UpgradeProjectReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut actions = Vec::new();
+    let mut errors = Vec::new();
+    let mut install = None;
+    let source = from
+        .map(Path::to_path_buf)
+        .unwrap_or(std::env::current_exe()?);
+    let target = resolve_install_target(to);
+    let same_binary = source
+        .canonicalize()
+        .ok()
+        .zip(target.canonicalize().ok())
+        .is_some_and(|(source, target)| source == target);
+    if same_binary {
+        actions.push(format!("binary already running from {}", target.display()));
+    } else {
+        match update_install(Some(&source), to, backup_dir, dry_run) {
+            Ok(report) => {
+                actions.push(if report.changed {
+                    format!("binary update prepared: {}", report.target)
+                } else {
+                    format!("binary already current: {}", report.target)
+                });
+                install = Some(report);
+            }
+            Err(err) => errors.push(format!("binary update failed: {err}")),
+        }
+    }
+    if dry_run {
+        actions.push("would refresh workspace rules and AGENTS.md".to_string());
+        actions.push("would refresh Codex skill".to_string());
+        actions.push("would write memory contract".to_string());
+    } else {
+        match write_workspace_rules(&root, true) {
+            Ok(path) => actions.push(format!("workspace rules refreshed: {}", path.display())),
+            Err(err) => errors.push(format!("workspace rules failed: {err}")),
+        }
+        match upsert_project_agents(&root) {
+            Ok(()) => actions.push("AGENTS.md dukememory. block refreshed".to_string()),
+            Err(err) => errors.push(format!("AGENTS.md refresh failed: {err}")),
+        }
+        match write_codex_skill(&expand_tilde("~/.codex/skills"), true) {
+            Ok(path) => actions.push(format!("Codex skill refreshed: {}", path.display())),
+            Err(err) => errors.push(format!("Codex skill refresh failed: {err}")),
+        }
+    }
+    let contract = match memory_contract_report(conn, &root, !dry_run) {
+        Ok(report) => {
+            if report.written {
+                actions.push(format!("memory contract written: {}", report.path));
+            }
+            Some(report)
+        }
+        Err(err) => {
+            errors.push(format!("memory contract failed: {err}"));
+            None
+        }
+    };
+    let qa = match memory_qa_report(conn, &root, 7) {
+        Ok(report) => Some(report),
+        Err(err) => {
+            errors.push(format!("memory qa failed: {err}"));
+            None
+        }
+    };
+    let ok = errors.is_empty() && qa.as_ref().is_none_or(|report| report.ok || dry_run);
+    Ok(UpgradeProjectReport {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        ok,
+        root: root.display().to_string(),
+        dry_run,
+        actions,
+        install,
+        qa,
+        contract,
+        errors,
+    })
+}
+
+pub(crate) fn workspace_init(root: &Path, force: bool) -> Result<()> {
+    let rules = write_workspace_rules(root, force)?;
+    upsert_project_agents(root)?;
+    println!("{}", rules.display());
+    Ok(())
+}
+
+pub(crate) fn write_workspace_rules(root: &Path, force: bool) -> Result<PathBuf> {
+    let agent_dir = root.join(".agent");
+    fs::create_dir_all(&agent_dir)
+        .with_context(|| format!("failed to create {}", agent_dir.display()))?;
+    let rules = agent_dir.join("rules.rhai");
+    if rules.exists() && !force {
+        bail!(
+            "{} already exists (use --force to overwrite)",
+            rules.display()
+        );
+    }
+    write_file(
+        &rules,
+        br#"fn score_memory(type, status, scope, title, body, task, confidence) {
+  if status == "active" { confidence * 2.0 } else { 0.0 }
+}
+
+fn should_include(type, status, scope, title, body, task, confidence) {
+  status != "rejected"
+}
+
+fn should_redact(type, status, scope, title, body, confidence) {
+  body.contains("api_key") || body.contains("token =")
+}
+"#,
+    )?;
+    Ok(rules)
+}
+
+pub(crate) fn project_root_from_config(config: &Path) -> Option<PathBuf> {
+    let parent = config.parent()?;
+    if parent.file_name().and_then(|value| value.to_str()) == Some(".agent") {
+        parent.parent().map(Path::to_path_buf)
+    } else {
+        parent.canonicalize().ok()
+    }
+}
+
+pub(crate) fn upsert_project_agents(root: &Path) -> Result<()> {
+    let path = root.join("AGENTS.md");
+    let block = project_memory_agents_block();
+    let content = if path.exists() {
+        let current = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        if current.contains("<!-- DUKEMEMORY_START -->") {
+            replace_marked_block(
+                &current,
+                "<!-- DUKEMEMORY_START -->",
+                "<!-- DUKEMEMORY_END -->",
+                block,
+            )
+        } else if current.trim().is_empty() {
+            block.to_string()
+        } else {
+            format!("{}\n\n{}", current.trim_end(), block)
+        }
+    } else {
+        block.to_string()
+    };
+    write_file(&path, content.as_bytes())?;
+    Ok(())
+}
+
+fn replace_marked_block(content: &str, start: &str, end: &str, replacement: &str) -> String {
+    let Some(start_pos) = content.find(start) else {
+        return format!("{}\n\n{}", content.trim_end(), replacement);
+    };
+    let Some(end_rel) = content[start_pos..].find(end) else {
+        return format!("{}\n\n{}", content.trim_end(), replacement);
+    };
+    let end_pos = start_pos + end_rel + end.len();
+    let mut out = String::new();
+    out.push_str(content[..start_pos].trim_end());
+    if !out.is_empty() {
+        out.push_str("\n\n");
+    }
+    out.push_str(replacement);
+    let tail = content[end_pos..].trim_start();
+    if !tail.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(tail);
+    }
+    out
+}
+
+fn project_memory_agents_block() -> &'static str {
+    r#"<!-- DUKEMEMORY_START -->
+## dukememory.
+
+This repository has local project memory installed in `.agent/memory.db`.
+
+For every new chat or coding task in this repository:
+- Use the Codex skill `$dukememory-use` when available.
+- Confirm the current project root before reading or writing memory; never write this project's durable facts into another `.agent/memory.db`.
+- Default to read-only memory use unless there is a durable fact worth saving.
+- Start with project memory before broad exploration. Prefer MCP `memory_brief` with a tiny budget for the user's task.
+- Memory use is mandatory when `.agent/memory.db` exists: if MCP tools are not available, use the CLI fallback from the project root instead of skipping memory.
+- CLI brief fallback: `dukememory brief "<task>" --budget-profile tiny`.
+- When a touched file, symbol, subsystem, command, UI area, or error is known, call MCP `memory_impact` or run `dukememory impact <target> --budget-profile tiny`.
+- For architectural/policy questions, call MCP `memory_doctrine`; use MCP `memory_evidence` for critical memory ids before relying on them.
+- Before broad edits/refactors/dependency changes/schema changes/release work, call MCP `memory_drift` or run `dukememory drift --root .`.
+- Persist only durable decisions, constraints, user preferences, project commands, known issues, and task state with MCP `memory_remember`/`memory_add` or the `dukememory remember`/`dukememory add` CLI.
+- Before adding decisions, check MCP `memory_doctrine` or `dukememory doctrine --json`; use MCP `memory_evidence` for high-impact or surprising memory before relying on it.
+- Do not save transient scratch notes, large logs, secrets, full file dumps, or obvious facts from nearby code.
+- After a batch of important memory writes, run `dukememory embed-index` once so embeddings stay ready.
+- Keep operational memory compact. Do not create recursive "compact of compact" summaries; prefer `dukememory memory-contract --write` for durable project-wide context.
+- Memory maintenance is autonomous by default: `dukememory autonomous run-once --level normal` may refresh embeddings, backups, cleanup, safe inbox approvals, compact stale operational notes, and supersede safe duplicates without hard deletion.
+- Roll back the last autonomous maintenance cycle with `dukememory autonomous rollback`; autonomous mode must keep rollback metadata and avoid hard delete by default.
+- Before the final response after substantial work, run the same end routine: save useful durable outcomes or task state, then refresh embeddings once after writes.
+- If memory was read or written, the final response must include a short receipt such as `Memory: used brief+impact, ids=[...], wrote=...`; if nothing durable was saved, say `wrote=none`.
+- To inspect whether memory is being used and reused, run `dukememory usage-report --since-days 7`.
+- To inspect memory quality and cleanup candidates, run `dukememory usefulness-report`.
+- To inspect autonomous maintenance, run `dukememory autonomous status --json`.
+- To inspect evidence-backed memory quality, run `dukememory quality-report --json`.
+- To choose the smallest useful context budget, run `dukememory budget-plan "<task>" --json`.
+- To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`.
+- To inspect live memory usefulness from reads and feedback, run `dukememory eval live --json`.
+- To inspect all local projects, run `dukememory dashboard --json`.
+- To safely group and process inbox suggestions, run `dukememory inbox-v2 report --json`.
+- To check whether memory is useful or noisy, run `dukememory memory-qa --json`.
+- To refresh project-wide memory instructions and the compact contract, run `dukememory upgrade-project --json`.
+- After a task, agents may record lightweight memory utility feedback with `dukememory feedback --id <memory-id> --rating useful|useless|missing`.
+
+Keep memory use lightweight: prefer `brief`/`impact`; do not dump large context packs unless needed.
+<!-- DUKEMEMORY_END -->"#
+}
