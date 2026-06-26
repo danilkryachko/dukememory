@@ -1,15 +1,24 @@
 # dukememory.
 
-**Local AI agent memory for coding workflows.**
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Rust 2024](https://img.shields.io/badge/rust-2024-orange.svg)](Cargo.toml)
+[![MCP server](https://img.shields.io/badge/MCP-server-0f766e.svg)](#mcp-and-codex)
+[![Local first](https://img.shields.io/badge/local--first-SQLite-0f766e.svg)](#core)
+
+**Local AI memory for coding agents.**
 
 SQLite project memory, MCP server, Codex skill, local embeddings, semantic
-recall, and reversible autonomous maintenance.
-
-`dukememory` helps coding agents remember the durable parts of a project:
-goals, decisions, constraints, commands, known issues, task state, and design
-notes. It stays local, fast, auditable, and token-light.
+recall, and reversible autonomous maintenance. `dukememory` keeps durable
+project context across chats without turning your transcript into a prompt.
 
 ![dukememory. web UI](docs/screenshot.png)
+
+## Why
+
+Coding agents need memory, but not a giant chat dump.
+
+`dukememory` stores only what should survive: goals, decisions, constraints,
+commands, known issues, task state, and design notes.
 
 ## Core
 
@@ -29,7 +38,7 @@ target/release/dukememory update-install \
   --to ~/.local/bin/dukememory
 ```
 
-## Start A Project
+## Quick Start
 
 ```bash
 cd /path/to/project
@@ -39,7 +48,7 @@ dukememory install-skill
 dukememory memory-contract --write
 ```
 
-## Use Memory
+## Daily Commands
 
 ```bash
 dukememory brief "fix checkout validation" --budget-profile tiny
@@ -48,7 +57,7 @@ dukememory recall "checkout validation" --max-chars 1200
 dukememory drift --root . --json
 ```
 
-Save only durable knowledge:
+Save durable knowledge:
 
 ```bash
 dukememory add decision \
