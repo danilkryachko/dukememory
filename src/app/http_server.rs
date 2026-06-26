@@ -582,6 +582,7 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                     rollback_dir: &ctx.root.join(".agent").join("autonomous-rollbacks"),
                     backup_dir: &ctx.root.join(".agent").join("backups"),
                     backup_keep: 10,
+                    rollback_keep: 10,
                     db: &ctx.db,
                     scope: "project",
                     provider,

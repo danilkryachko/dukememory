@@ -33,7 +33,7 @@ Transcript-based memory quickly turns into noise.
 - local-first storage with optional semantic recall
 - a web UI to inspect, edit, and audit memory
 - an MCP server and Codex skill for agent-native use
-- autonomous maintenance with rollback-friendly operations
+- autonomous maintenance with rollback-friendly, size-bounded backups
 
 ## What It Remembers
 

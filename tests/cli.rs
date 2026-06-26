@@ -1217,6 +1217,13 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
     assert_eq!(updated_json["dry_run"], false);
     let backup = updated_json["backup"].as_str().unwrap();
     assert_eq!(fs::read(backup).unwrap(), b"old installed binary");
+    for idx in 0..4 {
+        fs::write(
+            backup_dir.join(format!("dukememory-old-{idx}.bak")),
+            format!("old backup {idx}"),
+        )
+        .unwrap();
+    }
     let version_output = StdCommand::new(&target).arg("--version").output().unwrap();
     assert!(version_output.status.success());
     assert!(
@@ -1234,11 +1241,27 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
             .arg(&target)
             .arg("--backup-dir")
             .arg(&backup_dir)
+            .arg("--backup-keep")
+            .arg("2")
             .arg("--json"),
     );
     let current_json: Value = serde_json::from_str(&current).unwrap();
     assert_eq!(current_json["changed"], false);
     assert_eq!(current_json["backup"], Value::Null);
+    assert_eq!(current_json["backup_keep"], 2);
+    assert_eq!(current_json["kept_backups"].as_array().unwrap().len(), 2);
+    assert!(current_json["pruned_backups"].as_array().unwrap().len() >= 3);
+    let install_backup_count = fs::read_dir(&backup_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("dukememory-")
+        })
+        .count();
+    assert_eq!(install_backup_count, 2);
 
     let skills = dir.path().join("skills");
     cmd(&db)
@@ -3353,6 +3376,14 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
     let status_file = root.join(".agent/autonomous-status.json");
     let rollback_dir = root.join(".agent/autonomous-rollbacks");
     let backup_dir = root.join(".agent/backups");
+    fs::create_dir_all(&rollback_dir).unwrap();
+    for idx in 0..8 {
+        fs::write(
+            rollback_dir.join(format!("autonomous-old-{idx}.db")),
+            format!("old autonomous rollback {idx}"),
+        )
+        .unwrap();
+    }
     let run = stdout(
         cmd(&db)
             .arg("autonomous")
@@ -3363,6 +3394,8 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
             .arg(&status_file)
             .arg("--rollback-dir")
             .arg(&rollback_dir)
+            .arg("--rollback-keep")
+            .arg("3")
             .arg("--backup-dir")
             .arg(&backup_dir)
             .arg("--provider")
@@ -3382,6 +3415,22 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
             .iter()
             .any(|item| item["kind"] == "embed_index")
     );
+    assert!(
+        run_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "rollback_retention" && item["status"] == "ok")
+    );
+    let rollback_backup_count = fs::read_dir(&rollback_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            name.starts_with("autonomous-") && name.ends_with(".db")
+        })
+        .count();
+    assert!(rollback_backup_count <= 3);
 
     let rollback = stdout(
         cmd(&db)

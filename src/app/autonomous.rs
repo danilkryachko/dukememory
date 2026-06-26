@@ -1061,6 +1061,7 @@ pub(crate) struct AutonomousRunRequest<'a> {
     pub(crate) rollback_dir: &'a Path,
     pub(crate) backup_dir: &'a Path,
     pub(crate) backup_keep: usize,
+    pub(crate) rollback_keep: usize,
     pub(crate) db: &'a Path,
     pub(crate) scope: &'a str,
     pub(crate) provider: &'a str,
@@ -1084,6 +1085,7 @@ pub(crate) fn handle_autonomous(
             rollback_dir,
             backup_dir,
             backup_keep,
+            rollback_keep,
             scope,
             provider,
             endpoint,
@@ -1098,6 +1100,7 @@ pub(crate) fn handle_autonomous(
                     rollback_dir: &rollback_dir,
                     backup_dir: &backup_dir,
                     backup_keep,
+                    rollback_keep,
                     db,
                     scope: &scope,
                     provider: &provider,
@@ -1114,6 +1117,7 @@ pub(crate) fn handle_autonomous(
             rollback_dir,
             backup_dir,
             backup_keep,
+            rollback_keep,
             scope,
             provider,
             endpoint,
@@ -1127,6 +1131,7 @@ pub(crate) fn handle_autonomous(
                     rollback_dir: &rollback_dir,
                     backup_dir: &backup_dir,
                     backup_keep,
+                    rollback_keep,
                     db,
                     scope: &scope,
                     provider: &provider,
@@ -1178,6 +1183,9 @@ pub(crate) fn autonomous_run_once(
     conn: &Connection,
     request: AutonomousRunRequest<'_>,
 ) -> Result<AutonomousReport> {
+    if request.rollback_keep == 0 {
+        bail!("--rollback-keep must be at least 1");
+    }
     let mut report = AutonomousReport {
         version: 1,
         ok: true,
@@ -1396,6 +1404,27 @@ pub(crate) fn autonomous_run_once(
             }
         }
     }
+    let protected_backup = report.rollback_backup.as_deref().map(PathBuf::from);
+    let rollback_pruned = prune_autonomous_rollbacks(
+        request.rollback_dir,
+        request.rollback_keep,
+        protected_backup.as_deref(),
+    )?;
+    report.actions.push(AutonomousAction {
+        kind: "rollback_retention".to_string(),
+        status: if rollback_pruned.is_empty() {
+            "skipped"
+        } else {
+            "ok"
+        }
+        .to_string(),
+        detail: format!(
+            "keep={} pruned={}",
+            request.rollback_keep,
+            rollback_pruned.len()
+        ),
+        memory_id: None,
+    });
     write_autonomous_status(request.status_file, &report)?;
     Ok(report)
 }
@@ -1410,6 +1439,74 @@ fn autonomous_backup(db: &Path, rollback_dir: &Path) -> Result<PathBuf> {
         )
     })?;
     Ok(output)
+}
+
+struct AutonomousRollbackBackup {
+    path: PathBuf,
+    modified: SystemTime,
+}
+
+fn prune_autonomous_rollbacks(
+    rollback_dir: &Path,
+    keep: usize,
+    protected: Option<&Path>,
+) -> Result<Vec<String>> {
+    let backups = list_autonomous_rollback_backups(rollback_dir)?;
+    let mut kept = HashSet::new();
+    if let Some(path) = protected {
+        kept.insert(path.to_path_buf());
+    }
+    for item in backups.iter().rev() {
+        if kept.len() >= keep {
+            break;
+        }
+        kept.insert(item.path.clone());
+    }
+    let mut pruned = Vec::new();
+    for item in backups {
+        if kept.contains(&item.path) {
+            continue;
+        }
+        if item.path.exists() {
+            fs::remove_file(&item.path)
+                .with_context(|| format!("failed to remove {}", item.path.display()))?;
+        }
+        pruned.push(item.path.display().to_string());
+    }
+    pruned.sort();
+    Ok(pruned)
+}
+
+fn list_autonomous_rollback_backups(rollback_dir: &Path) -> Result<Vec<AutonomousRollbackBackup>> {
+    if !rollback_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut backups = Vec::new();
+    for entry in fs::read_dir(rollback_dir)
+        .with_context(|| format!("failed to read {}", rollback_dir.display()))?
+    {
+        let path = entry?.path();
+        if !path.is_file() || !is_autonomous_rollback_backup(&path) {
+            continue;
+        }
+        let modified = fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        backups.push(AutonomousRollbackBackup { path, modified });
+    }
+    backups.sort_by(|left, right| {
+        left.modified
+            .cmp(&right.modified)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    Ok(backups)
+}
+
+fn is_autonomous_rollback_backup(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    name.starts_with("autonomous-") && name.ends_with(".db")
 }
 
 fn autonomous_approve_inbox(

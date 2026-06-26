@@ -465,9 +465,17 @@ pub(crate) fn run() -> Result<()> {
             from,
             to,
             backup_dir,
+            backup_keep,
             dry_run,
             json,
-        } => print_update_install(from.as_deref(), &to, &backup_dir, dry_run, json)?,
+        } => print_update_install(
+            from.as_deref(),
+            &to,
+            &backup_dir,
+            backup_keep,
+            dry_run,
+            json,
+        )?,
         Command::VecStatus => print_vec_status(),
         Command::ServeMcp { content_length } => mcp_server::serve_mcp(&cli.db, content_length)?,
         Command::ProjectSummary { max_chars, json } => {
@@ -2495,10 +2503,11 @@ fn print_update_install(
     from: Option<&Path>,
     to: &str,
     backup_dir: &Path,
+    backup_keep: usize,
     dry_run: bool,
     json_out: bool,
 ) -> Result<()> {
-    let report = update_install(from, to, backup_dir, dry_run)?;
+    let report = update_install(from, to, backup_dir, backup_keep, dry_run)?;
     if json_out {
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
@@ -2518,6 +2527,9 @@ fn print_update_install(
     if let Some(backup) = &report.backup {
         println!("backup: {backup}");
     }
+    if !report.pruned_backups.is_empty() {
+        println!("pruned_backups: {}", report.pruned_backups.len());
+    }
     if report.dry_run {
         println!("dry_run: true");
     }
@@ -2528,8 +2540,12 @@ fn update_install(
     from: Option<&Path>,
     to: &str,
     backup_dir: &Path,
+    backup_keep: usize,
     dry_run: bool,
 ) -> Result<InstallUpdateReport> {
+    if backup_keep == 0 {
+        bail!("--backup-keep must be at least 1");
+    }
     let source = from
         .map(Path::to_path_buf)
         .unwrap_or(std::env::current_exe()?);
@@ -2564,6 +2580,8 @@ fn update_install(
     };
     let changed = previous_sha256.as_deref() != Some(source_sha256.as_str());
     let mut backup = None;
+    let mut pruned_backups = Vec::new();
+    let mut kept_backups = Vec::new();
 
     if changed && !dry_run {
         let tmp = target.with_extension(format!("update-{}.tmp", now_ms()));
@@ -2600,6 +2618,18 @@ fn update_install(
             );
         }
     }
+    if !dry_run {
+        let retention = prune_install_backups(backup_dir, backup_keep)?;
+        pruned_backups = retention.pruned;
+        kept_backups = retention.kept;
+    } else if backup_dir.exists() {
+        kept_backups = list_install_backups(backup_dir)?
+            .into_iter()
+            .rev()
+            .take(backup_keep)
+            .map(|item| item.path.display().to_string())
+            .collect();
+    }
 
     Ok(InstallUpdateReport {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -2612,7 +2642,77 @@ fn update_install(
         source_version,
         previous_sha256,
         source_sha256,
+        backup_keep,
+        pruned_backups,
+        kept_backups,
     })
+}
+
+struct InstallBackupItem {
+    path: PathBuf,
+    modified: SystemTime,
+}
+
+struct InstallBackupRetention {
+    kept: Vec<String>,
+    pruned: Vec<String>,
+}
+
+fn prune_install_backups(backup_dir: &Path, keep: usize) -> Result<InstallBackupRetention> {
+    let backups = list_install_backups(backup_dir)?;
+    let kept = backups
+        .iter()
+        .rev()
+        .take(keep)
+        .map(|item| item.path.display().to_string())
+        .collect::<Vec<_>>();
+    let prune_paths = backups
+        .into_iter()
+        .rev()
+        .skip(keep)
+        .map(|item| item.path)
+        .collect::<Vec<_>>();
+    let mut pruned = Vec::new();
+    for path in prune_paths {
+        if path.exists() {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+        }
+        pruned.push(path.display().to_string());
+    }
+    Ok(InstallBackupRetention { kept, pruned })
+}
+
+fn list_install_backups(backup_dir: &Path) -> Result<Vec<InstallBackupItem>> {
+    if !backup_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut backups = Vec::new();
+    for entry in fs::read_dir(backup_dir)
+        .with_context(|| format!("failed to read {}", backup_dir.display()))?
+    {
+        let path = entry?.path();
+        if !path.is_file() || !is_install_backup_file(&path) {
+            continue;
+        }
+        let modified = fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        backups.push(InstallBackupItem { path, modified });
+    }
+    backups.sort_by(|left, right| {
+        left.modified
+            .cmp(&right.modified)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    Ok(backups)
+}
+
+fn is_install_backup_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    name.starts_with(binary_name()) && name.ends_with(".bak")
 }
 
 fn resolve_install_target(to: &str) -> PathBuf {

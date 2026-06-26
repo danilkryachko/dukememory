@@ -166,6 +166,9 @@ pub(crate) struct InstallUpdateReport {
     pub(crate) source_version: Option<String>,
     pub(crate) previous_sha256: Option<String>,
     pub(crate) source_sha256: String,
+    pub(crate) backup_keep: usize,
+    pub(crate) pruned_backups: Vec<String>,
+    pub(crate) kept_backups: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

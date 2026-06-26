@@ -312,6 +312,8 @@ pub(crate) enum Command {
         to: String,
         #[arg(long, default_value = ".agent/install-backups")]
         backup_dir: PathBuf,
+        #[arg(long, default_value_t = 10)]
+        backup_keep: usize,
         #[arg(long)]
         dry_run: bool,
         #[arg(long)]
@@ -1305,6 +1307,8 @@ pub(crate) enum AutonomousCommand {
         backup_dir: PathBuf,
         #[arg(long, default_value_t = 10)]
         backup_keep: usize,
+        #[arg(long, default_value_t = 10)]
+        rollback_keep: usize,
         #[arg(long, default_value = "project")]
         scope: String,
         #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
@@ -1330,6 +1334,8 @@ pub(crate) enum AutonomousCommand {
         backup_dir: PathBuf,
         #[arg(long, default_value_t = 10)]
         backup_keep: usize,
+        #[arg(long, default_value_t = 10)]
+        rollback_keep: usize,
         #[arg(long, default_value = "project")]
         scope: String,
         #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
