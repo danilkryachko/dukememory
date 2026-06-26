@@ -176,6 +176,47 @@ pub(crate) struct DashboardRepairReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct DashboardRepairHistoryReport {
+    pub(crate) version: u32,
+    pub(crate) since_days: i64,
+    pub(crate) total_runs: usize,
+    pub(crate) applied_actions: usize,
+    pub(crate) skipped_actions: usize,
+    pub(crate) failed_actions: usize,
+    pub(crate) safe_actions: usize,
+    pub(crate) runs_by_source: BTreeMap<String, usize>,
+    pub(crate) actions_by_code: BTreeMap<String, usize>,
+    pub(crate) manual_actions_by_code: BTreeMap<String, usize>,
+    pub(crate) projects: Vec<DashboardRepairHistoryProject>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct DashboardRepairHistoryProject {
+    pub(crate) name: String,
+    pub(crate) root: String,
+    pub(crate) db: String,
+    pub(crate) total_runs: usize,
+    pub(crate) applied_actions: usize,
+    pub(crate) skipped_actions: usize,
+    pub(crate) failed_actions: usize,
+    pub(crate) safe_actions: usize,
+    pub(crate) recent: Vec<DashboardRepairHistoryEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct DashboardRepairHistoryEvent {
+    pub(crate) id: i64,
+    pub(crate) created_at: i64,
+    pub(crate) source: String,
+    pub(crate) total_actions: usize,
+    pub(crate) applied_actions: usize,
+    pub(crate) skipped_actions: usize,
+    pub(crate) failed_actions: usize,
+    pub(crate) safe_actions: usize,
+    pub(crate) actions: Vec<DashboardRepairResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DashboardRepairProject {
     pub(crate) name: String,
     pub(crate) root: String,
@@ -1322,6 +1363,227 @@ pub(crate) fn print_dashboard_repair(
         }
     }
     Ok(())
+}
+
+pub(crate) fn print_dashboard_repair_history(
+    default_db: &Path,
+    since_days: i64,
+    limit: usize,
+    project_filter: Option<&str>,
+    json_out: bool,
+) -> Result<()> {
+    let report = dashboard_repair_history_report(default_db, since_days, limit, project_filter)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("dukememory. Dashboard Repair History");
+        println!(
+            "summary: runs={} applied={} skipped={} failed={} safe={}",
+            report.total_runs,
+            report.applied_actions,
+            report.skipped_actions,
+            report.failed_actions,
+            report.safe_actions
+        );
+        for project in report.projects {
+            println!(
+                "- {} runs={} applied={} skipped={} failed={} safe={}",
+                project.name,
+                project.total_runs,
+                project.applied_actions,
+                project.skipped_actions,
+                project.failed_actions,
+                project.safe_actions
+            );
+            for event in project.recent {
+                println!(
+                    "  event={} source={} applied={} skipped={} failed={} actions={}",
+                    event.id,
+                    event.source,
+                    event.applied_actions,
+                    event.skipped_actions,
+                    event.failed_actions,
+                    event.total_actions
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn dashboard_repair_history_report(
+    default_db: &Path,
+    since_days: i64,
+    limit: usize,
+    project_filter: Option<&str>,
+) -> Result<DashboardRepairHistoryReport> {
+    let since_ms = now_ms().saturating_sub(since_days.max(0).saturating_mul(86_400_000));
+    let mut projects = Vec::new();
+    let mut runs_by_source = BTreeMap::new();
+    let mut actions_by_code = BTreeMap::new();
+    let mut manual_actions_by_code = BTreeMap::new();
+    for db in discover_project_dbs(default_db)? {
+        let root = app_project_root_for_db(&db).unwrap_or_else(|| {
+            db.parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."))
+        });
+        let name = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("project")
+            .to_string();
+        let item = ProjectDashboardItem {
+            name: name.clone(),
+            status: String::new(),
+            attention: false,
+            root: root.display().to_string(),
+            db: db.display().to_string(),
+            memories: 0,
+            pending_inbox: 0,
+            quality_average: None,
+            autonomous_ok: None,
+            autonomous_age_secs: None,
+            autonomous_fresh: None,
+            autonomous_live_reads: None,
+            autonomous_useful_rate: None,
+            autonomous_useful_rate_source: None,
+            autonomous_inferred_missing: None,
+            embedding_missing: None,
+            recommended_budget: None,
+            attention_reasons: Vec::new(),
+            repair_actions: Vec::new(),
+            recommendations: Vec::new(),
+        };
+        if !dashboard_project_matches(&item, project_filter) {
+            continue;
+        }
+        let conn = open_db(&db)?;
+        let recent = dashboard_repair_events(&conn, since_ms, limit)?;
+        if recent.is_empty() {
+            continue;
+        }
+        let total_runs = recent.len();
+        let applied_actions = recent.iter().map(|event| event.applied_actions).sum();
+        let skipped_actions = recent.iter().map(|event| event.skipped_actions).sum();
+        let failed_actions = recent.iter().map(|event| event.failed_actions).sum();
+        let safe_actions = recent.iter().map(|event| event.safe_actions).sum();
+        for event in &recent {
+            *runs_by_source.entry(event.source.clone()).or_insert(0) += 1;
+            for action in &event.actions {
+                *actions_by_code.entry(action.code.clone()).or_insert(0) += 1;
+                if !action.safe_auto {
+                    *manual_actions_by_code
+                        .entry(action.code.clone())
+                        .or_insert(0) += 1;
+                }
+            }
+        }
+        projects.push(DashboardRepairHistoryProject {
+            name,
+            root: root.display().to_string(),
+            db: db.display().to_string(),
+            total_runs,
+            applied_actions,
+            skipped_actions,
+            failed_actions,
+            safe_actions,
+            recent,
+        });
+    }
+    let total_runs = projects.iter().map(|project| project.total_runs).sum();
+    let applied_actions = projects.iter().map(|project| project.applied_actions).sum();
+    let skipped_actions = projects.iter().map(|project| project.skipped_actions).sum();
+    let failed_actions = projects.iter().map(|project| project.failed_actions).sum();
+    let safe_actions = projects.iter().map(|project| project.safe_actions).sum();
+    Ok(DashboardRepairHistoryReport {
+        version: 1,
+        since_days,
+        total_runs,
+        applied_actions,
+        skipped_actions,
+        failed_actions,
+        safe_actions,
+        runs_by_source,
+        actions_by_code,
+        manual_actions_by_code,
+        projects,
+    })
+}
+
+fn dashboard_repair_events(
+    conn: &Connection,
+    since_ms: i64,
+    limit: usize,
+) -> Result<Vec<DashboardRepairHistoryEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, detail, created_at FROM memory_events WHERE event_type = 'dashboard_repair' AND created_at >= ?1 ORDER BY created_at DESC, id DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(
+        params![since_ms, limit.min(i64::MAX as usize) as i64],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        },
+    )?;
+    let mut events = Vec::new();
+    for row in rows {
+        let (id, detail, created_at) = row?;
+        let value = serde_json::from_str::<Value>(&detail).unwrap_or_else(|_| json!({}));
+        let actions = value
+            .get("actions")
+            .and_then(Value::as_array)
+            .map(|actions| {
+                actions
+                    .iter()
+                    .filter_map(|action| serde_json::from_value(action.clone()).ok())
+                    .collect::<Vec<DashboardRepairResult>>()
+            })
+            .unwrap_or_default();
+        let safe_actions = value
+            .get("safe_actions")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or_else(|| actions.iter().filter(|action| action.safe_auto).count());
+        let applied_actions = value
+            .get("applied_actions")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or_else(|| actions.iter().filter(|action| action.applied).count());
+        let skipped_actions = value
+            .get("skipped_actions")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or_else(|| actions.iter().filter(|action| action.skipped).count());
+        let failed_actions = value
+            .get("failed_actions")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or_else(|| actions.iter().filter(|action| !action.ok).count());
+        events.push(DashboardRepairHistoryEvent {
+            id,
+            created_at,
+            source: value
+                .get("source")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+            total_actions: value
+                .get("total_actions")
+                .and_then(Value::as_u64)
+                .map(|value| value as usize)
+                .unwrap_or(actions.len()),
+            applied_actions,
+            skipped_actions,
+            failed_actions,
+            safe_actions,
+            actions,
+        });
+    }
+    Ok(events)
 }
 
 pub(crate) fn dashboard_repair_report(

@@ -4022,6 +4022,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("attention reasons"));
     assert!(html.contains("repair actions"));
     assert!(html.contains("safe repairs"));
+    assert!(html.contains("Repair history"));
     assert!(html.contains("<span>status</span>"));
     assert!(html.contains("Memory QA"));
     assert!(html.contains("Storage"));
@@ -4131,6 +4132,13 @@ fn v14_6_local_memory_ui_and_http_actions() {
         "GET /audit HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(audit.contains("dashboard_repair"));
+    let dashboard_repair_history = http_once(
+        &db,
+        "GET /dashboard-repair-history HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(dashboard_repair_history.contains("\"history\""));
+    assert!(dashboard_repair_history.contains("\"total_runs\""));
+    assert!(dashboard_repair_history.contains("\"runs_by_source\""));
 
     let recall = http_once(
         &db,
@@ -5272,6 +5280,37 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .flat_map(|project| project["actions"].as_array().unwrap().iter())
             .any(|action| action["safe_auto"] == true && action["applied"] == true)
     );
+    let dashboard_repair_history = stdout(cmd(&db).arg("dashboard-repair-history").arg("--json"));
+    let dashboard_repair_history_json: Value =
+        serde_json::from_str(&dashboard_repair_history).unwrap();
+    assert!(
+        dashboard_repair_history_json["total_runs"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+    assert!(
+        dashboard_repair_history_json["applied_actions"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+    assert!(
+        dashboard_repair_history_json["runs_by_source"]
+            .as_object()
+            .unwrap()
+            .contains_key("cli")
+    );
+    assert!(
+        dashboard_repair_history_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|project| !project["recent"].as_array().unwrap().is_empty())
+    );
+    let dashboard_repair_history_text = stdout(cmd(&db).arg("dashboard-repair-history"));
+    assert!(dashboard_repair_history_text.contains("dukememory. Dashboard Repair History"));
+    assert!(dashboard_repair_history_text.contains("summary: runs="));
     let dashboard_repair_text = stdout(cmd(&db).arg("dashboard-repair"));
     assert!(dashboard_repair_text.contains("dukememory. Dashboard Repair"));
     assert!(dashboard_repair_text.contains("summary: apply=false"));

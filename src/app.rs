@@ -780,6 +780,12 @@ pub(crate) fn run() -> Result<()> {
             ),
             json,
         )?,
+        Command::DashboardRepairHistory {
+            since_days,
+            limit,
+            project,
+            json,
+        } => print_dashboard_repair_history(&cli.db, since_days, limit, project.as_deref(), json)?,
         Command::OpsStatus {
             root,
             since_days,
@@ -2902,6 +2908,7 @@ fn print_completions(shell: CompletionShell) {
         "onboard",
         "dashboard",
         "dashboard-repair",
+        "dashboard-repair-history",
         "ops-status",
         "inbox-v2",
         "policy-tune",
@@ -2998,6 +3005,7 @@ fn print_manpage() {
     println!("  recall QUERY --max-chars 1200 compressed token-light recall");
     println!("  dashboard --json              multi-project memory health dashboard");
     println!("  dashboard-repair --apply      run safe dashboard repair actions");
+    println!("  dashboard-repair-history      summarize safe repair audit history");
     println!("  ops-status --json             one UI/autonomy/effectiveness/sync status");
     println!("  onboard --root DIR            initialize memory/profile/embeddings");
     println!("  inbox-v2 report|auto-apply    group and process pending suggestions");

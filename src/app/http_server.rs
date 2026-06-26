@@ -234,6 +234,23 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
             )
         }
         ("GET", "/dashboard") => HttpResponse::ok(json!({"dashboard": dashboard_report(db)?})),
+        ("GET", "/dashboard-repair-history") => {
+            let params = parse_query(query);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(30);
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(20);
+            HttpResponse::ok(json!({"history": dashboard_repair_history_report(
+                db,
+                since_days,
+                limit,
+                params.get("project").map(String::as_str),
+            )?}))
+        }
         ("GET", "/dashboard-repair") => HttpResponse::ok(json!({"repair": dashboard_repair_report(
             db,
             false,

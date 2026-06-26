@@ -707,6 +707,17 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Summarize dashboard repair history from audit events.
+    DashboardRepairHistory {
+        #[arg(long, default_value_t = 30)]
+        since_days: i64,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Print one operational readiness report for UI, autonomy, embeddings, and sync.
     OpsStatus {
         #[arg(long, default_value = ".")]
