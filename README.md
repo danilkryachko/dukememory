@@ -109,4 +109,4 @@ cargo build --release
 
 ## License
 
-No license has been added yet.
+Apache-2.0.

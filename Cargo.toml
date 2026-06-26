@@ -2,6 +2,7 @@
 name = "dukememory"
 version = "0.14.14"
 edition = "2024"
+license = "Apache-2.0"
 
 [dependencies]
 anyhow = "1.0"
