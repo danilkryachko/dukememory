@@ -2866,7 +2866,7 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
     );
     assert!(brief.len() <= 1200);
     assert!(brief.contains("Brief: auth rate limit"));
-    assert!(brief.contains("Memory: used brief"));
+    assert!(brief.contains("Memory: read brief"));
     assert!(brief.contains("Must Follow:"));
     assert!(brief.contains("Risks:"));
     assert!(brief.contains("Files:"));
@@ -2880,7 +2880,7 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
         brief_value["receipt"]
             .as_str()
             .unwrap()
-            .contains("Memory: used brief")
+            .contains("Memory: read brief")
     );
     assert!(!brief_value["must_follow"].as_array().unwrap().is_empty());
     assert!(
@@ -2896,7 +2896,7 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
         .assert()
         .success()
         .stdout(contains("Evidence:"))
-        .stdout(contains("Memory: used evidence"))
+        .stdout(contains("Memory: read evidence"))
         .stdout(contains("source: test"))
         .stdout(contains("link: file:src/auth.rs"))
         .stdout(contains("memory_added"));
@@ -2909,7 +2909,7 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
         evidence_value["receipt"]
             .as_str()
             .unwrap()
-            .contains("Memory: used evidence")
+            .contains("Memory: read evidence")
     );
     assert!(
         !evidence_value["audit_events"]
@@ -3098,7 +3098,7 @@ fn v14_5_impact_and_drift_are_lightweight_and_structured() {
     );
     assert!(impact.len() <= 1200);
     assert!(impact.contains("Impact: src/auth.rs"));
-    assert!(impact.contains("Memory: used impact"));
+    assert!(impact.contains("Memory: read impact"));
     assert!(impact.contains("Decisions:"));
     assert!(impact.contains("file:src/auth.rs"));
 
@@ -3110,7 +3110,7 @@ fn v14_5_impact_and_drift_are_lightweight_and_structured() {
         impact_value["receipt"]
             .as_str()
             .unwrap()
-            .contains("Memory: used impact")
+            .contains("Memory: read impact")
     );
     assert!(!impact_value["constraints"].as_array().unwrap().is_empty());
 
@@ -3861,7 +3861,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
         .arg("memory ui")
         .assert()
         .success()
-        .stdout(contains("Memory: used brief"));
+        .stdout(contains("Memory: read brief"));
 
     let html = http_once(
         &db,

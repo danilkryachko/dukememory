@@ -573,7 +573,7 @@ For every new chat or coding task in this repository:
 - Memory maintenance is autonomous by default: `dukememory autonomous run-once --level normal` may refresh embeddings, backups, cleanup, safe inbox approvals, compact stale operational notes, and supersede safe duplicates without hard deletion.
 - Roll back the last autonomous maintenance cycle with `dukememory autonomous rollback`; autonomous mode must keep rollback metadata and avoid hard delete by default.
 - Before the final response after substantial work, run the same end routine: save useful durable outcomes or task state, then refresh embeddings once after writes.
-- If memory was read or written, the final response must include a short receipt such as `Memory: used brief+impact, ids=[...], wrote=...`; if nothing durable was saved, say `wrote=none`.
+- If memory was read or written, the final response must include a short human-readable receipt such as `Memory: read brief+impact; matched 6 cards; saved task_state abc123.` If nothing durable was saved, say `saved nothing`. Do not paste long raw id lists.
 - To inspect whether memory is being used and reused, run `dukememory usage-report --since-days 7`.
 - To inspect memory quality and cleanup candidates, run `dukememory usefulness-report`.
 - To inspect autonomous maintenance, run `dukememory autonomous status --json`.

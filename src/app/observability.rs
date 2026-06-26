@@ -194,14 +194,24 @@ pub(crate) fn memory_receipt(
     wrote: &str,
 ) -> String {
     let semantic = semantic_used
-        .map(|used| format!(", semantic={}", if used { "used" } else { "fallback" }))
+        .map(|used| {
+            if used {
+                "; semantic search used"
+            } else {
+                "; semantic search fallback"
+            }
+        })
         .unwrap_or_default();
-    let rendered_ids = if ids.is_empty() {
-        "-".to_string()
-    } else {
-        ids.iter().take(8).cloned().collect::<Vec<_>>().join(",")
+    let matched = match ids.len() {
+        1 => "1 card".to_string(),
+        count => format!("{count} cards"),
     };
-    format!("Memory: used {command}{semantic}, ids=[{rendered_ids}], wrote={wrote}")
+    let saved = if wrote == "none" {
+        "saved nothing".to_string()
+    } else {
+        format!("saved {wrote}")
+    };
+    format!("Memory: read {command}; matched {matched}{semantic}; {saved}.")
 }
 
 pub(crate) fn log_read_event(conn: &Connection, input: ReadEventInput<'_>) -> Result<()> {
