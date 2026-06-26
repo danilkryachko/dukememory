@@ -510,6 +510,7 @@
         autonomous: "Автономная память", autonomousRun: "Автоцикл", rollback: "Откатить",
         inlineEdit: "Быстрая правка", timeline: "История", savedInline: "быстро сохранено",
         opsStatus: "Состояние памяти", multiDevice: "Несколько устройств", readyForSync: "готово к переносу",
+        storage: "Хранилище",
         typeLabels: { decision: "решение", constraint: "ограничение", task_state: "состояние задачи", known_issue: "известная проблема", command: "команда", note: "заметка", product_goal: "цель продукта", design_note: "дизайн-заметка", user_preference: "предпочтение", domain_fact: "факт" },
         statusLabels: { active: "активно", uncertain: "неуверенно", superseded: "заменено", rejected: "отклонено" }
       },
@@ -536,6 +537,7 @@
         autonomous: "Autonomous memory", autonomousRun: "Autonomous run", rollback: "Rollback",
         inlineEdit: "Inline edit", timeline: "Timeline", savedInline: "inline saved",
         opsStatus: "Memory status", multiDevice: "Multi-device", readyForSync: "ready to sync",
+        storage: "Storage",
         typeLabels: {}, statusLabels: {}
       }
     };
@@ -612,6 +614,17 @@
       return String(value ?? "").replace(/[&<>"']/g, (char) => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
       }[char]));
+    }
+
+    function formatBytes(value) {
+      let bytes = Number(value || 0);
+      const units = ["B", "KB", "MB", "GB"];
+      let unit = 0;
+      while (bytes >= 1024 && unit < units.length - 1) {
+        bytes /= 1024;
+        unit += 1;
+      }
+      return `${bytes >= 10 || unit === 0 ? bytes.toFixed(0) : bytes.toFixed(1)} ${units[unit]}`;
     }
 
     function highlight(value) {
@@ -1011,6 +1024,7 @@
       const effectiveness = ops.effectiveness || {};
       const opsEmbeddings = ops.embeddings || {};
       const opsAutonomous = ops.autonomous || {};
+      const storage = ops.storage || {};
       const multiDevice = ops.multi_device || {};
       $("settingsPanel").innerHTML = `<h2>${escapeHtml(t("opsStatus"))}</h2>
       <div class="stat-grid">
@@ -1020,8 +1034,10 @@
         <div class="stat"><strong>${Number(effectiveness.inferred_missing || 0)}</strong><span>memory gaps</span></div>
         <div class="stat"><strong>${opsEmbeddings.current ? "ok" : "warn"}</strong><span>${escapeHtml(t("embeddings"))}</span></div>
         <div class="stat"><strong>${opsAutonomous.ok == null ? "-" : opsAutonomous.ok ? "ok" : "warn"}</strong><span>${escapeHtml(t("autonomous"))}</span></div>
+        <div class="stat"><strong>${escapeHtml(storage.pressure || "-")}</strong><span>${escapeHtml(t("storage"))}</span></div>
         <div class="stat"><strong>${multiDevice.ready ? "ok" : "warn"}</strong><span>${escapeHtml(t("multiDevice"))}</span></div>
       </div>
+      <div class="card"><div class="title">${escapeHtml(t("storage"))}</div><div class="body">.agent ${escapeHtml(formatBytes(storage.agent_bytes))}<br>db ${escapeHtml(formatBytes(storage.db_bytes))}<br>backups ${Number(storage.backups_count || 0)} / ${escapeHtml(formatBytes(storage.backups_bytes))}<br>rollbacks ${Number(storage.rollback_count || 0)} / ${escapeHtml(formatBytes(storage.rollback_bytes))}<br>install ${Number(storage.install_backups_count || 0)} / ${escapeHtml(formatBytes(storage.install_backups_bytes))}</div></div>
       <div class="card"><div class="title">${escapeHtml(t("multiDevice"))}</div><div class="body">${escapeHtml(t("readyForSync"))}: ${multiDevice.ready ? "yes" : "no"}<br>${multiDevice.blockers?.length ? multiDevice.blockers.map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">memory gaps</div><div class="body">${effectiveness.inferred_missing_queries?.length ? effectiveness.inferred_missing_queries.slice(0, 6).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">recommendations</div><div class="body">${ops.recommendations?.length ? ops.recommendations.slice(0, 6).map(escapeHtml).join("<br>") : "-"}</div></div>

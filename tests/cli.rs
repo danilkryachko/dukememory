@@ -4003,6 +4003,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("Project profile"));
     assert!(html.contains("policy decisions"));
     assert!(html.contains("Memory QA"));
+    assert!(html.contains("Storage"));
     assert!(html.contains("/ops-status"));
     assert!(html.contains("/upgrade-project"));
 
@@ -4119,6 +4120,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(ops.contains("\"ops\""));
     assert!(ops.contains("\"effectiveness\""));
+    assert!(ops.contains("\"storage\""));
+    assert!(ops.contains("\"db_bytes\""));
     assert!(ops.contains("\"multi_device\""));
     assert!(ops.contains("\"inferred_missing\":1"));
 
@@ -4809,6 +4812,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .unwrap(),
         1
     );
+    assert!(ops_json["storage"]["db_bytes"].as_u64().unwrap() > 0);
+    assert!(
+        ops_json["storage"]["agent_bytes"].as_u64().unwrap()
+            >= ops_json["storage"]["db_bytes"].as_u64().unwrap()
+    );
+    assert!(ops_json["storage"]["retention_ready"].as_bool().is_some());
+    assert!(["ok", "warn"].contains(&ops_json["storage"]["pressure"].as_str().unwrap()));
     assert_eq!(ops_json["multi_device"]["local_first"], true);
 
     let gap_run = stdout(

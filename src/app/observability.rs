@@ -196,6 +196,7 @@ pub(crate) struct OpsStatusReport {
     pub(crate) quality_loop: OpsQualityLoopStatus,
     pub(crate) embeddings: OpsEmbeddingStatus,
     pub(crate) autonomous: OpsAutonomousStatus,
+    pub(crate) storage: OpsStorageStatus,
     pub(crate) multi_device: OpsMultiDeviceStatus,
     pub(crate) issues: Vec<String>,
     pub(crate) recommendations: Vec<String>,
@@ -247,6 +248,20 @@ pub(crate) struct OpsAutonomousStatus {
     pub(crate) ok: Option<bool>,
     pub(crate) status_file: String,
     pub(crate) rollback_ready: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct OpsStorageStatus {
+    pub(crate) db_bytes: u64,
+    pub(crate) agent_bytes: u64,
+    pub(crate) backups_bytes: u64,
+    pub(crate) backups_count: usize,
+    pub(crate) rollback_bytes: u64,
+    pub(crate) rollback_count: usize,
+    pub(crate) install_backups_bytes: u64,
+    pub(crate) install_backups_count: usize,
+    pub(crate) retention_ready: bool,
+    pub(crate) pressure: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1396,6 +1411,18 @@ pub(crate) fn print_ops_status(
             report.autonomous.rollback_ready
         );
         println!(
+            "storage: db={} agent={} backups={}/{} rollbacks={}/{} install_backups={}/{} pressure={}",
+            report.storage.db_bytes,
+            report.storage.agent_bytes,
+            report.storage.backups_count,
+            report.storage.backups_bytes,
+            report.storage.rollback_count,
+            report.storage.rollback_bytes,
+            report.storage.install_backups_count,
+            report.storage.install_backups_bytes,
+            report.storage.pressure
+        );
+        println!(
             "multi_device: ready={} local_first={}",
             report.multi_device.ready, report.multi_device.local_first
         );
@@ -1424,9 +1451,12 @@ pub(crate) fn ops_status_report(
     let embedding = embeddings::embed_status(conn, &provider, &endpoint, &model)?;
     let status_file = root.join(".agent/autonomous-status.json");
     let rollback_dir = root.join(".agent/autonomous-rollbacks");
+    let backup_dir = root.join(".agent/backups");
+    let install_backup_dir = root.join(".agent/install-backups");
     let autonomous = read_autonomous_status(&status_file).ok();
     let embedding_current = embedding.missing == 0 && embedding.stale == 0;
     let rollback_ready = rollback_dir.is_dir();
+    let storage = ops_storage_status(db, &root)?;
 
     let quality_loop = OpsQualityLoopStatus {
         average_score: quality.average_score,
@@ -1453,6 +1483,33 @@ pub(crate) fn ops_status_report(
     }
     if !embedding_current {
         recommendations.push("run dukememory embed-index before cross-device sync".to_string());
+    }
+    if storage.pressure == "warn" {
+        issues.push(format!(
+            "local memory storage is growing: .agent={} bytes",
+            storage.agent_bytes
+        ));
+        recommendations.push(
+            "run dukememory autonomous run-once --level normal to refresh retention".to_string(),
+        );
+    }
+    if storage.backups_count > 10 {
+        recommendations.push(format!(
+            "rotate database backups in {}",
+            backup_dir.display()
+        ));
+    }
+    if storage.rollback_count > 10 {
+        recommendations.push(format!(
+            "rotate autonomous rollback backups in {}",
+            rollback_dir.display()
+        ));
+    }
+    if storage.install_backups_count > 10 {
+        recommendations.push(format!(
+            "run update-install --backup-keep 10 for {}",
+            install_backup_dir.display()
+        ));
     }
 
     let mut blockers = Vec::new();
@@ -1489,6 +1546,9 @@ pub(crate) fn ops_status_report(
     }
     if !blockers.is_empty() {
         score -= blockers.len().min(5) as f64 * 3.0;
+    }
+    if storage.pressure == "warn" {
+        score -= 4.0;
     }
     score = score.clamp(0.0, 100.0);
 
@@ -1540,6 +1600,7 @@ pub(crate) fn ops_status_report(
             status_file: status_file.display().to_string(),
             rollback_ready,
         },
+        storage,
         multi_device: OpsMultiDeviceStatus {
             ready: blockers.is_empty(),
             local_first: true,
@@ -1553,4 +1614,94 @@ pub(crate) fn ops_status_report(
         issues,
         recommendations,
     })
+}
+
+fn ops_storage_status(db: &Path, root: &Path) -> Result<OpsStorageStatus> {
+    let agent_dir = root.join(".agent");
+    let backup_dir = agent_dir.join("backups");
+    let rollback_dir = agent_dir.join("autonomous-rollbacks");
+    let install_backup_dir = agent_dir.join("install-backups");
+    let db_bytes = file_size(db);
+    let agent_bytes = dir_size(&agent_dir)?;
+    let backups_bytes = dir_size(&backup_dir)?;
+    let rollback_bytes = dir_size(&rollback_dir)?;
+    let install_backups_bytes = dir_size(&install_backup_dir)?;
+    let backups_count = count_named_files(&backup_dir, |name| {
+        name.starts_with("dukememory-") && name.ends_with(".db")
+    })?;
+    let rollback_count = count_named_files(&rollback_dir, |name| {
+        name.starts_with("autonomous-") && name.ends_with(".db")
+    })?;
+    let install_backups_count = count_named_files(&install_backup_dir, |name| {
+        name.starts_with("dukememory") && name.ends_with(".bak")
+    })?;
+    let retention_ready =
+        backups_count <= 10 && rollback_count <= 10 && install_backups_count <= 10;
+    let pressure = if agent_bytes > 512 * 1024 * 1024
+        || backups_count > 20
+        || rollback_count > 20
+        || install_backups_count > 20
+    {
+        "warn"
+    } else {
+        "ok"
+    }
+    .to_string();
+    Ok(OpsStorageStatus {
+        db_bytes,
+        agent_bytes,
+        backups_bytes,
+        backups_count,
+        rollback_bytes,
+        rollback_count,
+        install_backups_bytes,
+        install_backups_count,
+        retention_ready,
+        pressure,
+    })
+}
+
+fn file_size(path: &Path) -> u64 {
+    fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+}
+
+fn dir_size(path: &Path) -> Result<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let mut total = 0_u64;
+    for entry in fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let entry_path = entry.path();
+        if file_type.is_file() {
+            total = total.saturating_add(file_size(&entry_path));
+        } else if file_type.is_dir() {
+            total = total.saturating_add(dir_size(&entry_path)?);
+        }
+    }
+    Ok(total)
+}
+
+fn count_named_files(path: &Path, matches_name: impl Fn(&str) -> bool) -> Result<usize> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let mut count = 0_usize;
+    for entry in fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if matches_name(name) {
+            count += 1;
+        }
+    }
+    Ok(count)
 }

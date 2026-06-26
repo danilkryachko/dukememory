@@ -34,6 +34,7 @@ Transcript-based memory quickly turns into noise.
 - a web UI to inspect, edit, and audit memory
 - an MCP server and Codex skill for agent-native use
 - autonomous maintenance with rollback-friendly, size-bounded backups
+- storage footprint checks for local `.agent` growth
 
 ## What It Remembers
 
