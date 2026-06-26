@@ -146,6 +146,8 @@ pub(crate) struct DashboardReport {
     pub(crate) attention_projects: usize,
     pub(crate) stale_projects: usize,
     pub(crate) missing_live_eval_projects: usize,
+    pub(crate) memory_gap_projects: usize,
+    pub(crate) memory_gap_count: usize,
     pub(crate) recommendations_count: usize,
     pub(crate) attention_reason_counts: BTreeMap<String, usize>,
     pub(crate) repair_actions_count: usize,
@@ -1264,13 +1266,15 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
     } else {
         println!("dukememory. Dashboard");
         println!(
-            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={} repair_loop_projects={} repair_loop_failed={} repair_loop_safe_skipped={}",
+            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} memory_gap_projects={} memory_gap_count={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={} repair_loop_projects={} repair_loop_failed={} repair_loop_safe_skipped={}",
             report.status,
             report.total_projects,
             report.ready_projects,
             report.attention_projects,
             report.stale_projects,
             report.missing_live_eval_projects,
+            report.memory_gap_projects,
+            report.memory_gap_count,
             report.recommendations_count,
             report.attention_reason_counts.len(),
             report.repair_actions_count,
@@ -2009,6 +2013,25 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                     autonomous_repair_command(&root, &db),
                 );
             }
+            if live_eval
+                .map(|live| live.inferred_missing)
+                .unwrap_or_default()
+                > 0
+            {
+                attention_reasons.push("memory_gaps_detected".to_string());
+                recommendations.push(
+                    "run dukememory autonomous run-once --level normal to materialize memory gaps"
+                        .to_string(),
+                );
+                push_repair_action(
+                    &mut repair_actions,
+                    "run_autonomous",
+                    "memory_gaps_detected",
+                    true,
+                    "Materialize inferred memory gaps into reviewable inbox suggestions.",
+                    autonomous_repair_command(&root, &db),
+                );
+            }
             if embedding_missing.unwrap_or(0) > 0 {
                 attention_reasons.push("embeddings_missing".to_string());
                 recommendations.push("run dukememory embed-index".to_string());
@@ -2094,6 +2117,14 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         .iter()
         .filter(|project| project.autonomous_live_reads.is_none())
         .count();
+    let memory_gap_projects = projects
+        .iter()
+        .filter(|project| project.autonomous_inferred_missing.unwrap_or_default() > 0)
+        .count();
+    let memory_gap_count = projects
+        .iter()
+        .map(|project| project.autonomous_inferred_missing.unwrap_or_default())
+        .sum();
     let recommendations_count = projects
         .iter()
         .map(|project| project.recommendations.len())
@@ -2138,6 +2169,8 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         attention_projects,
         stale_projects,
         missing_live_eval_projects,
+        memory_gap_projects,
+        memory_gap_count,
         recommendations_count,
         attention_reason_counts,
         repair_actions_count,

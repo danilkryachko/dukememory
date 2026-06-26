@@ -54,6 +54,7 @@ Transcript-based memory quickly turns into noise.
 - repair history summaries for autonomous upkeep loops
 - repair-loop health folded into one compact ops status
 - per-project repair-loop health in the multi-project dashboard
+- top-level memory-gap counters and safe repair hints in the dashboard
 
 ## What It Remembers
 

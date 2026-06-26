@@ -4018,6 +4018,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("auto age"));
     assert!(html.contains("recommendations"));
     assert!(html.contains("missing live eval"));
+    assert!(html.contains("gap projects"));
+    assert!(html.contains("memory gaps"));
     assert!(html.contains("attention"));
     assert!(html.contains("attention reasons"));
     assert!(html.contains("repair actions"));
@@ -4099,6 +4101,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(dashboard.contains("\"repair_loop_projects\""));
     assert!(dashboard.contains("\"repair_loop_failed_projects\""));
     assert!(dashboard.contains("\"repair_loop_safe_skipped_projects\""));
+    assert!(dashboard.contains("\"memory_gap_projects\""));
+    assert!(dashboard.contains("\"memory_gap_count\""));
     assert!(dashboard.contains("\"attention_projects\""));
     assert!(dashboard.contains("\"missing_live_eval_projects\""));
 
@@ -5164,6 +5168,8 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(dashboard_json["status"].as_str().is_some());
     assert!(dashboard_json["total_projects"].as_u64().unwrap() >= 1);
     assert!(dashboard_json["attention_projects"].as_u64().is_some());
+    assert!(dashboard_json["memory_gap_projects"].as_u64().is_some());
+    assert!(dashboard_json["memory_gap_count"].as_u64().is_some());
     assert!(dashboard_json["recommendations_count"].as_u64().is_some());
     assert!(
         dashboard_json["attention_reason_counts"]
@@ -5255,6 +5261,8 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(dashboard_text.contains("attention="));
     assert!(dashboard_text.contains("live_reads="));
     assert!(dashboard_text.contains("live_gaps="));
+    assert!(dashboard_text.contains("memory_gap_projects="));
+    assert!(dashboard_text.contains("memory_gap_count="));
     assert!(dashboard_text.contains("auto_age="));
     assert!(dashboard_text.contains("reasons="));
     assert!(dashboard_text.contains("repairs="));
