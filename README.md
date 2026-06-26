@@ -4,6 +4,7 @@
 [![Rust 2024](https://img.shields.io/badge/rust-2024-orange.svg)](Cargo.toml)
 [![MCP server](https://img.shields.io/badge/MCP-server-0f766e.svg)](#mcp-and-codex)
 [![Local first](https://img.shields.io/badge/local--first-SQLite-0f766e.svg)](#local-first)
+[![Views](https://hits.dwyl.com/danilkryachko/dukememory.svg?style=flat-square)](https://hits.dwyl.com/danilkryachko/dukememory)
 
 **Project memory for AI coding agents.**
 
