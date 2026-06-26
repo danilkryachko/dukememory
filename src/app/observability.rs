@@ -151,6 +151,8 @@ pub(crate) struct DashboardReport {
     pub(crate) memory_gap_count: usize,
     pub(crate) gap_inbox_pending_projects: usize,
     pub(crate) gap_inbox_pending_count: usize,
+    pub(crate) gap_inbox_stale_projects: usize,
+    pub(crate) gap_inbox_stale_count: usize,
     pub(crate) gap_inbox_oldest_pending_age_secs: Option<i64>,
     pub(crate) recommendations_count: usize,
     pub(crate) attention_reason_counts: BTreeMap<String, usize>,
@@ -275,6 +277,7 @@ pub(crate) struct ProjectDashboardItem {
 pub(crate) struct DashboardGapInboxStatus {
     pub(crate) total: usize,
     pub(crate) pending: usize,
+    pub(crate) stale_pending: usize,
     pub(crate) approved: usize,
     pub(crate) rejected: usize,
     pub(crate) oldest_pending_age_secs: Option<i64>,
@@ -1281,7 +1284,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
     } else {
         println!("dukememory. Dashboard");
         println!(
-            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} memory_gap_projects={} memory_gap_count={} gap_inbox_pending_projects={} gap_inbox_pending_count={} gap_inbox_oldest_age={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={} repair_loop_projects={} repair_loop_failed={} repair_loop_safe_skipped={}",
+            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} memory_gap_projects={} memory_gap_count={} gap_inbox_pending_projects={} gap_inbox_pending_count={} gap_inbox_stale_projects={} gap_inbox_stale_count={} gap_inbox_oldest_age={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={} repair_loop_projects={} repair_loop_failed={} repair_loop_safe_skipped={}",
             report.status,
             report.total_projects,
             report.ready_projects,
@@ -1292,6 +1295,8 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
             report.memory_gap_count,
             report.gap_inbox_pending_projects,
             report.gap_inbox_pending_count,
+            report.gap_inbox_stale_projects,
+            report.gap_inbox_stale_count,
             format_optional_secs(report.gap_inbox_oldest_pending_age_secs),
             report.recommendations_count,
             report.attention_reason_counts.len(),
@@ -1318,7 +1323,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
                     .join(",")
             };
             println!(
-                "- {} status={} attention={} reasons={} repairs={} repair_runs={} repair_failed={} repair_safe_skipped={} gap_inbox_pending={} gap_inbox_oldest_age={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
+                "- {} status={} attention={} reasons={} repairs={} repair_runs={} repair_failed={} repair_safe_skipped={} gap_inbox_pending={} gap_inbox_stale={} gap_inbox_oldest_age={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
                 project.name,
                 project.status,
                 project.attention,
@@ -1328,6 +1333,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
                 project.repair_loop.failed_actions,
                 project.repair_loop.safe_skipped_actions,
                 project.gap_inbox.pending,
+                project.gap_inbox.stale_pending,
                 format_optional_secs(project.gap_inbox.oldest_pending_age_secs),
                 project.memories,
                 project.pending_inbox,
@@ -2089,13 +2095,13 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                 );
             }
             if gap_inbox
-                .oldest_pending_age_secs
-                .is_some_and(|age| age >= GAP_INBOX_STALE_MS / 1000)
+                .stale_pending
+                > 0
             {
                 attention_reasons.push("gap_inbox_stale".to_string());
                 recommendations.push(format!(
-                    "run dukememory autonomous run-once --level normal to refresh stale gap inbox items older than {}s",
-                    GAP_INBOX_STALE_MS / 1000
+                    "run dukememory autonomous run-once --level normal to refresh {} stale gap inbox item(s)",
+                    gap_inbox.stale_pending
                 ));
                 push_repair_action(
                     &mut repair_actions,
@@ -2209,6 +2215,14 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         .iter()
         .map(|project| project.gap_inbox.pending)
         .sum();
+    let gap_inbox_stale_projects = projects
+        .iter()
+        .filter(|project| project.gap_inbox.stale_pending > 0)
+        .count();
+    let gap_inbox_stale_count = projects
+        .iter()
+        .map(|project| project.gap_inbox.stale_pending)
+        .sum();
     let gap_inbox_oldest_pending_age_secs = projects
         .iter()
         .filter_map(|project| project.gap_inbox.oldest_pending_age_secs)
@@ -2261,6 +2275,8 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         memory_gap_count,
         gap_inbox_pending_projects,
         gap_inbox_pending_count,
+        gap_inbox_stale_projects,
+        gap_inbox_stale_count,
         gap_inbox_oldest_pending_age_secs,
         recommendations_count,
         attention_reason_counts,
@@ -2504,8 +2520,9 @@ pub(crate) fn print_ops_status(
             report.autonomous.rollback_ready
         );
         println!(
-            "gap_inbox: pending={} total={} approved={} rejected={} oldest_pending_age_secs={}",
+            "gap_inbox: pending={} stale_pending={} total={} approved={} rejected={} oldest_pending_age_secs={}",
             report.gap_inbox.pending,
+            report.gap_inbox.stale_pending,
             report.gap_inbox.total,
             report.gap_inbox.approved,
             report.gap_inbox.rejected,
@@ -2618,11 +2635,11 @@ pub(crate) fn ops_status_report(
             gap_inbox.pending
         ));
     }
-    if let Some(age) = gap_inbox.oldest_pending_age_secs
-        && age >= GAP_INBOX_STALE_MS / 1000
-    {
+    if gap_inbox.stale_pending > 0 {
         issues.push(format!(
-            "autonomous gap inbox has stale pending items: oldest_pending_age_secs={age}"
+            "autonomous gap inbox has stale pending items: stale_pending={} oldest_pending_age_secs={}",
+            gap_inbox.stale_pending,
+            format_optional_secs(gap_inbox.oldest_pending_age_secs)
         ));
         recommendations.push(
             "run dukememory autonomous run-once --level normal to refresh stale gap inbox items"
@@ -2885,6 +2902,13 @@ fn dashboard_gap_inbox_status(conn: &Connection) -> Result<DashboardGapInboxStat
     )?;
     status.oldest_pending_age_secs =
         oldest_pending_created_at.map(|created_at| now_ms().saturating_sub(created_at) / 1000);
+    let stale_cutoff = now_ms().saturating_sub(GAP_INBOX_STALE_MS);
+    let stale_pending: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memory_inbox WHERE source = 'autonomous_gap' AND status = 'pending' AND created_at <= ?1",
+        [stale_cutoff],
+        |row| row.get(0),
+    )?;
+    status.stale_pending = stale_pending.max(0) as usize;
     Ok(status)
 }
 

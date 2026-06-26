@@ -62,6 +62,7 @@ Transcript-based memory quickly turns into noise.
 - local ops-status gap inbox counters for single-project agents
 - oldest pending gap-inbox age in dashboard and ops status
 - stale gap-inbox recommendations for autonomous repair prioritization
+- stale gap-inbox volume counters for dashboard and ops prioritization
 
 ## What It Remembers
 
