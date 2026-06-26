@@ -45,6 +45,7 @@ Transcript-based memory quickly turns into noise.
 - live usefulness visibility in autonomous CLI and web status
 - multi-project dashboard live reads, usefulness, and gap signals
 - dashboard autonomous age, freshness, and per-project repair hints
+- dashboard summary counters for ready and attention-needed projects
 
 ## What It Remembers
 

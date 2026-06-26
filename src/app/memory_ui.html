@@ -1001,7 +1001,15 @@
 
     function renderProjectsPanel() {
       const dashboardProjects = state.dashboard?.projects || [];
-      $("projectsPanel").innerHTML = state.projects.map((project) => {
+      const dashSummary = state.dashboard || {};
+      $("projectsPanel").innerHTML = `<div class="stat-grid">
+        <div class="stat"><strong>${Number(dashSummary.total_projects || 0)}</strong><span>projects</span></div>
+        <div class="stat"><strong>${Number(dashSummary.ready_projects || 0)}</strong><span>ready</span></div>
+        <div class="stat"><strong>${Number(dashSummary.attention_projects || 0)}</strong><span>attention</span></div>
+        <div class="stat"><strong>${Number(dashSummary.stale_projects || 0)}</strong><span>stale</span></div>
+        <div class="stat"><strong>${Number(dashSummary.missing_live_eval_projects || 0)}</strong><span>missing live eval</span></div>
+        <div class="stat"><strong>${Number(dashSummary.recommendations_count || 0)}</strong><span>recommendations</span></div>
+      </div>` + state.projects.map((project) => {
         const dash = dashboardProjects.find((item) => item.name === project.name || item.db === project.db) || {};
         const qaScore = project.key === state.project && state.qa ? Number(state.qa.score || 0).toFixed(1) : "-";
         return `<article class="card">

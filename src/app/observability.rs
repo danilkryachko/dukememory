@@ -139,6 +139,12 @@ pub(crate) struct ProjectProfileSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DashboardReport {
     pub(crate) version: u32,
+    pub(crate) total_projects: usize,
+    pub(crate) ready_projects: usize,
+    pub(crate) attention_projects: usize,
+    pub(crate) stale_projects: usize,
+    pub(crate) missing_live_eval_projects: usize,
+    pub(crate) recommendations_count: usize,
     pub(crate) projects: Vec<ProjectDashboardItem>,
 }
 
@@ -1143,6 +1149,15 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!("dukememory. Dashboard");
+        println!(
+            "summary: total={} ready={} attention={} stale={} missing_live_eval={} recommendations={}",
+            report.total_projects,
+            report.ready_projects,
+            report.attention_projects,
+            report.stale_projects,
+            report.missing_live_eval_projects,
+            report.recommendations_count
+        );
         for project in report.projects {
             println!(
                 "- {} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
@@ -1267,8 +1282,38 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
             })
         })
         .collect::<Vec<_>>();
+    let total_projects = projects.len();
+    let ready_projects = projects
+        .iter()
+        .filter(|project| {
+            project.autonomous_ok == Some(true)
+                && project.autonomous_fresh != Some(false)
+                && project.embedding_missing.unwrap_or(0) == 0
+                && project.pending_inbox == 0
+                && project.recommendations.is_empty()
+        })
+        .count();
+    let stale_projects = projects
+        .iter()
+        .filter(|project| project.autonomous_fresh == Some(false))
+        .count();
+    let missing_live_eval_projects = projects
+        .iter()
+        .filter(|project| project.autonomous_live_reads.is_none())
+        .count();
+    let recommendations_count = projects
+        .iter()
+        .map(|project| project.recommendations.len())
+        .sum();
+    let attention_projects = total_projects.saturating_sub(ready_projects);
     Ok(DashboardReport {
         version: 1,
+        total_projects,
+        ready_projects,
+        attention_projects,
+        stale_projects,
+        missing_live_eval_projects,
+        recommendations_count,
         projects,
     })
 }
