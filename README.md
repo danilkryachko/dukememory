@@ -146,7 +146,8 @@ pending inbox suggestions instead of silently creating noisy memory. Weak,
 unused, oversized, or unlinked cards can also be surfaced as low-confidence
 quality-review inbox items for safe cleanup. Duplicate detection avoids
 versioned release/history false positives. Successful and empty agent reads can
-be materialized as lightweight inferred feedback during autonomous maintenance.
+be materialized as lightweight inferred feedback during autonomous maintenance,
+and missing feedback signals also feed gap inbox suggestions.
 
 ## MCP And Codex
 

@@ -1457,12 +1457,21 @@ fn autonomous_create_gap_inbox(
         AutonomousLevel::Normal => 3,
         AutonomousLevel::Aggressive => 8,
     };
-    let gaps = live
-        .inferred_missing_queries
+    let mut gaps = Vec::new();
+    let mut seen = HashSet::new();
+    for query in live
+        .missing_queries
         .iter()
-        .take(max)
-        .cloned()
-        .collect::<Vec<_>>();
+        .chain(live.inferred_missing_queries.iter())
+    {
+        let query = query.trim();
+        if !query.is_empty() && seen.insert(query.to_string()) {
+            gaps.push(query.to_string());
+        }
+        if gaps.len() >= max {
+            break;
+        }
+    }
     let decision = autonomous_policy_decision(AutonomousPolicyInput {
         action: "gap_inbox",
         level,
@@ -1471,14 +1480,14 @@ fn autonomous_create_gap_inbox(
         token_saving_score: (gaps.len().min(8) as f64) * 4.0,
         confidence: if gaps.is_empty() { 0.0 } else { 0.7 },
         rollback: true,
-        reason: format!("{} inferred gap query(s)", gaps.len()),
+        reason: format!("{} gap query signal(s)", gaps.len()),
     });
     report.policy.push(decision.clone());
     if gaps.is_empty() {
         report.actions.push(AutonomousAction {
             kind: "gap_inbox".to_string(),
             status: "skipped".to_string(),
-            detail: "no unresolved inferred memory gaps".to_string(),
+            detail: "no unresolved memory gap signals".to_string(),
             memory_id: None,
         });
         return Ok(());
@@ -1505,7 +1514,7 @@ fn autonomous_create_gap_inbox(
         kind: "gap_inbox".to_string(),
         status: if created.is_empty() { "skipped" } else { "ok" }.to_string(),
         detail: if created.is_empty() {
-            "all inferred gap inbox suggestions already existed".to_string()
+            "all memory gap inbox suggestions already existed".to_string()
         } else {
             format!("created {} gap inbox suggestion(s)", created.len())
         },

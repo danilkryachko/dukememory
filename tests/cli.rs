@@ -4387,6 +4387,21 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(!recall_json["items"].as_array().unwrap().is_empty());
 
     insert_empty_read_event(&db, "impact", "missing autonomous rollback memory");
+    let missing_feedback = stdout(
+        cmd(&db)
+            .arg("feedback")
+            .arg("--id")
+            .arg("missing-manual-id")
+            .arg("--rating")
+            .arg("missing")
+            .arg("--command")
+            .arg("impact")
+            .arg("--query")
+            .arg("manual missing memory policy")
+            .arg("--json"),
+    );
+    let missing_feedback_json: Value = serde_json::from_str(&missing_feedback).unwrap();
+    assert_eq!(missing_feedback_json["ok"], true);
 
     let eval_live = stdout(
         cmd(&db)
@@ -4403,6 +4418,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(
         eval_live_json["inferred_missing_queries"][0],
         "missing autonomous rollback memory"
+    );
+    assert!(
+        eval_live_json["missing_queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "manual missing memory policy")
     );
 
     let inbox_v2 = stdout(cmd(&db).arg("inbox-v2").arg("report").arg("--json"));
@@ -4519,6 +4541,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
                 .as_str()
                 .unwrap()
                 .contains("missing autonomous rollback memory")
+    }));
+    assert!(gap_items.iter().any(|item| {
+        item["source"] == "autonomous_gap"
+            && item["body"]
+                .as_str()
+                .unwrap()
+                .contains("manual missing memory policy")
     }));
     assert!(gap_items.iter().any(|item| {
         item["source"] == "autonomous_quality"
