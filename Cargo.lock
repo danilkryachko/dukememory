@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "dukememory"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "assert_cmd",

@@ -319,6 +319,7 @@ pub(crate) struct OpsStatusReport {
     pub(crate) embeddings: OpsEmbeddingStatus,
     pub(crate) autonomous: OpsAutonomousStatus,
     pub(crate) repair_loop: OpsRepairLoopStatus,
+    pub(crate) gap_inbox: DashboardGapInboxStatus,
     pub(crate) agent_integration: OpsAgentIntegrationStatus,
     pub(crate) storage: OpsStorageStatus,
     pub(crate) multi_device: OpsMultiDeviceStatus,
@@ -2475,6 +2476,13 @@ pub(crate) fn print_ops_status(
             report.autonomous.rollback_ready
         );
         println!(
+            "gap_inbox: pending={} total={} approved={} rejected={}",
+            report.gap_inbox.pending,
+            report.gap_inbox.total,
+            report.gap_inbox.approved,
+            report.gap_inbox.rejected
+        );
+        println!(
             "storage: db={} agent={} backups={}/{} rollbacks={}/{} install_backups={}/{} pressure={}",
             report.storage.db_bytes,
             report.storage.agent_bytes,
@@ -2527,6 +2535,7 @@ pub(crate) fn ops_status_report(
         .map(|report| ((now_ms() - report.updated_at).max(0)) / 1000);
     let autonomous_fresh = autonomous_age_secs.is_some_and(|age| age <= 86_400);
     let repair_loop = ops_repair_loop_status(conn, since_days)?;
+    let gap_inbox = dashboard_gap_inbox_status(conn).unwrap_or_default();
 
     let quality_loop = OpsQualityLoopStatus {
         average_score: quality.average_score,
@@ -2573,6 +2582,12 @@ pub(crate) fn ops_status_report(
         recommendations.push(
             "run dukememory dashboard-repair --apply to apply pending safe repairs".to_string(),
         );
+    }
+    if gap_inbox.pending > 0 {
+        recommendations.push(format!(
+            "review {} pending autonomous gap inbox item(s)",
+            gap_inbox.pending
+        ));
     }
     if storage.pressure == "warn" {
         issues.push(format!(
@@ -2725,6 +2740,7 @@ pub(crate) fn ops_status_report(
             last_action_count: autonomous.as_ref().map(|report| report.actions.len()),
         },
         repair_loop,
+        gap_inbox,
         agent_integration,
         storage,
         multi_device: OpsMultiDeviceStatus {

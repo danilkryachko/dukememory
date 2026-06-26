@@ -59,6 +59,7 @@ Transcript-based memory quickly turns into noise.
 - compact autonomous gap metrics in dashboard repair results
 - gap inbox status counters in the multi-project dashboard
 - reversible auto-close for resolved autonomous gap inbox items
+- local ops-status gap inbox counters for single-project agents
 
 ## What It Remembers
 

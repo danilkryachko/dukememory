@@ -4966,6 +4966,10 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_object()
             .is_some()
     );
+    assert!(ops_json["gap_inbox"]["pending"].as_u64().is_some());
+    assert!(ops_json["gap_inbox"]["total"].as_u64().is_some());
+    assert!(ops_json["gap_inbox"]["approved"].as_u64().is_some());
+    assert!(ops_json["gap_inbox"]["rejected"].as_u64().is_some());
     assert!(ops_json["effectiveness"]["reads"].as_u64().unwrap() >= 1);
     assert!(
         ["feedback", "inferred"].contains(
@@ -5002,6 +5006,8 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(ops_json["storage"]["retention_ready"].as_bool().is_some());
     assert!(["ok", "warn"].contains(&ops_json["storage"]["pressure"].as_str().unwrap()));
     assert_eq!(ops_json["multi_device"]["local_first"], true);
+    let ops_text = stdout(cmd(&db).arg("ops-status").arg("--root").arg(dir.path()));
+    assert!(ops_text.contains("gap_inbox: pending="));
 
     let gap_run = stdout(
         cmd(&db)
