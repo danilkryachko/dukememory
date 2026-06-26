@@ -150,6 +150,9 @@ pub(crate) struct DashboardReport {
     pub(crate) attention_reason_counts: BTreeMap<String, usize>,
     pub(crate) repair_actions_count: usize,
     pub(crate) safe_repair_actions_count: usize,
+    pub(crate) repair_loop_projects: usize,
+    pub(crate) repair_loop_failed_projects: usize,
+    pub(crate) repair_loop_safe_skipped_projects: usize,
     pub(crate) projects: Vec<ProjectDashboardItem>,
 }
 
@@ -255,6 +258,7 @@ pub(crate) struct ProjectDashboardItem {
     pub(crate) autonomous_inferred_missing: Option<usize>,
     pub(crate) embedding_missing: Option<usize>,
     pub(crate) recommended_budget: Option<String>,
+    pub(crate) repair_loop: OpsRepairLoopStatus,
     pub(crate) attention_reasons: Vec<String>,
     pub(crate) repair_actions: Vec<DashboardRepairAction>,
     pub(crate) recommendations: Vec<String>,
@@ -361,7 +365,7 @@ pub(crate) struct OpsAutonomousStatus {
     pub(crate) last_action_count: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct OpsRepairLoopStatus {
     pub(crate) observed: bool,
     pub(crate) healthy: bool,
@@ -1260,7 +1264,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
     } else {
         println!("dukememory. Dashboard");
         println!(
-            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={}",
+            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={} repair_loop_projects={} repair_loop_failed={} repair_loop_safe_skipped={}",
             report.status,
             report.total_projects,
             report.ready_projects,
@@ -1270,7 +1274,10 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
             report.recommendations_count,
             report.attention_reason_counts.len(),
             report.repair_actions_count,
-            report.safe_repair_actions_count
+            report.safe_repair_actions_count,
+            report.repair_loop_projects,
+            report.repair_loop_failed_projects,
+            report.repair_loop_safe_skipped_projects
         );
         for project in report.projects {
             let reasons = if project.attention_reasons.is_empty() {
@@ -1289,12 +1296,15 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
                     .join(",")
             };
             println!(
-                "- {} status={} attention={} reasons={} repairs={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
+                "- {} status={} attention={} reasons={} repairs={} repair_runs={} repair_failed={} repair_safe_skipped={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
                 project.name,
                 project.status,
                 project.attention,
                 reasons,
                 repairs,
+                project.repair_loop.runs,
+                project.repair_loop.failed_actions,
+                project.repair_loop.safe_skipped_actions,
                 project.memories,
                 project.pending_inbox,
                 project
@@ -1469,6 +1479,7 @@ pub(crate) fn dashboard_repair_history_report(
             autonomous_inferred_missing: None,
             embedding_missing: None,
             recommended_budget: None,
+            repair_loop: empty_repair_loop_status(),
             attention_reasons: Vec::new(),
             repair_actions: Vec::new(),
             recommendations: Vec::new(),
@@ -1932,6 +1943,8 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
             .ok();
             let (memories, pending_inbox) = app_project_counts(&db).unwrap_or((0, 0));
             let embedding_missing = embedding.as_ref().map(|status| status.missing);
+            let repair_loop =
+                ops_repair_loop_status(&conn, 30).unwrap_or_else(|_| empty_repair_loop_status());
             let mut recommendations = Vec::new();
             let mut attention_reasons = Vec::new();
             let mut repair_actions = Vec::new();
@@ -2020,6 +2033,16 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                     inbox_review_command(&db),
                 );
             }
+            if repair_loop.failed_actions > 0 {
+                attention_reasons.push("repair_loop_failed".to_string());
+                recommendations
+                    .push("inspect dashboard repair history for failed actions".to_string());
+            }
+            if repair_loop.safe_skipped_actions > 0 {
+                attention_reasons.push("repair_loop_safe_skipped".to_string());
+                recommendations
+                    .push("run dukememory dashboard-repair --apply for safe repairs".to_string());
+            }
             let attention = !attention_reasons.is_empty() || !recommendations.is_empty();
             let status = if attention { "attention" } else { "ready" }.to_string();
             Some(ProjectDashboardItem {
@@ -2045,6 +2068,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                 autonomous_inferred_missing: live_eval.map(|live| live.inferred_missing),
                 embedding_missing,
                 recommended_budget: profile.map(|profile| profile.recommended_budget),
+                repair_loop,
                 attention_reasons,
                 repair_actions,
                 recommendations,
@@ -2090,6 +2114,18 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         .flat_map(|project| project.repair_actions.iter())
         .filter(|action| action.safe_auto)
         .count();
+    let repair_loop_projects = projects
+        .iter()
+        .filter(|project| project.repair_loop.observed)
+        .count();
+    let repair_loop_failed_projects = projects
+        .iter()
+        .filter(|project| project.repair_loop.failed_actions > 0)
+        .count();
+    let repair_loop_safe_skipped_projects = projects
+        .iter()
+        .filter(|project| project.repair_loop.safe_skipped_actions > 0)
+        .count();
     let attention_projects = total_projects.saturating_sub(ready_projects);
     let ok = attention_projects == 0;
     let status = if ok { "ready" } else { "attention" }.to_string();
@@ -2106,6 +2142,9 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         attention_reason_counts,
         repair_actions_count,
         safe_repair_actions_count,
+        repair_loop_projects,
+        repair_loop_failed_projects,
+        repair_loop_safe_skipped_projects,
         projects,
     })
 }
@@ -2649,6 +2688,24 @@ fn ops_repair_loop_status(conn: &Connection, since_days: i64) -> Result<OpsRepai
         last_action_count: last.map(|event| event.total_actions),
         actions_by_code,
     })
+}
+
+fn empty_repair_loop_status() -> OpsRepairLoopStatus {
+    OpsRepairLoopStatus {
+        observed: false,
+        healthy: true,
+        runs: 0,
+        applied_actions: 0,
+        skipped_actions: 0,
+        failed_actions: 0,
+        safe_actions: 0,
+        safe_skipped_actions: 0,
+        manual_actions: 0,
+        last_run_at: None,
+        last_source: None,
+        last_action_count: None,
+        actions_by_code: BTreeMap::new(),
+    }
 }
 
 fn ops_agent_integration_status(db: &Path, root: &Path) -> OpsAgentIntegrationStatus {

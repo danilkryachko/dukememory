@@ -4024,6 +4024,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("safe repairs"));
     assert!(html.contains("Repair history"));
     assert!(html.contains("repair loop"));
+    assert!(html.contains("repair failed"));
+    assert!(html.contains("safe skipped"));
     assert!(html.contains("<span>status</span>"));
     assert!(html.contains("Memory QA"));
     assert!(html.contains("Storage"));
@@ -4093,6 +4095,10 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(dashboard.contains("\"repair_actions\""));
     assert!(dashboard.contains("\"repair_actions_count\""));
     assert!(dashboard.contains("\"safe_repair_actions_count\""));
+    assert!(dashboard.contains("\"repair_loop\""));
+    assert!(dashboard.contains("\"repair_loop_projects\""));
+    assert!(dashboard.contains("\"repair_loop_failed_projects\""));
+    assert!(dashboard.contains("\"repair_loop_safe_skipped_projects\""));
     assert!(dashboard.contains("\"attention_projects\""));
     assert!(dashboard.contains("\"missing_live_eval_projects\""));
 
@@ -5170,6 +5176,17 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_u64()
             .is_some()
     );
+    assert!(dashboard_json["repair_loop_projects"].as_u64().is_some());
+    assert!(
+        dashboard_json["repair_loop_failed_projects"]
+            .as_u64()
+            .is_some()
+    );
+    assert!(
+        dashboard_json["repair_loop_safe_skipped_projects"]
+            .as_u64()
+            .is_some()
+    );
     assert!(
         dashboard_json["projects"]
             .as_array()
@@ -5212,6 +5229,15 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_array()
             .unwrap()
             .iter()
+            .all(|item| item["repair_loop"]["observed"].as_bool().is_some()
+                && item["repair_loop"]["runs"].as_u64().is_some()
+                && item["repair_loop"]["actions_by_code"].as_object().is_some())
+    );
+    assert!(
+        dashboard_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
             .flat_map(|item| item["repair_actions"].as_array().unwrap().iter())
             .any(|action| action["code"].as_str().is_some()
                 && action["safe_auto"].as_bool().is_some()
@@ -5233,6 +5259,10 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(dashboard_text.contains("reasons="));
     assert!(dashboard_text.contains("repairs="));
     assert!(dashboard_text.contains("repair_actions="));
+    assert!(dashboard_text.contains("repair_loop_projects="));
+    assert!(dashboard_text.contains("repair_runs="));
+    assert!(dashboard_text.contains("repair_failed="));
+    assert!(dashboard_text.contains("repair_safe_skipped="));
     assert!(dashboard_text.contains("recommendations="));
 
     let dashboard_repair = stdout(
@@ -5342,6 +5372,21 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_object()
             .unwrap()
             .is_empty()
+    );
+    let dashboard_after_repair = stdout(cmd(&db).arg("dashboard").arg("--json"));
+    let dashboard_after_repair_json: Value = serde_json::from_str(&dashboard_after_repair).unwrap();
+    assert!(
+        dashboard_after_repair_json["repair_loop_projects"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+    assert!(
+        dashboard_after_repair_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|project| project["repair_loop"]["runs"].as_u64().unwrap() >= 1)
     );
     let dashboard_repair_history_text = stdout(cmd(&db).arg("dashboard-repair-history"));
     assert!(dashboard_repair_history_text.contains("dukememory. Dashboard Repair History"));
