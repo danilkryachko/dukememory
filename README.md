@@ -148,7 +148,8 @@ quality-review inbox items for safe cleanup. Duplicate detection avoids
 versioned release/history false positives. Successful and empty agent reads can
 be materialized as lightweight inferred feedback during autonomous maintenance,
 and unresolved missing feedback signals also feed gap inbox suggestions. Release
-history and long operational cards are compacted separately to keep memory lean.
+history, long operational cards, and the project contract are bounded separately
+to keep memory lean.
 
 ## MCP And Codex
 

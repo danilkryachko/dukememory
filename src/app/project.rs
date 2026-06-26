@@ -1,5 +1,7 @@
 use super::*;
 
+const MEMORY_CONTRACT_MAX_CHARS: usize = 1100;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct OnboardReport {
     ok: bool,
@@ -188,7 +190,7 @@ pub(crate) fn memory_contract_report(
 ) -> Result<MemoryContractReport> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let path = root.join(".agent").join("MEMORY_CONTRACT.md");
-    let content = render_memory_contract(conn, &root, 3600)?;
+    let content = render_memory_contract(conn, &root, MEMORY_CONTRACT_MAX_CHARS)?;
     let mut memory_id = None;
     if write {
         if let Some(parent) = path.parent() {
@@ -203,7 +205,7 @@ pub(crate) fn memory_contract_report(
         path: path.display().to_string(),
         written: write,
         memory_id,
-        max_chars: 3600,
+        max_chars: MEMORY_CONTRACT_MAX_CHARS,
         content,
     })
 }
@@ -226,28 +228,28 @@ fn render_memory_contract(conn: &Connection, root: &Path, max_chars: usize) -> R
         profile.embedding_provider, profile.embedding_model
     ));
     out.push_str("Rules:\n");
-    out.push_str("- Start coding tasks with `dukememory brief \"<task>\" --budget-profile tiny` or MCP `memory_brief`.\n");
-    out.push_str("- Use `dukememory impact <file-or-symbol> --budget-profile tiny` before editing known areas.\n");
+    out.push_str("- Start with `dukememory brief \"<task>\" --budget-profile tiny`.\n");
     out.push_str(
-        "- Save only durable decisions, constraints, commands, known issues, and task state.\n",
+        "- Use `dukememory impact <target> --budget-profile tiny` before focused edits.\n",
     );
-    out.push_str("- Keep context small; use `dukememory recall \"<task>\" --max-chars 1200` instead of broad dumps.\n");
-    out.push_str("- Autonomous maintenance is allowed when reversible; use rollback instead of hard delete.\n\n");
-    append_contract_section(conn, &mut out, "Goals", &["product_goal".to_string()], 3)?;
+    out.push_str("- Save only durable decisions, constraints, commands, risks, and task state.\n");
+    out.push_str("- Keep recall small; use `dukememory recall \"<task>\" --max-chars 1200` only when brief is not enough.\n");
+    out.push_str("- Autonomous maintenance is allowed only when reversible.\n\n");
+    append_contract_section(conn, &mut out, "Goals", &["product_goal".to_string()], 2)?;
     append_contract_section(
         conn,
         &mut out,
         "Decisions",
         &["decision".to_string(), "constraint".to_string()],
-        8,
+        3,
     )?;
-    append_contract_section(conn, &mut out, "Commands", &["command".to_string()], 5)?;
+    append_contract_section(conn, &mut out, "Commands", &["command".to_string()], 3)?;
     append_contract_section(
         conn,
         &mut out,
         "Known Risks",
         &["known_issue".to_string()],
-        5,
+        3,
     )?;
     Ok(truncate_chars(&out, max_chars))
 }
@@ -275,9 +277,9 @@ fn append_contract_section(
     for row in rows {
         out.push_str(&format!(
             "- {} [{}]: {}\n",
-            truncate_chars(&row.title, 96),
+            truncate_chars(&row.title, 72),
             row.memory_type,
-            truncate_chars(&one_line_summary(&row.body), 220)
+            truncate_chars(&one_line_summary(&row.body), 140)
         ));
     }
     out.push('\n');

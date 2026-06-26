@@ -4718,6 +4718,8 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     let contract_json: Value = serde_json::from_str(&contract).unwrap();
     assert_eq!(contract_json["written"], true);
+    assert_eq!(contract_json["max_chars"], 1100);
+    assert!(contract_json["content"].as_str().unwrap().chars().count() <= 1100);
     assert!(
         dir.path()
             .join(".agent")
@@ -4725,6 +4727,15 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .exists()
     );
     assert!(contract_json["memory_id"].as_str().is_some());
+    let contract_memory_body: String = Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT body FROM memories WHERE id = ?1",
+            [contract_json["memory_id"].as_str().unwrap()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(contract_memory_body.chars().count() <= 1100);
 
     let upgrade = stdout(
         cmd(&db)
