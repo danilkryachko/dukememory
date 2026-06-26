@@ -4238,6 +4238,24 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
                 .arg("project"),
         );
     }
+    for version in ["0.14.20", "0.14.21", "0.14.22"] {
+        let prefix = if version == "0.14.22" {
+            "dukememory."
+        } else {
+            "dukememory"
+        };
+        stdout(
+            cmd(&db)
+                .arg("add")
+                .arg("task_state")
+                .arg(format!("{prefix} {version} release history noise released"))
+                .arg(format!(
+                    "Release {version} added autonomous memory behavior that should be compacted into release history."
+                ))
+                .arg("--scope")
+                .arg("project"),
+        );
+    }
     stdout(
         cmd(&db)
             .arg("add")
@@ -4294,6 +4312,11 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(
         actions
             .iter()
+            .any(|item| item["kind"] == "compact_release_history" && item["status"] == "ok")
+    );
+    assert!(
+        actions
+            .iter()
             .any(|item| item["kind"] == "quality_inbox" && item["status"] == "ok")
     );
     assert!(
@@ -4302,6 +4325,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .unwrap()
             .iter()
             .any(|item| item["action"] == "compact_operational")
+    );
+    assert!(
+        run_json["policy"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["action"] == "compact_release_history")
     );
     assert!(
         run_json["policy"]
@@ -4323,6 +4353,17 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(compact_body.len() <= 1800);
     assert!(compact_body.contains("Operational note"));
     assert!(!compact_body.contains("Nested compact marker should not appear"));
+    assert!(!compact_body.contains("release history noise"));
+    let release_body: String = conn
+        .query_row(
+            "SELECT body FROM memories WHERE title = 'Autonomous compacted project release history' AND body LIKE '%release history noise%' ORDER BY updated_at DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(release_body.len() <= 1400);
+    assert!(release_body.contains("0.14.20"));
+    assert!(release_body.contains("0.14.22"));
 
     let quality = stdout(
         cmd(&db)

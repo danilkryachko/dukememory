@@ -1307,6 +1307,7 @@ pub(crate) fn autonomous_run_once(
         autonomous_create_gap_inbox(conn, effective_level, request.scope, &mut report)?;
         if !matches!(request.level, AutonomousLevel::Conservative) {
             autonomous_approve_inbox(conn, effective_level, &mut report)?;
+            autonomous_compact_release_history(conn, effective_level, request.scope, &mut report)?;
             autonomous_compact_operational(conn, effective_level, request.scope, &mut report)?;
             autonomous_supersede_duplicates(conn, effective_level, &mut report)?;
         }
@@ -1620,11 +1621,23 @@ fn is_compacted_operational_memory(memory: &Memory) -> bool {
         || memory.source.as_deref() == Some("autonomous_compact")
 }
 
+fn is_release_history_memory(memory: &Memory) -> bool {
+    let title = memory.title.to_lowercase();
+    memory.memory_type == "task_state"
+        && (title.starts_with("dukememory ") || title.starts_with("dukememory. "))
+        && title.contains(" released")
+        && title.split_whitespace().any(|part| {
+            part.chars().any(|ch| ch.is_ascii_digit())
+                && part.contains('.')
+                && part.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
+        })
+}
+
 fn compact_operational_candidates(rows: Vec<Memory>) -> Vec<Memory> {
     let mut seen = HashSet::new();
     let mut selected = Vec::new();
     for row in rows {
-        if is_compacted_operational_memory(&row) {
+        if is_compacted_operational_memory(&row) || is_release_history_memory(&row) {
             continue;
         }
         let key = format!("{}:{}", row.memory_type, normalize_title(&row.title));
@@ -1654,6 +1667,119 @@ fn render_operational_compact_body(rows: &[Memory]) -> String {
         body.push_str(&line);
     }
     truncate_chars(&body, 1800)
+}
+
+fn release_history_candidates(rows: Vec<Memory>) -> Vec<Memory> {
+    rows.into_iter()
+        .filter(is_release_history_memory)
+        .take(12)
+        .collect()
+}
+
+fn render_release_history_body(rows: &[Memory]) -> String {
+    let mut body = String::from("Autonomously compacted release history:\n");
+    for row in rows {
+        let line = format!(
+            "- {} -- {}\n",
+            truncate_chars(&one_line_summary(&row.title), 100),
+            truncate_chars(&one_line_summary(&row.body), 180)
+        );
+        if body.len() + line.len() > 1400 {
+            break;
+        }
+        body.push_str(&line);
+    }
+    truncate_chars(&body, 1400)
+}
+
+fn autonomous_compact_release_history(
+    conn: &Connection,
+    level: AutonomousLevel,
+    scope: &str,
+    report: &mut AutonomousReport,
+) -> Result<()> {
+    let raw_rows = query_memories(
+        conn,
+        None,
+        &["task_state".to_string()],
+        &["active".to_string(), "uncertain".to_string()],
+        Some(scope),
+        80,
+    )?;
+    let rows = release_history_candidates(raw_rows);
+    let decision = autonomous_policy_decision(AutonomousPolicyInput {
+        action: "compact_release_history",
+        level,
+        risk_score: 14.0,
+        usefulness_score: (rows.len().min(12) as f64) * 7.0,
+        token_saving_score: (rows.len().min(12) as f64) * 7.0,
+        confidence: if rows.len() >= 3 { 0.88 } else { 0.2 },
+        rollback: true,
+        reason: format!("{} release history card(s)", rows.len()),
+    });
+    report.policy.push(decision.clone());
+    if rows.len() < 3 {
+        report.actions.push(AutonomousAction {
+            kind: "compact_release_history".to_string(),
+            status: "skipped".to_string(),
+            detail: format!("{} release history card(s), need at least 3", rows.len()),
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    if !decision.allowed {
+        report.actions.push(AutonomousAction {
+            kind: "compact_release_history".to_string(),
+            status: "skipped".to_string(),
+            detail: decision.reason,
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    let id = add_memory(
+        conn,
+        AddMemory {
+            id: None,
+            memory_type: "task_state".to_string(),
+            title: format!("Autonomous compacted {scope} release history"),
+            body: render_release_history_body(&rows),
+            scope: scope.to_string(),
+            status: "active".to_string(),
+            source: Some("autonomous_release_compact".to_string()),
+            supersedes: None,
+            confidence: 0.9,
+            links: Vec::new(),
+        },
+    )?;
+    report
+        .rollback
+        .push(AutonomousRollback::RejectAddedMemory { id: id.clone() });
+    for row in &rows {
+        report
+            .rollback
+            .push(AutonomousRollback::RestoreMemoryStatus {
+                id: row.id.clone(),
+                status: row.status.clone(),
+                superseded_by: row.superseded_by.clone(),
+            });
+        conn.execute(
+            "UPDATE memories SET status = 'superseded', superseded_by = ?1, updated_at = ?2 WHERE id = ?3",
+            params![id, now_ms(), row.id],
+        )?;
+    }
+    log_event(
+        conn,
+        "autonomous_release_compact",
+        Some(&id),
+        &format!("compacted {} release history memories", rows.len()),
+    )?;
+    report.actions.push(AutonomousAction {
+        kind: "compact_release_history".to_string(),
+        status: "ok".to_string(),
+        detail: format!("compacted {} release history cards", rows.len()),
+        memory_id: Some(id),
+    });
+    Ok(())
 }
 
 fn autonomous_compact_operational(
