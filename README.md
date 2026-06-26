@@ -139,7 +139,8 @@ dukememory ops-status --json
 ```
 
 It combines usage, usefulness, quality, embeddings, autonomous maintenance, and
-local-first multi-device readiness.
+local-first multi-device readiness. When no manual feedback exists, live
+usefulness is inferred from successful agent memory reads.
 
 ## MCP And Codex
 

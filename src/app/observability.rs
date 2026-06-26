@@ -163,6 +163,9 @@ pub(crate) struct MemoryQaReport {
     pub(crate) reads: usize,
     pub(crate) semantic_read_rate: f64,
     pub(crate) useful_rate: f64,
+    pub(crate) useful_rate_source: String,
+    pub(crate) feedback_useful_rate: f64,
+    pub(crate) inferred_useful_rate: f64,
     pub(crate) quality_average: f64,
     pub(crate) active_memories: usize,
     pub(crate) unused: usize,
@@ -201,6 +204,9 @@ pub(crate) struct OpsEffectivenessStatus {
     pub(crate) unique_memory_ids: usize,
     pub(crate) semantic_read_rate: f64,
     pub(crate) useful_rate: f64,
+    pub(crate) useful_rate_source: String,
+    pub(crate) feedback_useful_rate: f64,
+    pub(crate) inferred_useful_rate: f64,
     pub(crate) token_saving_estimate: usize,
 }
 
@@ -1158,7 +1164,11 @@ pub(crate) fn print_memory_qa(
             "semantic_read_rate: {:.1}%",
             report.semantic_read_rate * 100.0
         );
-        println!("useful_rate: {:.1}%", report.useful_rate * 100.0);
+        println!(
+            "useful_rate: {:.1}% ({})",
+            report.useful_rate * 100.0,
+            report.useful_rate_source
+        );
         println!("quality_average: {:.1}", report.quality_average);
         println!("token_saving_estimate: {}", report.token_saving_estimate);
         for issue in &report.issues {
@@ -1288,6 +1298,9 @@ pub(crate) fn memory_qa_report(
         reads: usage.read_count,
         semantic_read_rate,
         useful_rate: live.useful_rate,
+        useful_rate_source: live.useful_rate_source,
+        feedback_useful_rate: live.feedback_useful_rate,
+        inferred_useful_rate: live.inferred_useful_rate,
         quality_average: quality.average_score,
         active_memories: usefulness.total_active,
         unused: usefulness.unused.len(),
@@ -1470,6 +1483,9 @@ pub(crate) fn ops_status_report(
             unique_memory_ids: usage.unique_memory_ids,
             semantic_read_rate: qa.semantic_read_rate,
             useful_rate: qa.useful_rate,
+            useful_rate_source: qa.useful_rate_source,
+            feedback_useful_rate: qa.feedback_useful_rate,
+            inferred_useful_rate: qa.inferred_useful_rate,
             token_saving_estimate: qa.token_saving_estimate,
         },
         quality_loop,

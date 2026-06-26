@@ -3951,6 +3951,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(eval_live.contains("\"eval\""));
     assert!(eval_live.contains("\"useful_rate\""));
+    assert!(eval_live.contains("\"useful_rate_source\":\"inferred\""));
+    assert!(eval_live.contains("\"inferred_useful_rate\""));
 
     let recall = http_once(
         &db,
@@ -4305,6 +4307,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     let eval_live_json: Value = serde_json::from_str(&eval_live).unwrap();
     assert!(eval_live_json["reads"].as_u64().unwrap() >= 1);
+    assert!(eval_live_json["inferred_useful_rate"].as_f64().unwrap() > 0.0);
 
     let inbox_v2 = stdout(cmd(&db).arg("inbox-v2").arg("report").arg("--json"));
     let inbox_v2_json: Value = serde_json::from_str(&inbox_v2).unwrap();
@@ -4335,6 +4338,19 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let ops_json: Value = serde_json::from_str(&ops).unwrap();
     assert!(ops_json["score"].as_f64().unwrap() >= 0.0);
     assert!(ops_json["effectiveness"]["reads"].as_u64().unwrap() >= 1);
+    assert!(
+        ["feedback", "inferred"].contains(
+            &ops_json["effectiveness"]["useful_rate_source"]
+                .as_str()
+                .unwrap()
+        )
+    );
+    assert!(
+        ops_json["effectiveness"]["inferred_useful_rate"]
+            .as_f64()
+            .unwrap()
+            > 0.0
+    );
     assert_eq!(ops_json["multi_device"]["local_first"], true);
 
     let contract = stdout(

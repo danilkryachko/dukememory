@@ -10,6 +10,11 @@ pub(crate) struct LiveEvalReport {
     pub(crate) useless: usize,
     pub(crate) missing: usize,
     pub(crate) useful_rate: f64,
+    pub(crate) useful_rate_source: String,
+    pub(crate) feedback_useful_rate: f64,
+    pub(crate) inferred_useful: usize,
+    pub(crate) inferred_total: usize,
+    pub(crate) inferred_useful_rate: f64,
     pub(crate) noisy_memory_ids: Vec<String>,
     pub(crate) missing_queries: Vec<String>,
 }
@@ -913,7 +918,17 @@ fn print_live_eval(conn: &Connection, since_days: i64, json_out: bool) -> Result
         println!("Live Eval");
         println!("reads: {}", report.reads);
         println!("feedback_events: {}", report.feedback_events);
-        println!("useful_rate: {:.1}%", report.useful_rate * 100.0);
+        println!(
+            "useful_rate: {:.1}% ({})",
+            report.useful_rate * 100.0,
+            report.useful_rate_source
+        );
+        println!(
+            "inferred_useful_rate: {:.1}% ({}/{})",
+            report.inferred_useful_rate * 100.0,
+            report.inferred_useful,
+            report.inferred_total
+        );
         println!("noisy_memory_ids: {}", report.noisy_memory_ids.join(","));
     }
     Ok(())
@@ -956,6 +971,24 @@ pub(crate) fn live_eval_report(conn: &Connection, since_days: i64) -> Result<Liv
     missing_queries.sort();
     missing_queries.dedup();
     let total_feedback = useful + useless + missing;
+    let (inferred_useful, inferred_total) = inferred_live_usefulness(&reads);
+    let feedback_useful_rate = if total_feedback == 0 {
+        0.0
+    } else {
+        useful as f64 / total_feedback as f64
+    };
+    let inferred_useful_rate = if inferred_total == 0 {
+        0.0
+    } else {
+        inferred_useful as f64 / inferred_total as f64
+    };
+    let (useful_rate, useful_rate_source) = if total_feedback > 0 {
+        (feedback_useful_rate, "feedback")
+    } else if inferred_total > 0 {
+        (inferred_useful_rate, "inferred")
+    } else {
+        (0.0, "none")
+    };
     Ok(LiveEvalReport {
         version: 1,
         since_days,
@@ -964,14 +997,37 @@ pub(crate) fn live_eval_report(conn: &Connection, since_days: i64) -> Result<Liv
         useful,
         useless,
         missing,
-        useful_rate: if total_feedback == 0 {
-            0.0
-        } else {
-            useful as f64 / total_feedback as f64
-        },
+        useful_rate,
+        useful_rate_source: useful_rate_source.to_string(),
+        feedback_useful_rate,
+        inferred_useful,
+        inferred_total,
+        inferred_useful_rate,
         noisy_memory_ids: noisy,
         missing_queries,
     })
+}
+
+fn inferred_live_usefulness(reads: &[MemoryReadEvent]) -> (usize, usize) {
+    let mut useful = 0;
+    let mut total = 0;
+    for read in reads {
+        if !is_agent_memory_read(&read.command) {
+            continue;
+        }
+        total += 1;
+        if read.result_count > 0 && !read.memory_ids.is_empty() {
+            useful += 1;
+        }
+    }
+    (useful, total)
+}
+
+fn is_agent_memory_read(command: &str) -> bool {
+    matches!(
+        command,
+        "brief" | "impact" | "context" | "context-pack" | "retrieve" | "recall" | "evidence"
+    )
 }
 
 pub(crate) fn print_secret_scan(conn: &Connection, fix_redact: bool, json_out: bool) -> Result<()> {
