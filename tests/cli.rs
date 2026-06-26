@@ -1045,6 +1045,53 @@ fn v8_daemon_http_merge_profiles_and_sync() {
 }
 
 #[test]
+fn merge_candidates_ignore_different_release_versions() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let release_20 = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("task_state")
+            .arg("dukememory 0.14.20 autonomous gap inbox released")
+            .arg("Released 0.14.20 with autonomous gap inbox suggestions."),
+    )
+    .trim()
+    .to_string();
+    let release_21 = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("task_state")
+            .arg("dukememory 0.14.21 autonomous quality inbox released")
+            .arg("Released 0.14.21 with autonomous quality inbox suggestions."),
+    )
+    .trim()
+    .to_string();
+    let similar = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("task_state")
+            .arg("dukememory autonomous quality inbox released")
+            .arg("Released with autonomous quality inbox suggestions."),
+    )
+    .trim()
+    .to_string();
+
+    let merge_json = stdout(cmd(&db).arg("merge-candidates").arg("--json"));
+    let merge_items: Value = serde_json::from_str(&merge_json).unwrap();
+    assert!(!merge_items.as_array().unwrap().iter().any(|item| {
+        (item["primary_id"] == release_20 && item["duplicate_id"] == release_21)
+            || (item["primary_id"] == release_21 && item["duplicate_id"] == release_20)
+    }));
+    assert!(
+        merge_items
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| { item["primary_id"] == similar || item["duplicate_id"] == similar })
+    );
+}
+
+#[test]
 fn v9_schema_retrieve_eval_compact_and_http_metrics() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

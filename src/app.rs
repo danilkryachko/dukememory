@@ -1405,6 +1405,7 @@ fn merge_candidates(conn: &Connection, limit: usize) -> Result<Vec<MergeCandidat
         for j in (i + 1)..rows.len() {
             if rows[i].memory_type == rows[j].memory_type
                 && rows[i].scope == rows[j].scope
+                && !titles_have_different_versions(&rows[i].title, &rows[j].title)
                 && title_similarity(&rows[i].title, &rows[j].title) >= 0.65
             {
                 out.push(MergeCandidate {
@@ -1430,6 +1431,40 @@ fn title_similarity(a: &str, b: &str) -> f64 {
     }
     let overlap = a.intersection(&b).count() as f64;
     overlap / a.len().max(b.len()) as f64
+}
+
+fn titles_have_different_versions(a: &str, b: &str) -> bool {
+    let a_versions = title_versions(a);
+    let b_versions = title_versions(b);
+    !a_versions.is_empty() && !b_versions.is_empty() && a_versions.is_disjoint(&b_versions)
+}
+
+fn title_versions(title: &str) -> HashSet<String> {
+    let mut versions = HashSet::new();
+    let chars = title.chars().collect::<Vec<_>>();
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut dots = 0;
+        while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+            if chars[i] == '.' {
+                dots += 1;
+            }
+            i += 1;
+        }
+        if dots > 0 {
+            let candidate = chars[start..i].iter().collect::<String>();
+            let parts = candidate.split('.').collect::<Vec<_>>();
+            if parts.len() >= 2 && parts.iter().all(|part| !part.is_empty()) {
+                versions.insert(candidate);
+            }
+        }
+    }
+    versions
 }
 
 fn merge_apply(

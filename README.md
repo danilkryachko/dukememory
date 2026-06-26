@@ -144,7 +144,8 @@ usefulness is inferred from successful agent memory reads. Empty agent reads are
 surfaced as memory gaps, and autonomous maintenance can turn unresolved gaps into
 pending inbox suggestions instead of silently creating noisy memory. Weak,
 unused, oversized, or unlinked cards can also be surfaced as low-confidence
-quality-review inbox items for safe cleanup.
+quality-review inbox items for safe cleanup. Duplicate detection avoids
+versioned release/history false positives.
 
 ## MCP And Codex
 
