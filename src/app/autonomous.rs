@@ -2915,6 +2915,15 @@ fn print_autonomous_report(report: &AutonomousReport, json_out: bool) -> Result<
     if let Some(backup) = &report.rollback_backup {
         println!("rollback_backup: {backup}");
     }
+    if let Some(live) = &report.live_eval {
+        println!(
+            "live_eval: reads={} useful_rate={:.1}% source={} inferred_missing={}",
+            live.reads,
+            live.useful_rate * 100.0,
+            live.useful_rate_source,
+            live.inferred_missing
+        );
+    }
     for action in &report.actions {
         let id = action.memory_id.as_deref().unwrap_or("-");
         println!(
@@ -2937,6 +2946,7 @@ fn print_autonomous_explain(report: &AutonomousReport, json_out: bool) -> Result
         "allowed_policy": report.policy.iter().filter(|item| item.allowed).count(),
         "skipped_policy": report.policy.iter().filter(|item| !item.allowed).count(),
         "quality_average": report.quality.as_ref().map(|quality| quality.average_score),
+        "live_eval": report.live_eval,
         "rollback_available": !report.rollback.is_empty(),
         "rollback_backup": report.rollback_backup,
     });
@@ -2951,6 +2961,15 @@ fn print_autonomous_explain(report: &AutonomousReport, json_out: bool) -> Result
         println!(
             "quality: average={:.1} total={}",
             quality.average_score, quality.total
+        );
+    }
+    if let Some(live) = &report.live_eval {
+        println!(
+            "live_eval: reads={} useful_rate={:.1}% source={} inferred_missing={}",
+            live.reads,
+            live.useful_rate * 100.0,
+            live.useful_rate_source,
+            live.inferred_missing
         );
     }
     println!(

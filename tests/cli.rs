@@ -4011,6 +4011,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("id=\"reindexEmbeddings\""));
     assert!(html.contains("Project profile"));
     assert!(html.contains("policy decisions"));
+    assert!(html.contains("live usefulness"));
+    assert!(html.contains("live reads"));
     assert!(html.contains("Memory QA"));
     assert!(html.contains("Storage"));
     assert!(html.contains("/ops-status"));
@@ -4263,6 +4265,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(autonomous.contains("\"report\""));
     assert!(autonomous.contains("\"embed_index\""));
     assert!(autonomous.contains("\"optimize_storage\""));
+    assert!(autonomous.contains("\"live_eval\""));
+    assert!(autonomous.contains("\"live_eval_snapshot\""));
 
     let inbox = http_once(
         &db,
@@ -4486,6 +4490,22 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .unwrap()
             .contains("<!-- DUKEMEMORY_START -->")
     );
+    let autonomous_status_text = stdout(
+        cmd(&db)
+            .arg("autonomous")
+            .arg("status")
+            .arg("--status-file")
+            .arg(&status_file),
+    );
+    assert!(autonomous_status_text.contains("live_eval: reads="));
+    let autonomous_explain_text = stdout(
+        cmd(&db)
+            .arg("autonomous")
+            .arg("explain")
+            .arg("--status-file")
+            .arg(&status_file),
+    );
+    assert!(autonomous_explain_text.contains("live_eval: reads="));
     assert!(
         actions
             .iter()

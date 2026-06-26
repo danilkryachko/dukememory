@@ -1148,13 +1148,18 @@
       const report = state.autonomous || {};
       const actions = report.actions || [];
       const policy = report.policy || [];
+      const liveEval = report.live_eval || {};
       $("autonomousPanel").innerHTML = `<div class="stat-grid">
         <div class="stat"><strong>${escapeHtml(report.ok === false ? "warn" : report.ok === true ? "ok" : "-")}</strong><span>status</span></div>
         <div class="stat"><strong>${escapeHtml(report.level || "-")}</strong><span>level</span></div>
         <div class="stat"><strong>${actions.length}</strong><span>actions</span></div>
         <div class="stat"><strong>${policy.filter((item) => item.allowed).length}/${policy.length}</strong><span>policy</span></div>
+        <div class="stat"><strong>${Number(liveEval.reads || 0)}</strong><span>live reads</span></div>
+        <div class="stat"><strong>${Number((liveEval.useful_rate || 0) * 100).toFixed(0)}%</strong><span>live useful ${escapeHtml(liveEval.useful_rate_source || "")}</span></div>
+        <div class="stat"><strong>${Number(liveEval.inferred_missing || 0)}</strong><span>live gaps</span></div>
       </div>
       <div class="card"><div class="title">status file</div><div class="body">${escapeHtml(data.status_file || "-")}</div></div>
+      <div class="card"><div class="title">live usefulness</div><div class="body">feedback ${Number((liveEval.feedback_useful_rate || 0) * 100).toFixed(0)}%<br>inferred ${Number((liveEval.inferred_useful_rate || 0) * 100).toFixed(0)}%<br>missing ${liveEval.inferred_missing_queries?.length ? liveEval.inferred_missing_queries.slice(0, 6).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">latest actions</div><div class="body">${actions.length ? actions.slice(0, 8).map((item) => `${escapeHtml(item.status)} ${escapeHtml(item.kind)} ${escapeHtml(item.detail)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">policy decisions</div><div class="body">${policy.length ? policy.slice(0, 8).map((item) => `${item.allowed ? "allow" : "skip"} ${escapeHtml(item.action)} risk=${Number(item.risk_score || 0).toFixed(0)} ${escapeHtml(item.reason)}`).join("<br>") : "-"}</div></div>`;
     }
