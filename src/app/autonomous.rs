@@ -1007,6 +1007,8 @@ pub(crate) struct AutonomousReport {
     #[serde(default)]
     inferred_feedback: Option<InferredFeedbackReport>,
     #[serde(default)]
+    live_eval: Option<LiveEvalReport>,
+    #[serde(default)]
     budget: Option<BudgetPlan>,
     #[serde(default)]
     project_profile: Option<ProjectProfileSnapshot>,
@@ -1198,6 +1200,7 @@ pub(crate) fn autonomous_run_once(
         quality: None,
         feedback: None,
         inferred_feedback: None,
+        live_eval: None,
         budget: None,
         project_profile: None,
         policy_tuning: None,
@@ -1291,6 +1294,20 @@ pub(crate) fn autonomous_run_once(
             memory_id: None,
         });
         report.inferred_feedback = Some(inferred_feedback);
+        let live_eval = live_eval_report(conn, 7)?;
+        report.actions.push(AutonomousAction {
+            kind: "live_eval_snapshot".to_string(),
+            status: "ok".to_string(),
+            detail: format!(
+                "reads={} useful_rate={:.2} source={} inferred_missing={}",
+                live_eval.reads,
+                live_eval.useful_rate,
+                live_eval.useful_rate_source,
+                live_eval.inferred_missing
+            ),
+            memory_id: None,
+        });
+        report.live_eval = Some(live_eval);
         report.quality = Some(quality_report(conn, 30, 20)?);
         report.feedback = Some(feedback_summary(conn, 30)?);
         report.budget = Some(budget_plan(
@@ -2777,6 +2794,7 @@ pub(crate) fn autonomous_rollback(
         quality: None,
         feedback: None,
         inferred_feedback: None,
+        live_eval: None,
         budget: None,
         project_profile: None,
         policy_tuning: None,

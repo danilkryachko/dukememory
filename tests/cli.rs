@@ -4457,6 +4457,12 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .unwrap()
             >= 1
     );
+    assert!(run_json["live_eval"]["reads"].as_u64().is_some());
+    assert!(
+        run_json["live_eval"]["useful_rate_source"]
+            .as_str()
+            .is_some()
+    );
     let actions = run_json["actions"].as_array().unwrap();
     assert!(actions.iter().any(|item| item["kind"] == "embed_index"));
     assert!(
@@ -4468,6 +4474,11 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         actions
             .iter()
             .any(|item| item["kind"] == "agent_integration_repair" && item["status"] == "ok")
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|item| item["kind"] == "live_eval_snapshot" && item["status"] == "ok")
     );
     assert!(dir.path().join(".agent").join("config.toml").exists());
     assert!(

@@ -41,6 +41,7 @@ Transcript-based memory quickly turns into noise.
 - autonomous freshness and last-run action visibility
 - agent integration checks for project rules, skill, and MCP wiring
 - autonomous repair of project rules, config, AGENTS, and Codex skill
+- live usefulness snapshots in autonomous maintenance reports
 
 ## What It Remembers
 
