@@ -4191,6 +4191,15 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
                 .arg("project"),
         );
     }
+    stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("known_issue")
+            .arg("Verbose memory card without evidence")
+            .arg("This weak memory card is intentionally long, unlinked, and unused. ".repeat(30))
+            .arg("--scope")
+            .arg("project"),
+    );
 
     let run = stdout(
         cmd(&db)
@@ -4236,11 +4245,23 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .any(|item| item["kind"] == "compact_operational" && item["status"] == "ok")
     );
     assert!(
+        actions
+            .iter()
+            .any(|item| item["kind"] == "quality_inbox" && item["status"] == "ok")
+    );
+    assert!(
         run_json["policy"]
             .as_array()
             .unwrap()
             .iter()
             .any(|item| item["action"] == "compact_operational")
+    );
+    assert!(
+        run_json["policy"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["action"] == "quality_inbox")
     );
     assert!(status_file.exists());
 
@@ -4432,6 +4453,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
                 .unwrap()
                 .contains("missing autonomous rollback memory")
     }));
+    assert!(gap_items.iter().any(|item| {
+        item["source"] == "autonomous_quality"
+            && item["title"]
+                .as_str()
+                .unwrap()
+                .contains("Verbose memory card without evidence")
+    }));
 
     let gap_repeat = stdout(
         cmd(&db)
@@ -4612,6 +4640,15 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         )
         .unwrap();
     assert!(rejected_gap_inbox >= 1);
+    let rejected_quality_inbox: i64 = Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM memory_inbox WHERE source = 'autonomous_quality' AND status = 'rejected'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(rejected_quality_inbox >= 1);
 
     let active = stdout(
         cmd(&db)

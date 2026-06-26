@@ -601,6 +601,60 @@ pub(crate) fn insert_gap_inbox_suggestion(
     Ok(Some(id))
 }
 
+pub(crate) fn insert_quality_inbox_suggestion(
+    conn: &Connection,
+    scope: &str,
+    item: &MemoryQuality,
+) -> Result<Option<String>> {
+    let title = format!(
+        "Review memory quality: {} {}",
+        item.id,
+        truncate_chars(&item.title, 70)
+    );
+    let source = "autonomous_quality";
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM memory_inbox WHERE status = 'pending' AND source = ?1 AND title = ?2 LIMIT 1",
+            params![source, title],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if existing.is_some() {
+        return Ok(None);
+    }
+    let id = Uuid::new_v4().simple().to_string()[..12].to_string();
+    let now = now_ms();
+    let reasons = if item.reasons.is_empty() {
+        "no explicit quality reason".to_string()
+    } else {
+        item.reasons.join("; ")
+    };
+    let body = format!(
+        "Autonomous quality review candidate for memory {memory_id} ({memory_type}). Score {score:.1}; requests={requests}; links={links}; body_chars={body_chars}. Reasons: {reasons}. Improve, link, compact, or reject this card only if the review is still accurate.",
+        memory_id = item.id,
+        memory_type = item.memory_type,
+        score = item.score,
+        requests = item.request_count,
+        links = item.links,
+        body_chars = item.body_chars,
+    );
+    conn.execute(
+        r#"
+        INSERT INTO memory_inbox (
+            id, type, scope, title, body, source, confidence, status, created_at, updated_at
+        ) VALUES (?1, 'task_state', ?2, ?3, ?4, ?5, 0.58, 'pending', ?6, ?7)
+        "#,
+        params![id, scope, title, body, source, now, now],
+    )?;
+    log_event(
+        conn,
+        "autonomous_quality_inbox",
+        Some(&item.id),
+        &format!("created inbox suggestion {id} for weak memory {}", item.id),
+    )?;
+    Ok(Some(id))
+}
+
 pub(crate) fn print_inbox(
     conn: &Connection,
     status: &str,

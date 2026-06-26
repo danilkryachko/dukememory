@@ -1287,6 +1287,12 @@ pub(crate) fn autonomous_run_once(
             autonomous_compact_operational(conn, effective_level, request.scope, &mut report)?;
             autonomous_supersede_duplicates(conn, effective_level, &mut report)?;
         }
+        let quality_level = if matches!(request.level, AutonomousLevel::Conservative) {
+            request.level
+        } else {
+            effective_level
+        };
+        autonomous_create_quality_inbox(conn, quality_level, request.scope, &mut report)?;
         log_event(
             conn,
             "autonomous_tick",
@@ -1479,6 +1485,92 @@ fn autonomous_create_gap_inbox(
             "all inferred gap inbox suggestions already existed".to_string()
         } else {
             format!("created {} gap inbox suggestion(s)", created.len())
+        },
+        memory_id: None,
+    });
+    Ok(())
+}
+
+fn autonomous_create_quality_inbox(
+    conn: &Connection,
+    level: AutonomousLevel,
+    scope: &str,
+    report: &mut AutonomousReport,
+) -> Result<()> {
+    let max = match level {
+        AutonomousLevel::Conservative => 0,
+        AutonomousLevel::Normal => 3,
+        AutonomousLevel::Aggressive => 6,
+    };
+    if max == 0 {
+        report.actions.push(AutonomousAction {
+            kind: "quality_inbox".to_string(),
+            status: "skipped".to_string(),
+            detail: "disabled at conservative level".to_string(),
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    let quality = quality_report(conn, 30, 50)?;
+    let candidates = quality
+        .weakest
+        .iter()
+        .filter(|item| {
+            item.score <= 45.0
+                && !item.title.starts_with("Autonomous compacted ")
+                && (item.negative_feedback > 0
+                    || item.body_chars > 1200
+                    || item.links == 0
+                    || item.request_count == 0)
+        })
+        .take(max)
+        .cloned()
+        .collect::<Vec<_>>();
+    let decision = autonomous_policy_decision(AutonomousPolicyInput {
+        action: "quality_inbox",
+        level,
+        risk_score: 9.0,
+        usefulness_score: (candidates.len().min(6) as f64) * 9.0,
+        token_saving_score: (candidates.len().min(6) as f64) * 6.0,
+        confidence: if candidates.is_empty() { 0.0 } else { 0.74 },
+        rollback: true,
+        reason: format!("{} weak memory quality candidate(s)", candidates.len()),
+    });
+    report.policy.push(decision.clone());
+    if candidates.is_empty() {
+        report.actions.push(AutonomousAction {
+            kind: "quality_inbox".to_string(),
+            status: "skipped".to_string(),
+            detail: "no weak memory quality candidates".to_string(),
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    if !decision.allowed {
+        report.actions.push(AutonomousAction {
+            kind: "quality_inbox".to_string(),
+            status: "skipped".to_string(),
+            detail: decision.reason,
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    let mut created = Vec::new();
+    for item in candidates {
+        if let Some(inbox_id) = insert_quality_inbox_suggestion(conn, scope, &item)? {
+            report.rollback.push(AutonomousRollback::RejectInboxItem {
+                inbox_id: inbox_id.clone(),
+            });
+            created.push(inbox_id);
+        }
+    }
+    report.actions.push(AutonomousAction {
+        kind: "quality_inbox".to_string(),
+        status: if created.is_empty() { "skipped" } else { "ok" }.to_string(),
+        detail: if created.is_empty() {
+            "all weak memory quality suggestions already existed".to_string()
+        } else {
+            format!("created {} quality inbox suggestion(s)", created.len())
         },
         memory_id: None,
     });
