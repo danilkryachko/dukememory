@@ -4013,6 +4013,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("policy decisions"));
     assert!(html.contains("live usefulness"));
     assert!(html.contains("live reads"));
+    assert!(html.contains("live gaps"));
     assert!(html.contains("Memory QA"));
     assert!(html.contains("Storage"));
     assert!(html.contains("/ops-status"));
@@ -4068,6 +4069,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(dashboard.contains("\"dashboard\""));
     assert!(dashboard.contains("\"projects\""));
+    assert!(dashboard.contains("\"autonomous_live_reads\""));
+    assert!(dashboard.contains("\"autonomous_inferred_missing\""));
 
     insert_empty_read_event(&db, "brief", "missing ui deployment memory");
 
@@ -5087,6 +5090,17 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let dashboard = stdout(cmd(&db).arg("dashboard").arg("--json"));
     let dashboard_json: Value = serde_json::from_str(&dashboard).unwrap();
     assert!(!dashboard_json["projects"].as_array().unwrap().is_empty());
+    assert!(
+        dashboard_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["autonomous_live_reads"].is_number()
+                || item["autonomous_live_reads"].is_null())
+    );
+    let dashboard_text = stdout(cmd(&db).arg("dashboard"));
+    assert!(dashboard_text.contains("live_reads="));
+    assert!(dashboard_text.contains("live_gaps="));
 
     let onboard_root = dir.path().join("onboarded");
     fs::create_dir_all(&onboard_root).unwrap();

@@ -1007,7 +1007,7 @@ pub(crate) struct AutonomousReport {
     #[serde(default)]
     inferred_feedback: Option<InferredFeedbackReport>,
     #[serde(default)]
-    live_eval: Option<LiveEvalReport>,
+    pub(crate) live_eval: Option<LiveEvalReport>,
     #[serde(default)]
     budget: Option<BudgetPlan>,
     #[serde(default)]

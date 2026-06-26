@@ -43,6 +43,7 @@ Transcript-based memory quickly turns into noise.
 - autonomous repair of project rules, config, AGENTS, and Codex skill
 - live usefulness snapshots in autonomous maintenance reports
 - live usefulness visibility in autonomous CLI and web status
+- multi-project dashboard live reads, usefulness, and gap signals
 
 ## What It Remembers
 

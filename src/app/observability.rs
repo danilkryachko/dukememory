@@ -151,6 +151,10 @@ pub(crate) struct ProjectDashboardItem {
     pub(crate) pending_inbox: i64,
     pub(crate) quality_average: Option<f64>,
     pub(crate) autonomous_ok: Option<bool>,
+    pub(crate) autonomous_live_reads: Option<usize>,
+    pub(crate) autonomous_useful_rate: Option<f64>,
+    pub(crate) autonomous_useful_rate_source: Option<String>,
+    pub(crate) autonomous_inferred_missing: Option<usize>,
     pub(crate) embedding_missing: Option<usize>,
     pub(crate) recommended_budget: Option<String>,
 }
@@ -1138,7 +1142,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
         println!("dukememory. Dashboard");
         for project in report.projects {
             println!(
-                "- {} memories={} pending={} quality={} autonomous={}",
+                "- {} memories={} pending={} quality={} autonomous={} live_reads={} live_useful={} live_gaps={}",
                 project.name,
                 project.memories,
                 project.pending_inbox,
@@ -1148,6 +1152,18 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
                     .unwrap_or_else(|| "-".to_string()),
                 project
                     .autonomous_ok
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                project
+                    .autonomous_live_reads
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                project
+                    .autonomous_useful_rate
+                    .map(|value| format!("{:.0}%", value * 100.0))
+                    .unwrap_or_else(|| "-".to_string()),
+                project
+                    .autonomous_inferred_missing
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string())
             );
@@ -1170,6 +1186,9 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
             let quality = quality_report(&conn, 30, 10).ok();
             let autonomous =
                 read_autonomous_status(&root.join(".agent/autonomous-status.json")).ok();
+            let live_eval = autonomous
+                .as_ref()
+                .and_then(|status| status.live_eval.as_ref());
             let embedding = embeddings::embed_status(
                 &conn,
                 DEFAULT_EMBED_PROVIDER,
@@ -1189,7 +1208,12 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                 memories,
                 pending_inbox,
                 quality_average: quality.map(|quality| quality.average_score),
-                autonomous_ok: autonomous.map(|status| status.ok),
+                autonomous_ok: autonomous.as_ref().map(|status| status.ok),
+                autonomous_live_reads: live_eval.map(|live| live.reads),
+                autonomous_useful_rate: live_eval.map(|live| live.useful_rate),
+                autonomous_useful_rate_source: live_eval
+                    .map(|live| live.useful_rate_source.clone()),
+                autonomous_inferred_missing: live_eval.map(|live| live.inferred_missing),
                 embedding_missing: embedding.map(|status| status.missing),
                 recommended_budget: profile.map(|profile| profile.recommended_budget),
             })
