@@ -148,7 +148,18 @@ pub(crate) struct DashboardReport {
     pub(crate) missing_live_eval_projects: usize,
     pub(crate) recommendations_count: usize,
     pub(crate) attention_reason_counts: BTreeMap<String, usize>,
+    pub(crate) repair_actions_count: usize,
+    pub(crate) safe_repair_actions_count: usize,
     pub(crate) projects: Vec<ProjectDashboardItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct DashboardRepairAction {
+    pub(crate) code: String,
+    pub(crate) reason: String,
+    pub(crate) safe_auto: bool,
+    pub(crate) description: String,
+    pub(crate) command: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +182,7 @@ pub(crate) struct ProjectDashboardItem {
     pub(crate) embedding_missing: Option<usize>,
     pub(crate) recommended_budget: Option<String>,
     pub(crate) attention_reasons: Vec<String>,
+    pub(crate) repair_actions: Vec<DashboardRepairAction>,
     pub(crate) recommendations: Vec<String>,
 }
 
@@ -1156,7 +1168,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
     } else {
         println!("dukememory. Dashboard");
         println!(
-            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} recommendations={} reason_types={}",
+            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={}",
             report.status,
             report.total_projects,
             report.ready_projects,
@@ -1164,7 +1176,9 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
             report.stale_projects,
             report.missing_live_eval_projects,
             report.recommendations_count,
-            report.attention_reason_counts.len()
+            report.attention_reason_counts.len(),
+            report.repair_actions_count,
+            report.safe_repair_actions_count
         );
         for project in report.projects {
             let reasons = if project.attention_reasons.is_empty() {
@@ -1172,12 +1186,23 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
             } else {
                 project.attention_reasons.join(",")
             };
+            let repairs = if project.repair_actions.is_empty() {
+                "-".to_string()
+            } else {
+                project
+                    .repair_actions
+                    .iter()
+                    .map(|action| action.code.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
             println!(
-                "- {} status={} attention={} reasons={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
+                "- {} status={} attention={} reasons={} repairs={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
                 project.name,
                 project.status,
                 project.attention,
                 reasons,
+                repairs,
                 project.memories,
                 project.pending_inbox,
                 project
@@ -1215,6 +1240,68 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
     Ok(())
 }
 
+fn push_repair_action(
+    actions: &mut Vec<DashboardRepairAction>,
+    code: &str,
+    reason: &str,
+    safe_auto: bool,
+    description: &str,
+    command: Vec<String>,
+) {
+    if actions.iter().any(|action| action.code == code) {
+        return;
+    }
+    actions.push(DashboardRepairAction {
+        code: code.to_string(),
+        reason: reason.to_string(),
+        safe_auto,
+        description: description.to_string(),
+        command,
+    });
+}
+
+fn autonomous_repair_command(root: &Path, db: &Path) -> Vec<String> {
+    vec![
+        "dukememory".to_string(),
+        "--db".to_string(),
+        db.display().to_string(),
+        "autonomous".to_string(),
+        "run-once".to_string(),
+        "--level".to_string(),
+        "normal".to_string(),
+        "--status-file".to_string(),
+        root.join(".agent/autonomous-status.json")
+            .display()
+            .to_string(),
+        "--rollback-dir".to_string(),
+        root.join(".agent/autonomous-rollbacks")
+            .display()
+            .to_string(),
+        "--backup-dir".to_string(),
+        root.join(".agent/backups").display().to_string(),
+    ]
+}
+
+fn embed_repair_command(db: &Path) -> Vec<String> {
+    vec![
+        "dukememory".to_string(),
+        "--db".to_string(),
+        db.display().to_string(),
+        "embed-index".to_string(),
+    ]
+}
+
+fn inbox_review_command(db: &Path) -> Vec<String> {
+    vec![
+        "dukememory".to_string(),
+        "--db".to_string(),
+        db.display().to_string(),
+        "inbox-v2".to_string(),
+        "report".to_string(),
+        "--json".to_string(),
+    ]
+}
+
 pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
     let projects = discover_project_dbs(default_db)?
         .into_iter()
@@ -1247,6 +1334,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
             let embedding_missing = embedding.as_ref().map(|status| status.missing);
             let mut recommendations = Vec::new();
             let mut attention_reasons = Vec::new();
+            let mut repair_actions = Vec::new();
             match &autonomous {
                 None => {
                     attention_reasons.push("autonomous_status_missing".to_string());
@@ -1254,11 +1342,27 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                         "run dukememory autonomous run-once --level normal to create project status"
                             .to_string(),
                     );
+                    push_repair_action(
+                        &mut repair_actions,
+                        "run_autonomous",
+                        "autonomous_status_missing",
+                        true,
+                        "Create autonomous project status.",
+                        autonomous_repair_command(&root, &db),
+                    );
                 }
                 Some(status) if !status.ok => {
                     attention_reasons.push("autonomous_status_warn".to_string());
                     recommendations
                         .push("inspect dukememory autonomous status for warnings".to_string());
+                    push_repair_action(
+                        &mut repair_actions,
+                        "run_autonomous",
+                        "autonomous_status_warn",
+                        true,
+                        "Refresh autonomous maintenance status.",
+                        autonomous_repair_command(&root, &db),
+                    );
                 }
                 Some(_) => {}
             }
@@ -1268,6 +1372,14 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                     "run dukememory autonomous run-once --level normal to refresh status"
                         .to_string(),
                 );
+                push_repair_action(
+                    &mut repair_actions,
+                    "run_autonomous",
+                    "autonomous_status_stale",
+                    true,
+                    "Refresh stale autonomous project status.",
+                    autonomous_repair_command(&root, &db),
+                );
             }
             if live_eval.is_none() {
                 attention_reasons.push("live_eval_missing".to_string());
@@ -1275,14 +1387,38 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                     "run dukememory autonomous run-once --level normal to record live eval"
                         .to_string(),
                 );
+                push_repair_action(
+                    &mut repair_actions,
+                    "run_autonomous",
+                    "live_eval_missing",
+                    true,
+                    "Record live memory usefulness signals.",
+                    autonomous_repair_command(&root, &db),
+                );
             }
             if embedding_missing.unwrap_or(0) > 0 {
                 attention_reasons.push("embeddings_missing".to_string());
                 recommendations.push("run dukememory embed-index".to_string());
+                push_repair_action(
+                    &mut repair_actions,
+                    "embed_index",
+                    "embeddings_missing",
+                    true,
+                    "Refresh missing memory embeddings.",
+                    embed_repair_command(&db),
+                );
             }
             if pending_inbox > 0 {
                 attention_reasons.push("pending_inbox".to_string());
                 recommendations.push("review pending memory inbox".to_string());
+                push_repair_action(
+                    &mut repair_actions,
+                    "review_inbox",
+                    "pending_inbox",
+                    false,
+                    "Review pending inbox suggestions before accepting them.",
+                    inbox_review_command(&db),
+                );
             }
             let attention = !attention_reasons.is_empty() || !recommendations.is_empty();
             let status = if attention { "attention" } else { "ready" }.to_string();
@@ -1310,6 +1446,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                 embedding_missing,
                 recommended_budget: profile.map(|profile| profile.recommended_budget),
                 attention_reasons,
+                repair_actions,
                 recommendations,
             })
         })
@@ -1344,6 +1481,15 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
     {
         *attention_reason_counts.entry(reason.clone()).or_insert(0) += 1;
     }
+    let repair_actions_count = projects
+        .iter()
+        .map(|project| project.repair_actions.len())
+        .sum();
+    let safe_repair_actions_count = projects
+        .iter()
+        .flat_map(|project| project.repair_actions.iter())
+        .filter(|action| action.safe_auto)
+        .count();
     let attention_projects = total_projects.saturating_sub(ready_projects);
     let ok = attention_projects == 0;
     let status = if ok { "ready" } else { "attention" }.to_string();
@@ -1358,6 +1504,8 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         missing_live_eval_projects,
         recommendations_count,
         attention_reason_counts,
+        repair_actions_count,
+        safe_repair_actions_count,
         projects,
     })
 }

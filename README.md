@@ -48,6 +48,7 @@ Transcript-based memory quickly turns into noise.
 - dashboard summary counters for ready and attention-needed projects
 - explicit dashboard ready/attention status for monitoring
 - machine-readable dashboard attention reasons for monitors
+- dashboard repair plans with safe autonomous action hints
 
 ## What It Remembers
 

@@ -4019,6 +4019,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("missing live eval"));
     assert!(html.contains("attention"));
     assert!(html.contains("attention reasons"));
+    assert!(html.contains("repair actions"));
+    assert!(html.contains("safe repairs"));
     assert!(html.contains("<span>status</span>"));
     assert!(html.contains("Memory QA"));
     assert!(html.contains("Storage"));
@@ -4085,6 +4087,9 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(dashboard.contains("\"attention\""));
     assert!(dashboard.contains("\"attention_reasons\""));
     assert!(dashboard.contains("\"attention_reason_counts\""));
+    assert!(dashboard.contains("\"repair_actions\""));
+    assert!(dashboard.contains("\"repair_actions_count\""));
+    assert!(dashboard.contains("\"safe_repair_actions_count\""));
     assert!(dashboard.contains("\"attention_projects\""));
     assert!(dashboard.contains("\"missing_live_eval_projects\""));
 
@@ -5116,6 +5121,12 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_object()
             .is_some()
     );
+    assert!(dashboard_json["repair_actions_count"].as_u64().is_some());
+    assert!(
+        dashboard_json["safe_repair_actions_count"]
+            .as_u64()
+            .is_some()
+    );
     assert!(
         dashboard_json["projects"]
             .as_array()
@@ -5151,6 +5162,23 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_array()
             .unwrap()
             .iter()
+            .all(|item| item["repair_actions"].as_array().is_some())
+    );
+    assert!(
+        dashboard_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|item| item["repair_actions"].as_array().unwrap().iter())
+            .any(|action| action["code"].as_str().is_some()
+                && action["safe_auto"].as_bool().is_some()
+                && action["command"].as_array().is_some())
+    );
+    assert!(
+        dashboard_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
             .all(|item| item["status"].as_str().is_some() && item["attention"].as_bool().is_some())
     );
     let dashboard_text = stdout(cmd(&db).arg("dashboard"));
@@ -5160,6 +5188,8 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(dashboard_text.contains("live_gaps="));
     assert!(dashboard_text.contains("auto_age="));
     assert!(dashboard_text.contains("reasons="));
+    assert!(dashboard_text.contains("repairs="));
+    assert!(dashboard_text.contains("repair_actions="));
     assert!(dashboard_text.contains("recommendations="));
 
     let onboard_root = dir.path().join("onboarded");
