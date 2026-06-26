@@ -1031,6 +1031,10 @@ enum AutonomousRollback {
         status: String,
         superseded_by: Option<String>,
     },
+    RestoreMemoryBody {
+        id: String,
+        body: String,
+    },
     RejectAddedMemory {
         id: String,
     },
@@ -1310,6 +1314,7 @@ pub(crate) fn autonomous_run_once(
             autonomous_compact_release_history(conn, effective_level, request.scope, &mut report)?;
             autonomous_compact_operational(conn, effective_level, request.scope, &mut report)?;
             autonomous_supersede_duplicates(conn, effective_level, &mut report)?;
+            autonomous_slim_long_memories(conn, effective_level, request.scope, &mut report)?;
         }
         let quality_level = if matches!(request.level, AutonomousLevel::Conservative) {
             request.level
@@ -1873,6 +1878,188 @@ fn autonomous_compact_operational(
     Ok(())
 }
 
+fn is_slimmable_memory(memory: &Memory) -> bool {
+    if memory.body.chars().count() <= 1200 || memory.body.starts_with("Autonomously slimmed ") {
+        return false;
+    }
+    if matches!(
+        memory.memory_type.as_str(),
+        "decision" | "constraint" | "user_preference" | "product_goal" | "command"
+    ) {
+        return false;
+    }
+    if memory.source.as_deref() == Some("memory_contract") {
+        return false;
+    }
+    matches!(
+        memory.memory_type.as_str(),
+        "task_state" | "note" | "design_note" | "domain_fact"
+    )
+}
+
+fn slim_long_memory_candidates(rows: Vec<Memory>, max: usize) -> Vec<Memory> {
+    let mut rows = rows
+        .into_iter()
+        .filter(is_slimmable_memory)
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|row| std::cmp::Reverse(row.body.chars().count()));
+    rows.truncate(max);
+    rows
+}
+
+fn render_slim_memory_body(memory: &Memory) -> String {
+    let original_chars = memory.body.chars().count();
+    let mut body =
+        format!("Autonomously slimmed from {original_chars} chars for token-light recall.\n");
+    body.push_str(&format!(
+        "Title: {}\n",
+        truncate_chars(&one_line_summary(&memory.title), 140)
+    ));
+    body.push_str("Key points:\n");
+
+    let mut added = 0;
+    for raw in memory
+        .body
+        .lines()
+        .flat_map(|line| line.split(". "))
+        .map(one_line_summary)
+        .filter(|line| !line.is_empty())
+    {
+        let normalized = raw.trim_start_matches("- ").trim().to_string();
+        if normalized.is_empty()
+            || normalized.starts_with("Autonomously slimmed ")
+            || normalized.starts_with("Autonomously compacted ")
+        {
+            continue;
+        }
+        let line = format!("- {}\n", truncate_chars(&normalized, 180));
+        if body.len() + line.len() > 900 {
+            break;
+        }
+        body.push_str(&line);
+        added += 1;
+        if added >= 5 {
+            break;
+        }
+    }
+
+    if added == 0 {
+        body.push_str(&format!(
+            "- {}\n",
+            truncate_chars(&one_line_summary(&memory.body), 720)
+        ));
+    }
+    truncate_chars(&body, 900)
+}
+
+fn autonomous_slim_long_memories(
+    conn: &Connection,
+    level: AutonomousLevel,
+    scope: &str,
+    report: &mut AutonomousReport,
+) -> Result<()> {
+    let max = match level {
+        AutonomousLevel::Conservative => 0,
+        AutonomousLevel::Normal => 2,
+        AutonomousLevel::Aggressive => 5,
+    };
+    if max == 0 {
+        report.actions.push(AutonomousAction {
+            kind: "slim_long_memory".to_string(),
+            status: "skipped".to_string(),
+            detail: "disabled at conservative level".to_string(),
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    let raw_rows = query_memories(
+        conn,
+        None,
+        &[],
+        &["active".to_string(), "uncertain".to_string()],
+        Some(scope),
+        100,
+    )?;
+    let rows = slim_long_memory_candidates(raw_rows, max);
+    let original_chars = rows
+        .iter()
+        .map(|row| row.body.chars().count())
+        .sum::<usize>();
+    let slim_chars = rows
+        .iter()
+        .map(render_slim_memory_body)
+        .map(|body| body.chars().count())
+        .sum::<usize>();
+    let saved_chars = original_chars.saturating_sub(slim_chars);
+    let decision = autonomous_policy_decision(AutonomousPolicyInput {
+        action: "slim_long_memory",
+        level,
+        risk_score: 16.0,
+        usefulness_score: (rows.len().min(5) as f64) * 8.0,
+        token_saving_score: (saved_chars.min(5000) as f64) / 80.0,
+        confidence: if rows.is_empty() { 0.0 } else { 0.86 },
+        rollback: true,
+        reason: format!(
+            "{} long memory card(s), estimated {} chars saved",
+            rows.len(),
+            saved_chars
+        ),
+    });
+    report.policy.push(decision.clone());
+    if rows.is_empty() {
+        report.actions.push(AutonomousAction {
+            kind: "slim_long_memory".to_string(),
+            status: "skipped".to_string(),
+            detail: "no safe long memory candidates".to_string(),
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    if !decision.allowed {
+        report.actions.push(AutonomousAction {
+            kind: "slim_long_memory".to_string(),
+            status: "skipped".to_string(),
+            detail: decision.reason,
+            memory_id: None,
+        });
+        return Ok(());
+    }
+
+    let mut changed = 0;
+    for row in rows {
+        let body = render_slim_memory_body(&row);
+        if body.chars().count() >= row.body.chars().count() {
+            continue;
+        }
+        report.rollback.push(AutonomousRollback::RestoreMemoryBody {
+            id: row.id.clone(),
+            body: row.body.clone(),
+        });
+        conn.execute(
+            "UPDATE memories SET body = ?1, updated_at = ?2 WHERE id = ?3",
+            params![body, now_ms(), row.id],
+        )?;
+        log_event(
+            conn,
+            "autonomous_slim_long_memory",
+            Some(&row.id),
+            &format!("slimmed {} from {} chars", row.id, row.body.chars().count()),
+        )?;
+        changed += 1;
+    }
+    report.actions.push(AutonomousAction {
+        kind: "slim_long_memory".to_string(),
+        status: if changed == 0 { "skipped" } else { "ok" }.to_string(),
+        detail: if changed == 0 {
+            "long memory candidates were already compact enough".to_string()
+        } else {
+            format!("slimmed {changed} long memory card(s)")
+        },
+        memory_id: None,
+    });
+    Ok(())
+}
+
 fn autonomous_supersede_duplicates(
     conn: &Connection,
     level: AutonomousLevel,
@@ -2037,6 +2224,18 @@ pub(crate) fn autonomous_rollback(
                     kind: "rollback_restore_status".to_string(),
                     status: "ok".to_string(),
                     detail: status.clone(),
+                    memory_id: Some(id.clone()),
+                });
+            }
+            AutonomousRollback::RestoreMemoryBody { id, body } => {
+                conn.execute(
+                    "UPDATE memories SET body = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![body, now_ms(), id],
+                )?;
+                out.actions.push(AutonomousAction {
+                    kind: "rollback_restore_body".to_string(),
+                    status: "ok".to_string(),
+                    detail: "restored memory body".to_string(),
                     memory_id: Some(id.clone()),
                 });
             }

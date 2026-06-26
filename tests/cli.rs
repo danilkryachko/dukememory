@@ -4265,6 +4265,18 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .arg("--scope")
             .arg("project"),
     );
+    let slim_body = "Slim candidate durable detail. ".repeat(70);
+    let slim_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Long autonomous slim candidate")
+            .arg(&slim_body)
+            .arg("--scope")
+            .arg("project"),
+    )
+    .trim()
+    .to_string();
 
     let run = stdout(
         cmd(&db)
@@ -4320,6 +4332,11 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .any(|item| item["kind"] == "quality_inbox" && item["status"] == "ok")
     );
     assert!(
+        actions
+            .iter()
+            .any(|item| item["kind"] == "slim_long_memory" && item["status"] == "ok")
+    );
+    assert!(
         run_json["policy"]
             .as_array()
             .unwrap()
@@ -4340,9 +4357,28 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .iter()
             .any(|item| item["action"] == "quality_inbox")
     );
+    assert!(
+        run_json["policy"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["action"] == "slim_long_memory")
+    );
     assert!(status_file.exists());
 
     let conn = Connection::open(&db).unwrap();
+    let slimmed_body: String = conn
+        .query_row(
+            "SELECT body FROM memories WHERE id = ?1",
+            [&slim_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(slimmed_body.starts_with("Autonomously slimmed from"));
+    assert!(slimmed_body.len() <= 900);
+    assert!(slimmed_body.contains("Long autonomous slim candidate"));
+    assert!(slimmed_body.len() < slim_body.len());
+
     let compact_body: String = conn
         .query_row(
             "SELECT body FROM memories WHERE title = 'Autonomous compacted project operational memory' AND body LIKE '%Operational note%' ORDER BY updated_at DESC LIMIT 1",
@@ -4811,8 +4847,24 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_array()
             .unwrap()
             .iter()
+            .any(|item| item["kind"] == "rollback_restore_body")
+    );
+    assert!(
+        rollback_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|item| item["kind"] == "rollback_reject_inbox")
     );
+    let restored_slim_body: String = Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT body FROM memories WHERE id = ?1",
+            [&slim_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(restored_slim_body, slim_body);
     let rejected_gap_inbox: i64 = Connection::open(&db)
         .unwrap()
         .query_row(
