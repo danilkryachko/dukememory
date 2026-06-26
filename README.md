@@ -1,4 +1,4 @@
-# dukememory
+# dukememory.
 
 Local, structured project memory for agent-driven development.
 
@@ -8,7 +8,7 @@ It is built to stay local, fast, auditable, and token-light. Embeddings are
 optional: plain SQLite + FTS works by default, and semantic recall improves the
 result when a local embedding model is configured.
 
-![dukememory web UI](docs/screenshot.png)
+![dukememory. web UI](docs/screenshot.png)
 
 ## Why
 

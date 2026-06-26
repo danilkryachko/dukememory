@@ -823,7 +823,7 @@ fn v7_audit_workspace_init_and_bundle() {
         .stdout(contains(".agent/rules.rhai"));
     assert!(dir.path().join(".agent/rules.rhai").exists());
     let agents = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
-    assert!(agents.contains("dukememory"));
+    assert!(agents.contains("dukememory."));
     assert!(agents.contains("dukememory brief"));
 
     cmd(&db)
@@ -1518,7 +1518,7 @@ fn v11_release_bundle_bench_and_self_host() {
         .arg("local-first")
         .assert()
         .success()
-        .stdout(contains("dukememory local-first constraint"));
+        .stdout(contains("dukememory. local-first constraint"));
 
     let bench = stdout(cmd(&db).arg("bench").arg("--json"));
     let bench_json: Value = serde_json::from_str(&bench).unwrap();
@@ -3663,7 +3663,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(html.contains("200 OK"));
     assert!(html.contains("Content-Type: text/html"));
-    assert!(html.contains("dukememory"));
+    assert!(html.contains("dukememory."));
     assert!(html.contains("<html lang=\"ru\">"));
     assert!(html.contains("Поиск памяти"));
     assert!(html.contains("Добавить память"));

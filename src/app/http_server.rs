@@ -1163,7 +1163,7 @@ fn memory_ui_html() -> &'static str {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>dukememory</title>
+  <title>dukememory.</title>
   <style>
     :root {
       --bg: #f5f6f8;
@@ -1482,7 +1482,7 @@ fn memory_ui_html() -> &'static str {
 <body>
   <header>
     <div class="brand">
-      <h1>dukememory</h1>
+      <h1>dukememory.</h1>
       <span class="subtitle" data-i18n="subtitle">локальная память проектов</span>
     </div>
     <div class="header-actions">

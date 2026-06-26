@@ -2915,7 +2915,7 @@ fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
     if json_out {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        println!("dukememory Dashboard");
+        println!("dukememory. Dashboard");
         for project in report.projects {
             println!(
                 "- {} memories={} pending={} quality={} autonomous={}",
@@ -3385,7 +3385,7 @@ fn memory_contract_report(
 fn render_memory_contract(conn: &Connection, root: &Path, max_chars: usize) -> Result<String> {
     let profile = project_profile_snapshot(conn, root, "project")?;
     let mut out = String::new();
-    out.push_str("# dukememory Project Contract\n\n");
+    out.push_str("# dukememory. Project Contract\n\n");
     out.push_str(&format!("Root: {}\n", root.display()));
     out.push_str(&format!(
         "Memory: {} cards, {} decisions, {} constraints, {} commands, recommended budget: {}.\n",
@@ -3590,7 +3590,7 @@ fn upgrade_project_report(
             Err(err) => errors.push(format!("workspace rules failed: {err}")),
         }
         match upsert_project_agents(&root) {
-            Ok(()) => actions.push("AGENTS.md dukememory block refreshed".to_string()),
+            Ok(()) => actions.push("AGENTS.md dukememory. block refreshed".to_string()),
             Err(err) => errors.push(format!("AGENTS.md refresh failed: {err}")),
         }
         match write_codex_skill(&expand_tilde("~/.codex/skills"), true) {
@@ -3837,7 +3837,7 @@ fn replace_marked_block(content: &str, start: &str, end: &str, replacement: &str
 
 fn project_memory_agents_block() -> &'static str {
     r#"<!-- DUKEMEMORY_START -->
-## dukememory
+## dukememory.
 
 This repository has local project memory installed in `.agent/memory.db`.
 
@@ -9868,9 +9868,9 @@ name: dukememory-use
 description: Use local dukememory project memory automatically, safely, and token-lightly. Trigger in repositories with `.agent/memory.db` or `.agent/config.toml`, when dukememory/project memory is mentioned, when MCP tools memory_brief/memory_impact/memory_drift/memory_doctrine/memory_evidence/memory_remember are available, or when Codex needs to remember decisions, constraints, commands, preferences, task state, or project context across chats.
 ---
 
-# dukememory Use
+# dukememory. Use
 
-Use dukememory as the first, smallest context layer for repositories with local memory.
+Use the dukememory. memory layer as the first, smallest context layer for repositories with local memory.
 
 ## Invariants
 
@@ -10043,7 +10043,7 @@ Seed new project memory with project goal, build/test commands, main entrypoints
 "#;
 
 const DUKEMEMORY_SKILL_OPENAI_YAML: &str = r#"interface:
-  display_name: "dukememory"
+  display_name: "dukememory."
   short_description: "Use project memory with discipline."
   default_prompt: "Use $dukememory-use to read the smallest useful memory, verify critical facts, and save only durable outcomes."
 
@@ -10051,7 +10051,7 @@ dependencies:
   tools:
     - type: "mcp"
       value: "dukememory"
-      description: "Local dukememory MCP server for project memory briefs, impact, drift, and writes."
+      description: "Local dukememory. MCP server for project memory briefs, impact, drift, and writes."
 
 policy:
   allow_implicit_invocation: true
@@ -10285,7 +10285,7 @@ fn print_vec_status() {
 }
 
 fn print_review_tui(conn: &Connection, stale_days: i64) -> Result<()> {
-    println!("dukememory Review");
+    println!("dukememory. Review");
     println!();
     println!("Inbox");
     for item in list_inbox(conn, "pending", 10)? {
