@@ -1,5 +1,7 @@
 use super::*;
 
+const FRESH_MEMORY_GRACE_MS: i64 = 86_400_000;
+
 #[derive(Debug, Serialize)]
 pub(crate) struct MemoryReadEvent {
     pub(crate) id: i64,
@@ -496,6 +498,7 @@ pub(crate) fn usefulness_report(
 ) -> Result<UsefulnessReport> {
     let since_ms = now_ms().saturating_sub(since_days.max(0).saturating_mul(86_400_000));
     let counts = memory_request_counts_since(conn, Some(since_ms))?;
+    let fresh_cutoff = now_ms().saturating_sub(FRESH_MEMORY_GRACE_MS);
     let active = query_memories(
         conn,
         None,
@@ -524,7 +527,8 @@ pub(crate) fn usefulness_report(
         if request_count >= hot_threshold.max(1) {
             hot.push(item.clone());
         }
-        if request_count == 0 {
+        let fresh = memory.updated_at >= fresh_cutoff;
+        if request_count == 0 && !fresh {
             unused.push(item.clone());
             suggestions.push(UsefulnessSuggestion {
                 action: "review_unused".to_string(),
@@ -634,6 +638,7 @@ pub(crate) fn quality_report(
     limit: usize,
 ) -> Result<QualityReport> {
     let since_ms = now_ms().saturating_sub(since_days.max(0).saturating_mul(86_400_000));
+    let fresh_cutoff = now_ms().saturating_sub(FRESH_MEMORY_GRACE_MS);
     let request_counts = memory_request_counts_since(conn, Some(since_ms))?;
     let feedback = memory_feedback_counts(conn, since_ms)?;
     let rows = query_memories(
@@ -652,6 +657,7 @@ pub(crate) fn quality_report(
             feedback.get(&memory.id).copied().unwrap_or((0, 0, 0));
         let links = get_links(conn, &memory.id)?.len();
         let body_chars = memory.body.chars().count();
+        let fresh = memory.updated_at >= fresh_cutoff;
         let mut usefulness_score = 20.0 + (request_count.min(10) as f64 * 4.0);
         usefulness_score += positive_feedback.min(10) as f64 * 5.0;
         usefulness_score -= negative_feedback.min(10) as f64 * 6.0;
@@ -696,6 +702,9 @@ pub(crate) fn quality_report(
         let mut reasons = Vec::new();
         if request_count > 0 {
             reasons.push(format!("used {request_count} time(s) recently"));
+        } else if fresh {
+            usefulness_score += 10.0;
+            reasons.push("fresh; waiting for use".to_string());
         } else {
             reasons.push("unused recently".to_string());
             suggestions.push(UsefulnessSuggestion {

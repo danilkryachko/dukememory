@@ -4563,6 +4563,29 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     let quality_json: Value = serde_json::from_str(&quality).unwrap();
     assert!(quality_json["average_score"].as_f64().unwrap() >= 0.0);
+    let usefulness_after_run = stdout(cmd(&db).arg("usefulness-report").arg("--json"));
+    let usefulness_after_run_json: Value = serde_json::from_str(&usefulness_after_run).unwrap();
+    assert!(
+        !usefulness_after_run_json["unused"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == explicit_link_id)
+    );
+    assert!(
+        quality_json["weakest"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["id"] == explicit_link_id
+                    && item["reasons"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|reason| reason == "fresh; waiting for use")
+            })
+    );
 
     let feedback = stdout(
         cmd(&db)

@@ -152,7 +152,8 @@ history, long operational cards, and the project contract are bounded separately
 to keep memory lean. Resolved quality-review inbox items are closed
 autonomously when the underlying card is no longer weak. New compact cards keep
 inherited evidence links from their source memories, and no-link cards with
-explicit existing file paths are linked automatically.
+explicit existing file paths are linked automatically. Fresh cards get a short
+grace period before unused-card review.
 
 ## MCP And Codex
 
