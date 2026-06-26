@@ -1,0 +1,50 @@
+<!-- CODEGRAPH_START -->
+## CodeGraph
+
+In repositories indexed by CodeGraph (a `.codegraph/` directory exists at the repo root), reach for it BEFORE grep/find or reading files when you need to understand or locate code:
+
+- **MCP tools** (when available): `codegraph_explore` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them. `codegraph_node` returns one symbol's source + callers, or reads a whole file with line numbers. If the tools are listed but deferred, load them by name via tool search.
+- **Shell** (always works): `codegraph explore "<symbol names or question>"` and `codegraph node <symbol-or-file>` print the same output.
+
+If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is the user's decision.
+<!-- CODEGRAPH_END -->
+
+<!-- DUKEMEMORY_START -->
+## dukememory.
+
+This repository has local project memory installed in `.agent/memory.db`.
+
+For every new chat or coding task in this repository:
+- Use the Codex skill `$dukememory-use` when available.
+- Confirm the current project root before reading or writing memory; never write this project's durable facts into another `.agent/memory.db`.
+- Default to read-only memory use unless there is a durable fact worth saving.
+- Start with project memory before broad exploration. Prefer MCP `memory_brief` with a tiny budget for the user's task.
+- Memory use is mandatory when `.agent/memory.db` exists: if MCP tools are not available, use the CLI fallback from the project root instead of skipping memory.
+- CLI brief fallback: `dukememory brief "<task>" --budget-profile tiny`.
+- When a touched file, symbol, subsystem, command, UI area, or error is known, call MCP `memory_impact` or run `dukememory impact <target> --budget-profile tiny`.
+- For architectural/policy questions, call MCP `memory_doctrine`; use MCP `memory_evidence` for critical memory ids before relying on them.
+- Before broad edits/refactors/dependency changes/schema changes/release work, call MCP `memory_drift` or run `dukememory drift --root .`.
+- Persist only durable decisions, constraints, user preferences, project commands, known issues, and task state with MCP `memory_remember`/`memory_add` or the `dukememory remember`/`dukememory add` CLI.
+- Before adding decisions, check MCP `memory_doctrine` or `dukememory doctrine --json`; use MCP `memory_evidence` for high-impact or surprising memory before relying on it.
+- Do not save transient scratch notes, large logs, secrets, full file dumps, or obvious facts from nearby code.
+- After a batch of important memory writes, run `dukememory embed-index` once so embeddings stay ready.
+- Keep operational memory compact. Do not create recursive "compact of compact" summaries; prefer `dukememory memory-contract --write` for durable project-wide context.
+- Memory maintenance is autonomous by default: `dukememory autonomous run-once --level normal` may refresh embeddings, backups, cleanup, safe inbox approvals, compact stale operational notes, and supersede safe duplicates without hard deletion.
+- Roll back the last autonomous maintenance cycle with `dukememory autonomous rollback`; autonomous mode must keep rollback metadata and avoid hard delete by default.
+- Before the final response after substantial work, run the same end routine: save useful durable outcomes or task state, then refresh embeddings once after writes.
+- If memory was read or written, the final response must include a short receipt such as `Memory: used brief+impact, ids=[...], wrote=...`; if nothing durable was saved, say `wrote=none`.
+- To inspect whether memory is being used and reused, run `dukememory usage-report --since-days 7`.
+- To inspect memory quality and cleanup candidates, run `dukememory usefulness-report`.
+- To inspect autonomous maintenance, run `dukememory autonomous status --json`.
+- To inspect evidence-backed memory quality, run `dukememory quality-report --json`.
+- To choose the smallest useful context budget, run `dukememory budget-plan "<task>" --json`.
+- To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`.
+- To inspect live memory usefulness from reads and feedback, run `dukememory eval live --json`.
+- To inspect all local projects, run `dukememory dashboard --json`.
+- To safely group and process inbox suggestions, run `dukememory inbox-v2 report --json`.
+- To check whether memory is useful or noisy, run `dukememory memory-qa --json`.
+- To refresh project-wide memory instructions and the compact contract, run `dukememory upgrade-project --json`.
+- After a task, agents may record lightweight memory utility feedback with `dukememory feedback --id <memory-id> --rating useful|useless|missing`.
+
+Keep memory use lightweight: prefer `brief`/`impact`; do not dump large context packs unless needed.
+<!-- DUKEMEMORY_END -->
