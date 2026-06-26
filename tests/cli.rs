@@ -4131,6 +4131,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(ops.contains("\"effectiveness\""));
     assert!(ops.contains("\"storage\""));
     assert!(ops.contains("\"db_bytes\""));
+    assert!(ops.contains("\"vacuum_recommended\""));
     assert!(ops.contains("\"multi_device\""));
     assert!(ops.contains("\"inferred_missing\":1"));
 
@@ -4828,6 +4829,14 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         1
     );
     assert!(ops_json["storage"]["db_bytes"].as_u64().unwrap() > 0);
+    assert!(ops_json["storage"]["page_count"].as_i64().unwrap() > 0);
+    assert!(ops_json["storage"]["freelist_count"].as_i64().unwrap() >= 0);
+    assert!(ops_json["storage"]["freelist_ratio"].as_f64().unwrap() >= 0.0);
+    assert!(
+        ops_json["storage"]["vacuum_recommended"]
+            .as_bool()
+            .is_some()
+    );
     assert!(
         ops_json["storage"]["agent_bytes"].as_u64().unwrap()
             >= ops_json["storage"]["db_bytes"].as_u64().unwrap()

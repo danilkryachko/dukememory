@@ -253,6 +253,10 @@ pub(crate) struct OpsAutonomousStatus {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct OpsStorageStatus {
     pub(crate) db_bytes: u64,
+    pub(crate) page_count: i64,
+    pub(crate) freelist_count: i64,
+    pub(crate) freelist_ratio: f64,
+    pub(crate) vacuum_recommended: bool,
     pub(crate) agent_bytes: u64,
     pub(crate) backups_bytes: u64,
     pub(crate) backups_count: usize,
@@ -1456,7 +1460,7 @@ pub(crate) fn ops_status_report(
     let autonomous = read_autonomous_status(&status_file).ok();
     let embedding_current = embedding.missing == 0 && embedding.stale == 0;
     let rollback_ready = rollback_dir.is_dir();
-    let storage = ops_storage_status(db, &root)?;
+    let storage = ops_storage_status(conn, db, &root)?;
 
     let quality_loop = OpsQualityLoopStatus {
         average_score: quality.average_score,
@@ -1510,6 +1514,12 @@ pub(crate) fn ops_status_report(
             "run update-install --backup-keep {} for {}",
             DEFAULT_INSTALL_BACKUP_KEEP,
             install_backup_dir.display(),
+        ));
+    }
+    if storage.vacuum_recommended {
+        recommendations.push(format!(
+            "run dukememory --db {} optimize --vacuum during idle time",
+            db.display()
         ));
     }
 
@@ -1617,12 +1627,20 @@ pub(crate) fn ops_status_report(
     })
 }
 
-fn ops_storage_status(db: &Path, root: &Path) -> Result<OpsStorageStatus> {
+fn ops_storage_status(conn: &Connection, db: &Path, root: &Path) -> Result<OpsStorageStatus> {
     let agent_dir = root.join(".agent");
     let backup_dir = agent_dir.join("backups");
     let rollback_dir = agent_dir.join("autonomous-rollbacks");
     let install_backup_dir = agent_dir.join("install-backups");
     let db_bytes = file_size(db);
+    let page_count = sqlite_i64_pragma(conn, "PRAGMA page_count")?;
+    let freelist_count = sqlite_i64_pragma(conn, "PRAGMA freelist_count")?;
+    let freelist_ratio = if page_count <= 0 {
+        0.0
+    } else {
+        freelist_count.max(0) as f64 / page_count as f64
+    };
+    let vacuum_recommended = db_bytes > 4 * 1024 * 1024 && freelist_ratio >= 0.20;
     let agent_bytes = dir_size(&agent_dir)?;
     let backups_bytes = dir_size(&backup_dir)?;
     let rollback_bytes = dir_size(&rollback_dir)?;
@@ -1651,6 +1669,10 @@ fn ops_storage_status(db: &Path, root: &Path) -> Result<OpsStorageStatus> {
     .to_string();
     Ok(OpsStorageStatus {
         db_bytes,
+        page_count,
+        freelist_count,
+        freelist_ratio,
+        vacuum_recommended,
         agent_bytes,
         backups_bytes,
         backups_count,
@@ -1661,6 +1683,11 @@ fn ops_storage_status(db: &Path, root: &Path) -> Result<OpsStorageStatus> {
         retention_ready,
         pressure,
     })
+}
+
+fn sqlite_i64_pragma(conn: &Connection, sql: &str) -> Result<i64> {
+    conn.query_row(sql, [], |row| row.get(0))
+        .map_err(Into::into)
 }
 
 fn file_size(path: &Path) -> u64 {

@@ -37,6 +37,7 @@ Transcript-based memory quickly turns into noise.
 - storage footprint checks for local `.agent` growth
 - small install-backup retention by default
 - automatic SQLite and FTS optimization during autonomous maintenance
+- SQLite freelist health and manual vacuum recommendations
 
 ## What It Remembers
 
