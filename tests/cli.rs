@@ -4022,6 +4022,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("memory gaps"));
     assert!(html.contains("gap inbox projects"));
     assert!(html.contains("gap inbox pending"));
+    assert!(html.contains("gap inbox oldest"));
     assert!(html.contains("attention"));
     assert!(html.contains("attention reasons"));
     assert!(html.contains("repair actions"));
@@ -4108,6 +4109,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(dashboard.contains("\"gap_inbox\""));
     assert!(dashboard.contains("\"gap_inbox_pending_projects\""));
     assert!(dashboard.contains("\"gap_inbox_pending_count\""));
+    assert!(dashboard.contains("\"gap_inbox_oldest_pending_age_secs\""));
+    assert!(dashboard.contains("\"oldest_pending_age_secs\""));
     assert!(dashboard.contains("\"attention_projects\""));
     assert!(dashboard.contains("\"missing_live_eval_projects\""));
 
@@ -4970,6 +4973,10 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(ops_json["gap_inbox"]["total"].as_u64().is_some());
     assert!(ops_json["gap_inbox"]["approved"].as_u64().is_some());
     assert!(ops_json["gap_inbox"]["rejected"].as_u64().is_some());
+    assert!(
+        ops_json["gap_inbox"]["oldest_pending_age_secs"].is_number()
+            || ops_json["gap_inbox"]["oldest_pending_age_secs"].is_null()
+    );
     assert!(ops_json["effectiveness"]["reads"].as_u64().unwrap() >= 1);
     assert!(
         ["feedback", "inferred"].contains(
@@ -5008,6 +5015,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(ops_json["multi_device"]["local_first"], true);
     let ops_text = stdout(cmd(&db).arg("ops-status").arg("--root").arg(dir.path()));
     assert!(ops_text.contains("gap_inbox: pending="));
+    assert!(ops_text.contains("oldest_pending_age_secs="));
 
     let gap_run = stdout(
         cmd(&db)
@@ -5220,6 +5228,10 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .is_some()
     );
     assert!(dashboard_json["gap_inbox_pending_count"].as_u64().is_some());
+    assert!(
+        dashboard_json["gap_inbox_oldest_pending_age_secs"].is_number()
+            || dashboard_json["gap_inbox_oldest_pending_age_secs"].is_null()
+    );
     assert!(dashboard_json["recommendations_count"].as_u64().is_some());
     assert!(
         dashboard_json["attention_reason_counts"]
@@ -5265,7 +5277,9 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .unwrap()
             .iter()
             .all(|item| item["gap_inbox"]["pending"].as_u64().is_some()
-                && item["gap_inbox"]["total"].as_u64().is_some())
+                && item["gap_inbox"]["total"].as_u64().is_some()
+                && (item["gap_inbox"]["oldest_pending_age_secs"].is_number()
+                    || item["gap_inbox"]["oldest_pending_age_secs"].is_null()))
     );
     assert!(
         dashboard_json["projects"]
@@ -5345,6 +5359,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(dashboard_text.contains("memory_gap_count="));
     assert!(dashboard_text.contains("gap_inbox_pending_projects="));
     assert!(dashboard_text.contains("gap_inbox_pending_count="));
+    assert!(dashboard_text.contains("gap_inbox_oldest_age="));
     assert!(dashboard_text.contains("gap_inbox_pending="));
     assert!(dashboard_text.contains("auto_age="));
     assert!(dashboard_text.contains("reasons="));

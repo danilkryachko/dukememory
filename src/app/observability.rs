@@ -150,6 +150,7 @@ pub(crate) struct DashboardReport {
     pub(crate) memory_gap_count: usize,
     pub(crate) gap_inbox_pending_projects: usize,
     pub(crate) gap_inbox_pending_count: usize,
+    pub(crate) gap_inbox_oldest_pending_age_secs: Option<i64>,
     pub(crate) recommendations_count: usize,
     pub(crate) attention_reason_counts: BTreeMap<String, usize>,
     pub(crate) repair_actions_count: usize,
@@ -275,6 +276,7 @@ pub(crate) struct DashboardGapInboxStatus {
     pub(crate) pending: usize,
     pub(crate) approved: usize,
     pub(crate) rejected: usize,
+    pub(crate) oldest_pending_age_secs: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1278,7 +1280,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
     } else {
         println!("dukememory. Dashboard");
         println!(
-            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} memory_gap_projects={} memory_gap_count={} gap_inbox_pending_projects={} gap_inbox_pending_count={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={} repair_loop_projects={} repair_loop_failed={} repair_loop_safe_skipped={}",
+            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} memory_gap_projects={} memory_gap_count={} gap_inbox_pending_projects={} gap_inbox_pending_count={} gap_inbox_oldest_age={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={} repair_loop_projects={} repair_loop_failed={} repair_loop_safe_skipped={}",
             report.status,
             report.total_projects,
             report.ready_projects,
@@ -1289,6 +1291,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
             report.memory_gap_count,
             report.gap_inbox_pending_projects,
             report.gap_inbox_pending_count,
+            format_optional_secs(report.gap_inbox_oldest_pending_age_secs),
             report.recommendations_count,
             report.attention_reason_counts.len(),
             report.repair_actions_count,
@@ -1314,7 +1317,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
                     .join(",")
             };
             println!(
-                "- {} status={} attention={} reasons={} repairs={} repair_runs={} repair_failed={} repair_safe_skipped={} gap_inbox_pending={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
+                "- {} status={} attention={} reasons={} repairs={} repair_runs={} repair_failed={} repair_safe_skipped={} gap_inbox_pending={} gap_inbox_oldest_age={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
                 project.name,
                 project.status,
                 project.attention,
@@ -1324,6 +1327,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
                 project.repair_loop.failed_actions,
                 project.repair_loop.safe_skipped_actions,
                 project.gap_inbox.pending,
+                format_optional_secs(project.gap_inbox.oldest_pending_age_secs),
                 project.memories,
                 project.pending_inbox,
                 project
@@ -2186,6 +2190,10 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         .iter()
         .map(|project| project.gap_inbox.pending)
         .sum();
+    let gap_inbox_oldest_pending_age_secs = projects
+        .iter()
+        .filter_map(|project| project.gap_inbox.oldest_pending_age_secs)
+        .max();
     let recommendations_count = projects
         .iter()
         .map(|project| project.recommendations.len())
@@ -2234,6 +2242,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         memory_gap_count,
         gap_inbox_pending_projects,
         gap_inbox_pending_count,
+        gap_inbox_oldest_pending_age_secs,
         recommendations_count,
         attention_reason_counts,
         repair_actions_count,
@@ -2476,11 +2485,12 @@ pub(crate) fn print_ops_status(
             report.autonomous.rollback_ready
         );
         println!(
-            "gap_inbox: pending={} total={} approved={} rejected={}",
+            "gap_inbox: pending={} total={} approved={} rejected={} oldest_pending_age_secs={}",
             report.gap_inbox.pending,
             report.gap_inbox.total,
             report.gap_inbox.approved,
-            report.gap_inbox.rejected
+            report.gap_inbox.rejected,
+            format_optional_secs(report.gap_inbox.oldest_pending_age_secs)
         );
         println!(
             "storage: db={} agent={} backups={}/{} rollbacks={}/{} install_backups={}/{} pressure={}",
@@ -2838,7 +2848,20 @@ fn dashboard_gap_inbox_status(conn: &Connection) -> Result<DashboardGapInboxStat
             _ => {}
         }
     }
+    let oldest_pending_created_at = conn.query_row(
+        "SELECT MIN(created_at) FROM memory_inbox WHERE source = 'autonomous_gap' AND status = 'pending'",
+        [],
+        |row| row.get::<_, Option<i64>>(0),
+    )?;
+    status.oldest_pending_age_secs =
+        oldest_pending_created_at.map(|created_at| now_ms().saturating_sub(created_at) / 1000);
     Ok(status)
+}
+
+fn format_optional_secs(value: Option<i64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "-".to_string())
 }
 
 fn ops_agent_integration_status(db: &Path, root: &Path) -> OpsAgentIntegrationStatus {
