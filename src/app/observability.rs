@@ -196,6 +196,7 @@ pub(crate) struct OpsStatusReport {
     pub(crate) quality_loop: OpsQualityLoopStatus,
     pub(crate) embeddings: OpsEmbeddingStatus,
     pub(crate) autonomous: OpsAutonomousStatus,
+    pub(crate) agent_integration: OpsAgentIntegrationStatus,
     pub(crate) storage: OpsStorageStatus,
     pub(crate) multi_device: OpsMultiDeviceStatus,
     pub(crate) issues: Vec<String>,
@@ -252,6 +253,18 @@ pub(crate) struct OpsAutonomousStatus {
     pub(crate) age_secs: Option<i64>,
     pub(crate) fresh: bool,
     pub(crate) last_action_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct OpsAgentIntegrationStatus {
+    pub(crate) ready: bool,
+    pub(crate) project_memory_installed: bool,
+    pub(crate) project_config_present: bool,
+    pub(crate) agents_block_present: bool,
+    pub(crate) skill_installed: bool,
+    pub(crate) codex_mcp_configured: bool,
+    pub(crate) skill_path: String,
+    pub(crate) codex_config: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1465,6 +1478,7 @@ pub(crate) fn ops_status_report(
     let embedding_current = embedding.missing == 0 && embedding.stale == 0;
     let rollback_ready = rollback_dir.is_dir();
     let storage = ops_storage_status(conn, db, &root)?;
+    let agent_integration = ops_agent_integration_status(db, &root);
     let autonomous_age_secs = autonomous
         .as_ref()
         .map(|report| ((now_ms() - report.updated_at).max(0)) / 1000);
@@ -1537,6 +1551,26 @@ pub(crate) fn ops_status_report(
             "run dukememory --db {} optimize --vacuum during idle time",
             db.display()
         ));
+    }
+    if !agent_integration.project_memory_installed {
+        issues.push("project memory database is missing".to_string());
+        recommendations.push("run dukememory onboard --root . --install-autonomous".to_string());
+    }
+    if !agent_integration.project_config_present {
+        recommendations.push(
+            "run dukememory upgrade-project --json to refresh .agent/config.toml".to_string(),
+        );
+    }
+    if !agent_integration.agents_block_present {
+        recommendations
+            .push("run dukememory upgrade-project --json to refresh AGENTS.md".to_string());
+    }
+    if !agent_integration.skill_installed {
+        recommendations.push("run dukememory install-skill --force".to_string());
+    }
+    if !agent_integration.codex_mcp_configured {
+        recommendations
+            .push("run dukememory codex-doctor --json to inspect MCP wiring".to_string());
     }
 
     let mut blockers = Vec::new();
@@ -1631,6 +1665,7 @@ pub(crate) fn ops_status_report(
             fresh: autonomous_fresh,
             last_action_count: autonomous.as_ref().map(|report| report.actions.len()),
         },
+        agent_integration,
         storage,
         multi_device: OpsMultiDeviceStatus {
             ready: blockers.is_empty(),
@@ -1645,6 +1680,37 @@ pub(crate) fn ops_status_report(
         issues,
         recommendations,
     })
+}
+
+fn ops_agent_integration_status(db: &Path, root: &Path) -> OpsAgentIntegrationStatus {
+    let skill_path = expand_tilde("~/.codex/skills/dukememory-use/SKILL.md");
+    let codex_config = expand_tilde("~/.codex/config.toml");
+    let agents_path = root.join("AGENTS.md");
+    let project_memory_installed = db.exists();
+    let project_config_present = root.join(".agent/config.toml").exists();
+    let agents_block_present = fs::read_to_string(&agents_path)
+        .map(|content| content.contains("<!-- DUKEMEMORY_START -->"))
+        .unwrap_or(false);
+    let skill_installed = fs::read_to_string(&skill_path)
+        .map(|content| content.contains("name: dukememory-use"))
+        .unwrap_or(false);
+    let codex_mcp_configured = fs::read_to_string(&codex_config)
+        .map(|content| content.contains("[mcp_servers.dukememory]"))
+        .unwrap_or(false);
+    let ready = project_memory_installed
+        && project_config_present
+        && agents_block_present
+        && skill_installed;
+    OpsAgentIntegrationStatus {
+        ready,
+        project_memory_installed,
+        project_config_present,
+        agents_block_present,
+        skill_installed,
+        codex_mcp_configured,
+        skill_path: skill_path.display().to_string(),
+        codex_config: codex_config.display().to_string(),
+    }
 }
 
 fn ops_storage_status(conn: &Connection, db: &Path, root: &Path) -> Result<OpsStorageStatus> {

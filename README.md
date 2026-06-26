@@ -39,6 +39,7 @@ Transcript-based memory quickly turns into noise.
 - automatic SQLite and FTS optimization during autonomous maintenance
 - SQLite freelist health and manual vacuum recommendations
 - autonomous freshness and last-run action visibility
+- agent integration checks for project rules, skill, and MCP wiring
 
 ## What It Remembers
 

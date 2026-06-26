@@ -415,10 +415,26 @@ pub(crate) fn upgrade_project_report(
         }
     }
     if dry_run {
+        actions.push("would refresh .agent/config.toml".to_string());
         actions.push("would refresh workspace rules and AGENTS.md".to_string());
         actions.push("would refresh Codex skill".to_string());
         actions.push("would write memory contract".to_string());
     } else {
+        let db = root.join(".agent").join("memory.db");
+        let (provider, endpoint, model) = read_project_embedding_config(&root);
+        match write_project_config(
+            &root.join(".agent").join("config.toml"),
+            &db,
+            &provider,
+            &endpoint,
+            &model,
+        ) {
+            Ok(()) => actions.push(format!(
+                "project config refreshed: {}",
+                root.join(".agent").join("config.toml").display()
+            )),
+            Err(err) => errors.push(format!("project config refresh failed: {err}")),
+        }
         match write_workspace_rules(&root, true) {
             Ok(path) => actions.push(format!("workspace rules refreshed: {}", path.display())),
             Err(err) => errors.push(format!("workspace rules failed: {err}")),
@@ -530,6 +546,11 @@ pub(crate) fn upsert_project_agents(root: &Path) -> Result<()> {
         }
     } else {
         block.to_string()
+    };
+    let content = if content.ends_with('\n') {
+        content
+    } else {
+        format!("{content}\n")
     };
     write_file(&path, content.as_bytes())?;
     Ok(())

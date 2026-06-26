@@ -4129,6 +4129,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(ops.contains("\"ops\""));
     assert!(ops.contains("\"effectiveness\""));
+    assert!(ops.contains("\"agent_integration\""));
+    assert!(ops.contains("\"skill_installed\""));
     assert!(ops.contains("\"fresh\""));
     assert!(ops.contains("\"age_secs\""));
     assert!(ops.contains("\"storage\""));
@@ -4810,6 +4812,27 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     let ops_json: Value = serde_json::from_str(&ops).unwrap();
     assert!(ops_json["score"].as_f64().unwrap() >= 0.0);
+    assert!(ops_json["agent_integration"]["ready"].as_bool().is_some());
+    assert!(
+        ops_json["agent_integration"]["project_memory_installed"]
+            .as_bool()
+            .is_some()
+    );
+    assert!(
+        ops_json["agent_integration"]["project_config_present"]
+            .as_bool()
+            .is_some()
+    );
+    assert!(
+        ops_json["agent_integration"]["agents_block_present"]
+            .as_bool()
+            .is_some()
+    );
+    assert!(
+        ops_json["agent_integration"]["skill_installed"]
+            .as_bool()
+            .is_some()
+    );
     assert!(ops_json["autonomous"]["fresh"].as_bool().is_some());
     assert!(
         ops_json["autonomous"]["age_secs"].is_number()
