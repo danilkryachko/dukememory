@@ -52,6 +52,7 @@ Transcript-based memory quickly turns into noise.
 - safe dashboard repair execution for autonomous project upkeep
 - HTTP and Web safe repair with audit visibility
 - repair history summaries for autonomous upkeep loops
+- repair-loop health folded into one compact ops status
 
 ## What It Remembers
 

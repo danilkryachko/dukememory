@@ -4023,6 +4023,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("repair actions"));
     assert!(html.contains("safe repairs"));
     assert!(html.contains("Repair history"));
+    assert!(html.contains("repair loop"));
     assert!(html.contains("<span>status</span>"));
     assert!(html.contains("Memory QA"));
     assert!(html.contains("Storage"));
@@ -4942,6 +4943,14 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         ops_json["autonomous"]["last_action_count"].is_number()
             || ops_json["autonomous"]["last_action_count"].is_null()
     );
+    assert!(ops_json["repair_loop"]["observed"].as_bool().is_some());
+    assert!(ops_json["repair_loop"]["healthy"].as_bool().is_some());
+    assert!(ops_json["repair_loop"]["runs"].as_u64().is_some());
+    assert!(
+        ops_json["repair_loop"]["actions_by_code"]
+            .as_object()
+            .is_some()
+    );
     assert!(ops_json["effectiveness"]["reads"].as_u64().unwrap() >= 1);
     assert!(
         ["feedback", "inferred"].contains(
@@ -5307,6 +5316,32 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .unwrap()
             .iter()
             .any(|project| !project["recent"].as_array().unwrap().is_empty())
+    );
+    let ops_after_repair = stdout(
+        cmd(&db)
+            .arg("ops-status")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    );
+    let ops_after_repair_json: Value = serde_json::from_str(&ops_after_repair).unwrap();
+    assert!(
+        ops_after_repair_json["repair_loop"]["runs"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+    assert!(
+        ops_after_repair_json["repair_loop"]["applied_actions"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+    assert!(
+        !ops_after_repair_json["repair_loop"]["actions_by_code"]
+            .as_object()
+            .unwrap()
+            .is_empty()
     );
     let dashboard_repair_history_text = stdout(cmd(&db).arg("dashboard-repair-history"));
     assert!(dashboard_repair_history_text.contains("dukememory. Dashboard Repair History"));

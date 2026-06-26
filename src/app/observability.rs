@@ -301,6 +301,7 @@ pub(crate) struct OpsStatusReport {
     pub(crate) quality_loop: OpsQualityLoopStatus,
     pub(crate) embeddings: OpsEmbeddingStatus,
     pub(crate) autonomous: OpsAutonomousStatus,
+    pub(crate) repair_loop: OpsRepairLoopStatus,
     pub(crate) agent_integration: OpsAgentIntegrationStatus,
     pub(crate) storage: OpsStorageStatus,
     pub(crate) multi_device: OpsMultiDeviceStatus,
@@ -358,6 +359,23 @@ pub(crate) struct OpsAutonomousStatus {
     pub(crate) age_secs: Option<i64>,
     pub(crate) fresh: bool,
     pub(crate) last_action_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct OpsRepairLoopStatus {
+    pub(crate) observed: bool,
+    pub(crate) healthy: bool,
+    pub(crate) runs: usize,
+    pub(crate) applied_actions: usize,
+    pub(crate) skipped_actions: usize,
+    pub(crate) failed_actions: usize,
+    pub(crate) safe_actions: usize,
+    pub(crate) safe_skipped_actions: usize,
+    pub(crate) manual_actions: usize,
+    pub(crate) last_run_at: Option<i64>,
+    pub(crate) last_source: Option<String>,
+    pub(crate) last_action_count: Option<usize>,
+    pub(crate) actions_by_code: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2374,6 +2392,7 @@ pub(crate) fn ops_status_report(
         .as_ref()
         .map(|report| ((now_ms() - report.updated_at).max(0)) / 1000);
     let autonomous_fresh = autonomous_age_secs.is_some_and(|age| age <= 86_400);
+    let repair_loop = ops_repair_loop_status(conn, since_days)?;
 
     let quality_loop = OpsQualityLoopStatus {
         average_score: quality.average_score,
@@ -2408,6 +2427,18 @@ pub(crate) fn ops_status_report(
     }
     if !embedding_current {
         recommendations.push("run dukememory embed-index before cross-device sync".to_string());
+    }
+    if repair_loop.failed_actions > 0 {
+        issues.push(format!(
+            "dashboard repair loop has failed actions: failed={}",
+            repair_loop.failed_actions
+        ));
+        recommendations.push("run dukememory dashboard-repair-history --json".to_string());
+    }
+    if repair_loop.safe_skipped_actions > 0 {
+        recommendations.push(
+            "run dukememory dashboard-repair --apply to apply pending safe repairs".to_string(),
+        );
     }
     if storage.pressure == "warn" {
         issues.push(format!(
@@ -2502,6 +2533,9 @@ pub(crate) fn ops_status_report(
     if storage.pressure == "warn" {
         score -= 4.0;
     }
+    if repair_loop.failed_actions > 0 {
+        score -= 5.0;
+    }
     score = score.clamp(0.0, 100.0);
 
     let ok = score >= 70.0 && blockers.len() <= 2;
@@ -2556,6 +2590,7 @@ pub(crate) fn ops_status_report(
             fresh: autonomous_fresh,
             last_action_count: autonomous.as_ref().map(|report| report.actions.len()),
         },
+        repair_loop,
         agent_integration,
         storage,
         multi_device: OpsMultiDeviceStatus {
@@ -2570,6 +2605,49 @@ pub(crate) fn ops_status_report(
         },
         issues,
         recommendations,
+    })
+}
+
+fn ops_repair_loop_status(conn: &Connection, since_days: i64) -> Result<OpsRepairLoopStatus> {
+    let since_ms = now_ms().saturating_sub(since_days.max(0).saturating_mul(86_400_000));
+    let events = dashboard_repair_events(conn, since_ms, 50)?;
+    let mut actions_by_code = BTreeMap::new();
+    let mut applied_actions = 0;
+    let mut skipped_actions = 0;
+    let mut failed_actions = 0;
+    let mut safe_actions = 0;
+    let mut safe_skipped_actions = 0;
+    let mut manual_actions = 0;
+    for event in &events {
+        applied_actions += event.applied_actions;
+        skipped_actions += event.skipped_actions;
+        failed_actions += event.failed_actions;
+        safe_actions += event.safe_actions;
+        for action in &event.actions {
+            *actions_by_code.entry(action.code.clone()).or_insert(0) += 1;
+            if action.safe_auto && action.skipped {
+                safe_skipped_actions += 1;
+            }
+            if !action.safe_auto {
+                manual_actions += 1;
+            }
+        }
+    }
+    let last = events.first();
+    Ok(OpsRepairLoopStatus {
+        observed: !events.is_empty(),
+        healthy: failed_actions == 0,
+        runs: events.len(),
+        applied_actions,
+        skipped_actions,
+        failed_actions,
+        safe_actions,
+        safe_skipped_actions,
+        manual_actions,
+        last_run_at: last.map(|event| event.created_at),
+        last_source: last.map(|event| event.source.clone()),
+        last_action_count: last.map(|event| event.total_actions),
+        actions_by_code,
     })
 }
 
