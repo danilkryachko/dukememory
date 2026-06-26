@@ -1465,7 +1465,10 @@ fn autonomous_create_gap_inbox(
         .chain(live.inferred_missing_queries.iter())
     {
         let query = query.trim();
-        if !query.is_empty() && seen.insert(query.to_string()) {
+        if !query.is_empty()
+            && unresolved_memory_gap(conn, query)?
+            && seen.insert(query.to_string())
+        {
             gaps.push(query.to_string());
         }
         if gaps.len() >= max {

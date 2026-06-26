@@ -4402,6 +4402,31 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     let missing_feedback_json: Value = serde_json::from_str(&missing_feedback).unwrap();
     assert_eq!(missing_feedback_json["ok"], true);
+    stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Resolved missing memory policy")
+            .arg("This card resolves the resolved missing memory policy query.")
+            .arg("--scope")
+            .arg("project"),
+    );
+    let resolved_missing_feedback = stdout(
+        cmd(&db)
+            .arg("feedback")
+            .arg("--id")
+            .arg("resolved-missing-id")
+            .arg("--rating")
+            .arg("missing")
+            .arg("--command")
+            .arg("impact")
+            .arg("--query")
+            .arg("resolved missing memory policy")
+            .arg("--json"),
+    );
+    let resolved_missing_feedback_json: Value =
+        serde_json::from_str(&resolved_missing_feedback).unwrap();
+    assert_eq!(resolved_missing_feedback_json["ok"], true);
 
     let eval_live = stdout(
         cmd(&db)
@@ -4425,6 +4450,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .unwrap()
             .iter()
             .any(|item| item == "manual missing memory policy")
+    );
+    assert!(
+        eval_live_json["missing_queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "resolved missing memory policy")
     );
 
     let inbox_v2 = stdout(cmd(&db).arg("inbox-v2").arg("report").arg("--json"));
@@ -4548,6 +4580,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
                 .as_str()
                 .unwrap()
                 .contains("manual missing memory policy")
+    }));
+    assert!(!gap_items.iter().any(|item| {
+        item["source"] == "autonomous_gap"
+            && item["body"]
+                .as_str()
+                .unwrap()
+                .contains("resolved missing memory policy")
     }));
     assert!(gap_items.iter().any(|item| {
         item["source"] == "autonomous_quality"

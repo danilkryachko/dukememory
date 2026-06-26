@@ -1135,7 +1135,7 @@ fn inferred_live_signals(
     })
 }
 
-fn unresolved_memory_gap(conn: &Connection, query: &str) -> Result<bool> {
+pub(crate) fn unresolved_memory_gap(conn: &Connection, query: &str) -> Result<bool> {
     let query = query.trim();
     if query.is_empty() {
         return Ok(false);
