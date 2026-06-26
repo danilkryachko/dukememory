@@ -472,6 +472,9 @@
         </div>
         <div id="tab-projects" class="tab-panel">
           <h2 data-i18n="tabProjects">Проекты</h2>
+          <div class="actions">
+            <button id="dashboardRepair" class="primary" data-i18n="safeRepair">Safe repair</button>
+          </div>
           <div id="projectsPanel" class="stack"></div>
         </div>
         <div id="tab-settings" class="tab-panel">
@@ -503,7 +506,7 @@
         memories: "память", pending: "входящие", root: "папка", latestBackup: "backup",
         autopilotOk: "автопилот ok", autopilotWarn: "автопилот требует внимания",
         noViolations: "нарушений нет", audit: "аудит", links: "ссылки", source: "источник", requests: "запросы",
-        runOnce: "Запустить", repair: "Починить", exportStatus: "Экспорт", activity: "Активность",
+        runOnce: "Запустить", repair: "Починить", safeRepair: "Безопасный ремонт", exportStatus: "Экспорт", activity: "Активность",
         usageAll: "все", usageHot: "частые", usageUnused: "без запросов", usageStale: "старые",
         sortUpdated: "свежие", sortRequests: "по запросам", sortUnused: "мало запросов",
         usefulness: "Полезность", embeddings: "Эмбеддинги", reindex: "Переиндексировать",
@@ -530,7 +533,7 @@
         memories: "memories", pending: "pending", root: "root", latestBackup: "backup",
         autopilotOk: "autopilot ok", autopilotWarn: "autopilot needs attention",
         noViolations: "no violations", audit: "audit", links: "links", source: "source", requests: "requests",
-        runOnce: "Run once", repair: "Repair", exportStatus: "Export", activity: "Activity",
+        runOnce: "Run once", repair: "Repair", safeRepair: "Safe repair", exportStatus: "Export", activity: "Activity",
         usageAll: "all", usageHot: "hot", usageUnused: "unused", usageStale: "stale",
         sortUpdated: "recent", sortRequests: "by requests", sortUnused: "least used",
         usefulness: "Usefulness", embeddings: "Embeddings", reindex: "Reindex",
@@ -547,7 +550,7 @@
       selected: null, evidence: null, memories: [], project: saved.project || null,
       projects: [], selectedIds: new Set(), tab: saved.tab || "detail",
       lang: savedLang === "en" ? "en" : "ru", activity: [], usefulness: null, embedding: null, autonomous: null,
-      quality: null, profile: null, budget: null, dashboard: null, qa: null, contract: null, ops: null
+      quality: null, profile: null, budget: null, dashboard: null, dashboardRepair: null, qa: null, contract: null, ops: null
     };
     const $ = (id) => document.getElementById(id);
     const t = (key) => i18n[state.lang][key] || i18n.en[key] || key;
@@ -831,6 +834,16 @@
       await Promise.all([loadMemoryQa(), loadOpsStatus(), loadMemoryContract(), loadDashboard()]);
     }
 
+    async function runDashboardRepair() {
+      const data = await api("/dashboard-repair", {
+        method: "POST",
+        body: JSON.stringify({ apply: true })
+      });
+      state.dashboardRepair = data.repair;
+      setToast(`safe repair: ${Number(data.repair?.applied_actions || 0)} applied, ${Number(data.repair?.skipped_actions || 0)} skipped`);
+      await Promise.all([loadProjects(), loadDashboard(), loadOpsStatus(), loadAutonomous(), loadMemoryQa()]);
+    }
+
     async function loadEvidence(id) {
       state.selected = id;
       const data = await api("/evidence", { method: "POST", body: JSON.stringify(withProject({ id })) });
@@ -1002,6 +1015,7 @@
     function renderProjectsPanel() {
       const dashboardProjects = state.dashboard?.projects || [];
       const dashSummary = state.dashboard || {};
+      const repairSummary = state.dashboardRepair || {};
       $("projectsPanel").innerHTML = `<div class="stat-grid">
         <div class="stat"><strong>${escapeHtml(dashSummary.status || "-")}</strong><span>status</span></div>
         <div class="stat"><strong>${Number(dashSummary.total_projects || 0)}</strong><span>projects</span></div>
@@ -1013,6 +1027,7 @@
         <div class="stat"><strong>${Object.keys(dashSummary.attention_reason_counts || {}).length}</strong><span>attention reasons</span></div>
         <div class="stat"><strong>${Number(dashSummary.repair_actions_count || 0)}</strong><span>repair actions</span></div>
         <div class="stat"><strong>${Number(dashSummary.safe_repair_actions_count || 0)}</strong><span>safe repairs</span></div>
+        <div class="stat"><strong>${Number(repairSummary.applied_actions || 0)}</strong><span>last applied</span></div>
       </div>` + state.projects.map((project) => {
         const dash = dashboardProjects.find((item) => item.name === project.name || item.db === project.db) || {};
         const qaScore = project.key === state.project && state.qa ? Number(state.qa.score || 0).toFixed(1) : "-";
@@ -1237,6 +1252,7 @@
     $("autopilotExport").addEventListener("click", () => autopilotAction("export-status"));
     $("autonomousRun").addEventListener("click", () => autonomousAction("run-once"));
     $("autonomousRollback").addEventListener("click", () => autonomousAction("rollback"));
+    $("dashboardRepair").addEventListener("click", runDashboardRepair);
     document.querySelectorAll("[data-quick-type]").forEach((button) => button.addEventListener("click", () => {
       $("type").value = $("type").value === button.dataset.quickType ? "all" : button.dataset.quickType;
       persistUi();

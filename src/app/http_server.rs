@@ -234,6 +234,41 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
             )
         }
         ("GET", "/dashboard") => HttpResponse::ok(json!({"dashboard": dashboard_report(db)?})),
+        ("GET", "/dashboard-repair") => HttpResponse::ok(json!({"repair": dashboard_repair_report(
+            db,
+            false,
+            parse_query(query).get("project").map(String::as_str),
+            DEFAULT_EMBED_PROVIDER,
+            DEFAULT_EMBED_ENDPOINT,
+            DEFAULT_EMBED_MODEL,
+            "http",
+        )?})),
+        ("POST", "/dashboard-repair") => {
+            let value = parse_json_body(body)?;
+            let apply = value.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            let selected = value.get("project").and_then(Value::as_str);
+            let provider = value
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or(DEFAULT_EMBED_PROVIDER);
+            let endpoint = value
+                .get("endpoint")
+                .and_then(Value::as_str)
+                .unwrap_or(DEFAULT_EMBED_ENDPOINT);
+            let model = value
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or(DEFAULT_EMBED_MODEL);
+            HttpResponse::ok(json!({"repair": dashboard_repair_report(
+                db,
+                apply,
+                selected,
+                provider,
+                endpoint,
+                model,
+                "http",
+            )?}))
+        }
         ("GET", "/ops-status") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);

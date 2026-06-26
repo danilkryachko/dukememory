@@ -1282,8 +1282,15 @@ pub(crate) fn print_dashboard_repair(
     model: &str,
     json_out: bool,
 ) -> Result<()> {
-    let report =
-        dashboard_repair_report(default_db, apply, project_filter, provider, endpoint, model)?;
+    let report = dashboard_repair_report(
+        default_db,
+        apply,
+        project_filter,
+        provider,
+        endpoint,
+        model,
+        "cli",
+    )?;
     if json_out {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -1317,13 +1324,14 @@ pub(crate) fn print_dashboard_repair(
     Ok(())
 }
 
-fn dashboard_repair_report(
+pub(crate) fn dashboard_repair_report(
     default_db: &Path,
     apply: bool,
     project_filter: Option<&str>,
     provider: &str,
     endpoint: &str,
     model: &str,
+    source: &str,
 ) -> Result<DashboardRepairReport> {
     let dashboard = dashboard_report(default_db)?;
     let mut projects = Vec::new();
@@ -1338,6 +1346,9 @@ fn dashboard_repair_report(
             ));
         }
         if !actions.is_empty() {
+            if apply {
+                log_dashboard_repair_project(&project, &actions, source)?;
+            }
             projects.push(DashboardRepairProject {
                 name: project.name,
                 root: project.root,
@@ -1381,6 +1392,27 @@ fn dashboard_repair_report(
         failed_actions,
         projects,
     })
+}
+
+fn log_dashboard_repair_project(
+    project: &ProjectDashboardItem,
+    actions: &[DashboardRepairResult],
+    source: &str,
+) -> Result<()> {
+    let conn = open_db(Path::new(&project.db))?;
+    let detail = serde_json::to_string(&json!({
+        "version": 1,
+        "source": source,
+        "project": project.name,
+        "root": project.root,
+        "total_actions": actions.len(),
+        "safe_actions": actions.iter().filter(|action| action.safe_auto).count(),
+        "applied_actions": actions.iter().filter(|action| action.applied).count(),
+        "skipped_actions": actions.iter().filter(|action| action.skipped).count(),
+        "failed_actions": actions.iter().filter(|action| !action.ok).count(),
+        "actions": actions,
+    }))?;
+    log_event(&conn, "dashboard_repair", None, &detail)
 }
 
 fn dashboard_project_matches(project: &ProjectDashboardItem, filter: Option<&str>) -> bool {

@@ -4004,6 +4004,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("id=\"autopilotRun\""));
     assert!(html.contains("id=\"autonomousRun\""));
     assert!(html.contains("id=\"autonomousRollback\""));
+    assert!(html.contains("id=\"dashboardRepair\""));
     assert!(html.contains("/memory?"));
     assert!(html.contains("запросы"));
     assert!(html.contains("id=\"usage\""));
@@ -4093,6 +4094,14 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(dashboard.contains("\"attention_projects\""));
     assert!(dashboard.contains("\"missing_live_eval_projects\""));
 
+    let dashboard_repair = http_once(
+        &db,
+        "GET /dashboard-repair HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(dashboard_repair.contains("\"repair\""));
+    assert!(dashboard_repair.contains("\"apply\":false"));
+    assert!(dashboard_repair.contains("\"skipped_actions\""));
+
     insert_empty_read_event(&db, "brief", "missing ui deployment memory");
 
     let eval_live = http_once(
@@ -4105,6 +4114,23 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(eval_live.contains("\"inferred_useful_rate\""));
     assert!(eval_live.contains("\"inferred_missing\":1"));
     assert!(eval_live.contains("missing ui deployment memory"));
+
+    let dashboard_repair_body =
+        r#"{"apply":true,"provider":"mock","endpoint":"local","model":"mock-small"}"#;
+    let dashboard_repair_request = format!(
+        "POST /dashboard-repair HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        dashboard_repair_body.len(),
+        dashboard_repair_body
+    );
+    let dashboard_repair_apply = http_once(&db, &dashboard_repair_request);
+    assert!(dashboard_repair_apply.contains("\"repair\""));
+    assert!(dashboard_repair_apply.contains("\"apply\":true"));
+    assert!(dashboard_repair_apply.contains("\"ok\":true"));
+    let audit = http_once(
+        &db,
+        "GET /audit HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(audit.contains("dashboard_repair"));
 
     let recall = http_once(
         &db,
