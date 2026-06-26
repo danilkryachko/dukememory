@@ -2,7 +2,7 @@
 name = "dukememory"
 version = "0.14.14"
 edition = "2024"
-license = "PolyForm-Noncommercial-1.0.0"
+license = "Apache-2.0"
 description = "Local AI memory for coding agents: SQLite, MCP server, Codex skill, embeddings, and autonomous maintenance."
 repository = "https://github.com/danilkryachko/dukememory"
 readme = "README.md"
