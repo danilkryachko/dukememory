@@ -1257,6 +1257,7 @@ pub(crate) fn autonomous_run_once(
             ),
             memory_id: None,
         });
+        autonomous_repair_agent_integration(&request, &mut report)?;
         let usefulness = usefulness_report(conn, 30, 30, 3)?;
         report.actions.push(AutonomousAction {
             kind: "usefulness_scan".to_string(),
@@ -1441,6 +1442,46 @@ pub(crate) fn autonomous_run_once(
     });
     write_autonomous_status(request.status_file, &report)?;
     Ok(report)
+}
+
+fn autonomous_repair_agent_integration(
+    request: &AutonomousRunRequest<'_>,
+    report: &mut AutonomousReport,
+) -> Result<()> {
+    if matches!(request.level, AutonomousLevel::Conservative) {
+        report.actions.push(AutonomousAction {
+            kind: "agent_integration_repair".to_string(),
+            status: "skipped".to_string(),
+            detail: "conservative level".to_string(),
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    let root = autonomous_project_root_for_db(request.db);
+    let (provider, endpoint, model) = read_project_embedding_config(root);
+    write_project_config(
+        &root.join(".agent").join("config.toml"),
+        request.db,
+        &provider,
+        &endpoint,
+        &model,
+    )?;
+    let rules = write_workspace_rules(root, true)?;
+    upsert_project_agents(root)?;
+    let skill_dir = write_codex_skill(&expand_tilde("~/.codex/skills"), true)?;
+    report.actions.push(AutonomousAction {
+        kind: "agent_integration_repair".to_string(),
+        status: "ok".to_string(),
+        detail: format!(
+            "config={} rules={} agents={} skill={}",
+            root.join(".agent").join("config.toml").display(),
+            rules.display(),
+            root.join("AGENTS.md").display(),
+            skill_dir.display()
+        ),
+        memory_id: None,
+    });
+    Ok(())
 }
 
 fn autonomous_backup(db: &Path, rollback_dir: &Path) -> Result<PathBuf> {

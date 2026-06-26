@@ -40,6 +40,7 @@ Transcript-based memory quickly turns into noise.
 - SQLite freelist health and manual vacuum recommendations
 - autonomous freshness and last-run action visibility
 - agent integration checks for project rules, skill, and MCP wiring
+- autonomous repair of project rules, config, AGENTS, and Codex skill
 
 ## What It Remembers
 

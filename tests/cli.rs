@@ -4467,6 +4467,17 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(
         actions
             .iter()
+            .any(|item| item["kind"] == "agent_integration_repair" && item["status"] == "ok")
+    );
+    assert!(dir.path().join(".agent").join("config.toml").exists());
+    assert!(
+        fs::read_to_string(dir.path().join("AGENTS.md"))
+            .unwrap()
+            .contains("<!-- DUKEMEMORY_START -->")
+    );
+    assert!(
+        actions
+            .iter()
             .any(|item| item["kind"] == "compact_operational" && item["status"] == "ok")
     );
     assert!(
