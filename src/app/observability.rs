@@ -248,6 +248,10 @@ pub(crate) struct OpsAutonomousStatus {
     pub(crate) ok: Option<bool>,
     pub(crate) status_file: String,
     pub(crate) rollback_ready: bool,
+    pub(crate) updated_at: Option<i64>,
+    pub(crate) age_secs: Option<i64>,
+    pub(crate) fresh: bool,
+    pub(crate) last_action_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1461,6 +1465,10 @@ pub(crate) fn ops_status_report(
     let embedding_current = embedding.missing == 0 && embedding.stale == 0;
     let rollback_ready = rollback_dir.is_dir();
     let storage = ops_storage_status(conn, db, &root)?;
+    let autonomous_age_secs = autonomous
+        .as_ref()
+        .map(|report| ((now_ms() - report.updated_at).max(0)) / 1000);
+    let autonomous_fresh = autonomous_age_secs.is_some_and(|age| age <= 86_400);
 
     let quality_loop = OpsQualityLoopStatus {
         average_score: quality.average_score,
@@ -1477,6 +1485,14 @@ pub(crate) fn ops_status_report(
     let mut recommendations = qa.recommendations.clone();
     if autonomous.is_none() {
         issues.push("autonomous maintenance has not written a status report".to_string());
+        recommendations.push("run dukememory autonomous run-once --level normal".to_string());
+    }
+    if let Some(age) = autonomous_age_secs
+        && age > 86_400
+    {
+        issues.push(format!(
+            "autonomous maintenance status is stale: age_secs={age}"
+        ));
         recommendations.push("run dukememory autonomous run-once --level normal".to_string());
     }
     if !rollback_ready {
@@ -1610,6 +1626,10 @@ pub(crate) fn ops_status_report(
             ok: autonomous.as_ref().map(|report| report.ok),
             status_file: status_file.display().to_string(),
             rollback_ready,
+            updated_at: autonomous.as_ref().map(|report| report.updated_at),
+            age_secs: autonomous_age_secs,
+            fresh: autonomous_fresh,
+            last_action_count: autonomous.as_ref().map(|report| report.actions.len()),
         },
         storage,
         multi_device: OpsMultiDeviceStatus {

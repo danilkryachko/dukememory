@@ -38,6 +38,7 @@ Transcript-based memory quickly turns into noise.
 - small install-backup retention by default
 - automatic SQLite and FTS optimization during autonomous maintenance
 - SQLite freelist health and manual vacuum recommendations
+- autonomous freshness and last-run action visibility
 
 ## What It Remembers
 

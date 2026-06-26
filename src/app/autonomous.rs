@@ -994,9 +994,9 @@ pub(crate) struct AutonomousReport {
     version: u32,
     pub(crate) ok: bool,
     level: String,
-    updated_at: i64,
+    pub(crate) updated_at: i64,
     rollback_backup: Option<String>,
-    actions: Vec<AutonomousAction>,
+    pub(crate) actions: Vec<AutonomousAction>,
     rollback: Vec<AutonomousRollback>,
     #[serde(default)]
     policy: Vec<AutonomousPolicyDecision>,

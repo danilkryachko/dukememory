@@ -4129,6 +4129,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(ops.contains("\"ops\""));
     assert!(ops.contains("\"effectiveness\""));
+    assert!(ops.contains("\"fresh\""));
+    assert!(ops.contains("\"age_secs\""));
     assert!(ops.contains("\"storage\""));
     assert!(ops.contains("\"db_bytes\""));
     assert!(ops.contains("\"vacuum_recommended\""));
@@ -4808,6 +4810,15 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     let ops_json: Value = serde_json::from_str(&ops).unwrap();
     assert!(ops_json["score"].as_f64().unwrap() >= 0.0);
+    assert!(ops_json["autonomous"]["fresh"].as_bool().is_some());
+    assert!(
+        ops_json["autonomous"]["age_secs"].is_number()
+            || ops_json["autonomous"]["age_secs"].is_null()
+    );
+    assert!(
+        ops_json["autonomous"]["last_action_count"].is_number()
+            || ops_json["autonomous"]["last_action_count"].is_null()
+    );
     assert!(ops_json["effectiveness"]["reads"].as_u64().unwrap() >= 1);
     assert!(
         ["feedback", "inferred"].contains(
