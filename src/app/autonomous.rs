@@ -966,6 +966,30 @@ fn print_autopilot_status(path: &Path, status: &DaemonStatus, json_out: bool) ->
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct AutonomousPolicyDecision {
+    action: String,
+    allowed: bool,
+    level: String,
+    risk_score: f64,
+    usefulness_score: f64,
+    token_saving_score: f64,
+    confidence: f64,
+    rollback: bool,
+    reason: String,
+}
+
+struct AutonomousPolicyInput {
+    action: &'static str,
+    level: AutonomousLevel,
+    risk_score: f64,
+    usefulness_score: f64,
+    token_saving_score: f64,
+    confidence: f64,
+    rollback: bool,
+    reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AutonomousReport {
     version: u32,
     pub(crate) ok: bool,

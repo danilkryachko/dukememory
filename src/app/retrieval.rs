@@ -258,6 +258,26 @@ pub(crate) fn retrieve_rows(
     .collect())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct RecallReport {
+    query: String,
+    max_chars: usize,
+    token_saving_estimate: usize,
+    receipt: String,
+    items: Vec<RecallItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecallItem {
+    id: String,
+    #[serde(rename = "type")]
+    memory_type: String,
+    title: String,
+    summary: String,
+    score: f64,
+    reasons: Vec<String>,
+}
+
 pub(crate) struct RecallRequest<'a> {
     pub(crate) query: &'a str,
     pub(crate) max_chars: usize,

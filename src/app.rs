@@ -1264,30 +1264,6 @@ fn log_event(
     Ok(())
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct AutonomousPolicyDecision {
-    action: String,
-    allowed: bool,
-    level: String,
-    risk_score: f64,
-    usefulness_score: f64,
-    token_saving_score: f64,
-    confidence: f64,
-    rollback: bool,
-    reason: String,
-}
-
-struct AutonomousPolicyInput {
-    action: &'static str,
-    level: AutonomousLevel,
-    risk_score: f64,
-    usefulness_score: f64,
-    token_saving_score: f64,
-    confidence: f64,
-    rollback: bool,
-    reason: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LiveEvalReport {
     version: u32,
     since_days: i64,
@@ -1299,26 +1275,6 @@ struct LiveEvalReport {
     useful_rate: f64,
     noisy_memory_ids: Vec<String>,
     missing_queries: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RecallReport {
-    query: String,
-    max_chars: usize,
-    token_saving_estimate: usize,
-    receipt: String,
-    items: Vec<RecallItem>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RecallItem {
-    id: String,
-    #[serde(rename = "type")]
-    memory_type: String,
-    title: String,
-    summary: String,
-    score: f64,
-    reasons: Vec<String>,
 }
 
 fn read_events(conn: &Connection, since_ms: i64, limit: usize) -> Result<Vec<MemoryReadEvent>> {
