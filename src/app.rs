@@ -36,192 +36,12 @@ mod db;
 mod embeddings;
 mod http_server;
 mod mcp_server;
+mod model;
 mod ops;
 mod release_ops;
 use cli::*;
 use db::*;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Memory {
-    id: String,
-    #[serde(rename = "type")]
-    memory_type: String,
-    scope: String,
-    title: String,
-    body: String,
-    status: String,
-    source: Option<String>,
-    created_at: i64,
-    updated_at: i64,
-    supersedes: Option<String>,
-    superseded_by: Option<String>,
-    confidence: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct MemoryLink {
-    kind: String,
-    target: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct MemoryWithLinks {
-    #[serde(flatten)]
-    memory: Memory,
-    links: Vec<MemoryLink>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct MemoryExport {
-    version: u32,
-    exported_at: i64,
-    memories: Vec<MemoryWithLinks>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct EmbeddingRow {
-    memory: MemoryWithLinks,
-    score: f64,
-}
-
-#[derive(Debug, Serialize)]
-struct RetrievalReport {
-    version: u32,
-    query: String,
-    strategy: String,
-    scope: Option<String>,
-    semantic_used: bool,
-    semantic_error: Option<String>,
-    receipt: String,
-    hits: Vec<RetrievalHit>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct RetrievalHit {
-    memory: MemoryWithLinks,
-    score: f64,
-    utility_score: f64,
-    semantic_score: Option<f64>,
-    reasons: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct BriefReport {
-    version: u32,
-    task: String,
-    budget: usize,
-    semantic_used: bool,
-    semantic_error: Option<String>,
-    receipt: String,
-    must_follow: Vec<BriefItem>,
-    relevant: Vec<BriefItem>,
-    risks: Vec<BriefItem>,
-    files: Vec<String>,
-    checks: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct ImpactReport {
-    version: u32,
-    target: String,
-    budget: usize,
-    receipt: String,
-    decisions: Vec<BriefItem>,
-    constraints: Vec<BriefItem>,
-    risks: Vec<BriefItem>,
-    checks: Vec<String>,
-    related: Vec<BriefItem>,
-    links: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct BriefItem {
-    id: String,
-    #[serde(rename = "type")]
-    memory_type: String,
-    title: String,
-    summary: String,
-    score: f64,
-    reasons: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct EvidenceReport {
-    memory: MemoryWithLinks,
-    source: Option<String>,
-    supersedes_chain: Vec<String>,
-    superseded_by: Option<String>,
-    audit_events: Vec<MemoryEvent>,
-    receipt: String,
-}
-
-#[derive(Debug, Serialize)]
-struct DriftReport {
-    version: u32,
-    ok: bool,
-    changed_only: bool,
-    root: String,
-    changed_files: Vec<String>,
-    missing_links: Vec<LinkReport>,
-    conflicts: Vec<MergeCandidate>,
-    stale_active: Vec<BriefItem>,
-    warnings: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct InstallUpdateReport {
-    version: String,
-    source: String,
-    target: String,
-    backup: Option<String>,
-    dry_run: bool,
-    changed: bool,
-    previous_version: Option<String>,
-    source_version: Option<String>,
-    previous_sha256: Option<String>,
-    source_sha256: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct EmbeddingIndexReport {
-    provider: String,
-    endpoint: String,
-    model: String,
-    indexed: usize,
-    skipped: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct OllamaEmbeddingRequest<'a> {
-    model: &'a str,
-    prompt: &'a str,
-}
-
-#[derive(Debug, Deserialize)]
-struct OllamaEmbeddingResponse {
-    embedding: Vec<f32>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct InboxItem {
-    id: String,
-    #[serde(rename = "type")]
-    memory_type: String,
-    scope: String,
-    title: String,
-    body: String,
-    source: Option<String>,
-    confidence: f64,
-    status: String,
-    created_at: i64,
-    updated_at: i64,
-}
-
-#[derive(Debug, Serialize)]
-struct ProviderModel {
-    name: String,
-    details: Option<Value>,
-}
+use model::*;
 
 pub(crate) fn run() -> Result<()> {
     let cli = Cli::parse();
@@ -1149,6 +969,30 @@ fn init_project(conn: &Connection, db: &Path, config: &Path, force: bool) -> Res
     Ok(())
 }
 
+fn write_project_config(
+    config: &Path,
+    db: &Path,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> Result<()> {
+    let mut cfg = if config.exists() {
+        let raw = fs::read_to_string(config)
+            .with_context(|| format!("failed to read {}", config.display()))?;
+        toml::from_str::<AgentConfig>(&raw)
+            .with_context(|| format!("failed to parse {}", config.display()))?
+    } else {
+        AgentConfig::production_defaults(db, provider, endpoint, model)
+    };
+    cfg.db_path = db.display().to_string();
+    cfg.embeddings.provider = provider.to_string();
+    cfg.embeddings.endpoint = endpoint.to_string();
+    cfg.embeddings.model = model.to_string();
+    let content = toml::to_string_pretty(&cfg)?;
+    write_file(config, content.as_bytes())?;
+    Ok(())
+}
+
 fn add_memory(conn: &Connection, input: AddMemory) -> Result<String> {
     validate_confidence(input.confidence)?;
     let id = input
@@ -1699,15 +1543,6 @@ fn log_event(
         params![event_type, memory_id, detail, now_ms()],
     )?;
     Ok(())
-}
-
-#[derive(Debug, Serialize)]
-struct MemoryEvent {
-    id: i64,
-    event_type: String,
-    memory_id: Option<String>,
-    detail: String,
-    created_at: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -2845,6 +2680,14 @@ fn onboard_project(
     let db = root.join(".agent").join("memory.db");
     let conn = open_db(&db)?;
     let mut actions = Vec::new();
+    write_project_config(
+        &root.join(".agent").join("config.toml"),
+        &db,
+        provider,
+        endpoint,
+        model,
+    )?;
+    actions.push("config".to_string());
     write_workspace_rules(&root, true)?;
     upsert_project_agents(&root)?;
     actions.push("workspace_init".to_string());
@@ -5940,14 +5783,6 @@ fn autopilot_endpoint_ok(provider: &str, endpoint: &str) -> bool {
         .and_then(|client| client.get(url).send())
         .map(|response| response.status().is_success())
         .unwrap_or(false)
-}
-
-#[derive(Debug, Serialize)]
-struct MergeCandidate {
-    primary_id: String,
-    duplicate_id: String,
-    title: String,
-    reason: String,
 }
 
 fn print_merge_candidates(conn: &Connection, limit: usize, json_out: bool) -> Result<()> {
@@ -9661,15 +9496,6 @@ fn normalize_title(title: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-#[derive(Debug, Serialize)]
-struct LinkReport {
-    memory_id: String,
-    kind: String,
-    target: String,
-    status: String,
-    detail: String,
 }
 
 fn print_link_report(

@@ -109,22 +109,22 @@ fn handle_mcp_request(db: &Path, request: Value) -> Value {
 
 fn mcp_tools() -> Value {
     json!([
-        {"name":"memory_brief","description":"Return a tiny verified task brief","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"scope":{"type":"string"}},"required":["task"]}},
-        {"name":"memory_impact","description":"Return lightweight impact memory for a file, symbol, or topic","inputSchema":{"type":"object","properties":{"target":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"scope":{"type":"string"}},"required":["target"]}},
+        {"name":"memory_brief","description":"Return a tiny verified task brief","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
+        {"name":"memory_impact","description":"Return lightweight impact memory for a file, symbol, or topic","inputSchema":{"type":"object","properties":{"target":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["target"]}},
         {"name":"memory_drift","description":"Detect cheap local memory drift before coding","inputSchema":{"type":"object","properties":{"changed_only":{"type":"boolean"},"root":{"type":"string"}}}},
-        {"name":"memory_add","description":"Add a typed memory card","inputSchema":{"type":"object","properties":{"type":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"scope":{"type":"string"},"source":{"type":"string"}},"required":["type","title","body"]}},
-        {"name":"memory_remember","description":"Remember plain text as local memory","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"type":{"type":"string"},"scope":{"type":"string"}},"required":["text"]}},
-        {"name":"memory_search","description":"Search local memory","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"}},"required":["query"]}},
-        {"name":"memory_context_pack","description":"Return a compact relevant memory pack","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"}},"required":["task"]}},
-        {"name":"memory_agent_context","description":"Return agent-native context with planner defaults","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"}},"required":["task"]}},
-        {"name":"memory_snapshot","description":"Return compact project snapshot","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"}}}},
-        {"name":"memory_doctrine","description":"Return active decision doctrine and supersession chains","inputSchema":{"type":"object","properties":{"scope":{"type":"string"}}}},
-        {"name":"memory_evidence","description":"Return provenance for one memory card","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}},
+        {"name":"memory_add","description":"Add a typed memory card","inputSchema":{"type":"object","properties":{"type":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"scope":{"type":"string"},"source":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["type","title","body"]}},
+        {"name":"memory_remember","description":"Remember plain text as local memory","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"type":{"type":"string"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["text"]}},
+        {"name":"memory_search","description":"Search local memory","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
+        {"name":"memory_context_pack","description":"Return a compact relevant memory pack","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
+        {"name":"memory_agent_context","description":"Return agent-native context with planner defaults","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
+        {"name":"memory_snapshot","description":"Return compact project snapshot","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_doctrine","description":"Return active decision doctrine and supersession chains","inputSchema":{"type":"object","properties":{"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_evidence","description":"Return provenance for one memory card","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_auto_ingest","description":"Scan agent session files into pending inbox suggestions without duplicates","inputSchema":{"type":"object","properties":{"input":{"type":"string"},"scope":{"type":"string"},"dry_run":{"type":"boolean"}}}},
-        {"name":"memory_get","description":"Get one memory card","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}},
-        {"name":"memory_review","description":"Review stale/conflicting memory","inputSchema":{"type":"object","properties":{}}},
-        {"name":"memory_doctor","description":"Run memory health checks","inputSchema":{"type":"object","properties":{}}},
-        {"name":"memory_inbox_list","description":"List pending inbox items","inputSchema":{"type":"object","properties":{"limit":{"type":"number"}}}}
+        {"name":"memory_get","description":"Get one memory card","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
+        {"name":"memory_review","description":"Review stale/conflicting memory","inputSchema":{"type":"object","properties":{"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_doctor","description":"Run memory health checks","inputSchema":{"type":"object","properties":{"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_inbox_list","description":"List pending inbox items","inputSchema":{"type":"object","properties":{"limit":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}
     ])
 }
 
@@ -137,7 +137,8 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    let conn = open_db(db).map_err(|err| err.to_string())?;
+    let selected_db = mcp_selected_db(db, &args);
+    let conn = open_db(&selected_db).map_err(|err| err.to_string())?;
     let text = match name {
         "memory_add" => {
             let memory_type = json_string(&args, "type").unwrap_or_else(|| "note".to_string());
@@ -258,7 +259,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let task = json_string(&args, "task").ok_or_else(|| "missing task".to_string())?;
             let limit = json_usize(&args, "limit").unwrap_or(10);
             let budget = json_usize(&args, "budget").unwrap_or(1200);
-            let scope = json_string(&args, "scope");
+            let scope = mcp_memory_scope(&args);
             let report = brief_report(
                 &conn,
                 &BriefRequest {
@@ -281,7 +282,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 json_string(&args, "target").ok_or_else(|| "missing target".to_string())?;
             let limit = json_usize(&args, "limit").unwrap_or(10);
             let budget = json_usize(&args, "budget").unwrap_or(1200);
-            let scope = json_string(&args, "scope");
+            let scope = mcp_memory_scope(&args);
             let report = impact_report(
                 &conn,
                 &ImpactRequest {
@@ -306,7 +307,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
         }
         "memory_doctrine" => {
-            let scope = json_string(&args, "scope");
+            let scope = mcp_memory_scope(&args);
             let report = doctrine_report(&conn, scope.as_deref()).map_err(|err| err.to_string())?;
             serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
         }
@@ -367,6 +368,62 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         other => return Err(format!("unsupported tool: {other}")),
     };
     Ok(json!({"content":[{"type":"text","text":text}]}))
+}
+
+fn mcp_selected_db(default_db: &Path, args: &Value) -> PathBuf {
+    if let Some(db) = json_string(args, "db").filter(|value| !value.trim().is_empty()) {
+        return expand_mcp_path(&db);
+    }
+    for key in ["root", "project_root", "project"] {
+        if let Some(root) = json_string(args, key).filter(|value| !value.trim().is_empty()) {
+            return project_memory_db(&root);
+        }
+    }
+    if let Some(scope) = json_string(args, "scope")
+        && mcp_scope_looks_like_project_root(&scope)
+    {
+        return project_memory_db(&scope);
+    }
+    default_db.to_path_buf()
+}
+
+fn mcp_memory_scope(args: &Value) -> Option<String> {
+    json_string(args, "scope").filter(|scope| VALID_SCOPES.contains(&scope.as_str()))
+}
+
+fn project_memory_db(root: &str) -> PathBuf {
+    let path = expand_mcp_path(root);
+    if path.file_name().is_some_and(|name| name == "memory.db") {
+        path
+    } else {
+        path.join(DEFAULT_DB)
+    }
+}
+
+fn mcp_scope_looks_like_project_root(value: &str) -> bool {
+    if VALID_SCOPES.contains(&value) {
+        return false;
+    }
+    value.starts_with('/')
+        || value.starts_with("~/")
+        || value == "."
+        || value.starts_with("./")
+        || value.starts_with("../")
+        || value.contains("/.agent/")
+}
+
+fn expand_mcp_path(value: &str) -> PathBuf {
+    if value == "~" {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(value))
+    } else if let Some(rest) = value.strip_prefix("~/") {
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join(rest))
+            .unwrap_or_else(|| PathBuf::from(value))
+    } else {
+        PathBuf::from(value)
+    }
 }
 
 fn json_string(value: &Value, key: &str) -> Option<String> {

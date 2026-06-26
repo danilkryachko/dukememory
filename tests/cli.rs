@@ -395,6 +395,62 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
 }
 
 #[test]
+fn mcp_tool_calls_can_select_project_db_by_root_or_path_scope() {
+    let dir = tempdir().unwrap();
+    let default_root = dir.path().join("default");
+    let selected_root = dir.path().join("selected");
+    let default_db = default_root.join(".agent/memory.db");
+    let selected_db = selected_root.join(".agent/memory.db");
+
+    cmd(&default_db)
+        .arg("add")
+        .arg("decision")
+        .arg("Default project decision")
+        .arg("MCP should not read this card when a root override is supplied.")
+        .assert()
+        .success();
+    cmd(&selected_db)
+        .arg("add")
+        .arg("decision")
+        .arg("Selected project decision")
+        .arg("MCP should read this card through the root override.")
+        .assert()
+        .success();
+
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
+        .arg("--db")
+        .arg(&default_db)
+        .arg("serve-mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_brief","arguments":{"task":"selected project","root":selected_root}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_brief","arguments":{"task":"selected project","scope":selected_root}}})
+        )
+        .unwrap();
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Selected project decision"));
+    assert!(!stdout.contains("Default project decision"));
+}
+
+#[test]
 fn v3_project_intelligence_rhai_suggest_compact_and_lifecycle() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
@@ -3131,6 +3187,154 @@ fn v14_9_codex_doctor_checks_mcp_config() {
             .iter()
             .any(|item| item["kind"] == "mcp_probe" && item["status"] == "ok")
     );
+}
+
+#[test]
+fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("project");
+    let db = root.join(".agent/memory.db");
+    let agent_config = root.join(".agent/config.toml");
+    let codex_config = dir.path().join("codex-config.toml");
+    let skills = dir.path().join("skills");
+    let binary = assert_cmd::cargo::cargo_bin("dukememory");
+
+    cmd(&db)
+        .arg("onboard")
+        .arg("--root")
+        .arg(&root)
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .assert()
+        .success()
+        .stdout(contains("onboard:"));
+    assert!(agent_config.exists());
+    assert!(root.join("AGENTS.md").exists());
+
+    cmd(&db)
+        .arg("install-skill")
+        .arg("--path")
+        .arg(&skills)
+        .assert()
+        .success();
+    assert!(skills.join("dukememory-use/SKILL.md").exists());
+
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("E2E memory route")
+        .arg("Codex MCP should retrieve the onboarded project memory by root.")
+        .assert()
+        .success();
+
+    fs::write(
+        &codex_config,
+        format!(
+            "[mcp_servers.dukememory]\ncommand = \"{}\"\nargs = [\"--db\", \"{}\", \"--config\", \"{}\", \"serve-mcp\"]\n",
+            binary.display(),
+            db.display(),
+            agent_config.display()
+        ),
+    )
+    .unwrap();
+    let doctor = stdout(
+        cmd(&db)
+            .arg("codex-doctor")
+            .arg("--config")
+            .arg(&codex_config)
+            .arg("--json"),
+    );
+    let doctor_json: Value = serde_json::from_str(&doctor).unwrap();
+    assert_eq!(doctor_json["ok"], true);
+
+    let mut child = StdCommand::new(&binary)
+        .arg("--db")
+        .arg(dir.path().join("other/.agent/memory.db"))
+        .arg("serve-mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_brief","arguments":{"task":"route onboarded memory","root":root}}})
+        )
+        .unwrap();
+    }
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("E2E memory route")
+    );
+
+    for idx in 0..3 {
+        cmd(&db)
+            .arg("add")
+            .arg("note")
+            .arg(format!("E2E operational note {idx}"))
+            .arg(format!("Temporary e2e operational context {idx}."))
+            .assert()
+            .success();
+    }
+
+    let status_file = root.join(".agent/autonomous-status.json");
+    let rollback_dir = root.join(".agent/autonomous-rollbacks");
+    let backup_dir = root.join(".agent/backups");
+    let run = stdout(
+        cmd(&db)
+            .arg("autonomous")
+            .arg("run-once")
+            .arg("--level")
+            .arg("normal")
+            .arg("--status-file")
+            .arg(&status_file)
+            .arg("--rollback-dir")
+            .arg(&rollback_dir)
+            .arg("--backup-dir")
+            .arg(&backup_dir)
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let run_json: Value = serde_json::from_str(&run).unwrap();
+    assert_eq!(run_json["ok"], true);
+    assert!(
+        run_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "embed_index")
+    );
+
+    let rollback = stdout(
+        cmd(&db)
+            .arg("autonomous")
+            .arg("rollback")
+            .arg("--status-file")
+            .arg(&status_file)
+            .arg("--json"),
+    );
+    let rollback_json: Value = serde_json::from_str(&rollback).unwrap();
+    assert_eq!(rollback_json["level"], "rollback");
+    assert!(rollback_json["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["kind"] == "rollback_restore_status"));
 }
 
 #[test]
