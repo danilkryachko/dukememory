@@ -1032,6 +1032,9 @@ enum AutonomousRollback {
     RejectAddedMemory {
         id: String,
     },
+    RejectInboxItem {
+        inbox_id: String,
+    },
     RestoreInboxPending {
         inbox_id: String,
         memory_id: String,
@@ -1278,6 +1281,7 @@ pub(crate) fn autonomous_run_once(
             ),
             memory_id: None,
         });
+        autonomous_create_gap_inbox(conn, effective_level, request.scope, &mut report)?;
         if !matches!(request.level, AutonomousLevel::Conservative) {
             autonomous_approve_inbox(conn, effective_level, &mut report)?;
             autonomous_compact_operational(conn, effective_level, request.scope, &mut report)?;
@@ -1306,18 +1310,39 @@ pub(crate) fn autonomous_run_once(
             memory_id: None,
         });
     }
-    if report.rollback.is_empty()
-        && let Ok(previous) = read_autonomous_status(request.status_file)
+    if let Ok(previous) = read_autonomous_status(request.status_file)
         && !previous.rollback.is_empty()
     {
-        report.rollback = previous.rollback;
-        report.rollback_backup = previous.rollback_backup;
-        report.actions.push(AutonomousAction {
-            kind: "preserve_rollback".to_string(),
-            status: "ok".to_string(),
-            detail: "preserved last reversible autonomous change".to_string(),
-            memory_id: None,
-        });
+        if report.rollback.is_empty() {
+            report.rollback = previous.rollback;
+            report.rollback_backup = previous.rollback_backup;
+            report.actions.push(AutonomousAction {
+                kind: "preserve_rollback".to_string(),
+                status: "ok".to_string(),
+                detail: "preserved last reversible autonomous change".to_string(),
+                memory_id: None,
+            });
+        } else {
+            let current_len = report.rollback.len();
+            let mut seen = std::collections::BTreeSet::new();
+            let mut merged = Vec::new();
+            for action in previous.rollback.iter().chain(report.rollback.iter()) {
+                let key = serde_json::to_string(action)?;
+                if seen.insert(key) {
+                    merged.push(action.clone());
+                }
+            }
+            if merged.len() > current_len {
+                let preserved = merged.len() - current_len;
+                report.rollback = merged;
+                report.actions.push(AutonomousAction {
+                    kind: "merge_rollback".to_string(),
+                    status: "ok".to_string(),
+                    detail: format!("preserved {preserved} previous rollback item(s)"),
+                    memory_id: None,
+                });
+            }
+        }
     }
     write_autonomous_status(request.status_file, &report)?;
     Ok(report)
@@ -1388,6 +1413,75 @@ fn autonomous_approve_inbox(
             memory_id: Some(memory_id),
         });
     }
+    Ok(())
+}
+
+fn autonomous_create_gap_inbox(
+    conn: &Connection,
+    level: AutonomousLevel,
+    scope: &str,
+    report: &mut AutonomousReport,
+) -> Result<()> {
+    let live = live_eval_report(conn, 7)?;
+    let max = match level {
+        AutonomousLevel::Conservative => 1,
+        AutonomousLevel::Normal => 3,
+        AutonomousLevel::Aggressive => 8,
+    };
+    let gaps = live
+        .inferred_missing_queries
+        .iter()
+        .take(max)
+        .cloned()
+        .collect::<Vec<_>>();
+    let decision = autonomous_policy_decision(AutonomousPolicyInput {
+        action: "gap_inbox",
+        level,
+        risk_score: 10.0,
+        usefulness_score: (gaps.len().min(8) as f64) * 10.0,
+        token_saving_score: (gaps.len().min(8) as f64) * 4.0,
+        confidence: if gaps.is_empty() { 0.0 } else { 0.7 },
+        rollback: true,
+        reason: format!("{} inferred gap query(s)", gaps.len()),
+    });
+    report.policy.push(decision.clone());
+    if gaps.is_empty() {
+        report.actions.push(AutonomousAction {
+            kind: "gap_inbox".to_string(),
+            status: "skipped".to_string(),
+            detail: "no unresolved inferred memory gaps".to_string(),
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    if !decision.allowed {
+        report.actions.push(AutonomousAction {
+            kind: "gap_inbox".to_string(),
+            status: "skipped".to_string(),
+            detail: decision.reason,
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    let mut created = Vec::new();
+    for query in gaps {
+        if let Some(inbox_id) = insert_gap_inbox_suggestion(conn, scope, &query)? {
+            report.rollback.push(AutonomousRollback::RejectInboxItem {
+                inbox_id: inbox_id.clone(),
+            });
+            created.push(inbox_id);
+        }
+    }
+    report.actions.push(AutonomousAction {
+        kind: "gap_inbox".to_string(),
+        status: if created.is_empty() { "skipped" } else { "ok" }.to_string(),
+        detail: if created.is_empty() {
+            "all inferred gap inbox suggestions already existed".to_string()
+        } else {
+            format!("created {} gap inbox suggestion(s)", created.len())
+        },
+        memory_id: None,
+    });
     Ok(())
 }
 
@@ -1702,6 +1796,18 @@ pub(crate) fn autonomous_rollback(
                     status: "ok".to_string(),
                     detail: "marked autonomous-created card rejected".to_string(),
                     memory_id: Some(id.clone()),
+                });
+            }
+            AutonomousRollback::RejectInboxItem { inbox_id } => {
+                conn.execute(
+                    "UPDATE memory_inbox SET status = 'rejected', updated_at = ?1 WHERE id = ?2",
+                    params![now_ms(), inbox_id],
+                )?;
+                out.actions.push(AutonomousAction {
+                    kind: "rollback_reject_inbox".to_string(),
+                    status: "ok".to_string(),
+                    detail: format!("rejected autonomous-created inbox {inbox_id}"),
+                    memory_id: None,
                 });
             }
             AutonomousRollback::RestoreInboxPending {

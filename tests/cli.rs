@@ -4387,6 +4387,81 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     assert_eq!(ops_json["multi_device"]["local_first"], true);
 
+    let gap_run = stdout(
+        cmd(&db)
+            .arg("autonomous")
+            .arg("run-once")
+            .arg("--level")
+            .arg("normal")
+            .arg("--status-file")
+            .arg(&status_file)
+            .arg("--rollback-dir")
+            .arg(&rollback_dir)
+            .arg("--backup-dir")
+            .arg(&backup_dir)
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let gap_run_json: Value = serde_json::from_str(&gap_run).unwrap();
+    assert!(
+        gap_run_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "gap_inbox" && item["status"] == "ok")
+    );
+    assert!(
+        gap_run_json["rollback"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "RejectInboxItem")
+    );
+    let gap_inbox = stdout(cmd(&db).arg("inbox-list").arg("--json"));
+    let gap_inbox_json: Value = serde_json::from_str(&gap_inbox).unwrap();
+    let gap_items = gap_inbox_json.as_array().unwrap();
+    assert!(gap_items.iter().any(|item| {
+        item["source"] == "autonomous_gap"
+            && item["body"]
+                .as_str()
+                .unwrap()
+                .contains("missing autonomous rollback memory")
+    }));
+
+    let gap_repeat = stdout(
+        cmd(&db)
+            .arg("autonomous")
+            .arg("run-once")
+            .arg("--level")
+            .arg("normal")
+            .arg("--status-file")
+            .arg(&status_file)
+            .arg("--rollback-dir")
+            .arg(&rollback_dir)
+            .arg("--backup-dir")
+            .arg(&backup_dir)
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let gap_repeat_json: Value = serde_json::from_str(&gap_repeat).unwrap();
+    assert!(
+        gap_repeat_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "gap_inbox" && item["status"] == "skipped")
+    );
+
     let contract = stdout(
         cmd(&db)
             .arg("memory-contract")
@@ -4521,6 +4596,22 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .iter()
             .any(|item| item["kind"] == "rollback_restore_status")
     );
+    assert!(
+        rollback_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "rollback_reject_inbox")
+    );
+    let rejected_gap_inbox: i64 = Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM memory_inbox WHERE source = 'autonomous_gap' AND status = 'rejected'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(rejected_gap_inbox >= 1);
 
     let active = stdout(
         cmd(&db)

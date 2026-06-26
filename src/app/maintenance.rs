@@ -558,6 +558,49 @@ fn insert_inbox_suggestions(
     Ok(count)
 }
 
+pub(crate) fn insert_gap_inbox_suggestion(
+    conn: &Connection,
+    scope: &str,
+    query: &str,
+) -> Result<Option<String>> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(None);
+    }
+    let title = format!("Fill memory gap: {}", truncate_chars(query, 80));
+    let source = "autonomous_gap";
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM memory_inbox WHERE status = 'pending' AND source = ?1 AND title = ?2 LIMIT 1",
+            params![source, title],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if existing.is_some() {
+        return Ok(None);
+    }
+    let id = Uuid::new_v4().simple().to_string()[..12].to_string();
+    let now = now_ms();
+    let body = format!(
+        "Autonomous memory gap detected from an agent read that returned no usable memory. Query: {query}. Add a concise durable memory card only if this gap reflects real project knowledge."
+    );
+    conn.execute(
+        r#"
+        INSERT INTO memory_inbox (
+            id, type, scope, title, body, source, confidence, status, created_at, updated_at
+        ) VALUES (?1, 'task_state', ?2, ?3, ?4, ?5, 0.62, 'pending', ?6, ?7)
+        "#,
+        params![id, scope, title, body, source, now, now],
+    )?;
+    log_event(
+        conn,
+        "autonomous_gap_inbox",
+        None,
+        &format!("created inbox suggestion {id} for gap {query}"),
+    )?;
+    Ok(Some(id))
+}
+
 pub(crate) fn print_inbox(
     conn: &Connection,
     status: &str,
