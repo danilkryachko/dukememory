@@ -4477,6 +4477,26 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     let gap_run_json: Value = serde_json::from_str(&gap_run).unwrap();
     assert!(
+        gap_run_json["inferred_feedback"]["written"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+    assert!(
+        gap_run_json["inferred_feedback"]["missing"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+    assert!(gap_run_json["feedback"]["missing"].as_u64().unwrap() >= 1);
+    assert!(
+        gap_run_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "inferred_feedback" && item["status"] == "ok")
+    );
+    assert!(
         gap_run_json["actions"]
             .as_array()
             .unwrap()
@@ -4529,6 +4549,12 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .arg("--json"),
     );
     let gap_repeat_json: Value = serde_json::from_str(&gap_repeat).unwrap();
+    assert_eq!(
+        gap_repeat_json["inferred_feedback"]["written"]
+            .as_u64()
+            .unwrap(),
+        0
+    );
     assert!(
         gap_repeat_json["actions"]
             .as_array()

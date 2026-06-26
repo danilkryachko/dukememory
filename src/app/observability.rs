@@ -782,6 +782,11 @@ pub(crate) fn memory_feedback_counts(
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        if ids.is_empty() && rating == "missing" {
+            let entry = counts.entry("__missing__".to_string()).or_insert((0, 0, 0));
+            entry.2 += 1;
+            continue;
+        }
         for id in ids
             .into_iter()
             .filter_map(|id| id.as_str().map(str::to_string))

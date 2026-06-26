@@ -1005,6 +1005,8 @@ pub(crate) struct AutonomousReport {
     #[serde(default)]
     feedback: Option<FeedbackSummary>,
     #[serde(default)]
+    inferred_feedback: Option<InferredFeedbackReport>,
+    #[serde(default)]
     budget: Option<BudgetPlan>,
     #[serde(default)]
     project_profile: Option<ProjectProfileSnapshot>,
@@ -1175,6 +1177,7 @@ pub(crate) fn autonomous_run_once(
         policy: Vec::new(),
         quality: None,
         feedback: None,
+        inferred_feedback: None,
         budget: None,
         project_profile: None,
         policy_tuning: None,
@@ -1233,6 +1236,26 @@ pub(crate) fn autonomous_run_once(
             ),
             memory_id: None,
         });
+        let inferred_feedback = materialize_inferred_feedback(conn, 7, 100)?;
+        report.actions.push(AutonomousAction {
+            kind: "inferred_feedback".to_string(),
+            status: if inferred_feedback.written == 0 {
+                "skipped"
+            } else {
+                "ok"
+            }
+            .to_string(),
+            detail: format!(
+                "scanned={} written={} useful={} missing={} skipped={}",
+                inferred_feedback.scanned,
+                inferred_feedback.written,
+                inferred_feedback.useful,
+                inferred_feedback.missing,
+                inferred_feedback.skipped
+            ),
+            memory_id: None,
+        });
+        report.inferred_feedback = Some(inferred_feedback);
         report.quality = Some(quality_report(conn, 30, 20)?);
         report.feedback = Some(feedback_summary(conn, 30)?);
         report.budget = Some(budget_plan(
@@ -1855,6 +1878,7 @@ pub(crate) fn autonomous_rollback(
         policy: Vec::new(),
         quality: None,
         feedback: None,
+        inferred_feedback: None,
         budget: None,
         project_profile: None,
         policy_tuning: None,

@@ -21,6 +21,17 @@ pub(crate) struct LiveEvalReport {
     pub(crate) inferred_missing_queries: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct InferredFeedbackReport {
+    pub(crate) version: u32,
+    pub(crate) since_days: i64,
+    pub(crate) scanned: usize,
+    pub(crate) written: usize,
+    pub(crate) useful: usize,
+    pub(crate) missing: usize,
+    pub(crate) skipped: usize,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct DoctrineReport {
     active: Vec<DoctrineDecision>,
@@ -1017,6 +1028,77 @@ pub(crate) fn live_eval_report(conn: &Connection, since_days: i64) -> Result<Liv
         missing_queries,
         inferred_missing_queries: inferred.missing_queries,
     })
+}
+
+pub(crate) fn materialize_inferred_feedback(
+    conn: &Connection,
+    since_days: i64,
+    limit: usize,
+) -> Result<InferredFeedbackReport> {
+    let since_ms = now_ms().saturating_sub(since_days.max(0).saturating_mul(86_400_000));
+    let reads = read_events(conn, since_ms, limit)?;
+    let mut report = InferredFeedbackReport {
+        version: 1,
+        since_days,
+        scanned: 0,
+        written: 0,
+        useful: 0,
+        missing: 0,
+        skipped: 0,
+    };
+    for read in reads {
+        if !is_agent_memory_read(&read.command) {
+            continue;
+        }
+        report.scanned += 1;
+        if inferred_feedback_exists(conn, read.id)? {
+            report.skipped += 1;
+            continue;
+        }
+        if read.result_count > 0 && !read.memory_ids.is_empty() {
+            let ids = read.memory_ids.iter().take(8).cloned().collect::<Vec<_>>();
+            let detail = serde_json::to_string(&json!({
+                "rating": "useful",
+                "ids": ids,
+                "command": read.command,
+                "query": truncate_chars(&read.query, 500),
+                "note": "autonomous inferred feedback from successful memory read",
+                "source": "autonomous_inferred",
+                "inferred_read_id": read.id,
+            }))?;
+            log_event(conn, "memory_feedback", None, &detail)?;
+            report.written += 1;
+            report.useful += 1;
+        } else if unresolved_memory_gap(conn, &read.query)? {
+            let detail = serde_json::to_string(&json!({
+                "rating": "missing",
+                "ids": [],
+                "command": read.command,
+                "query": truncate_chars(&read.query, 500),
+                "note": "autonomous inferred feedback from empty memory read",
+                "source": "autonomous_inferred",
+                "inferred_read_id": read.id,
+            }))?;
+            log_event(conn, "memory_feedback", None, &detail)?;
+            report.written += 1;
+            report.missing += 1;
+        } else {
+            report.skipped += 1;
+        }
+    }
+    Ok(report)
+}
+
+fn inferred_feedback_exists(conn: &Connection, read_id: i64) -> Result<bool> {
+    let pattern = format!("%\"inferred_read_id\":{read_id}%");
+    let exists: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM memory_events WHERE event_type = 'memory_feedback' AND detail LIKE ?1 LIMIT 1",
+            params![pattern],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(exists.is_some())
 }
 
 struct InferredLiveSignals {
