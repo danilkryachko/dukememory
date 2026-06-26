@@ -1,23 +1,23 @@
 # dukememory.
 
-Local, token-light project memory for coding agents.
+**Local AI agent memory for coding workflows.**
 
-`dukememory` stores the project context that should survive across chats:
+SQLite project memory, MCP server, Codex skill, local embeddings, semantic
+recall, and reversible autonomous maintenance.
+
+`dukememory` helps coding agents remember the durable parts of a project:
 goals, decisions, constraints, commands, known issues, task state, and design
-notes. It runs locally on SQLite + FTS, with optional embeddings for semantic
-recall.
+notes. It stays local, fast, auditable, and token-light.
 
 ![dukememory. web UI](docs/screenshot.png)
 
-## What It Does
+## Core
 
-- gives agents a tiny `brief` before coding
-- shows `impact` memory for files, symbols, or subsystems
-- saves structured cards instead of noisy transcripts
-- keeps memory in `.agent/memory.db`
-- supports local embeddings through Ollama or OpenAI-compatible endpoints
-- exposes a local web UI and MCP server
-- runs reversible autonomous maintenance
+- Local storage: `.agent/memory.db`
+- Search: SQLite FTS by default
+- Semantic recall: optional Ollama or OpenAI-compatible embeddings
+- Agent access: CLI, HTTP UI, MCP server, Codex skill
+- Maintenance: autonomous, observable, rollback-friendly
 
 ## Install
 
@@ -27,11 +27,9 @@ cargo build --release
 target/release/dukememory update-install \
   --from target/release/dukememory \
   --to ~/.local/bin/dukememory
-
-dukememory --version
 ```
 
-## Quick Start
+## Start A Project
 
 ```bash
 cd /path/to/project
@@ -41,7 +39,7 @@ dukememory install-skill
 dukememory memory-contract --write
 ```
 
-Use it during development:
+## Use Memory
 
 ```bash
 dukememory brief "fix checkout validation" --budget-profile tiny
@@ -50,7 +48,7 @@ dukememory recall "checkout validation" --max-chars 1200
 dukememory drift --root . --json
 ```
 
-Save durable knowledge:
+Save only durable knowledge:
 
 ```bash
 dukememory add decision \
@@ -61,17 +59,7 @@ dukememory add decision \
 dukememory embed-index
 ```
 
-## Memory Cards
-
-Common types: `product_goal`, `decision`, `constraint`, `command`,
-`known_issue`, `design_note`, `task_state`, `user_preference`.
-
-The useful rule: save decisions, rules, commands, risks, and continuation state.
-Do not save full chat transcripts.
-
 ## Embeddings
-
-Embeddings are optional. Without them, retrieval still works through SQLite FTS.
 
 ```bash
 export DUKEMEMORY_EMBED_PROVIDER=ollama
@@ -90,18 +78,16 @@ dukememory serve-http --host 127.0.0.1 --port 8765
 
 Open `http://127.0.0.1:8765/`.
 
-## Codex And MCP
+## MCP And Codex
 
 ```bash
-dukememory install-skill
-dukememory workspace-init --root . --force
 dukememory serve-mcp
+dukememory install-skill
 dukememory codex-doctor --json
 ```
 
-Agent flow: `brief` first, `impact` for touched files, `drift` before broad
-edits, write only durable outcomes, then re-index embeddings after important
-writes.
+Agent rule: read `brief`, use `impact`, run `drift` before broad edits, write
+only durable outcomes, then re-index embeddings after important writes.
 
 ## Autonomous Maintenance
 
@@ -110,8 +96,6 @@ dukememory autonomous install --force --level normal
 dukememory autonomous status --json
 dukememory autonomous rollback --json
 ```
-
-Maintenance is designed to be auditable and reversible.
 
 ## Development
 
