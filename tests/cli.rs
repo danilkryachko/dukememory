@@ -1198,6 +1198,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
     let dry_run_json: Value = serde_json::from_str(&dry_run).unwrap();
     assert_eq!(dry_run_json["changed"], true);
     assert_eq!(dry_run_json["dry_run"], true);
+    assert_eq!(dry_run_json["backup_keep"], 3);
     assert_eq!(fs::read(&target).unwrap(), b"old installed binary");
     assert!(!backup_dir.exists());
 
@@ -1215,6 +1216,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
     let updated_json: Value = serde_json::from_str(&updated).unwrap();
     assert_eq!(updated_json["changed"], true);
     assert_eq!(updated_json["dry_run"], false);
+    assert_eq!(updated_json["backup_keep"], 3);
     let backup = updated_json["backup"].as_str().unwrap();
     assert_eq!(fs::read(backup).unwrap(), b"old installed binary");
     for idx in 0..4 {

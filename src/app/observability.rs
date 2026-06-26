@@ -1505,10 +1505,11 @@ pub(crate) fn ops_status_report(
             rollback_dir.display()
         ));
     }
-    if storage.install_backups_count > 10 {
+    if storage.install_backups_count > DEFAULT_INSTALL_BACKUP_KEEP {
         recommendations.push(format!(
-            "run update-install --backup-keep 10 for {}",
-            install_backup_dir.display()
+            "run update-install --backup-keep {} for {}",
+            DEFAULT_INSTALL_BACKUP_KEEP,
+            install_backup_dir.display(),
         ));
     }
 
@@ -1635,8 +1636,9 @@ fn ops_storage_status(db: &Path, root: &Path) -> Result<OpsStorageStatus> {
     let install_backups_count = count_named_files(&install_backup_dir, |name| {
         name.starts_with("dukememory") && name.ends_with(".bak")
     })?;
-    let retention_ready =
-        backups_count <= 10 && rollback_count <= 10 && install_backups_count <= 10;
+    let retention_ready = backups_count <= 10
+        && rollback_count <= 10
+        && install_backups_count <= DEFAULT_INSTALL_BACKUP_KEEP;
     let pressure = if agent_bytes > 512 * 1024 * 1024
         || backups_count > 20
         || rollback_count > 20

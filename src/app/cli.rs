@@ -312,7 +312,7 @@ pub(crate) enum Command {
         to: String,
         #[arg(long, default_value = ".agent/install-backups")]
         backup_dir: PathBuf,
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = DEFAULT_INSTALL_BACKUP_KEEP)]
         backup_keep: usize,
         #[arg(long)]
         dry_run: bool,

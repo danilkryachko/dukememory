@@ -35,6 +35,7 @@ Transcript-based memory quickly turns into noise.
 - an MCP server and Codex skill for agent-native use
 - autonomous maintenance with rollback-friendly, size-bounded backups
 - storage footprint checks for local `.agent` growth
+- small install-backup retention by default
 
 ## What It Remembers
 

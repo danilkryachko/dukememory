@@ -396,7 +396,13 @@ pub(crate) fn upgrade_project_report(
     if same_binary {
         actions.push(format!("binary already running from {}", target.display()));
     } else {
-        match update_install(Some(&source), to, backup_dir, 10, dry_run) {
+        match update_install(
+            Some(&source),
+            to,
+            backup_dir,
+            DEFAULT_INSTALL_BACKUP_KEEP,
+            dry_run,
+        ) {
             Ok(report) => {
                 actions.push(if report.changed {
                     format!("binary update prepared: {}", report.target)
