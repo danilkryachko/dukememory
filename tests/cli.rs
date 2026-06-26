@@ -5089,6 +5089,15 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
                 .unwrap()
                 .contains("Verbose memory card without evidence")
     }));
+    stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Resolved autonomous rollback gap")
+            .arg("This durable card resolves missing autonomous rollback memory.")
+            .arg("--scope")
+            .arg("project"),
+    );
 
     let gap_repeat = stdout(
         cmd(&db)
@@ -5124,6 +5133,29 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .iter()
             .any(|item| item["kind"] == "gap_inbox" && item["status"] == "skipped")
     );
+    assert!(
+        gap_repeat_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "gap_inbox_resolved" && item["status"] == "ok")
+    );
+    assert!(
+        gap_repeat_json["rollback"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "RestoreInboxStatus")
+    );
+    let resolved_gap_status: String = Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT status FROM memory_inbox WHERE source = 'autonomous_gap' AND title = 'Fill memory gap: missing autonomous rollback memory'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(resolved_gap_status, "rejected");
 
     let contract = stdout(
         cmd(&db)

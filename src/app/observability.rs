@@ -1829,7 +1829,12 @@ fn run_dashboard_autonomous_repair(
 
 fn compact_autonomous_repair_detail(report: &AutonomousReport) -> String {
     let mut parts = vec![format!("ok={} actions={}", report.ok, report.actions.len())];
-    for kind in ["inferred_feedback", "gap_inbox", "live_eval_snapshot"] {
+    for kind in [
+        "inferred_feedback",
+        "gap_inbox",
+        "gap_inbox_resolved",
+        "live_eval_snapshot",
+    ] {
         if let Some(action) = report.actions.iter().find(|action| action.kind == kind) {
             parts.push(format!("{kind}:{}:{}", action.status, action.detail));
         }

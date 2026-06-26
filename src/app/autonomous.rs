@@ -1357,6 +1357,7 @@ pub(crate) fn autonomous_run_once(
             memory_id: None,
         });
         autonomous_create_gap_inbox(conn, effective_level, request.scope, &mut report)?;
+        autonomous_close_resolved_gap_inbox(conn, &mut report)?;
         if !matches!(request.level, AutonomousLevel::Conservative) {
             autonomous_approve_inbox(conn, effective_level, &mut report)?;
             autonomous_compact_release_history(conn, effective_level, request.scope, &mut report)?;
@@ -1716,6 +1717,68 @@ fn autonomous_create_gap_inbox(
         memory_id: None,
     });
     Ok(())
+}
+
+fn autonomous_close_resolved_gap_inbox(
+    conn: &Connection,
+    report: &mut AutonomousReport,
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, body FROM memory_inbox WHERE status = 'pending' AND source = 'autonomous_gap' ORDER BY updated_at ASC LIMIT 25",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut scanned = 0;
+    let mut closed = 0;
+    for row in rows {
+        let (inbox_id, title, body) = row?;
+        scanned += 1;
+        let Some(query) = gap_inbox_query(&title, &body) else {
+            continue;
+        };
+        if unresolved_memory_gap(conn, &query)? {
+            continue;
+        }
+        conn.execute(
+            "UPDATE memory_inbox SET status = 'rejected', updated_at = ?1 WHERE id = ?2",
+            params![now_ms(), inbox_id],
+        )?;
+        report
+            .rollback
+            .push(AutonomousRollback::RestoreInboxStatus {
+                inbox_id,
+                status: "pending".to_string(),
+            });
+        closed += 1;
+    }
+    report.actions.push(AutonomousAction {
+        kind: "gap_inbox_resolved".to_string(),
+        status: if closed == 0 { "skipped" } else { "ok" }.to_string(),
+        detail: format!("scanned={scanned} closed={closed}"),
+        memory_id: None,
+    });
+    Ok(())
+}
+
+fn gap_inbox_query(title: &str, body: &str) -> Option<String> {
+    if let Some((_, rest)) = body.split_once("Query: ")
+        && let Some((query, _)) = rest.split_once(". Add ")
+    {
+        let query = query.trim();
+        if !query.is_empty() {
+            return Some(query.to_string());
+        }
+    }
+    title
+        .strip_prefix("Fill memory gap: ")
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+        .map(ToString::to_string)
 }
 
 fn autonomous_create_quality_inbox(
