@@ -3,30 +3,58 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust 2024](https://img.shields.io/badge/rust-2024-orange.svg)](Cargo.toml)
 [![MCP server](https://img.shields.io/badge/MCP-server-0f766e.svg)](#mcp-and-codex)
-[![Local first](https://img.shields.io/badge/local--first-SQLite-0f766e.svg)](#core)
+[![Local first](https://img.shields.io/badge/local--first-SQLite-0f766e.svg)](#local-first)
 
-**Local AI memory for coding agents.**
+**Project memory for AI coding agents.**
 
-SQLite project memory, MCP server, Codex skill, local embeddings, semantic
-recall, and reversible autonomous maintenance. `dukememory` keeps durable
-project context across chats without turning your transcript into a prompt.
+`dukememory` is a local memory layer for Codex, Claude, Cursor, and other
+coding agents. It keeps the project knowledge that should survive across chats:
+decisions, constraints, commands, known issues, task state, user preferences,
+and design notes.
+
+It is built for one job: give agents the smallest useful context before they
+touch code, without dumping chat history into every prompt.
 
 ![dukememory. web UI](docs/screenshot.png)
 
 ## Why
 
-Coding agents need memory, but not a giant chat dump.
+Coding agents forget important project context. Long prompts waste tokens.
+Transcript-based memory quickly turns into noise.
 
-`dukememory` stores only what should survive: goals, decisions, constraints,
-commands, known issues, task state, and design notes.
+`dukememory` gives you:
 
-## Core
+- durable project memory in `.agent/memory.db`
+- tiny task briefs before coding
+- file and symbol impact checks before edits
+- structured cards instead of chat dumps
+- local-first storage with optional semantic recall
+- a web UI to inspect, edit, and audit memory
+- an MCP server and Codex skill for agent-native use
+- autonomous maintenance with rollback-friendly operations
 
-- Local storage: `.agent/memory.db`
-- Search: SQLite FTS by default
-- Semantic recall: optional Ollama or OpenAI-compatible embeddings
-- Agent access: CLI, HTTP UI, MCP server, Codex skill
-- Maintenance: autonomous, observable, rollback-friendly
+## What It Remembers
+
+| Memory | Examples |
+| --- | --- |
+| Goals | product direction, project purpose |
+| Decisions | accepted architecture or UX choices |
+| Constraints | rules the agent must keep following |
+| Commands | build, test, deploy, setup commands |
+| Known issues | bugs, risks, caveats, fragile paths |
+| Task state | where work stopped and what is next |
+| Design notes | implementation details worth reusing |
+
+## How It Works
+
+1. Store durable facts as typed memory cards.
+2. Retrieve a compact `brief` at the start of a task.
+3. Retrieve `impact` memory for files, symbols, or subsystems before editing.
+4. Use SQLite FTS by default, or add embeddings for semantic recall.
+5. Keep memory healthy with observable, reversible autonomous maintenance.
+
+The result is less repeated explanation, fewer forgotten constraints, and lower
+context cost.
 
 ## Install
 
@@ -68,6 +96,18 @@ dukememory add decision \
 dukememory embed-index
 ```
 
+## Local First
+
+`dukememory` stores data in the project by default:
+
+```text
+.agent/memory.db
+.agent/config.toml
+.agent/MEMORY_CONTRACT.md
+```
+
+No cloud service is required. Embeddings are optional.
+
 ## Embeddings
 
 ```bash
@@ -86,6 +126,9 @@ dukememory serve-http --host 127.0.0.1 --port 8765
 ```
 
 Open `http://127.0.0.1:8765/`.
+
+Use it to search memory, inspect evidence, review inbox items, watch usage, and
+check autonomous health.
 
 ## MCP And Codex
 
