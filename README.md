@@ -1,9 +1,9 @@
-# DukeMemory
+# dukememory
 
-Production v14.9 local memory for agent-driven projects.
+Production v0.14.13 local memory for agent-driven projects.
 
 - CodeGraph remembers code structure: files, symbols, calls, dependencies.
-- DukeMemory remembers product intent: goals, decisions, preferences, commands,
+- dukememory remembers product intent: goals, decisions, preferences, commands,
   design notes, known issues, and current task state.
 
 The implementation is Rust + SQLite + FTS5 + Rhai, with optional local

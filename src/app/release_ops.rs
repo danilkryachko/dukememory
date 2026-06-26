@@ -180,25 +180,25 @@ const SELF_MEMORY_SEEDS: &[SelfMemorySeed] = &[
     SelfMemorySeed {
         id: "self-v11-purpose",
         memory_type: "product_goal",
-        title: "DukeMemory purpose",
-        body: "DukeMemory is the local Rust + SQLite + FTS5 + Rhai memory layer for agent-driven projects. It stores durable product intent, decisions, preferences, commands, task state, constraints, and notes.",
+        title: "dukememory purpose",
+        body: "dukememory is the local Rust + SQLite + FTS5 + Rhai memory layer for agent-driven projects. It stores durable product intent, decisions, preferences, commands, task state, constraints, and notes.",
     },
     SelfMemorySeed {
         id: "self-v11-architecture",
         memory_type: "design_note",
-        title: "DukeMemory architecture",
+        title: "dukememory architecture",
         body: "Production v14.5 uses a schema-migrated SQLite store, FTS-first retrieval, optional ready-index embedding recall, Rhai policy hooks, auto-ingest, doctrine extraction, tiny briefs, evidence reports, HTTP/MCP surfaces, and service/storage modules for maintainable operations.",
     },
     SelfMemorySeed {
         id: "self-v11-operations",
         memory_type: "command",
-        title: "DukeMemory release operations",
+        title: "dukememory release operations",
         body: "Use schema verify, doctor --self-check, bench --json, release-bundle, cargo test, cargo test --features vec, cargo clippy --all-targets --all-features -- -D warnings, and cargo build --release before calling a release ready.",
     },
     SelfMemorySeed {
         id: "self-v11-local-first",
         memory_type: "constraint",
-        title: "DukeMemory local-first constraint",
+        title: "dukememory local-first constraint",
         body: "The memory system must stay local, fast, and useful without a model server. Embeddings improve recall when available, but FTS, structured cards, doctrine, and context packing remain the reliable baseline.",
     },
 ];

@@ -297,7 +297,7 @@ pub(crate) enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Install the Codex skill that makes agents use DukeMemory automatically.
+    /// Install the Codex skill that makes agents use dukememory automatically.
     InstallSkill {
         #[arg(long, default_value = "~/.codex/skills")]
         path: String,
@@ -737,7 +737,7 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Diagnose Codex MCP configuration for DukeMemory.
+    /// Diagnose Codex MCP configuration for dukememory.
     CodexDoctor {
         #[arg(long, default_value = "~/.codex/config.toml")]
         config: String,
