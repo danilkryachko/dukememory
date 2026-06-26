@@ -36,6 +36,7 @@ Transcript-based memory quickly turns into noise.
 - autonomous maintenance with rollback-friendly, size-bounded backups
 - storage footprint checks for local `.agent` growth
 - small install-backup retention by default
+- automatic SQLite and FTS optimization during autonomous maintenance
 
 ## What It Remembers
 

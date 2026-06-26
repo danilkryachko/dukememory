@@ -1243,6 +1243,20 @@ pub(crate) fn autonomous_run_once(
             detail: "operational retention cleanup applied".to_string(),
             memory_id: None,
         });
+        let optimized = optimize_db_report(conn, false)?;
+        report.actions.push(AutonomousAction {
+            kind: "optimize_storage".to_string(),
+            status: "ok".to_string(),
+            detail: format!(
+                "analyzed={} fts={} wal_checkpointed={} page_count={} freelist_count={}",
+                optimized.analyzed,
+                optimized.fts_optimized,
+                optimized.wal_checkpointed,
+                optimized.page_count,
+                optimized.freelist_count
+            ),
+            memory_id: None,
+        });
         let usefulness = usefulness_report(conn, 30, 30, 3)?;
         report.actions.push(AutonomousAction {
             kind: "usefulness_scan".to_string(),

@@ -381,35 +381,17 @@ fn integrity_report(conn: &Connection) -> Result<IntegrityReport> {
 }
 
 #[derive(Debug, Serialize)]
-struct OptimizeReport {
-    analyzed: bool,
-    fts_optimized: bool,
-    vacuumed: bool,
-    wal_checkpointed: bool,
-    page_count: i64,
-    freelist_count: i64,
+pub(crate) struct OptimizeReport {
+    pub(crate) analyzed: bool,
+    pub(crate) fts_optimized: bool,
+    pub(crate) vacuumed: bool,
+    pub(crate) wal_checkpointed: bool,
+    pub(crate) page_count: i64,
+    pub(crate) freelist_count: i64,
 }
 
 pub(crate) fn optimize_db(conn: &Connection, vacuum: bool, json_out: bool) -> Result<()> {
-    conn.execute_batch(
-        r#"
-        ANALYZE;
-        PRAGMA optimize;
-        INSERT INTO memories_fts(memories_fts) VALUES('optimize');
-        PRAGMA wal_checkpoint(TRUNCATE);
-        "#,
-    )?;
-    if vacuum {
-        conn.execute_batch("VACUUM;")?;
-    }
-    let report = OptimizeReport {
-        analyzed: true,
-        fts_optimized: true,
-        vacuumed: vacuum,
-        wal_checkpointed: true,
-        page_count: conn.query_row("PRAGMA page_count", [], |row| row.get(0))?,
-        freelist_count: conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?,
-    };
+    let report = optimize_db_report(conn, vacuum)?;
     if json_out {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -421,4 +403,26 @@ pub(crate) fn optimize_db(conn: &Connection, vacuum: bool, json_out: bool) -> Re
         println!("freelist_count: {}", report.freelist_count);
     }
     Ok(())
+}
+
+pub(crate) fn optimize_db_report(conn: &Connection, vacuum: bool) -> Result<OptimizeReport> {
+    conn.execute_batch(
+        r#"
+        ANALYZE;
+        PRAGMA optimize;
+        INSERT INTO memories_fts(memories_fts) VALUES('optimize');
+        PRAGMA wal_checkpoint(TRUNCATE);
+        "#,
+    )?;
+    if vacuum {
+        conn.execute_batch("VACUUM;")?;
+    }
+    Ok(OptimizeReport {
+        analyzed: true,
+        fts_optimized: true,
+        vacuumed: vacuum,
+        wal_checkpointed: true,
+        page_count: conn.query_row("PRAGMA page_count", [], |row| row.get(0))?,
+        freelist_count: conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?,
+    })
 }

@@ -3422,6 +3422,13 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
             .as_array()
             .unwrap()
             .iter()
+            .any(|item| item["kind"] == "optimize_storage" && item["status"] == "ok")
+    );
+    assert!(
+        run_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|item| item["kind"] == "rollback_retention" && item["status"] == "ok")
     );
     let rollback_backup_count = fs::read_dir(&rollback_dir)
@@ -4250,6 +4257,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     let autonomous = http_once(&db, &autonomous_request);
     assert!(autonomous.contains("\"report\""));
     assert!(autonomous.contains("\"embed_index\""));
+    assert!(autonomous.contains("\"optimize_storage\""));
 
     let inbox = http_once(
         &db,
@@ -4446,6 +4454,11 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     let actions = run_json["actions"].as_array().unwrap();
     assert!(actions.iter().any(|item| item["kind"] == "embed_index"));
+    assert!(
+        actions
+            .iter()
+            .any(|item| item["kind"] == "optimize_storage" && item["status"] == "ok")
+    );
     assert!(
         actions
             .iter()
