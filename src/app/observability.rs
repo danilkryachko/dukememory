@@ -147,6 +147,7 @@ pub(crate) struct DashboardReport {
     pub(crate) stale_projects: usize,
     pub(crate) missing_live_eval_projects: usize,
     pub(crate) recommendations_count: usize,
+    pub(crate) attention_reason_counts: BTreeMap<String, usize>,
     pub(crate) projects: Vec<ProjectDashboardItem>,
 }
 
@@ -169,6 +170,7 @@ pub(crate) struct ProjectDashboardItem {
     pub(crate) autonomous_inferred_missing: Option<usize>,
     pub(crate) embedding_missing: Option<usize>,
     pub(crate) recommended_budget: Option<String>,
+    pub(crate) attention_reasons: Vec<String>,
     pub(crate) recommendations: Vec<String>,
 }
 
@@ -1154,21 +1156,28 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
     } else {
         println!("dukememory. Dashboard");
         println!(
-            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} recommendations={}",
+            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} recommendations={} reason_types={}",
             report.status,
             report.total_projects,
             report.ready_projects,
             report.attention_projects,
             report.stale_projects,
             report.missing_live_eval_projects,
-            report.recommendations_count
+            report.recommendations_count,
+            report.attention_reason_counts.len()
         );
         for project in report.projects {
+            let reasons = if project.attention_reasons.is_empty() {
+                "-".to_string()
+            } else {
+                project.attention_reasons.join(",")
+            };
             println!(
-                "- {} status={} attention={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
+                "- {} status={} attention={} reasons={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
                 project.name,
                 project.status,
                 project.attention,
+                reasons,
                 project.memories,
                 project.pending_inbox,
                 project
@@ -1237,39 +1246,45 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
             let (memories, pending_inbox) = app_project_counts(&db).unwrap_or((0, 0));
             let embedding_missing = embedding.as_ref().map(|status| status.missing);
             let mut recommendations = Vec::new();
+            let mut attention_reasons = Vec::new();
             match &autonomous {
-                None => recommendations.push(
-                    "run dukememory autonomous run-once --level normal to create project status"
-                        .to_string(),
-                ),
-                Some(status) if !status.ok => recommendations
-                    .push("inspect dukememory autonomous status for warnings".to_string()),
+                None => {
+                    attention_reasons.push("autonomous_status_missing".to_string());
+                    recommendations.push(
+                        "run dukememory autonomous run-once --level normal to create project status"
+                            .to_string(),
+                    );
+                }
+                Some(status) if !status.ok => {
+                    attention_reasons.push("autonomous_status_warn".to_string());
+                    recommendations
+                        .push("inspect dukememory autonomous status for warnings".to_string());
+                }
                 Some(_) => {}
             }
             if autonomous_fresh == Some(false) {
+                attention_reasons.push("autonomous_status_stale".to_string());
                 recommendations.push(
                     "run dukememory autonomous run-once --level normal to refresh status"
                         .to_string(),
                 );
             }
             if live_eval.is_none() {
+                attention_reasons.push("live_eval_missing".to_string());
                 recommendations.push(
                     "run dukememory autonomous run-once --level normal to record live eval"
                         .to_string(),
                 );
             }
             if embedding_missing.unwrap_or(0) > 0 {
+                attention_reasons.push("embeddings_missing".to_string());
                 recommendations.push("run dukememory embed-index".to_string());
             }
             if pending_inbox > 0 {
+                attention_reasons.push("pending_inbox".to_string());
                 recommendations.push("review pending memory inbox".to_string());
             }
-            let attention = autonomous.as_ref().is_none_or(|status| !status.ok)
-                || autonomous_fresh == Some(false)
-                || live_eval.is_none()
-                || embedding_missing.unwrap_or(0) > 0
-                || pending_inbox > 0
-                || !recommendations.is_empty();
+            let attention = !attention_reasons.is_empty() || !recommendations.is_empty();
             let status = if attention { "attention" } else { "ready" }.to_string();
             Some(ProjectDashboardItem {
                 name: root
@@ -1294,6 +1309,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                 autonomous_inferred_missing: live_eval.map(|live| live.inferred_missing),
                 embedding_missing,
                 recommended_budget: profile.map(|profile| profile.recommended_budget),
+                attention_reasons,
                 recommendations,
             })
         })
@@ -1321,6 +1337,13 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         .iter()
         .map(|project| project.recommendations.len())
         .sum();
+    let mut attention_reason_counts = BTreeMap::new();
+    for reason in projects
+        .iter()
+        .flat_map(|project| project.attention_reasons.iter())
+    {
+        *attention_reason_counts.entry(reason.clone()).or_insert(0) += 1;
+    }
     let attention_projects = total_projects.saturating_sub(ready_projects);
     let ok = attention_projects == 0;
     let status = if ok { "ready" } else { "attention" }.to_string();
@@ -1334,6 +1357,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         stale_projects,
         missing_live_eval_projects,
         recommendations_count,
+        attention_reason_counts,
         projects,
     })
 }
