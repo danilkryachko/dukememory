@@ -139,6 +139,8 @@ pub(crate) struct ProjectProfileSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DashboardReport {
     pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
     pub(crate) total_projects: usize,
     pub(crate) ready_projects: usize,
     pub(crate) attention_projects: usize,
@@ -151,6 +153,8 @@ pub(crate) struct DashboardReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ProjectDashboardItem {
     pub(crate) name: String,
+    pub(crate) status: String,
+    pub(crate) attention: bool,
     pub(crate) root: String,
     pub(crate) db: String,
     pub(crate) memories: i64,
@@ -1150,7 +1154,8 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
     } else {
         println!("dukememory. Dashboard");
         println!(
-            "summary: total={} ready={} attention={} stale={} missing_live_eval={} recommendations={}",
+            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} recommendations={}",
+            report.status,
             report.total_projects,
             report.ready_projects,
             report.attention_projects,
@@ -1160,8 +1165,10 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
         );
         for project in report.projects {
             println!(
-                "- {} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
+                "- {} status={} attention={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
                 project.name,
+                project.status,
+                project.attention,
                 project.memories,
                 project.pending_inbox,
                 project
@@ -1257,12 +1264,21 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
             if pending_inbox > 0 {
                 recommendations.push("review pending memory inbox".to_string());
             }
+            let attention = autonomous.as_ref().is_none_or(|status| !status.ok)
+                || autonomous_fresh == Some(false)
+                || live_eval.is_none()
+                || embedding_missing.unwrap_or(0) > 0
+                || pending_inbox > 0
+                || !recommendations.is_empty();
+            let status = if attention { "attention" } else { "ready" }.to_string();
             Some(ProjectDashboardItem {
                 name: root
                     .file_name()
                     .and_then(|name| name.to_str())
                     .unwrap_or("project")
                     .to_string(),
+                status,
+                attention,
                 root: root.display().to_string(),
                 db: db.display().to_string(),
                 memories,
@@ -1306,8 +1322,12 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         .map(|project| project.recommendations.len())
         .sum();
     let attention_projects = total_projects.saturating_sub(ready_projects);
+    let ok = attention_projects == 0;
+    let status = if ok { "ready" } else { "attention" }.to_string();
     Ok(DashboardReport {
         version: 1,
+        ok,
+        status,
         total_projects,
         ready_projects,
         attention_projects,

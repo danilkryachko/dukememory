@@ -4018,6 +4018,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("recommendations"));
     assert!(html.contains("missing live eval"));
     assert!(html.contains("attention"));
+    assert!(html.contains("<span>status</span>"));
     assert!(html.contains("Memory QA"));
     assert!(html.contains("Storage"));
     assert!(html.contains("/ops-status"));
@@ -4079,6 +4080,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(dashboard.contains("\"autonomous_fresh\""));
     assert!(dashboard.contains("\"recommendations\""));
     assert!(dashboard.contains("\"total_projects\""));
+    assert!(dashboard.contains("\"status\""));
+    assert!(dashboard.contains("\"attention\""));
     assert!(dashboard.contains("\"attention_projects\""));
     assert!(dashboard.contains("\"missing_live_eval_projects\""));
 
@@ -5100,6 +5103,8 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let dashboard = stdout(cmd(&db).arg("dashboard").arg("--json"));
     let dashboard_json: Value = serde_json::from_str(&dashboard).unwrap();
     assert!(!dashboard_json["projects"].as_array().unwrap().is_empty());
+    assert!(dashboard_json["ok"].as_bool().is_some());
+    assert!(dashboard_json["status"].as_str().is_some());
     assert!(dashboard_json["total_projects"].as_u64().unwrap() >= 1);
     assert!(dashboard_json["attention_projects"].as_u64().is_some());
     assert!(dashboard_json["recommendations_count"].as_u64().is_some());
@@ -5126,8 +5131,16 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .iter()
             .all(|item| item["recommendations"].as_array().is_some())
     );
+    assert!(
+        dashboard_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["status"].as_str().is_some() && item["attention"].as_bool().is_some())
+    );
     let dashboard_text = stdout(cmd(&db).arg("dashboard"));
-    assert!(dashboard_text.contains("summary: total="));
+    assert!(dashboard_text.contains("summary: status="));
+    assert!(dashboard_text.contains("attention="));
     assert!(dashboard_text.contains("live_reads="));
     assert!(dashboard_text.contains("live_gaps="));
     assert!(dashboard_text.contains("auto_age="));

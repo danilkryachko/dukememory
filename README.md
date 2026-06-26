@@ -46,6 +46,7 @@ Transcript-based memory quickly turns into noise.
 - multi-project dashboard live reads, usefulness, and gap signals
 - dashboard autonomous age, freshness, and per-project repair hints
 - dashboard summary counters for ready and attention-needed projects
+- explicit dashboard ready/attention status for monitoring
 
 ## What It Remembers
 
