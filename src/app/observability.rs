@@ -166,6 +166,8 @@ pub(crate) struct MemoryQaReport {
     pub(crate) useful_rate_source: String,
     pub(crate) feedback_useful_rate: f64,
     pub(crate) inferred_useful_rate: f64,
+    pub(crate) inferred_missing: usize,
+    pub(crate) inferred_missing_queries: Vec<String>,
     pub(crate) quality_average: f64,
     pub(crate) active_memories: usize,
     pub(crate) unused: usize,
@@ -207,6 +209,8 @@ pub(crate) struct OpsEffectivenessStatus {
     pub(crate) useful_rate_source: String,
     pub(crate) feedback_useful_rate: f64,
     pub(crate) inferred_useful_rate: f64,
+    pub(crate) inferred_missing: usize,
+    pub(crate) inferred_missing_queries: Vec<String>,
     pub(crate) token_saving_estimate: usize,
 }
 
@@ -1170,6 +1174,7 @@ pub(crate) fn print_memory_qa(
             report.useful_rate_source
         );
         println!("quality_average: {:.1}", report.quality_average);
+        println!("inferred_missing: {}", report.inferred_missing);
         println!("token_saving_estimate: {}", report.token_saving_estimate);
         for issue in &report.issues {
             println!("issue: {issue}");
@@ -1270,6 +1275,16 @@ pub(crate) fn memory_qa_report(
         recommendations
             .push("convert repeated missing facts into durable memory cards".to_string());
     }
+    if live.inferred_missing > 0 {
+        issues.push(format!(
+            "{} inferred memory gap(s) from empty agent reads",
+            live.inferred_missing
+        ));
+        recommendations.push(
+            "review eval live --json inferred_missing_queries and add durable cards for repeated gaps"
+                .to_string(),
+        );
+    }
     recommendations.sort();
     recommendations.dedup();
     let mut score = 100.0;
@@ -1288,6 +1303,7 @@ pub(crate) fn memory_qa_report(
     if autonomous.as_ref().is_some_and(|status| !status.ok) {
         score -= 12.0;
     }
+    score -= live.inferred_missing.min(5) as f64 * 3.0;
     score = score.clamp(0.0, 100.0);
     Ok(MemoryQaReport {
         version: 1,
@@ -1301,6 +1317,8 @@ pub(crate) fn memory_qa_report(
         useful_rate_source: live.useful_rate_source,
         feedback_useful_rate: live.feedback_useful_rate,
         inferred_useful_rate: live.inferred_useful_rate,
+        inferred_missing: live.inferred_missing,
+        inferred_missing_queries: live.inferred_missing_queries,
         quality_average: quality.average_score,
         active_memories: usefulness.total_active,
         unused: usefulness.unused.len(),
@@ -1486,6 +1504,8 @@ pub(crate) fn ops_status_report(
             useful_rate_source: qa.useful_rate_source,
             feedback_useful_rate: qa.feedback_useful_rate,
             inferred_useful_rate: qa.inferred_useful_rate,
+            inferred_missing: qa.inferred_missing,
+            inferred_missing_queries: qa.inferred_missing_queries,
             token_saving_estimate: qa.token_saving_estimate,
         },
         quality_loop,

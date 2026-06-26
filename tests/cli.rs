@@ -1,6 +1,6 @@
 use assert_cmd::Command;
 use predicates::str::contains;
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 use serde_json::Value;
 use std::fs;
 use std::io::Write;
@@ -16,6 +16,22 @@ fn cmd(db: &std::path::Path) -> Command {
 
 fn stdout(command: &mut Command) -> String {
     String::from_utf8(command.assert().success().get_output().stdout.clone()).unwrap()
+}
+
+fn insert_empty_read_event(db: &std::path::Path, command: &str, query: &str) {
+    let conn = Connection::open(db).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .min(i64::MAX as u128) as i64;
+    conn.execute(
+        "INSERT INTO memory_read_events \
+         (command, query, memory_ids, semantic_used, result_count, budget, elapsed_ms, created_at) \
+         VALUES (?1, ?2, '', 1, 0, 1200, 1, ?3)",
+        params![command, query, now],
+    )
+    .unwrap();
 }
 
 fn http_once(db: &std::path::Path, request: &str) -> String {
@@ -3945,6 +3961,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(dashboard.contains("\"dashboard\""));
     assert!(dashboard.contains("\"projects\""));
 
+    insert_empty_read_event(&db, "brief", "missing ui deployment memory");
+
     let eval_live = http_once(
         &db,
         "GET /eval-live?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
@@ -3953,6 +3971,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(eval_live.contains("\"useful_rate\""));
     assert!(eval_live.contains("\"useful_rate_source\":\"inferred\""));
     assert!(eval_live.contains("\"inferred_useful_rate\""));
+    assert!(eval_live.contains("\"inferred_missing\":1"));
+    assert!(eval_live.contains("missing ui deployment memory"));
 
     let recall = http_once(
         &db,
@@ -4004,6 +4024,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(ops.contains("\"ops\""));
     assert!(ops.contains("\"effectiveness\""));
     assert!(ops.contains("\"multi_device\""));
+    assert!(ops.contains("\"inferred_missing\":1"));
 
     let contract = http_once(
         &db,
@@ -4297,6 +4318,8 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let recall_json: Value = serde_json::from_str(&recall).unwrap();
     assert!(!recall_json["items"].as_array().unwrap().is_empty());
 
+    insert_empty_read_event(&db, "impact", "missing autonomous rollback memory");
+
     let eval_live = stdout(
         cmd(&db)
             .arg("eval")
@@ -4308,6 +4331,11 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let eval_live_json: Value = serde_json::from_str(&eval_live).unwrap();
     assert!(eval_live_json["reads"].as_u64().unwrap() >= 1);
     assert!(eval_live_json["inferred_useful_rate"].as_f64().unwrap() > 0.0);
+    assert_eq!(eval_live_json["inferred_missing"].as_u64().unwrap(), 1);
+    assert_eq!(
+        eval_live_json["inferred_missing_queries"][0],
+        "missing autonomous rollback memory"
+    );
 
     let inbox_v2 = stdout(cmd(&db).arg("inbox-v2").arg("report").arg("--json"));
     let inbox_v2_json: Value = serde_json::from_str(&inbox_v2).unwrap();
@@ -4350,6 +4378,12 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_f64()
             .unwrap()
             > 0.0
+    );
+    assert_eq!(
+        ops_json["effectiveness"]["inferred_missing"]
+            .as_u64()
+            .unwrap(),
+        1
     );
     assert_eq!(ops_json["multi_device"]["local_first"], true);
 

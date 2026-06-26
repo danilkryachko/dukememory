@@ -140,7 +140,8 @@ dukememory ops-status --json
 
 It combines usage, usefulness, quality, embeddings, autonomous maintenance, and
 local-first multi-device readiness. When no manual feedback exists, live
-usefulness is inferred from successful agent memory reads.
+usefulness is inferred from successful agent memory reads, and empty agent reads
+are surfaced as memory gaps to fill.
 
 ## MCP And Codex
 

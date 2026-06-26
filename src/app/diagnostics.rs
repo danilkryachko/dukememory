@@ -15,8 +15,10 @@ pub(crate) struct LiveEvalReport {
     pub(crate) inferred_useful: usize,
     pub(crate) inferred_total: usize,
     pub(crate) inferred_useful_rate: f64,
+    pub(crate) inferred_missing: usize,
     pub(crate) noisy_memory_ids: Vec<String>,
     pub(crate) missing_queries: Vec<String>,
+    pub(crate) inferred_missing_queries: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -929,6 +931,13 @@ fn print_live_eval(conn: &Connection, since_days: i64, json_out: bool) -> Result
             report.inferred_useful,
             report.inferred_total
         );
+        println!("inferred_missing: {}", report.inferred_missing);
+        if !report.inferred_missing_queries.is_empty() {
+            println!(
+                "inferred_missing_queries: {}",
+                report.inferred_missing_queries.join(" | ")
+            );
+        }
         println!("noisy_memory_ids: {}", report.noisy_memory_ids.join(","));
     }
     Ok(())
@@ -971,20 +980,20 @@ pub(crate) fn live_eval_report(conn: &Connection, since_days: i64) -> Result<Liv
     missing_queries.sort();
     missing_queries.dedup();
     let total_feedback = useful + useless + missing;
-    let (inferred_useful, inferred_total) = inferred_live_usefulness(&reads);
+    let inferred = inferred_live_signals(conn, &reads)?;
     let feedback_useful_rate = if total_feedback == 0 {
         0.0
     } else {
         useful as f64 / total_feedback as f64
     };
-    let inferred_useful_rate = if inferred_total == 0 {
+    let inferred_useful_rate = if inferred.total == 0 {
         0.0
     } else {
-        inferred_useful as f64 / inferred_total as f64
+        inferred.useful as f64 / inferred.total as f64
     };
     let (useful_rate, useful_rate_source) = if total_feedback > 0 {
         (feedback_useful_rate, "feedback")
-    } else if inferred_total > 0 {
+    } else if inferred.total > 0 {
         (inferred_useful_rate, "inferred")
     } else {
         (0.0, "none")
@@ -1000,17 +1009,29 @@ pub(crate) fn live_eval_report(conn: &Connection, since_days: i64) -> Result<Liv
         useful_rate,
         useful_rate_source: useful_rate_source.to_string(),
         feedback_useful_rate,
-        inferred_useful,
-        inferred_total,
+        inferred_useful: inferred.useful,
+        inferred_total: inferred.total,
         inferred_useful_rate,
+        inferred_missing: inferred.missing_queries.len(),
         noisy_memory_ids: noisy,
         missing_queries,
+        inferred_missing_queries: inferred.missing_queries,
     })
 }
 
-fn inferred_live_usefulness(reads: &[MemoryReadEvent]) -> (usize, usize) {
+struct InferredLiveSignals {
+    useful: usize,
+    total: usize,
+    missing_queries: Vec<String>,
+}
+
+fn inferred_live_signals(
+    conn: &Connection,
+    reads: &[MemoryReadEvent],
+) -> Result<InferredLiveSignals> {
     let mut useful = 0;
     let mut total = 0;
+    let mut missing_queries = Vec::new();
     for read in reads {
         if !is_agent_memory_read(&read.command) {
             continue;
@@ -1018,9 +1039,34 @@ fn inferred_live_usefulness(reads: &[MemoryReadEvent]) -> (usize, usize) {
         total += 1;
         if read.result_count > 0 && !read.memory_ids.is_empty() {
             useful += 1;
+        } else if unresolved_memory_gap(conn, &read.query)? {
+            missing_queries.push(truncate_chars(&read.query, 140));
         }
     }
-    (useful, total)
+    missing_queries.sort();
+    missing_queries.dedup();
+    missing_queries.truncate(20);
+    Ok(InferredLiveSignals {
+        useful,
+        total,
+        missing_queries,
+    })
+}
+
+fn unresolved_memory_gap(conn: &Connection, query: &str) -> Result<bool> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(false);
+    }
+    let rows = query_memories(
+        conn,
+        Some(query),
+        &[],
+        &["active".to_string(), "uncertain".to_string()],
+        None,
+        1,
+    )?;
+    Ok(rows.is_empty())
 }
 
 fn is_agent_memory_read(command: &str) -> bool {

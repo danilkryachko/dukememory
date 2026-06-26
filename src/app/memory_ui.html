@@ -1017,11 +1017,13 @@
         <div class="stat"><strong>${Number(ops.score || 0).toFixed(1)}</strong><span>${escapeHtml(ops.status || "-")}</span></div>
         <div class="stat"><strong>${Number(effectiveness.reads || 0)}</strong><span>reads</span></div>
         <div class="stat"><strong>${Number((effectiveness.useful_rate || 0) * 100).toFixed(0)}%</strong><span>useful ${escapeHtml(effectiveness.useful_rate_source || "")}</span></div>
+        <div class="stat"><strong>${Number(effectiveness.inferred_missing || 0)}</strong><span>memory gaps</span></div>
         <div class="stat"><strong>${opsEmbeddings.current ? "ok" : "warn"}</strong><span>${escapeHtml(t("embeddings"))}</span></div>
         <div class="stat"><strong>${opsAutonomous.ok == null ? "-" : opsAutonomous.ok ? "ok" : "warn"}</strong><span>${escapeHtml(t("autonomous"))}</span></div>
         <div class="stat"><strong>${multiDevice.ready ? "ok" : "warn"}</strong><span>${escapeHtml(t("multiDevice"))}</span></div>
       </div>
       <div class="card"><div class="title">${escapeHtml(t("multiDevice"))}</div><div class="body">${escapeHtml(t("readyForSync"))}: ${multiDevice.ready ? "yes" : "no"}<br>${multiDevice.blockers?.length ? multiDevice.blockers.map(escapeHtml).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">memory gaps</div><div class="body">${effectiveness.inferred_missing_queries?.length ? effectiveness.inferred_missing_queries.slice(0, 6).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">recommendations</div><div class="body">${ops.recommendations?.length ? ops.recommendations.slice(0, 6).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="kv">
         <b>Language</b><span>${escapeHtml(state.lang.toUpperCase())}</span>
@@ -1038,6 +1040,7 @@
         <div class="stat"><strong>${Number(qa.reads || 0)}</strong><span>reads</span></div>
         <div class="stat"><strong>${Number((qa.semantic_read_rate || 0) * 100).toFixed(0)}%</strong><span>semantic</span></div>
         <div class="stat"><strong>${Number((qa.inferred_useful_rate || 0) * 100).toFixed(0)}%</strong><span>inferred useful</span></div>
+        <div class="stat"><strong>${Number(qa.inferred_missing || 0)}</strong><span>gaps</span></div>
         <div class="stat"><strong>${Number(qa.token_saving_estimate || 0)}</strong><span>tokens saved</span></div>
       </div>
       <div class="card"><div class="title">issues</div><div class="body">${qa.issues?.length ? qa.issues.map(escapeHtml).join("<br>") : "-"}</div></div>
