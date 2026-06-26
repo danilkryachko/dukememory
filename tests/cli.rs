@@ -5350,6 +5350,29 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .flat_map(|project| project["actions"].as_array().unwrap().iter())
             .any(|action| action["safe_auto"] == true && action["applied"] == true)
     );
+    assert!(
+        dashboard_repair_apply_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|project| project["actions"].as_array().unwrap().iter())
+            .any(|action| action["safe_auto"] == true
+                && action["applied"] == true
+                && action["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("inferred_feedback:"))
+    );
+    assert!(
+        dashboard_repair_apply_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|project| project["actions"].as_array().unwrap().iter())
+            .any(|action| action["safe_auto"] == true
+                && action["applied"] == true
+                && action["detail"].as_str().unwrap().contains("gap_inbox:"))
+    );
     let dashboard_repair_history = stdout(cmd(&db).arg("dashboard-repair-history").arg("--json"));
     let dashboard_repair_history_json: Value =
         serde_json::from_str(&dashboard_repair_history).unwrap();

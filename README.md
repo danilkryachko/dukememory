@@ -56,6 +56,7 @@ Transcript-based memory quickly turns into noise.
 - per-project repair-loop health in the multi-project dashboard
 - top-level memory-gap counters and safe repair hints in the dashboard
 - fresh live-eval fallback for dashboard memory-gap detection
+- compact autonomous gap metrics in dashboard repair results
 
 ## What It Remembers
 
