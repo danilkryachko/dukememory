@@ -4226,6 +4226,39 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .arg("--source")
             .arg("autonomous_compact"),
     );
+    let legacy_compact_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("task_state")
+            .arg("Autonomous compacted legacy operational memory")
+            .arg("Legacy compact card that should inherit source links.")
+            .arg("--scope")
+            .arg("project")
+            .arg("--source")
+            .arg("autonomous_compact"),
+    )
+    .trim()
+    .to_string();
+    let legacy_source_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("note")
+            .arg("Legacy source with evidence link")
+            .arg("Source row for old compact link repair.")
+            .arg("--scope")
+            .arg("project")
+            .arg("--link")
+            .arg("file:src/app/autonomous.rs"),
+    )
+    .trim()
+    .to_string();
+    Connection::open(&db)
+        .unwrap()
+        .execute(
+            "UPDATE memories SET status = 'superseded', superseded_by = ?1 WHERE id = ?2",
+            params![legacy_compact_id, legacy_source_id],
+        )
+        .unwrap();
 
     for idx in 0..3 {
         stdout(
@@ -4235,7 +4268,9 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
                 .arg(format!("Operational note {idx}"))
                 .arg(format!("Temporary operational context {idx}."))
                 .arg("--scope")
-                .arg("project"),
+                .arg("project")
+                .arg("--link")
+                .arg("file:src/app/autonomous.rs"),
         );
     }
     for version in ["0.14.20", "0.14.21", "0.14.22"] {
@@ -4253,7 +4288,9 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
                     "Release {version} added autonomous memory behavior that should be compacted into release history."
                 ))
                 .arg("--scope")
-                .arg("project"),
+                .arg("project")
+                .arg("--link")
+                .arg("file:src/app/autonomous.rs"),
         );
     }
     stdout(
@@ -4365,6 +4402,11 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(
         actions
             .iter()
+            .any(|item| item["kind"] == "repair_compact_links" && item["status"] == "ok")
+    );
+    assert!(
+        actions
+            .iter()
             .any(|item| item["kind"] == "resolve_quality_inbox" && item["status"] == "ok")
     );
     assert!(
@@ -4400,6 +4442,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_array()
             .unwrap()
             .iter()
+            .any(|item| item["action"] == "repair_compact_links")
+    );
+    assert!(
+        run_json["policy"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|item| item["action"] == "resolve_quality_inbox")
     );
     assert!(status_file.exists());
@@ -4413,6 +4462,14 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         )
         .unwrap();
     assert_eq!(resolved_quality_status, "rejected");
+    let repaired_legacy_links: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_links WHERE memory_id = ?1 AND target = 'src/app/autonomous.rs'",
+            [&legacy_compact_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(repaired_legacy_links, 1);
 
     let slimmed_body: String = conn
         .query_row(
@@ -4447,6 +4504,22 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(release_body.len() <= 1400);
     assert!(release_body.contains("0.14.20"));
     assert!(release_body.contains("0.14.22"));
+    let inherited_operational_links: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_links l JOIN memories m ON m.id = l.memory_id WHERE m.title = 'Autonomous compacted project operational memory' AND l.target = 'src/app/autonomous.rs'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(inherited_operational_links >= 1);
+    let inherited_release_links: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_links l JOIN memories m ON m.id = l.memory_id WHERE m.title = 'Autonomous compacted project release history' AND l.target = 'src/app/autonomous.rs'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(inherited_release_links >= 1);
 
     let quality = stdout(
         cmd(&db)
@@ -4829,7 +4902,18 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .arg("--json"),
     );
     let superseded_json: Value = serde_json::from_str(&superseded).unwrap();
-    assert_eq!(superseded_json.as_array().unwrap().len(), 3);
+    assert_eq!(
+        superseded_json
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["title"]
+                .as_str()
+                .unwrap()
+                .starts_with("Operational note"))
+            .count(),
+        3
+    );
 
     let no_change_run = stdout(
         cmd(&db)
@@ -4912,6 +4996,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_array()
             .unwrap()
             .iter()
+            .any(|item| item["kind"] == "rollback_restore_links")
+    );
+    assert!(
+        rollback_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|item| item["kind"] == "rollback_restore_inbox_status")
     );
     assert!(
@@ -4939,6 +5030,15 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         )
         .unwrap();
     assert_eq!(restored_quality_inbox_status, "pending");
+    let restored_legacy_links: i64 = Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM memory_links WHERE memory_id = ?1",
+            [&legacy_compact_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(restored_legacy_links, 0);
     let rejected_gap_inbox: i64 = Connection::open(&db)
         .unwrap()
         .query_row(

@@ -150,7 +150,8 @@ be materialized as lightweight inferred feedback during autonomous maintenance,
 and unresolved missing feedback signals also feed gap inbox suggestions. Release
 history, long operational cards, and the project contract are bounded separately
 to keep memory lean. Resolved quality-review inbox items are closed
-autonomously when the underlying card is no longer weak.
+autonomously when the underlying card is no longer weak. New compact cards keep
+inherited evidence links from their source memories.
 
 ## MCP And Codex
 

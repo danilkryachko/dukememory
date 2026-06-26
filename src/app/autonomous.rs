@@ -1035,6 +1035,10 @@ enum AutonomousRollback {
         id: String,
         body: String,
     },
+    RestoreMemoryLinks {
+        id: String,
+        links: Vec<String>,
+    },
     RejectAddedMemory {
         id: String,
     },
@@ -1317,6 +1321,7 @@ pub(crate) fn autonomous_run_once(
             autonomous_approve_inbox(conn, effective_level, &mut report)?;
             autonomous_compact_release_history(conn, effective_level, request.scope, &mut report)?;
             autonomous_compact_operational(conn, effective_level, request.scope, &mut report)?;
+            autonomous_repair_compact_links(conn, effective_level, request.scope, &mut report)?;
             autonomous_supersede_duplicates(conn, effective_level, &mut report)?;
             autonomous_slim_long_memories(conn, effective_level, request.scope, &mut report)?;
             autonomous_resolve_quality_inbox(conn, effective_level, request.scope, &mut report)?;
@@ -1803,6 +1808,51 @@ fn render_release_history_body(rows: &[Memory]) -> String {
     truncate_chars(&body, 1400)
 }
 
+fn inherited_memory_links(conn: &Connection, rows: &[Memory], max: usize) -> Result<Vec<String>> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for row in rows {
+        for link in get_links(conn, &row.id)? {
+            let raw = format!("{}:{}", link.kind, link.target);
+            if seen.insert(raw.clone()) {
+                out.push(raw);
+                if out.len() >= max {
+                    return Ok(out);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn raw_memory_links(conn: &Connection, memory_id: &str) -> Result<Vec<String>> {
+    get_links(conn, memory_id).map(|links| {
+        links
+            .into_iter()
+            .map(|link| format!("{}:{}", link.kind, link.target))
+            .collect()
+    })
+}
+
+fn replace_memory_links(conn: &Connection, memory_id: &str, links: &[String]) -> Result<()> {
+    let parsed = parse_links(links)?;
+    conn.execute(
+        "DELETE FROM memory_links WHERE memory_id = ?1",
+        params![memory_id],
+    )?;
+    insert_links(conn, memory_id, &parsed)
+}
+
+fn superseded_sources(conn: &Connection, memory_id: &str) -> Result<Vec<Memory>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM memories WHERE superseded_by = ?1 ORDER BY updated_at DESC LIMIT 50",
+    )?;
+    let ids = stmt
+        .query_map(params![memory_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ids.into_iter().map(|id| get_memory(conn, &id)).collect()
+}
+
 fn autonomous_compact_release_history(
     conn: &Connection,
     level: AutonomousLevel,
@@ -1847,6 +1897,7 @@ fn autonomous_compact_release_history(
         });
         return Ok(());
     }
+    let links = inherited_memory_links(conn, &rows, 8)?;
     let id = add_memory(
         conn,
         AddMemory {
@@ -1859,7 +1910,7 @@ fn autonomous_compact_release_history(
             source: Some("autonomous_release_compact".to_string()),
             supersedes: None,
             confidence: 0.9,
-            links: Vec::new(),
+            links,
         },
     )?;
     report
@@ -1889,6 +1940,112 @@ fn autonomous_compact_release_history(
         status: "ok".to_string(),
         detail: format!("compacted {} release history cards", rows.len()),
         memory_id: Some(id),
+    });
+    Ok(())
+}
+
+fn is_autonomous_compact_card(memory: &Memory) -> bool {
+    memory.title.starts_with("Autonomous compacted ")
+        || matches!(
+            memory.source.as_deref(),
+            Some("autonomous_compact") | Some("autonomous_release_compact")
+        )
+}
+
+fn autonomous_repair_compact_links(
+    conn: &Connection,
+    level: AutonomousLevel,
+    scope: &str,
+    report: &mut AutonomousReport,
+) -> Result<()> {
+    let max = match level {
+        AutonomousLevel::Conservative => 0,
+        AutonomousLevel::Normal => 2,
+        AutonomousLevel::Aggressive => 5,
+    };
+    if max == 0 {
+        return Ok(());
+    }
+    let compact_cards = query_memories(
+        conn,
+        None,
+        &["task_state".to_string()],
+        &["active".to_string(), "uncertain".to_string()],
+        Some(scope),
+        100,
+    )?
+    .into_iter()
+    .filter(is_autonomous_compact_card)
+    .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    for card in compact_cards {
+        let existing = raw_memory_links(conn, &card.id)?;
+        if !existing.is_empty() {
+            continue;
+        }
+        let sources = superseded_sources(conn, &card.id)?;
+        let inherited = inherited_memory_links(conn, &sources, 8)?;
+        if !inherited.is_empty() {
+            candidates.push((card, existing, inherited));
+        }
+        if candidates.len() >= max {
+            break;
+        }
+    }
+    let decision = autonomous_policy_decision(AutonomousPolicyInput {
+        action: "repair_compact_links",
+        level,
+        risk_score: 8.0,
+        usefulness_score: (candidates.len().min(5) as f64) * 8.0,
+        token_saving_score: (candidates.len().min(5) as f64) * 2.0,
+        confidence: if candidates.is_empty() { 0.0 } else { 0.92 },
+        rollback: true,
+        reason: format!(
+            "{} compact card(s) with inheritable links",
+            candidates.len()
+        ),
+    });
+    report.policy.push(decision.clone());
+    if candidates.is_empty() {
+        report.actions.push(AutonomousAction {
+            kind: "repair_compact_links".to_string(),
+            status: "skipped".to_string(),
+            detail: "no compact cards with inheritable links".to_string(),
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    if !decision.allowed {
+        report.actions.push(AutonomousAction {
+            kind: "repair_compact_links".to_string(),
+            status: "skipped".to_string(),
+            detail: decision.reason,
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    let mut changed = 0;
+    for (card, previous_links, inherited_links) in candidates {
+        report
+            .rollback
+            .push(AutonomousRollback::RestoreMemoryLinks {
+                id: card.id.clone(),
+                links: previous_links,
+            });
+        replace_memory_links(conn, &card.id, &inherited_links)?;
+        log_event(
+            conn,
+            "autonomous_repair_compact_links",
+            Some(&card.id),
+            &format!("inherited {} link(s)", inherited_links.len()),
+        )?;
+        changed += 1;
+    }
+    report.actions.push(AutonomousAction {
+        kind: "repair_compact_links".to_string(),
+        status: "ok".to_string(),
+        detail: format!("repaired links on {changed} compact card(s)"),
+        memory_id: None,
     });
     Ok(())
 }
@@ -1938,6 +2095,7 @@ fn autonomous_compact_operational(
         return Ok(());
     }
     let body = render_operational_compact_body(&rows);
+    let links = inherited_memory_links(conn, &rows, 8)?;
     let id = add_memory(
         conn,
         AddMemory {
@@ -1950,7 +2108,7 @@ fn autonomous_compact_operational(
             source: Some("autonomous_compact".to_string()),
             supersedes: None,
             confidence: 0.9,
-            links: Vec::new(),
+            links,
         },
     )?;
     report
@@ -2342,6 +2500,15 @@ pub(crate) fn autonomous_rollback(
                     kind: "rollback_restore_body".to_string(),
                     status: "ok".to_string(),
                     detail: "restored memory body".to_string(),
+                    memory_id: Some(id.clone()),
+                });
+            }
+            AutonomousRollback::RestoreMemoryLinks { id, links } => {
+                replace_memory_links(conn, id, links)?;
+                out.actions.push(AutonomousAction {
+                    kind: "rollback_restore_links".to_string(),
+                    status: "ok".to_string(),
+                    detail: format!("restored {} memory link(s)", links.len()),
                     memory_id: Some(id.clone()),
                 });
             }
