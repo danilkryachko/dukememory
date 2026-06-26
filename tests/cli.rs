@@ -3330,11 +3330,13 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
     );
     let rollback_json: Value = serde_json::from_str(&rollback).unwrap();
     assert_eq!(rollback_json["level"], "rollback");
-    assert!(rollback_json["actions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|item| item["kind"] == "rollback_restore_status"));
+    assert!(
+        rollback_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "rollback_restore_status")
+    );
 }
 
 #[test]
