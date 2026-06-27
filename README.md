@@ -1,4 +1,4 @@
-# dukememory.
+# dukememory
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust 2024](https://img.shields.io/badge/rust-2024-orange.svg)](Cargo.toml)
@@ -7,15 +7,16 @@
 [![Brand](https://img.shields.io/badge/brand-protected-6b7280.svg)](TRADEMARKS.md)
 ![Views](https://komarev.com/ghpvc/?username=danilkryachko-dukememory&label=views&color=0f766e&style=flat-square)
 
-**Project memory for AI coding agents.**
+**Local-first project memory for AI coding agents.**
 
-`dukememory` is a local memory layer for Codex, Claude, Cursor, and other
-coding agents. It keeps the project knowledge that should survive across chats:
+`dukememory` is a Rust CLI, MCP server, and Codex skill that gives Codex,
+Claude, Cursor, and other AI coding agents durable project memory. It stores
 decisions, constraints, commands, known issues, task state, user preferences,
-and design notes.
+and design notes in local SQLite, with optional semantic search through
+embeddings.
 
-It is built for one job: give agents the smallest useful context before they
-touch code, without dumping chat history into every prompt.
+It is built for one job: give agents the smallest useful context before coding,
+without dumping chat history into every prompt.
 
 ![dukememory. web UI](docs/screenshot.png)
 
@@ -24,92 +25,14 @@ touch code, without dumping chat history into every prompt.
 Coding agents forget important project context. Long prompts waste tokens.
 Transcript-based memory quickly turns into noise.
 
-`dukememory` gives you:
+`dukememory` gives them a compact, searchable memory layer:
 
-- durable project memory in `.agent/memory.db`
-- tiny task briefs before coding
-- file and symbol impact checks before edits
-- structured cards instead of chat dumps
-- local-first storage with optional semantic recall
-- a web UI to inspect, edit, and audit memory
-- an MCP server and Codex skill for agent-native use
-- autonomous maintenance with rollback-friendly, size-bounded backups
-- storage footprint checks for local `.agent` growth
-- small install-backup retention by default
-- automatic SQLite and FTS optimization during autonomous maintenance
-- SQLite freelist health and manual vacuum recommendations
-- autonomous freshness and last-run action visibility
-- agent integration checks for project rules, skill, and MCP wiring
-- autonomous repair of project rules, config, AGENTS, and Codex skill
-- live usefulness snapshots in autonomous maintenance reports
-- live usefulness visibility in autonomous CLI and web status
-- multi-project dashboard live reads, usefulness, and gap signals
-- dashboard autonomous age, freshness, and per-project repair hints
-- dashboard summary counters for ready and attention-needed projects
-- explicit dashboard ready/attention status for monitoring
-- machine-readable dashboard attention reasons for monitors
-- dashboard repair plans with safe autonomous action hints
-- safe dashboard repair execution for autonomous project upkeep
-- HTTP and Web safe repair with audit visibility
-- repair history summaries for autonomous upkeep loops
-- repair-loop health folded into one compact ops status
-- per-project repair-loop health in the multi-project dashboard
-- top-level memory-gap counters and safe repair hints in the dashboard
-- fresh live-eval fallback for dashboard memory-gap detection
-- compact autonomous gap metrics in dashboard repair results
-- gap inbox status counters in the multi-project dashboard
-- reversible auto-close for resolved autonomous gap inbox items
-- local ops-status gap inbox counters for single-project agents
-- oldest pending gap-inbox age in dashboard and ops status
-- stale gap-inbox recommendations for autonomous repair prioritization
-- stale gap-inbox volume counters for dashboard and ops prioritization
-- dashboard repair priority ordering for stale gap-inbox projects
-- quality-aware retrieval ranking from recent reads and feedback
-- diverse retrieval selection so one memory type cannot crowd out the brief
-- adaptive relevance floors so tiny retrieval drops weak low-score tails
-- query-focused retrieval snippets so long cards stay token-light
-- query-focused brief and impact summaries for first-hop agent memory
-- runtime near-duplicate suppression for smaller focused retrieval packs
-- generic query-term filtering for cleaner relevance scoring
-- specificity-aware hit caps for extra-compact generic queries
-- specificity-aware brief file and check limits
-- semantic skip for generic-only hybrid queries
-- explicit semantic skipped receipts for clearer memory observability
-- generic-only retrieval skips unrelated recent fallback candidates
-- tiny lexical-saturated retrieval skips unrelated recent fallback candidates
-- tiny multi-term retrieval drops partial lexical noise without semantic support
-- context packs keep recent fallback relevant, with one-card bootstrap only when direct matches are empty
-- agent context recent fallback requires task overlap or one durable bootstrap card
-- agent context and semantic context packs share budgeted semantic thresholds
-- compressed recall summaries focus on the query window instead of leading body text
-- agent context next actions are relevance-filtered and budget-bounded
-- context-pack cards render query-focused body windows for task-aware surfaces
-- MCP memory search returns compact query-focused summaries instead of full bodies
-- MCP memory get is compact by default, with explicit include_body for full cards
-- MCP evidence and doctrine are compact by default, with explicit include_body for audits
-- MCP snapshot, review, and inbox list are bounded for token-light agent reads
-- MCP brief, impact, drift, auto-ingest, and doctor share bounded agent defaults
-- MCP budget planning helps agents choose the smallest useful memory budget
-- MCP compact JSON responses stay valid under very small max_chars budgets
-- MCP feedback lets agents record useful/useless/missing memory signals
-- tiny retrieval suppresses same-query useless feedback hits
-- context and impact suppress same-query useless feedback hits
-- semantic context additions suppress same-query useless feedback hits
-- CLI, MCP, and web search suppress same-query useless feedback hits
-- MCP snapshot and agent next actions suppress same-query useless feedback hits
-- search and snapshot suppression use feedback-only signals to avoid read-event scans
-- budget planning uses missing feedback to choose the next smallest useful profile
-- budget planning ignores missing feedback after the gap is resolved
-- generic-only empty reads ignored by inferred memory-gap QA
-- zero-card generic-only outputs explain why memory was not injected
-- weak one-term retrieval skips unrelated recent fallback candidates
-- weak one-term hybrid queries skip semantic search
-- budget-aware semantic score floors filter weak semantic-only candidates
-- tiny hybrid retrieval skips semantic search when lexical matches are saturated
-- lexical saturation ignores near-duplicate FTS matches
-- lexical saturation requires full concrete query-term coverage
-- lexical saturation requires trusted active high-confidence FTS matches
-- tiny relevance floor can keep one strong card instead of forcing a weak second
+- **Local-first storage** in `.agent/memory.db` with SQLite and FTS.
+- **Agent-native access** through an MCP server, Codex skill, CLI, and web UI.
+- **Structured memory cards** for decisions, constraints, commands, issues, and task state.
+- **Small context briefs** before coding, including file and symbol impact checks.
+- **Optional semantic recall** with Ollama or OpenAI-compatible embeddings.
+- **Autonomous maintenance** for freshness, backups, repair hints, and memory-gap review.
 
 ## What It Remembers
 
