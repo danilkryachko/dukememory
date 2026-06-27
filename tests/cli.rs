@@ -4529,6 +4529,94 @@ fn tiny_retrieval_suppresses_compacted_history_unless_requested() {
 }
 
 #[test]
+fn tiny_retrieval_caps_broad_release_task_state_tail() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for (title, body) in [
+        (
+            "Budget target first release",
+            "Released dukememory with budget target alpha planner window storage guard.",
+        ),
+        (
+            "Budget target second release",
+            "Released dukememory with budget target beta scheduler cache telemetry guard.",
+        ),
+    ] {
+        cmd(&db)
+            .arg("add")
+            .arg("task_state")
+            .arg(title)
+            .arg(body)
+            .assert()
+            .success();
+    }
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Budget target evergreen design")
+        .arg("Budget target policy retrieval behavior should prefer durable design notes.")
+        .assert()
+        .success();
+
+    let focused = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("budget target policy")
+            .arg("--strategy")
+            .arg("fts")
+            .arg("--format")
+            .arg("json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let focused_json: Value = serde_json::from_str(&focused).unwrap();
+    let focused_hits = focused_json["hits"].as_array().unwrap();
+    let focused_release_task_states = focused_hits
+        .iter()
+        .filter(|hit| {
+            hit["memory"]["type"] == "task_state"
+                && hit["memory"]["title"].as_str().unwrap().contains("release")
+        })
+        .count();
+    assert_eq!(
+        focused_release_task_states, 1,
+        "ordinary tiny recall should keep at most one broad release task_state"
+    );
+    assert!(
+        focused_hits
+            .iter()
+            .any(|hit| hit["memory"]["title"] == "Budget target evergreen design")
+    );
+
+    let release = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("budget target release")
+            .arg("--strategy")
+            .arg("fts")
+            .arg("--format")
+            .arg("json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let release_json: Value = serde_json::from_str(&release).unwrap();
+    let release_task_states = release_json["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|hit| {
+            hit["memory"]["type"] == "task_state"
+                && hit["memory"]["title"].as_str().unwrap().contains("release")
+        })
+        .count();
+    assert!(
+        release_task_states >= 2,
+        "explicit release queries should not cap release task_state cards"
+    );
+}
+
+#[test]
 fn quality_report_caps_broad_history_read_boost() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

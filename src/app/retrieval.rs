@@ -498,6 +498,7 @@ pub(crate) fn retrieve_report(
     });
     hits = apply_tiny_lexical_precision_gate(hits, request.budget, &task_terms);
     hits = apply_tiny_operational_history_gate(hits, request.budget, &task_terms);
+    hits = apply_tiny_broad_release_task_state_cap(hits, request.budget, &task_terms);
     hits = apply_tiny_feedback_precision_gate(hits, request.budget, &task_terms, &quality_signals);
     hits = apply_relevance_floor(hits, request.budget);
     hits = filter_redundant_hits(hits, request.budget);
@@ -1176,6 +1177,38 @@ fn is_compacted_operational_task_state(memory: &Memory) -> bool {
         || title.contains("release history")
         || title.contains("operational memory")
         || body.starts_with("autonomously compacted")
+}
+
+fn apply_tiny_broad_release_task_state_cap(
+    hits: Vec<RetrievalHit>,
+    budget: usize,
+    task_terms: &HashSet<String>,
+) -> Vec<RetrievalHit> {
+    if budget > 1_200 || task_terms.len() < 2 || query_seeks_operational_history(task_terms) {
+        return hits;
+    }
+    let mut release_task_states = 0usize;
+    hits.into_iter()
+        .filter(|hit| {
+            if !is_broad_release_task_state(&hit.memory.memory) {
+                return true;
+            }
+            release_task_states += 1;
+            release_task_states <= 1
+        })
+        .collect()
+}
+
+fn is_broad_release_task_state(memory: &Memory) -> bool {
+    if memory.memory_type != "task_state" {
+        return false;
+    }
+    let title = memory.title.to_lowercase();
+    let body = memory.body.to_lowercase();
+    title.ends_with(" release")
+        || title.ends_with(" released")
+        || body.starts_with("released dukememory")
+        || body.starts_with("released with")
 }
 
 fn should_suppress_for_query_feedback(
