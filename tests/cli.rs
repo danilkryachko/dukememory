@@ -2978,6 +2978,41 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
     assert!(!focused_snippet.contains(&"prefix noise ".repeat(20)));
 
     cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Generic scoring terms")
+        .arg("memory agent project retrieval token quality context recall brief semantic")
+        .assert()
+        .success();
+    let generic_scoring = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("memory agent project retrieval token quality context recall brief semantic")
+            .arg("--strategy")
+            .arg("fts")
+            .arg("--format")
+            .arg("json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let generic_scoring_json: Value = serde_json::from_str(&generic_scoring).unwrap();
+    assert!(
+        generic_scoring_json["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["memory"]["title"] == "Generic scoring terms")
+    );
+    assert!(
+        generic_scoring_json["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|hit| hit["reasons"].as_array().unwrap().iter())
+            .all(|reason| !reason.as_str().unwrap().starts_with("text_match:"))
+    );
+
+    cmd(&db)
         .arg("context-pack")
         .arg("constraints memory")
         .arg("--budget-profile")

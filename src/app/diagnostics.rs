@@ -264,7 +264,7 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
     let mut seen_items = HashSet::new();
     let mut seen_files = HashSet::new();
     let mut seen_checks = HashSet::new();
-    let task_terms = tokenize(request.task);
+    let task_terms = relevance_terms(request.task);
 
     for hit in &retrieval.hits {
         let memory = &hit.memory.memory;
@@ -573,7 +573,7 @@ pub(crate) fn impact_report(
     let mut seen_items = HashSet::new();
     let mut seen_checks = HashSet::new();
     let mut seen_links = HashSet::new();
-    let target_terms = tokenize(request.target);
+    let target_terms = relevance_terms(request.target);
 
     for (memory, linked, quality_reasons, rank_score) in &scored_rows {
         let reason = if *linked {

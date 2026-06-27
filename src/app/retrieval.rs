@@ -185,7 +185,7 @@ pub(crate) fn retrieve_report(
         }
     }
     let rhai = request.rules.and_then(|path| load_rhai_rules(path).ok());
-    let task_terms = tokenize(request.query);
+    let task_terms = relevance_terms(request.query);
     let quality_signals = retrieval_quality_signals(conn, 30).unwrap_or_default();
     let mut hits = Vec::new();
     for (_, (memory, semantic_score)) in candidates {
@@ -704,7 +704,7 @@ fn rank_context_rows_with_quality(
     rules: Option<&Path>,
     quality_signals: Option<&RetrievalQualitySignals>,
 ) {
-    let task_terms = tokenize(task);
+    let task_terms = relevance_terms(task);
     let rhai = rules.and_then(|path| load_rhai_rules(path).ok());
     rows.sort_by(|a, b| {
         let mut a_reasons = Vec::new();
@@ -792,7 +792,7 @@ fn render_retrieval_pack(hits: &[RetrievalHit], max_chars: usize, query: &str) -
     if hits.is_empty() {
         return Ok("Relevant Memory:\n- none".to_string());
     }
-    let query_terms = tokenize(query);
+    let query_terms = relevance_terms(query);
     let mut rows = hits
         .iter()
         .map(|hit| &hit.memory.memory)
@@ -858,6 +858,47 @@ pub(crate) fn query_focused_summary(
     }
     focused_text_window(&body, query_terms, max_chars)
         .unwrap_or_else(|| truncate_chars(&body, max_chars))
+}
+
+pub(crate) fn relevance_terms(text: &str) -> HashSet<String> {
+    tokenize(text)
+        .into_iter()
+        .filter(|term| !is_generic_relevance_term(term))
+        .collect()
+}
+
+fn is_generic_relevance_term(term: &str) -> bool {
+    matches!(
+        term,
+        "agent"
+            | "agents"
+            | "brief"
+            | "briefs"
+            | "card"
+            | "cards"
+            | "context"
+            | "contexts"
+            | "dukememory"
+            | "fast"
+            | "faster"
+            | "generic"
+            | "local"
+            | "memory"
+            | "memories"
+            | "minimal"
+            | "optimization"
+            | "optimize"
+            | "project"
+            | "projects"
+            | "quality"
+            | "recall"
+            | "retrieval"
+            | "retrieve"
+            | "scoring"
+            | "semantic"
+            | "token"
+            | "tokens"
+    )
 }
 
 fn focused_text_window(

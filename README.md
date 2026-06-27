@@ -70,6 +70,7 @@ Transcript-based memory quickly turns into noise.
 - query-focused retrieval snippets so long cards stay token-light
 - query-focused brief and impact summaries for first-hop agent memory
 - runtime near-duplicate suppression for smaller focused retrieval packs
+- generic query-term filtering for cleaner relevance scoring
 
 ## What It Remembers
 
