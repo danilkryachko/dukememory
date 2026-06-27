@@ -84,6 +84,7 @@ Transcript-based memory quickly turns into noise.
 - tiny hybrid retrieval skips semantic search when lexical matches are saturated
 - lexical saturation ignores near-duplicate FTS matches
 - lexical saturation requires full concrete query-term coverage
+- tiny relevance floor can keep one strong card instead of forcing a weak second
 
 ## What It Remembers
 

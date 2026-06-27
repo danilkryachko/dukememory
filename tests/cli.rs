@@ -3326,6 +3326,51 @@ fn v14_retrieve_filters_weak_semantic_candidates() {
 }
 
 #[test]
+fn v14_tiny_relevance_floor_can_keep_one_strong_card() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("constraint")
+        .arg("Needlefloor exact strong")
+        .arg("needlefloor exact release guard must remain verified local fast and deterministic")
+        .arg("--confidence")
+        .arg("1.0")
+        .arg("--link")
+        .arg("file:needlefloor/exact.rs")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("note")
+        .arg("Needlefloor exact weak")
+        .arg("needlefloor exact")
+        .arg("--status")
+        .arg("uncertain")
+        .arg("--confidence")
+        .arg("0.1")
+        .assert()
+        .success();
+
+    let retrieved = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("needlefloor exact")
+            .arg("--strategy")
+            .arg("fts")
+            .arg("--format")
+            .arg("json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let retrieved_json: Value = serde_json::from_str(&retrieved).unwrap();
+    let hits = retrieved_json["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0]["memory"]["title"], "Needlefloor exact strong");
+}
+
+#[test]
 fn v14_retrieve_does_not_count_duplicate_fts_as_saturated() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

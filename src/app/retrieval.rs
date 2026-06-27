@@ -678,22 +678,24 @@ fn budget_aware_hit_limit(limit: usize, budget: usize, relevance_term_count: usi
 }
 
 fn apply_relevance_floor(hits: Vec<RetrievalHit>, budget: usize) -> Vec<RetrievalHit> {
-    if hits.len() <= 2 {
-        return hits;
-    }
     let Some(top_score) = hits.first().map(|hit| hit.score) else {
         return hits;
     };
     let Some(floor) = relevance_floor_for_budget(budget, top_score) else {
         return hits;
     };
+    let minimum_keep = relevance_floor_minimum_keep(budget);
     let mut kept = Vec::new();
     for hit in hits {
-        if kept.len() < 2 || hit.score >= floor {
+        if kept.len() < minimum_keep || hit.score >= floor {
             kept.push(hit);
         }
     }
     kept
+}
+
+fn relevance_floor_minimum_keep(budget: usize) -> usize {
+    if budget <= 1_200 { 1 } else { 2 }
 }
 
 fn relevance_floor_for_budget(budget: usize, top_score: f64) -> Option<f64> {
