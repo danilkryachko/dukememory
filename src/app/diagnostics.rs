@@ -662,6 +662,7 @@ pub(crate) fn impact_report(
     let mut seen_checks = HashSet::new();
     let mut seen_links = HashSet::new();
     let target_terms = relevance_terms(request.target);
+    let section_limits = impact_section_limits(request.budget);
 
     for (memory, linked, quality_reasons, rank_score) in &scored_rows {
         let reason = if *linked {
@@ -674,28 +675,48 @@ pub(crate) fn impact_report(
         let item = brief_item_from_memory(memory, *rank_score, reasons, &target_terms);
         match memory.memory_type.as_str() {
             "decision" | "product_goal" => {
-                push_unique_brief_item(&mut decisions, &mut seen_items, item, 5);
+                push_unique_brief_item(
+                    &mut decisions,
+                    &mut seen_items,
+                    item,
+                    section_limits.decisions,
+                );
             }
             "constraint" => {
-                push_unique_brief_item(&mut constraints, &mut seen_items, item, 5);
+                push_unique_brief_item(
+                    &mut constraints,
+                    &mut seen_items,
+                    item,
+                    section_limits.constraints,
+                );
             }
             "known_issue" => {
-                push_unique_brief_item(&mut risks, &mut seen_items, item, 5);
+                push_unique_brief_item(&mut risks, &mut seen_items, item, section_limits.risks);
             }
             "command" => {
-                push_unique_check(&mut checks, &mut seen_checks, &memory.body, 6);
-                push_unique_brief_item(&mut related, &mut seen_items, item, 6);
+                push_unique_check(
+                    &mut checks,
+                    &mut seen_checks,
+                    &memory.body,
+                    section_limits.checks,
+                );
+                push_unique_brief_item(&mut related, &mut seen_items, item, section_limits.related);
             }
             _ => {
-                push_unique_brief_item(&mut related, &mut seen_items, item, 6);
+                push_unique_brief_item(&mut related, &mut seen_items, item, section_limits.related);
             }
         }
-        collect_check_hints(&mut checks, &mut seen_checks, &memory.body, 6);
+        collect_check_hints(
+            &mut checks,
+            &mut seen_checks,
+            &memory.body,
+            section_limits.checks,
+        );
 
         for link in get_links(conn, &memory.id)? {
             if matches!(link.kind.as_str(), "file" | "symbol") {
                 let rendered = format!("{}:{}", link.kind, link.target);
-                if links.len() < 10 && seen_links.insert(rendered.clone()) {
+                if links.len() < section_limits.links && seen_links.insert(rendered.clone()) {
                     links.push(rendered);
                 }
             }
@@ -737,6 +758,47 @@ pub(crate) fn impact_report(
         related,
         links,
     })
+}
+
+#[derive(Clone, Copy)]
+struct ImpactSectionLimits {
+    decisions: usize,
+    constraints: usize,
+    risks: usize,
+    related: usize,
+    checks: usize,
+    links: usize,
+}
+
+fn impact_section_limits(budget: usize) -> ImpactSectionLimits {
+    if budget <= 1_200 {
+        ImpactSectionLimits {
+            decisions: 2,
+            constraints: 2,
+            risks: 2,
+            related: 2,
+            checks: 3,
+            links: 5,
+        }
+    } else if budget <= 3_000 {
+        ImpactSectionLimits {
+            decisions: 5,
+            constraints: 5,
+            risks: 5,
+            related: 6,
+            checks: 6,
+            links: 10,
+        }
+    } else {
+        ImpactSectionLimits {
+            decisions: 8,
+            constraints: 8,
+            risks: 6,
+            related: 8,
+            checks: 8,
+            links: 14,
+        }
+    }
 }
 
 pub(crate) fn print_evidence(conn: &Connection, id: &str, json_out: bool) -> Result<()> {

@@ -5174,6 +5174,85 @@ fn brief_sections_are_budget_aware() {
 }
 
 #[test]
+fn impact_sections_are_budget_aware() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let target = "src/checkout.rs";
+
+    for index in 0..6 {
+        cmd(&db)
+            .arg("add")
+            .arg("decision")
+            .arg(format!("Checkout impact decision {index}"))
+            .arg("checkout impact target must stay compact and relevant")
+            .arg("--link")
+            .arg(format!("file:{target}"))
+            .assert()
+            .success();
+        cmd(&db)
+            .arg("add")
+            .arg("constraint")
+            .arg(format!("Checkout impact constraint {index}"))
+            .arg("checkout impact target must avoid slow unrelated work")
+            .arg("--link")
+            .arg(format!("file:{target}"))
+            .assert()
+            .success();
+        cmd(&db)
+            .arg("add")
+            .arg("known_issue")
+            .arg(format!("Checkout impact risk {index}"))
+            .arg("checkout impact target risk should be visible but bounded")
+            .arg("--link")
+            .arg(format!("file:{target}"))
+            .assert()
+            .success();
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(format!("Checkout impact note {index}"))
+            .arg("checkout impact target implementation detail for focused edits")
+            .arg("--link")
+            .arg(format!("file:{target}"))
+            .assert()
+            .success();
+    }
+
+    let tiny = stdout(
+        cmd(&db)
+            .arg("impact")
+            .arg(target)
+            .arg("--budget-profile")
+            .arg("tiny")
+            .arg("--limit")
+            .arg("30")
+            .arg("--json"),
+    );
+    let tiny_json: Value = serde_json::from_str(&tiny).unwrap();
+    assert!(tiny_json["decisions"].as_array().unwrap().len() <= 2);
+    assert!(tiny_json["constraints"].as_array().unwrap().len() <= 2);
+    assert!(tiny_json["risks"].as_array().unwrap().len() <= 2);
+    assert!(tiny_json["related"].as_array().unwrap().len() <= 2);
+    assert!(tiny_json["links"].as_array().unwrap().len() <= 5);
+
+    let normal = stdout(
+        cmd(&db)
+            .arg("impact")
+            .arg(target)
+            .arg("--budget-profile")
+            .arg("normal")
+            .arg("--limit")
+            .arg("30")
+            .arg("--json"),
+    );
+    let normal_json: Value = serde_json::from_str(&normal).unwrap();
+    assert!(normal_json["decisions"].as_array().unwrap().len() >= 4);
+    assert!(normal_json["constraints"].as_array().unwrap().len() >= 4);
+    assert!(normal_json["risks"].as_array().unwrap().len() >= 4);
+    assert!(normal_json["related"].as_array().unwrap().len() >= 4);
+}
+
+#[test]
 fn v14_5_impact_and_drift_are_lightweight_and_structured() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
