@@ -78,6 +78,7 @@ Transcript-based memory quickly turns into noise.
 - generic-only retrieval skips unrelated recent fallback candidates
 - tiny lexical-saturated retrieval skips unrelated recent fallback candidates
 - tiny multi-term retrieval drops partial lexical noise without semantic support
+- context packs keep recent fallback relevant, with one-card bootstrap only when direct matches are empty
 - generic-only empty reads ignored by inferred memory-gap QA
 - zero-card generic-only outputs explain why memory was not injected
 - weak one-term retrieval skips unrelated recent fallback candidates

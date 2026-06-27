@@ -14,6 +14,7 @@ pub(crate) fn build_context_rows(
     conn: &Connection,
     query: ContextQuery<'_>,
 ) -> Result<Vec<Memory>> {
+    let task_terms = relevance_terms(query.task);
     let mut rows = query_memories(
         conn,
         Some(query.task),
@@ -22,6 +23,7 @@ pub(crate) fn build_context_rows(
         query.scope,
         query.limit,
     )?;
+    let has_direct_matches = !rows.is_empty();
     if query.include_recent > 0 {
         let recent = query_memories(
             conn,
@@ -29,10 +31,16 @@ pub(crate) fn build_context_rows(
             query.types,
             &["active".to_string()],
             query.scope,
-            query.include_recent,
+            if has_direct_matches {
+                query.include_recent
+            } else {
+                1
+            },
         )?;
         for row in recent {
-            if !rows.iter().any(|existing| existing.id == row.id) {
+            if !rows.iter().any(|existing| existing.id == row.id)
+                && (!has_direct_matches || context_recent_matches_task(conn, &row, &task_terms)?)
+            {
                 rows.push(row);
             }
         }
@@ -47,6 +55,22 @@ pub(crate) fn build_context_rows(
     );
     rows = select_diverse_memories(rows, query.limit);
     Ok(rows)
+}
+
+fn context_recent_matches_task(
+    conn: &Connection,
+    memory: &Memory,
+    task_terms: &HashSet<String>,
+) -> Result<bool> {
+    if task_terms.len() < 2 {
+        return Ok(false);
+    }
+    let required_overlap = task_terms.len().min(2);
+    let mut tokens = memory_signature(memory);
+    for link in get_links(conn, &memory.id)? {
+        tokens.extend(tokenize(&format!("{} {}", link.kind, link.target)));
+    }
+    Ok(task_terms.intersection(&tokens).count() >= required_overlap)
 }
 
 pub(crate) struct RetrieveRequest<'a> {

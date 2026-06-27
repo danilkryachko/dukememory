@@ -2977,20 +2977,6 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
     assert!(focused_snippet.contains("needle relevance floor exact detail"));
     assert!(!focused_snippet.contains(&"prefix noise ".repeat(20)));
 
-    cmd(&db)
-        .arg("context-pack")
-        .arg("constraints memory")
-        .arg("--budget-profile")
-        .arg("normal")
-        .arg("--max-chars")
-        .arg("3000")
-        .assert()
-        .success()
-        .stdout(contains("Decisions:"))
-        .stdout(contains("Constraints:"))
-        .stdout(contains("Risks:"))
-        .stdout(contains("Recent Work:"));
-
     let boosted = stdout(
         cmd(&db)
             .arg("retrieve")
@@ -3009,6 +2995,49 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
             .iter()
             .any(|reason| reason.as_str().unwrap().starts_with("rhai_score:"))
     );
+
+    cmd(&db)
+        .arg("add")
+        .arg("task_state")
+        .arg("Recent linked work")
+        .arg("fresh linked update should enter through relevant recent context")
+        .arg("--link")
+        .arg("file:src/constraints/ranking.rs")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("task_state")
+        .arg("Recent unrelated context")
+        .arg("fresh billing export update should not enter an unrelated context pack")
+        .assert()
+        .success();
+    let context_pack = stdout(
+        cmd(&db)
+            .arg("context-pack")
+            .arg("constraints memory")
+            .arg("--budget-profile")
+            .arg("normal")
+            .arg("--max-chars")
+            .arg("3000"),
+    );
+    assert!(context_pack.contains("Decisions:"));
+    assert!(context_pack.contains("Constraints:"));
+    assert!(context_pack.contains("Risks:"));
+    assert!(!context_pack.contains("Recent unrelated context"));
+
+    let recent_context_pack = stdout(
+        cmd(&db)
+            .arg("context-pack")
+            .arg("constraints ranking")
+            .arg("--budget-profile")
+            .arg("normal")
+            .arg("--max-chars")
+            .arg("3000"),
+    );
+    assert!(recent_context_pack.contains("Recent Work:"));
+    assert!(recent_context_pack.contains("Recent linked work"));
+    assert!(!recent_context_pack.contains("Recent unrelated context"));
 
     cmd(&db)
         .arg("add")
