@@ -273,7 +273,7 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
 
     for hit in &retrieval.hits {
         let memory = &hit.memory.memory;
-        let item = brief_item_from_hit(hit, &task_terms);
+        let item = brief_item_from_hit(hit, request.budget, &task_terms);
         match memory.memory_type.as_str() {
             "decision" | "constraint" | "product_goal" => {
                 push_unique_brief_item(
@@ -416,13 +416,18 @@ fn brief_artifact_limits(budget: usize, relevance_term_count: usize) -> (usize, 
     }
 }
 
-fn brief_item_from_hit(hit: &RetrievalHit, query_terms: &HashSet<String>) -> BriefItem {
+fn brief_item_from_hit(
+    hit: &RetrievalHit,
+    budget: usize,
+    query_terms: &HashSet<String>,
+) -> BriefItem {
     let memory = &hit.memory.memory;
     brief_item_from_memory(
         memory,
         hit.score,
         hit.reasons.iter().take(4).cloned().collect(),
         query_terms,
+        budget,
     )
 }
 
@@ -431,14 +436,25 @@ fn brief_item_from_memory(
     score: f64,
     reasons: Vec<String>,
     query_terms: &HashSet<String>,
+    budget: usize,
 ) -> BriefItem {
     BriefItem {
         id: memory.id.clone(),
         memory_type: memory.memory_type.clone(),
         title: memory.title.clone(),
-        summary: query_focused_summary(&memory.body, query_terms, 180),
+        summary: query_focused_summary(&memory.body, query_terms, brief_summary_limit(budget)),
         score,
         reasons,
+    }
+}
+
+fn brief_summary_limit(budget: usize) -> usize {
+    if budget <= 1_200 {
+        120
+    } else if budget <= 3_000 {
+        150
+    } else {
+        180
     }
 }
 
@@ -700,7 +716,8 @@ pub(crate) fn impact_report(
         };
         let mut reasons = vec![reason.to_string()];
         reasons.extend(quality_reasons.iter().cloned());
-        let item = brief_item_from_memory(memory, *rank_score, reasons, &target_terms);
+        let item =
+            brief_item_from_memory(memory, *rank_score, reasons, &target_terms, request.budget);
         match memory.memory_type.as_str() {
             "decision" | "product_goal" => {
                 push_unique_brief_item(
@@ -1145,6 +1162,7 @@ pub(crate) fn drift_report(
                 100.0 - index as f64,
                 vec!["active superseded_by".into()],
                 &empty_terms,
+                8_000,
             )
         })
         .collect::<Vec<_>>();

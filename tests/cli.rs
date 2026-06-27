@@ -6271,6 +6271,49 @@ fn tiny_brief_keeps_artifact_hints_compact() {
 }
 
 #[test]
+fn tiny_brief_uses_shorter_query_focused_summaries() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Summary budget note")
+        .arg(format!(
+            "{} summary budget exact useful detail should remain visible while the surrounding noise is shortened {}",
+            "prefix noise ".repeat(40),
+            "tail noise ".repeat(40)
+        ))
+        .assert()
+        .success();
+
+    let tiny = stdout(
+        cmd(&db)
+            .arg("brief")
+            .arg("summary budget exact")
+            .arg("--json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let tiny_json: Value = serde_json::from_str(&tiny).unwrap();
+    let tiny_summary = tiny_json["relevant"][0]["summary"].as_str().unwrap();
+    assert!(tiny_summary.len() <= 120);
+    assert!(tiny_summary.contains("summary budget exact"));
+
+    let deep = stdout(
+        cmd(&db)
+            .arg("brief")
+            .arg("summary budget exact")
+            .arg("--json")
+            .arg("--budget-profile")
+            .arg("deep"),
+    );
+    let deep_json: Value = serde_json::from_str(&deep).unwrap();
+    let deep_summary = deep_json["relevant"][0]["summary"].as_str().unwrap();
+    assert!(deep_summary.len() >= tiny_summary.len());
+}
+
+#[test]
 fn usage_report_counts_semantic_eligible_reads_only() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
