@@ -933,7 +933,13 @@ pub(crate) fn quality_report(
         let links = get_links(conn, &memory.id)?.len();
         let body_chars = memory.body.chars().count();
         let fresh = memory.updated_at >= fresh_cutoff;
-        let mut usefulness_score = 20.0 + (request_count.min(10) as f64 * 4.0);
+        let broad_history = quality_broad_history_task_state(&memory);
+        let scored_request_count = if broad_history {
+            request_count.min(3)
+        } else {
+            request_count
+        };
+        let mut usefulness_score = 20.0 + (scored_request_count.min(10) as f64 * 4.0);
         usefulness_score += positive_feedback.min(10) as f64 * 5.0;
         usefulness_score -= negative_feedback.min(10) as f64 * 6.0;
         usefulness_score += match memory.memory_type.as_str() {
@@ -974,6 +980,9 @@ pub(crate) fn quality_report(
         if body_chars > 1200 {
             risk_score += 5.0;
         }
+        if broad_history && request_count >= 8 && positive_feedback == 0 {
+            risk_score += 18.0;
+        }
         let mut reasons = Vec::new();
         if request_count > 0 {
             reasons.push(format!("used {request_count} time(s) recently"));
@@ -993,6 +1002,9 @@ pub(crate) fn quality_report(
         }
         if body_chars > 1200 {
             reasons.push("large body increases token cost".to_string());
+        }
+        if broad_history {
+            reasons.push("broad history card; frequent reads are capped".to_string());
         }
         if positive_feedback > 0 || negative_feedback > 0 {
             reasons.push(format!(
@@ -1044,6 +1056,20 @@ pub(crate) fn quality_report(
         items: items.into_iter().take(limit).collect(),
         suggestions,
     })
+}
+
+fn quality_broad_history_task_state(memory: &Memory) -> bool {
+    if memory.memory_type != "task_state" {
+        return false;
+    }
+    let title = memory.title.to_lowercase();
+    let body = memory.body.to_lowercase();
+    title.contains("autonomous compacted")
+        || title.contains("compacted project")
+        || title.contains("release history")
+        || title.ends_with(" release")
+        || title.ends_with(" released")
+        || body.starts_with("autonomously compacted")
 }
 
 pub(crate) fn memory_feedback_counts(

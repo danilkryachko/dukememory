@@ -48,6 +48,17 @@ fn insert_read_event(db: &std::path::Path, command: &str, query: &str, semantic_
     .unwrap();
 }
 
+fn insert_read_event_with_ids(db: &std::path::Path, command: &str, query: &str, ids: &[&str]) {
+    let conn = Connection::open(db).unwrap();
+    conn.execute(
+        "INSERT INTO memory_read_events \
+         (command, query, memory_ids, semantic_used, result_count, budget, elapsed_ms, created_at) \
+         VALUES (?1, ?2, ?3, 1, ?4, 1200, 1, ?5)",
+        params![command, query, ids.join(","), ids.len(), now_ms()],
+    )
+    .unwrap();
+}
+
 fn http_once(db: &std::path::Path, request: &str) -> String {
     let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
         .arg("--db")
@@ -4515,6 +4526,57 @@ fn tiny_retrieval_suppresses_compacted_history_unless_requested() {
             .any(|hit| hit["memory"]["title"] == "Autonomous compacted project release history"),
         "explicit release-history queries should still reach compacted history cards"
     );
+}
+
+#[test]
+fn quality_report_caps_broad_history_read_boost() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    let history_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("task_state")
+            .arg("Autonomous compacted project release history")
+            .arg("Autonomously compacted release history: old release notes are useful only for explicit history lookup.")
+            .arg("--link")
+            .arg("file:src/app/autonomous.rs"),
+    )
+    .trim()
+    .to_string();
+    for _ in 0..16 {
+        insert_read_event_with_ids(
+            &db,
+            "brief",
+            "memory quality release history",
+            &[&history_id],
+        );
+    }
+
+    let quality = stdout(
+        cmd(&db)
+            .arg("quality-report")
+            .arg("--json")
+            .arg("--limit")
+            .arg("20"),
+    );
+    let quality_json: Value = serde_json::from_str(&quality).unwrap();
+    let history = quality_json["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == history_id)
+        .unwrap();
+    assert!(
+        history["score"].as_f64().unwrap() < 90.0,
+        "broad history cards should not reach top quality solely from frequent reads"
+    );
+    assert!(history["reasons"].as_array().unwrap().iter().any(|reason| {
+        reason
+            .as_str()
+            .unwrap()
+            .contains("frequent reads are capped")
+    }));
 }
 
 #[test]
