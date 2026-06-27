@@ -268,7 +268,7 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
     let mut seen_files = HashSet::new();
     let mut seen_checks = HashSet::new();
     let task_terms = relevance_terms(request.task);
-    let (file_limit, check_limit) = brief_artifact_limits(task_terms.len());
+    let (file_limit, check_limit) = brief_artifact_limits(request.budget, task_terms.len());
     let section_limits = brief_section_limits(request.budget);
 
     for hit in &retrieval.hits {
@@ -394,11 +394,25 @@ fn brief_section_limits(budget: usize) -> BriefSectionLimits {
     }
 }
 
-fn brief_artifact_limits(relevance_term_count: usize) -> (usize, usize) {
-    match relevance_term_count {
-        0 => (0, 0),
-        1 => (3, 2),
-        _ => (8, 5),
+fn brief_artifact_limits(budget: usize, relevance_term_count: usize) -> (usize, usize) {
+    if budget <= 1_200 {
+        match relevance_term_count {
+            0 => (0, 0),
+            1 => (2, 1),
+            _ => (4, 2),
+        }
+    } else if budget <= 3_000 {
+        match relevance_term_count {
+            0 => (0, 0),
+            1 => (3, 2),
+            _ => (6, 3),
+        }
+    } else {
+        match relevance_term_count {
+            0 => (0, 0),
+            1 => (3, 2),
+            _ => (8, 5),
+        }
     }
 }
 

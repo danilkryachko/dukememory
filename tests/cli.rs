@@ -6221,6 +6221,56 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
 }
 
 #[test]
+fn tiny_brief_keeps_artifact_hints_compact() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for index in 0..6 {
+        cmd(&db)
+            .arg("add")
+            .arg("command")
+            .arg(format!("Artifact budget command {index}"))
+            .arg(format!(
+                "cargo test artifact_budget_{index} # artifact budget query focused check"
+            ))
+            .arg("--link")
+            .arg(format!("file:src/artifact_budget_{index}.rs"))
+            .assert()
+            .success();
+    }
+
+    let brief = stdout(
+        cmd(&db)
+            .arg("brief")
+            .arg("artifact budget query")
+            .arg("--json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let brief_json: Value = serde_json::from_str(&brief).unwrap();
+    assert!(brief_json["files"].as_array().unwrap().len() <= 4);
+    assert!(brief_json["checks"].as_array().unwrap().len() <= 2);
+
+    let normal = stdout(
+        cmd(&db)
+            .arg("brief")
+            .arg("artifact budget query")
+            .arg("--json")
+            .arg("--budget-profile")
+            .arg("normal"),
+    );
+    let normal_json: Value = serde_json::from_str(&normal).unwrap();
+    assert!(
+        normal_json["files"].as_array().unwrap().len()
+            >= brief_json["files"].as_array().unwrap().len()
+    );
+    assert!(
+        normal_json["checks"].as_array().unwrap().len()
+            >= brief_json["checks"].as_array().unwrap().len()
+    );
+}
+
+#[test]
 fn usage_report_counts_semantic_eligible_reads_only() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
