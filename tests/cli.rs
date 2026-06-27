@@ -3077,6 +3077,23 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
             .flat_map(|hit| hit["reasons"].as_array().unwrap().iter())
             .all(|reason| !reason.as_str().unwrap().starts_with("text_match:"))
     );
+    let generic_empty_plain = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("agents memories projects contexts")
+            .arg("--strategy")
+            .arg("hybrid")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    assert!(generic_empty_plain.contains("Relevant Memory:"));
+    assert!(generic_empty_plain.contains("none (generic query; semantic search skipped)"));
 
     for index in 0..4 {
         cmd(&db)
@@ -3232,6 +3249,16 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
     );
     assert!(!generic_brief.contains("Files:"));
     assert!(!generic_brief.contains("Checks:"));
+    let generic_empty_brief = stdout(
+        cmd(&db)
+            .arg("brief")
+            .arg("agents memories projects contexts")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    assert!(
+        generic_empty_brief.contains("Relevant: none (generic query; semantic search skipped)")
+    );
 
     let brief = stdout(
         cmd(&db)

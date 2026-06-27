@@ -72,7 +72,12 @@ pub(crate) fn print_retrieve(conn: &Connection, request: RetrieveRequest<'_>) ->
             println!("{}", report.receipt);
             println!(
                 "{}",
-                render_retrieval_pack(&report.hits, request.budget, request.query)?
+                render_retrieval_pack(
+                    &report.hits,
+                    request.budget,
+                    request.query,
+                    report.semantic_skipped
+                )?
             );
             println!("\nSelection Reasons:");
             for hit in &report.hits {
@@ -104,7 +109,12 @@ pub(crate) fn print_retrieve(conn: &Connection, request: RetrieveRequest<'_>) ->
         OutputFormat::Plain => {
             println!(
                 "{}",
-                render_retrieval_pack(&report.hits, request.budget, request.query)?
+                render_retrieval_pack(
+                    &report.hits,
+                    request.budget,
+                    request.query,
+                    report.semantic_skipped
+                )?
             );
             println!("{}", report.receipt);
         }
@@ -807,8 +817,18 @@ pub(crate) fn render_context_pack(
     Ok(out)
 }
 
-fn render_retrieval_pack(hits: &[RetrievalHit], max_chars: usize, query: &str) -> Result<String> {
+fn render_retrieval_pack(
+    hits: &[RetrievalHit],
+    max_chars: usize,
+    query: &str,
+    semantic_skipped: bool,
+) -> Result<String> {
     if hits.is_empty() {
+        if semantic_skipped {
+            return Ok(
+                "Relevant Memory:\n- none (generic query; semantic search skipped)".to_string(),
+            );
+        }
         return Ok("Relevant Memory:\n- none".to_string());
     }
     let query_terms = relevance_terms(query);

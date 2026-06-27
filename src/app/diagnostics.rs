@@ -429,12 +429,27 @@ fn render_brief(report: &BriefReport) -> String {
         );
     }
     push_line_budget(&mut out, report.budget, &report.receipt);
+    if report.semantic_skipped && brief_is_empty(report) {
+        push_line_budget(
+            &mut out,
+            report.budget,
+            "Relevant: none (generic query; semantic search skipped)",
+        );
+    }
     render_brief_items(&mut out, report.budget, "Must Follow", &report.must_follow);
     render_brief_items(&mut out, report.budget, "Relevant", &report.relevant);
     render_brief_items(&mut out, report.budget, "Risks", &report.risks);
     render_brief_strings(&mut out, report.budget, "Files", &report.files);
     render_brief_strings(&mut out, report.budget, "Checks", &report.checks);
     truncate_chars(&out, report.budget)
+}
+
+fn brief_is_empty(report: &BriefReport) -> bool {
+    report.must_follow.is_empty()
+        && report.relevant.is_empty()
+        && report.risks.is_empty()
+        && report.files.is_empty()
+        && report.checks.is_empty()
 }
 
 fn linked_memories(
