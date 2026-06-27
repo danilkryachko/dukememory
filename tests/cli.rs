@@ -646,6 +646,15 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         .arg(&transcript)
         .assert()
         .success();
+    for index in 0..4 {
+        cmd(&db)
+            .arg("add")
+            .arg("task_state")
+            .arg(format!("Recent unrelated snapshot {index}"))
+            .arg("billing export unrelated recent card should not hide query snapshot memory")
+            .assert()
+            .success();
+    }
 
     let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
         .arg("--db")
@@ -1031,7 +1040,7 @@ fn mcp_snapshot_filters_query_useless_feedback() {
         writeln!(
             stdin,
             "{}",
-            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_snapshot","arguments":{"query":query,"max_chars":1000}}})
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_snapshot","arguments":{"query":query,"limit":4,"max_chars":1000}}})
         )
         .unwrap();
     }
@@ -1044,6 +1053,7 @@ fn mcp_snapshot_filters_query_useless_feedback() {
     let text = value["result"]["content"][0]["text"].as_str().unwrap();
     assert!(!text.contains("Noisy snapshot memory"));
     assert!(text.contains("Useful snapshot memory"));
+    assert!(!text.contains("Recent unrelated snapshot"));
 }
 
 #[test]
