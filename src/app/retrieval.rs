@@ -334,6 +334,9 @@ fn non_redundant_memory_count(
     };
     let mut signatures: Vec<HashSet<String>> = Vec::new();
     for row in rows {
+        if !is_trusted_lexical_saturation_candidate(row) {
+            continue;
+        }
         let signature = memory_signature(row);
         if !required_terms.is_subset(&signature) {
             continue;
@@ -348,6 +351,10 @@ fn non_redundant_memory_count(
         signatures.push(signature);
     }
     signatures.len()
+}
+
+fn is_trusted_lexical_saturation_candidate(memory: &Memory) -> bool {
+    memory.status == "active" && memory.confidence >= 0.8
 }
 
 pub(crate) fn retrieve_rows(
