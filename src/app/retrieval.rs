@@ -138,9 +138,10 @@ pub(crate) fn retrieve_report(
     )? {
         candidates.entry(row.id.clone()).or_insert((row, None));
     }
+    let task_terms = relevance_terms(request.query);
     let mut semantic_used = false;
     let mut semantic_error = None;
-    if matches!(request.strategy, RetrievalStrategy::Hybrid) {
+    if matches!(request.strategy, RetrievalStrategy::Hybrid) && !task_terms.is_empty() {
         match embeddings::semantic_index_ready(
             conn,
             request.provider,
@@ -185,7 +186,6 @@ pub(crate) fn retrieve_report(
         }
     }
     let rhai = request.rules.and_then(|path| load_rhai_rules(path).ok());
-    let task_terms = relevance_terms(request.query);
     let quality_signals = retrieval_quality_signals(conn, 30).unwrap_or_default();
     let mut hits = Vec::new();
     for (_, (memory, semantic_score)) in candidates {

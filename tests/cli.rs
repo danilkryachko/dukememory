@@ -2989,13 +2989,21 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
             .arg("retrieve")
             .arg("memory agent project retrieval token quality context recall brief semantic")
             .arg("--strategy")
-            .arg("fts")
+            .arg("hybrid")
             .arg("--format")
             .arg("json")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
             .arg("--budget-profile")
             .arg("tiny"),
     );
     let generic_scoring_json: Value = serde_json::from_str(&generic_scoring).unwrap();
+    assert_eq!(generic_scoring_json["semantic_used"], false);
+    assert!(generic_scoring_json["semantic_error"].is_null());
     assert!(
         generic_scoring_json["hits"].as_array().unwrap().len() <= 2,
         "generic-only tiny retrieval should stay extra compact"

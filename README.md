@@ -73,6 +73,7 @@ Transcript-based memory quickly turns into noise.
 - generic query-term filtering for cleaner relevance scoring
 - specificity-aware hit caps for extra-compact generic queries
 - specificity-aware brief file and check limits
+- semantic skip for generic-only hybrid queries
 
 ## What It Remembers
 
