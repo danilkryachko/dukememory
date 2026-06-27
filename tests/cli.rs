@@ -3951,6 +3951,81 @@ fn v14_context_and_impact_filter_query_useless_feedback() {
 }
 
 #[test]
+fn v14_semantic_context_filters_query_useless_feedback() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let query = "auth rate limit";
+    let noisy_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Noisy semantic context")
+            .arg(
+                "auth rate limit noisy semantic context card should not return through embeddings",
+            ),
+    )
+    .trim()
+    .to_string();
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Useful semantic context")
+        .arg("auth rate limit useful semantic context card should remain")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("embed-index")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("feedback")
+        .arg("--id")
+        .arg(&noisy_id)
+        .arg("--rating")
+        .arg("useless")
+        .arg("--command")
+        .arg("context-pack")
+        .arg("--query")
+        .arg(query)
+        .assert()
+        .success();
+
+    let semantic_context_pack = stdout(
+        cmd(&db)
+            .arg("context-pack")
+            .arg(query)
+            .arg("--semantic")
+            .arg("--json")
+            .arg("--budget-profile")
+            .arg("normal")
+            .arg("--embed-provider")
+            .arg("mock")
+            .arg("--embed-endpoint")
+            .arg("local")
+            .arg("--embed-model")
+            .arg("mock-small"),
+    );
+    let semantic_context_pack_json: Value = serde_json::from_str(&semantic_context_pack).unwrap();
+    let titles = semantic_context_pack_json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|memory| memory["title"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        !titles.contains(&"Noisy semantic context"),
+        "semantic additions should not re-add same-query useless context"
+    );
+    assert!(titles.contains(&"Useful semantic context"));
+}
+
+#[test]
 fn v14_recall_uses_query_focused_summaries() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

@@ -1131,6 +1131,7 @@ pub(crate) fn append_semantic_context_rows(
     }
     let threshold = semantic_score_threshold(request.budget);
     let max_additions = semantic_context_add_limit(request.limit, request.budget);
+    let quality_signals = retrieval_quality_signals(conn, 30).unwrap_or_default();
     let mut added = 0;
     for item in embeddings::semantic_search(
         conn,
@@ -1148,6 +1149,9 @@ pub(crate) fn append_semantic_context_rows(
             continue;
         }
         if rows.iter().any(|existing| existing.id == memory.id) {
+            continue;
+        }
+        if should_suppress_for_query_feedback(&memory.id, &task_terms, &quality_signals) {
             continue;
         }
         rows.push(memory);
