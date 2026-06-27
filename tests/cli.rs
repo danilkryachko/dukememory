@@ -529,7 +529,7 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         writeln!(
             stdin,
             "{}",
-            serde_json::json!({"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"memory_evidence","arguments":{"id":long_id,"query":"needle mcp","max_chars":80}}})
+            serde_json::json!({"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"memory_evidence","arguments":{"id":long_id.clone(),"query":"needle mcp","max_chars":80}}})
         )
         .unwrap();
         writeln!(
@@ -550,6 +550,18 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
             serde_json::json!({"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"memory_doctor","arguments":{"max_chars":80}}})
         )
         .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"memory_feedback","arguments":{"id":long_id,"rating":"useful","command":"mcp-test","query":"needle mcp"}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"memory_feedback","arguments":{"rating":"missing","command":"mcp-test","query":"missing mcp card"}}})
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
 
@@ -559,6 +571,7 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
     assert!(stdout.contains("memory_brief"));
     assert!(stdout.contains("memory_impact"));
     assert!(stdout.contains("memory_budget_plan"));
+    assert!(stdout.contains("memory_feedback"));
     assert!(stdout.contains("memory_drift"));
     assert!(stdout.contains("memory_context_pack"));
     assert!(stdout.find("memory_brief") < stdout.find("memory_context_pack"));
@@ -655,7 +668,17 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
             .unwrap()
             .to_string()
     };
-    for id in 16..=21 {
+    let feedback = mcp_text(22);
+    let feedback_json: Value = serde_json::from_str(&feedback).unwrap();
+    assert_eq!(feedback_json["ok"], true);
+    assert_eq!(feedback_json["rating"], "useful");
+    assert_eq!(feedback_json["summary"]["positive"], 1);
+    let missing_feedback = mcp_text(23);
+    let missing_feedback_json: Value = serde_json::from_str(&missing_feedback).unwrap();
+    assert_eq!(missing_feedback_json["ok"], true);
+    assert_eq!(missing_feedback_json["rating"], "missing");
+    assert_eq!(missing_feedback_json["summary"]["missing"], 1);
+    for id in 16..=23 {
         let text = mcp_text(id);
         serde_json::from_str::<Value>(&text)
             .unwrap_or_else(|err| panic!("MCP id {id} returned invalid JSON text: {err}: {text}"));

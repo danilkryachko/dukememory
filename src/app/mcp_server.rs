@@ -112,6 +112,7 @@ fn mcp_tools() -> Value {
         {"name":"memory_brief","description":"Return a tiny verified task brief","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"max_chars":{"type":"number"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_impact","description":"Return lightweight impact memory for a file, symbol, or topic","inputSchema":{"type":"object","properties":{"target":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"max_chars":{"type":"number"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["target"]}},
         {"name":"memory_budget_plan","description":"Choose the smallest useful memory budget for a task","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"scope":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
+        {"name":"memory_feedback","description":"Record lightweight useful/useless/missing feedback for memory reads","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"rating":{"type":"string"},"command":{"type":"string"},"query":{"type":"string"},"note":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["rating"]}},
         {"name":"memory_drift","description":"Detect cheap local memory drift before coding as bounded summary by default","inputSchema":{"type":"object","properties":{"changed_only":{"type":"boolean"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"}}}},
         {"name":"memory_add","description":"Add a typed memory card","inputSchema":{"type":"object","properties":{"type":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"scope":{"type":"string"},"source":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["type","title","body"]}},
         {"name":"memory_remember","description":"Remember plain text as local memory","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"type":{"type":"string"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["text"]}},
@@ -274,6 +275,52 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 budget_plan(&conn, &task, scope.as_deref()).map_err(|err| err.to_string())?;
             budgeted_mcp_json_response(&plan, max_chars, &["reasons"])
                 .map_err(|err| err.to_string())?
+        }
+        "memory_feedback" => {
+            let mut ids = json_string_array(&args, "ids");
+            if let Some(id) = json_string(&args, "id").filter(|id| !id.trim().is_empty()) {
+                ids.push(id);
+            }
+            ids.retain(|id| !id.trim().is_empty());
+            ids.sort();
+            ids.dedup();
+
+            let rating_text =
+                json_string(&args, "rating").ok_or_else(|| "missing rating".to_string())?;
+            let rating = match rating_text.as_str() {
+                "useful" => FeedbackRating::Useful,
+                "useless" => FeedbackRating::Useless,
+                "missing" => FeedbackRating::Missing,
+                _ => return Err("invalid rating: expected useful, useless, or missing".to_string()),
+            };
+            if ids.is_empty() && !matches!(rating, FeedbackRating::Missing) {
+                return Err("missing ids for useful/useless feedback".to_string());
+            }
+            let rating = match rating {
+                FeedbackRating::Useful => "useful",
+                FeedbackRating::Useless => "useless",
+                FeedbackRating::Missing => "missing",
+            };
+            let command = json_string(&args, "command").unwrap_or_else(|| "mcp".to_string());
+            let query = json_string(&args, "query").unwrap_or_default();
+            let note = json_string(&args, "note").unwrap_or_default();
+            let detail = serde_json::to_string(&json!({
+                "rating": rating,
+                "ids": ids,
+                "command": command,
+                "query": query,
+                "note": note,
+            }))
+            .map_err(|err| err.to_string())?;
+            log_event(&conn, "memory_feedback", None, &detail).map_err(|err| err.to_string())?;
+            let report = FeedbackReport {
+                ok: true,
+                rating: rating.to_string(),
+                ids,
+                written_event: "memory_feedback".to_string(),
+                summary: feedback_summary(&conn, 30).map_err(|err| err.to_string())?,
+            };
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
         }
         "memory_brief" => {
             let task = json_string(&args, "task").ok_or_else(|| "missing task".to_string())?;
@@ -861,6 +908,20 @@ fn json_string(value: &Value, key: &str) -> Option<String> {
         .get(key)
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
+}
+
+fn json_string_array(value: &Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn json_usize(value: &Value, key: &str) -> Option<usize> {
