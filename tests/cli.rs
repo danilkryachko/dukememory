@@ -3371,6 +3371,58 @@ fn v14_tiny_relevance_floor_can_keep_one_strong_card() {
 }
 
 #[test]
+fn v14_tiny_retrieval_drops_partial_lexical_noise() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Auth rollout exact")
+        .arg("auth rollout validation must stay local fast deterministic and verified")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("constraint")
+        .arg("Auth partial noisy")
+        .arg("auth platform ownership belongs to a different operational area")
+        .arg("--confidence")
+        .arg("1.0")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("constraint")
+        .arg("Recent unrelated noisy")
+        .arg("billing export preferences belong to a different operational area")
+        .arg("--confidence")
+        .arg("1.0")
+        .assert()
+        .success();
+
+    let retrieved = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("auth rollout")
+            .arg("--strategy")
+            .arg("fts")
+            .arg("--format")
+            .arg("json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let retrieved_json: Value = serde_json::from_str(&retrieved).unwrap();
+    let titles = retrieved_json["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["memory"]["title"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(titles, vec!["Auth rollout exact"]);
+}
+
+#[test]
 fn v14_retrieve_does_not_count_duplicate_fts_as_saturated() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

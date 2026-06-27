@@ -77,6 +77,7 @@ Transcript-based memory quickly turns into noise.
 - explicit semantic skipped receipts for clearer memory observability
 - generic-only retrieval skips unrelated recent fallback candidates
 - tiny lexical-saturated retrieval skips unrelated recent fallback candidates
+- tiny multi-term retrieval drops partial lexical noise without semantic support
 - generic-only empty reads ignored by inferred memory-gap QA
 - zero-card generic-only outputs explain why memory was not injected
 - weak one-term retrieval skips unrelated recent fallback candidates

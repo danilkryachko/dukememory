@@ -256,6 +256,7 @@ pub(crate) fn retrieve_report(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| b.memory.memory.updated_at.cmp(&a.memory.memory.updated_at))
     });
+    hits = apply_tiny_lexical_precision_gate(hits, request.budget, &task_terms);
     hits = apply_relevance_floor(hits, request.budget);
     hits = filter_redundant_hits(hits, request.budget);
     hits = select_diverse_hits(hits, effective_limit);
@@ -711,6 +712,31 @@ fn apply_relevance_floor(hits: Vec<RetrievalHit>, budget: usize) -> Vec<Retrieva
         }
     }
     kept
+}
+
+fn apply_tiny_lexical_precision_gate(
+    hits: Vec<RetrievalHit>,
+    budget: usize,
+    task_terms: &HashSet<String>,
+) -> Vec<RetrievalHit> {
+    if budget > 1_200 || task_terms.len() < 2 {
+        return hits;
+    }
+    let required_overlap = task_terms.len().min(2);
+    hits.into_iter()
+        .filter(|hit| {
+            hit.semantic_score.is_some() || hit_lexical_overlap(hit, task_terms) >= required_overlap
+        })
+        .collect()
+}
+
+fn hit_lexical_overlap(hit: &RetrievalHit, task_terms: &HashSet<String>) -> usize {
+    let memory = &hit.memory.memory;
+    let mut tokens = tokenize(&format!("{} {}", memory.title, memory.body));
+    for link in &hit.memory.links {
+        tokens.extend(tokenize(&format!("{} {}", link.kind, link.target)));
+    }
+    task_terms.intersection(&tokens).count()
 }
 
 fn relevance_floor_minimum_keep(budget: usize) -> usize {
