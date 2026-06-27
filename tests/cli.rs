@@ -5491,6 +5491,72 @@ fn impact_sections_are_budget_aware() {
 }
 
 #[test]
+fn impact_filters_noisy_top_candidates() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let target = "checkout impact token budget";
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Useful impact memory")
+        .arg("checkout impact token budget useful card should remain in impact")
+        .assert()
+        .success();
+    let mut noisy_ids = Vec::new();
+    for index in 0..10 {
+        let id = stdout(
+            cmd(&db)
+                .arg("add")
+                .arg("design_note")
+                .arg(format!("Noisy impact memory {index}"))
+                .arg("checkout impact token budget noisy card should be suppressed from impact"),
+        )
+        .trim()
+        .to_string();
+        noisy_ids.push(id);
+    }
+    for id in noisy_ids {
+        cmd(&db)
+            .arg("feedback")
+            .arg("--id")
+            .arg(id)
+            .arg("--rating")
+            .arg("useless")
+            .arg("--command")
+            .arg("impact")
+            .arg("--query")
+            .arg(target)
+            .assert()
+            .success();
+    }
+
+    let impact = stdout(
+        cmd(&db)
+            .arg("impact")
+            .arg(target)
+            .arg("--budget-profile")
+            .arg("tiny")
+            .arg("--limit")
+            .arg("30")
+            .arg("--json"),
+    );
+    let impact_json: Value = serde_json::from_str(&impact).unwrap();
+    let related_titles = impact_json["related"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["title"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(related_titles.contains(&"Useful impact memory"));
+    assert!(
+        related_titles
+            .iter()
+            .all(|title| !title.starts_with("Noisy impact memory"))
+    );
+}
+
+#[test]
 fn v14_5_impact_and_drift_are_lightweight_and_structured() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

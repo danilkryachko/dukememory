@@ -612,14 +612,15 @@ pub(crate) fn impact_report(
 ) -> Result<ImpactReport> {
     let started = Instant::now();
     let effective_limit = impact_effective_limit(request.limit, request.budget);
-    let mut rows = linked_memories(conn, request.target, request.scope, effective_limit)?;
+    let candidate_limit = impact_candidate_limit(request.limit, effective_limit, request.budget);
+    let mut rows = linked_memories(conn, request.target, request.scope, candidate_limit)?;
     let fts_rows = query_memories(
         conn,
         Some(request.target),
         &[],
         &["active".to_string(), "uncertain".to_string()],
         request.scope,
-        effective_limit,
+        candidate_limit,
     )?;
     for row in fts_rows {
         if !rows.iter().any(|existing| existing.id == row.id) {
@@ -811,6 +812,21 @@ fn impact_effective_limit(limit: usize, budget: usize) -> usize {
         limit
     };
     limit.min(budget_limit).max(1)
+}
+
+fn impact_candidate_limit(limit: usize, effective_limit: usize, budget: usize) -> usize {
+    let requested_scan = limit.max(effective_limit).max(1);
+    let budget_scan = if budget <= 1_200 {
+        effective_limit.saturating_mul(2).max(effective_limit)
+    } else if budget <= 3_000 {
+        effective_limit
+            .saturating_mul(2)
+            .max(effective_limit)
+            .min(48)
+    } else {
+        requested_scan
+    };
+    requested_scan.min(budget_scan).max(effective_limit).max(1)
 }
 
 pub(crate) fn print_evidence(conn: &Connection, id: &str, json_out: bool) -> Result<()> {
@@ -2088,5 +2104,9 @@ mod tests {
         assert_eq!(impact_effective_limit(30, 8_000), 30);
         assert_eq!(impact_effective_limit(3, 1_200), 3);
         assert_eq!(impact_effective_limit(0, 1_200), 1);
+        assert_eq!(impact_candidate_limit(30, 8, 1_200), 16);
+        assert_eq!(impact_candidate_limit(30, 24, 3_000), 30);
+        assert_eq!(impact_candidate_limit(100, 24, 3_000), 48);
+        assert_eq!(impact_candidate_limit(30, 30, 8_000), 30);
     }
 }
