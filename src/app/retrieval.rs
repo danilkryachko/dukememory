@@ -499,6 +499,7 @@ pub(crate) fn retrieve_report(
     hits = apply_tiny_lexical_precision_gate(hits, request.budget, &task_terms);
     hits = apply_tiny_operational_history_gate(hits, request.budget, &task_terms);
     hits = apply_tiny_broad_release_task_state_cap(hits, request.budget, &task_terms);
+    hits = apply_tiny_contract_memory_gate(hits, request.budget, &task_terms);
     hits = apply_tiny_feedback_precision_gate(hits, request.budget, &task_terms, &quality_signals);
     hits = apply_relevance_floor(hits, request.budget);
     hits = filter_redundant_hits(hits, request.budget);
@@ -1209,6 +1210,45 @@ fn is_broad_release_task_state(memory: &Memory) -> bool {
         || title.ends_with(" released")
         || body.starts_with("released dukememory")
         || body.starts_with("released with")
+}
+
+fn apply_tiny_contract_memory_gate(
+    hits: Vec<RetrievalHit>,
+    budget: usize,
+    task_terms: &HashSet<String>,
+) -> Vec<RetrievalHit> {
+    if budget > 1_200 || task_terms.len() < 2 || query_seeks_memory_contract(task_terms) {
+        return hits;
+    }
+    hits.into_iter()
+        .filter(|hit| !is_project_memory_contract_card(&hit.memory.memory))
+        .collect()
+}
+
+fn query_seeks_memory_contract(task_terms: &HashSet<String>) -> bool {
+    task_terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "contract"
+                | "contracts"
+                | "instruction"
+                | "instructions"
+                | "onboard"
+                | "onboarding"
+                | "rule"
+                | "rules"
+                | "skill"
+                | "skills"
+        )
+    })
+}
+
+fn is_project_memory_contract_card(memory: &Memory) -> bool {
+    let title = memory.title.to_lowercase();
+    let body = memory.body.to_lowercase();
+    title == "project memory contract"
+        || title.contains("memory contract")
+        || body.starts_with("# dukememory. project contract")
 }
 
 fn should_suppress_for_query_feedback(

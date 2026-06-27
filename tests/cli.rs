@@ -4617,6 +4617,81 @@ fn tiny_retrieval_caps_broad_release_task_state_tail() {
 }
 
 #[test]
+fn tiny_retrieval_suppresses_contract_cards_unless_requested() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    let contract_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Project memory contract")
+            .arg("# dukememory. Project Contract\nRules: summary budget exact must keep recall small."),
+    )
+    .trim()
+    .to_string();
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Summary budget exact implementation")
+        .arg("summary budget exact implementation should be selected for ordinary recall work.")
+        .assert()
+        .success();
+    for _ in 0..16 {
+        insert_read_event_with_ids(&db, "brief", "summary budget exact", &[&contract_id]);
+    }
+
+    let focused = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("summary budget exact")
+            .arg("--strategy")
+            .arg("fts")
+            .arg("--format")
+            .arg("json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let focused_json: Value = serde_json::from_str(&focused).unwrap();
+    assert!(
+        focused_json["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|hit| hit["memory"]["title"] != "Project memory contract"),
+        "ordinary tiny recall should not include project memory contract cards"
+    );
+    assert!(
+        focused_json["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["memory"]["title"] == "Summary budget exact implementation")
+    );
+
+    let contract = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("memory contract")
+            .arg("--strategy")
+            .arg("fts")
+            .arg("--format")
+            .arg("json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let contract_json: Value = serde_json::from_str(&contract).unwrap();
+    assert!(
+        contract_json["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["memory"]["title"] == "Project memory contract"),
+        "explicit memory contract queries should still retrieve contract cards"
+    );
+}
+
+#[test]
 fn quality_report_caps_broad_history_read_boost() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
