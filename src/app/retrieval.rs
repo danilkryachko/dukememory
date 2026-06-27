@@ -1845,6 +1845,7 @@ pub(crate) fn print_agent_context(
     conn: &Connection,
     request: AgentContextRequest<'_>,
 ) -> Result<()> {
+    let started = Instant::now();
     let statuses = ["active".to_string(), "uncertain".to_string()];
     let effective_limit = context_effective_limit(request.limit, request.max_chars);
     let include_recent = match request.mode {
@@ -1864,7 +1865,7 @@ pub(crate) fn print_agent_context(
             rules: request.rules,
         },
     )?;
-    if !matches!(request.mode, ContextMode::Fast) {
+    let semantic_used = if !matches!(request.mode, ContextMode::Fast) {
         append_semantic_context_rows(
             conn,
             &mut rows,
@@ -1877,8 +1878,26 @@ pub(crate) fn print_agent_context(
                 model: request.model,
                 rules: request.rules,
             },
-        )?;
-    }
+        )?
+    } else {
+        false
+    };
+    let ids = rows
+        .iter()
+        .map(|memory| memory.id.clone())
+        .collect::<Vec<_>>();
+    log_read_event(
+        conn,
+        ReadEventInput {
+            command: "context",
+            query: request.task,
+            ids: &ids,
+            semantic_used,
+            result_count: ids.len(),
+            budget: request.max_chars,
+            elapsed_ms: started.elapsed().as_millis(),
+        },
+    )?;
     if request.json_out || matches!(request.format, OutputFormat::Json) {
         let memories =
             compact_agent_context_memories(conn, &rows, request.task, request.max_chars)?;
