@@ -119,7 +119,7 @@ fn mcp_tools() -> Value {
         {"name":"memory_search","description":"Search local memory with compact query-focused summaries","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
         {"name":"memory_context_pack","description":"Return a compact relevant memory pack","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_agent_context","description":"Return agent-native context with planner defaults","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
-        {"name":"memory_snapshot","description":"Return compact bounded project snapshot","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_snapshot","description":"Return compact bounded project snapshot","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_doctrine","description":"Return compact active decision doctrine by default","inputSchema":{"type":"object","properties":{"scope":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_evidence","description":"Return compact provenance for one memory card by default","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_auto_ingest","description":"Scan agent session files into pending inbox suggestions without duplicates as bounded summary","inputSchema":{"type":"object","properties":{"input":{"type":"string"},"scope":{"type":"string"},"dry_run":{"type":"boolean"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"}}}},
@@ -346,11 +346,18 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 .map_err(|err| err.to_string())?
         }
         "memory_snapshot" => {
+            let started = Instant::now();
             let query = json_string(&args, "query").unwrap_or_default();
             let limit = json_usize(&args, "limit").unwrap_or(12);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
             let effective_limit = mcp_effective_limit(limit, max_chars);
             let query_filter = (!query.trim().is_empty()).then_some(query.as_str());
+            let provider = json_string(&args, "provider")
+                .unwrap_or_else(|| DEFAULT_EMBED_PROVIDER.to_string());
+            let endpoint = json_string(&args, "endpoint")
+                .unwrap_or_else(|| DEFAULT_EMBED_ENDPOINT.to_string());
+            let model =
+                json_string(&args, "model").unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
             let fetch_limit = if query_filter.is_some() {
                 mcp_snapshot_query_candidate_limit(effective_limit, max_chars)
             } else {
@@ -366,11 +373,45 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             )
             .map_err(|err| err.to_string())?;
             if query.trim().is_empty() {
+                log_mcp_context_read(
+                    &conn,
+                    "memory_snapshot",
+                    "",
+                    &rows,
+                    false,
+                    max_chars,
+                    started,
+                )
+                .map_err(|err| err.to_string())?;
                 render_context_pack(&conn, &rows, max_chars).map_err(|err| err.to_string())?
             } else {
                 let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
                 rows = filter_query_useless_memories(rows, &query, &quality_signals);
                 rows.truncate(effective_limit);
+                let semantic_used = append_semantic_context_rows(
+                    &conn,
+                    &mut rows,
+                    SemanticContextRequest {
+                        task: &query,
+                        limit: effective_limit,
+                        budget: max_chars,
+                        provider: &provider,
+                        endpoint: &endpoint,
+                        model: &model,
+                        rules: None,
+                    },
+                )
+                .map_err(|err| err.to_string())?;
+                log_mcp_context_read(
+                    &conn,
+                    "memory_snapshot",
+                    &query,
+                    &rows,
+                    semantic_used,
+                    max_chars,
+                    started,
+                )
+                .map_err(|err| err.to_string())?;
                 render_context_pack_for_task(&conn, &rows, max_chars, &query)
                     .map_err(|err| err.to_string())?
             }

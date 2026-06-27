@@ -5157,6 +5157,67 @@ fn mcp_context_surfaces_use_semantic_supplement() {
 }
 
 #[test]
+fn mcp_snapshot_query_uses_semantic_supplement() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Semantic snapshot fallback")
+        .arg("semantic snapshot fallback useful memory should be found through embeddings")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("embed-index")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .assert()
+        .success();
+
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
+        .arg("--db")
+        .arg(&db)
+        .arg("serve-mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_snapshot","arguments":{"query":"semantic snapshot fallback orchard","max_chars":1000,"provider":"mock","endpoint":"local","model":"mock-small"}}})
+        )
+        .unwrap();
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let mcp_stdout = String::from_utf8(output.stdout).unwrap();
+    let value: Value = serde_json::from_str(mcp_stdout.lines().next().unwrap()).unwrap();
+    let text = value["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("Semantic snapshot fallback"));
+
+    let usage = stdout(cmd(&db).arg("usage-report").arg("--json"));
+    let usage_json: Value = serde_json::from_str(&usage).unwrap();
+    assert!(
+        usage_json["recent_reads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|read| read["command"] == "memory_snapshot" && read["semantic_used"] == true)
+    );
+}
+
+#[test]
 fn agent_context_json_is_compact_and_query_focused() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
