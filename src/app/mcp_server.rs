@@ -194,7 +194,8 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let query = json_string(&args, "query").ok_or_else(|| "missing query".to_string())?;
             let limit = json_usize(&args, "limit").unwrap_or(10);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
-            let fetch_limit = limit.saturating_mul(2).max(limit);
+            let effective_limit = mcp_effective_limit(limit, max_chars);
+            let fetch_limit = effective_limit.saturating_mul(2).max(effective_limit);
             let rows = query_memories(
                 &conn,
                 Some(&query),
@@ -206,13 +207,14 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             .map_err(|err| err.to_string())?;
             let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
             let mut rows = filter_query_useless_memories(rows, &query, &quality_signals);
-            rows.truncate(limit);
+            rows.truncate(effective_limit);
             compact_mcp_search_response(&rows, &query, max_chars).map_err(|err| err.to_string())?
         }
         "memory_context_pack" => {
             let task = json_string(&args, "task").ok_or_else(|| "missing task".to_string())?;
             let limit = json_usize(&args, "limit").unwrap_or(12);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(4000);
+            let effective_limit = mcp_effective_limit(limit, max_chars);
             let statuses = ["active".to_string(), "uncertain".to_string()];
             let rows = build_context_rows(
                 &conn,
@@ -221,7 +223,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     types: &[],
                     statuses: &statuses,
                     scope: None,
-                    limit,
+                    limit: effective_limit,
                     include_recent: 3,
                     rules: None,
                 },
@@ -234,6 +236,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let task = json_string(&args, "task").ok_or_else(|| "missing task".to_string())?;
             let limit = json_usize(&args, "limit").unwrap_or(12);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(5000);
+            let effective_limit = mcp_effective_limit(limit, max_chars);
             let statuses = ["active".to_string(), "uncertain".to_string()];
             let rows = build_context_rows(
                 &conn,
@@ -242,7 +245,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     types: &[],
                     statuses: &statuses,
                     scope: None,
-                    limit,
+                    limit: effective_limit,
                     include_recent: 4,
                     rules: None,
                 },
@@ -592,6 +595,10 @@ fn budgeted_mcp_json_response<T: Serialize>(
     render_budgeted_json_value(serde_json::to_value(report)?, max_chars, sections)
 }
 
+fn mcp_effective_limit(limit: usize, max_chars: usize) -> usize {
+    context_effective_limit(limit, max_chars)
+}
+
 fn compact_mcp_drift_response(report: &DriftReport, max_chars: usize) -> Result<String> {
     let value = json!({
         "version": report.version,
@@ -932,4 +939,18 @@ fn json_string_array(value: &Value, key: &str) -> Vec<String> {
 
 fn json_usize(value: &Value, key: &str) -> Option<usize> {
     value.get(key).and_then(Value::as_u64).map(|v| v as usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_effective_limit_tracks_response_budget() {
+        assert_eq!(mcp_effective_limit(20, 900), 4);
+        assert_eq!(mcp_effective_limit(20, 3_000), 8);
+        assert_eq!(mcp_effective_limit(20, 5_000), 20);
+        assert_eq!(mcp_effective_limit(3, 900), 3);
+        assert_eq!(mcp_effective_limit(0, 900), 1);
+    }
 }
