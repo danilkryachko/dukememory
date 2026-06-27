@@ -23,6 +23,10 @@ pub(crate) struct UsageReport {
     pub(crate) write_count: usize,
     pub(crate) semantic_read_count: usize,
     pub(crate) fallback_read_count: usize,
+    pub(crate) semantic_eligible_read_count: usize,
+    pub(crate) semantic_eligible_total: usize,
+    pub(crate) semantic_eligible_read_rate: f64,
+    pub(crate) nonsemantic_read_count: usize,
     pub(crate) unique_memory_ids: usize,
     pub(crate) reads_by_command: BTreeMap<String, usize>,
     pub(crate) writes_by_type: BTreeMap<String, usize>,
@@ -559,6 +563,13 @@ pub(crate) fn print_usage_report(
     println!("writes: {}", report.write_count);
     println!("semantic_reads: {}", report.semantic_read_count);
     println!("fallback_reads: {}", report.fallback_read_count);
+    println!(
+        "semantic_eligible_reads: {}/{} ({:.1}%)",
+        report.semantic_eligible_read_count,
+        report.semantic_eligible_total,
+        report.semantic_eligible_read_rate * 100.0
+    );
+    println!("nonsemantic_reads: {}", report.nonsemantic_read_count);
     println!("unique_memory_ids: {}", report.unique_memory_ids);
     if !report.reads_by_command.is_empty() {
         println!("reads_by_command:");
@@ -614,10 +625,18 @@ pub(crate) fn usage_report(
     let mut reads_by_command = BTreeMap::new();
     let mut unique_ids = HashSet::new();
     let mut semantic_read_count = 0;
+    let mut semantic_eligible_read_count = 0;
+    let mut semantic_eligible_total = 0;
     for event in &all_reads {
         *reads_by_command.entry(event.command.clone()).or_insert(0) += 1;
         if event.semantic_used {
             semantic_read_count += 1;
+        }
+        if semantic_eligible_read_event(event) {
+            semantic_eligible_total += 1;
+            if event.semantic_used {
+                semantic_eligible_read_count += 1;
+            }
         }
         for id in &event.memory_ids {
             unique_ids.insert(id.clone());
@@ -643,11 +662,57 @@ pub(crate) fn usage_report(
         write_count,
         semantic_read_count,
         fallback_read_count: all_reads.len().saturating_sub(semantic_read_count),
+        semantic_eligible_read_count,
+        semantic_eligible_total,
+        semantic_eligible_read_rate: if semantic_eligible_total == 0 {
+            0.0
+        } else {
+            semantic_eligible_read_count as f64 / semantic_eligible_total as f64
+        },
+        nonsemantic_read_count: all_reads.len().saturating_sub(semantic_eligible_total),
         unique_memory_ids: unique_ids.len(),
         reads_by_command,
         writes_by_type,
         recent_reads,
     })
+}
+
+fn semantic_eligible_read_event(event: &MemoryReadEvent) -> bool {
+    if !matches!(
+        event.command.as_str(),
+        "brief"
+            | "impact"
+            | "retrieve"
+            | "recall"
+            | "search"
+            | "context"
+            | "context-pack"
+            | "memory_search"
+            | "memory_context_pack"
+            | "memory_agent_context"
+            | "memory_snapshot"
+    ) {
+        return false;
+    }
+    let query = event.query.trim();
+    if query.is_empty() || semantic_usage_code_identifier_query(query) {
+        return false;
+    }
+    relevance_terms(query).len() >= 2
+}
+
+fn semantic_usage_code_identifier_query(query: &str) -> bool {
+    let query = query.trim();
+    !query.is_empty()
+        && !query.chars().any(char::is_whitespace)
+        && (query.contains("::")
+            || query.contains('/')
+            || query.contains('\\')
+            || query.contains('.')
+            || query.contains('_')
+            || query
+                .chars()
+                .any(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit()))
 }
 
 pub(crate) fn print_usefulness_report(
@@ -2469,11 +2534,7 @@ pub(crate) fn memory_qa_report(
     )
     .ok();
     let autonomous = read_autonomous_status(&root.join(".agent/autonomous-status.json")).ok();
-    let semantic_read_rate = if usage.read_count == 0 {
-        0.0
-    } else {
-        usage.semantic_read_count as f64 / usage.read_count as f64
-    };
+    let semantic_read_rate = usage.semantic_eligible_read_rate;
     let token_saving_estimate = quality
         .items
         .iter()
@@ -2490,8 +2551,9 @@ pub(crate) fn memory_qa_report(
         recommendations
             .push("ensure agents start with dukememory brief or MCP memory_brief".to_string());
     }
-    if semantic_read_rate < 0.50 && usage.read_count > 0 {
-        issues.push("semantic recall is used by less than half of recent reads".to_string());
+    if semantic_read_rate < 0.50 && usage.semantic_eligible_total > 0 {
+        issues
+            .push("semantic recall is used by less than half of eligible recent reads".to_string());
         recommendations
             .push("run dukememory embed-status and embed-index if missing or stale".to_string());
     }

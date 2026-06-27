@@ -37,6 +37,17 @@ fn insert_empty_read_event(db: &std::path::Path, command: &str, query: &str) {
     .unwrap();
 }
 
+fn insert_read_event(db: &std::path::Path, command: &str, query: &str, semantic_used: bool) {
+    let conn = Connection::open(db).unwrap();
+    conn.execute(
+        "INSERT INTO memory_read_events \
+         (command, query, memory_ids, semantic_used, result_count, budget, elapsed_ms, created_at) \
+         VALUES (?1, ?2, '', ?3, 0, 1200, 1, ?4)",
+        params![command, query, if semantic_used { 1 } else { 0 }, now_ms()],
+    )
+    .unwrap();
+}
+
 fn http_once(db: &std::path::Path, request: &str) -> String {
     let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
         .arg("--db")
@@ -5823,11 +5834,20 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
     assert!(usage.contains("brief:"));
     assert!(usage.contains("evidence:"));
     assert!(usage.contains("unique_memory_ids:"));
+    assert!(usage.contains("semantic_eligible_reads:"));
+    assert!(usage.contains("nonsemantic_reads:"));
 
     let usage_json = stdout(cmd(&db).arg("usage-report").arg("--json"));
     let usage_value: Value = serde_json::from_str(&usage_json).unwrap();
     assert!(usage_value["read_count"].as_u64().unwrap() >= 2);
     assert!(usage_value["unique_memory_ids"].as_u64().unwrap() >= 1);
+    assert!(usage_value["semantic_eligible_total"].as_u64().is_some());
+    assert!(
+        usage_value["semantic_eligible_read_rate"]
+            .as_f64()
+            .is_some()
+    );
+    assert!(usage_value["nonsemantic_read_count"].as_u64().is_some());
 
     let usefulness = stdout(cmd(&db).arg("usefulness-report").arg("--json"));
     let usefulness_value: Value = serde_json::from_str(&usefulness).unwrap();
@@ -5985,6 +6005,38 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
     assert!(response.contains("200 OK"));
     assert!(response.contains("memory_added"));
     assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn usage_report_counts_semantic_eligible_reads_only() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Initialize schema")
+        .arg("Create db.")
+        .assert()
+        .success();
+
+    insert_read_event(&db, "brief", "checkout policy memory", true);
+    insert_read_event(&db, "impact", "payment retry policy", false);
+    insert_read_event(&db, "evidence", "abc123", false);
+    insert_read_event(&db, "impact", "src/app.rs", false);
+
+    let usage = stdout(cmd(&db).arg("usage-report").arg("--json"));
+    let usage_json: Value = serde_json::from_str(&usage).unwrap();
+    assert_eq!(usage_json["read_count"], 4);
+    assert_eq!(usage_json["semantic_read_count"], 1);
+    assert_eq!(usage_json["fallback_read_count"], 3);
+    assert_eq!(usage_json["semantic_eligible_total"], 2);
+    assert_eq!(usage_json["semantic_eligible_read_count"], 1);
+    assert_eq!(usage_json["nonsemantic_read_count"], 2);
+    assert_eq!(
+        usage_json["semantic_eligible_read_rate"].as_f64().unwrap(),
+        0.5
+    );
 }
 
 #[test]
