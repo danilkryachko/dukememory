@@ -5856,6 +5856,60 @@ fn agent_context_json_is_compact_and_query_focused() {
 }
 
 #[test]
+fn agent_context_json_respects_tight_max_chars_and_usage() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for index in 0..4 {
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(format!("Context json budget {index}"))
+            .arg(format!(
+                "context json budget exact useful detail variant{index} {}",
+                "tail noise ".repeat(50)
+            ))
+            .assert()
+            .success();
+    }
+
+    let context = stdout(
+        cmd(&db)
+            .arg("context")
+            .arg("context json budget")
+            .arg("--mode")
+            .arg("fast")
+            .arg("--max-chars")
+            .arg("360")
+            .arg("--limit")
+            .arg("8")
+            .arg("--json"),
+    );
+    assert!(
+        context.len() <= 360,
+        "agent context JSON exceeded budget: {}",
+        context.len()
+    );
+    let context_json: Value = serde_json::from_str(&context).unwrap();
+    let rendered_count = context_json["memories"].as_array().unwrap().len();
+
+    let usage = stdout(cmd(&db).arg("usage-report").arg("--json"));
+    let usage_json: Value = serde_json::from_str(&usage).unwrap();
+    let read = &usage_json["recent_reads"][0];
+    assert_eq!(read["command"], "context");
+    assert_eq!(
+        read["result_count"].as_u64().unwrap(),
+        rendered_count as u64,
+        "usage should log only rendered context memories"
+    );
+    assert_eq!(
+        read["memory_ids"].as_array().unwrap().len(),
+        rendered_count,
+        "logged memory ids should match rendered context memories"
+    );
+}
+
+#[test]
 fn v14_agent_context_recent_fallback_requires_task_overlap() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

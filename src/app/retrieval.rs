@@ -2103,6 +2103,30 @@ pub(crate) fn print_agent_context(
     } else {
         false
     };
+    if request.json_out || matches!(request.format, OutputFormat::Json) {
+        let memories =
+            compact_agent_context_memories(conn, &rows, request.task, request.max_chars)?;
+        let (rendered, memories) =
+            render_agent_context_json(request.mode, request.task, request.max_chars, memories)?;
+        let ids = memories
+            .iter()
+            .map(|memory| memory.id.clone())
+            .collect::<Vec<_>>();
+        log_read_event(
+            conn,
+            ReadEventInput {
+                command: "context",
+                query: request.task,
+                ids: &ids,
+                semantic_used,
+                result_count: ids.len(),
+                budget: request.max_chars,
+                elapsed_ms: started.elapsed().as_millis(),
+            },
+        )?;
+        println!("{rendered}");
+        return Ok(());
+    }
     let ids = rows
         .iter()
         .map(|memory| memory.id.clone())
@@ -2119,21 +2143,6 @@ pub(crate) fn print_agent_context(
             elapsed_ms: started.elapsed().as_millis(),
         },
     )?;
-    if request.json_out || matches!(request.format, OutputFormat::Json) {
-        let memories =
-            compact_agent_context_memories(conn, &rows, request.task, request.max_chars)?;
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({
-                "mode": format!("{:?}", request.mode).to_lowercase(),
-                "task": request.task,
-                "max_chars": request.max_chars,
-                "compact": true,
-                "memories": memories
-            }))?
-        );
-        return Ok(());
-    }
     if matches!(request.format, OutputFormat::Markdown | OutputFormat::Agent) {
         return print_memory_output(
             conn,
@@ -2183,6 +2192,28 @@ fn compact_agent_context_memories(
             })
         })
         .collect()
+}
+
+fn render_agent_context_json(
+    mode: ContextMode,
+    task: &str,
+    max_chars: usize,
+    mut memories: Vec<AgentContextMemory>,
+) -> Result<(String, Vec<AgentContextMemory>)> {
+    let mode = format!("{mode:?}").to_lowercase();
+    loop {
+        let rendered = serde_json::to_string_pretty(&json!({
+            "mode": mode,
+            "task": task,
+            "max_chars": max_chars,
+            "compact": true,
+            "memories": &memories
+        }))?;
+        if rendered.len() <= max_chars || memories.is_empty() {
+            return Ok((rendered, memories));
+        }
+        memories.pop();
+    }
 }
 
 pub(crate) fn context_effective_limit(limit: usize, max_chars: usize) -> usize {
