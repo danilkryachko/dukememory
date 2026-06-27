@@ -4100,6 +4100,24 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
             serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_evidence","arguments":{"id":decision_id}}})
         )
         .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memory_evidence","arguments":{"id":decision_id,"include_body":true}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"memory_doctrine","arguments":{"max_chars":700}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"memory_doctrine","arguments":{"include_body":true}}})
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
     let output = child.wait_with_output().unwrap();
@@ -4107,6 +4125,29 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("Auth rate limit doctrine"));
     assert!(stdout.contains("memory_added"));
+    let compact_evidence = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":2"))
+        .unwrap();
+    assert!(compact_evidence.contains("summary"));
+    assert!(compact_evidence.contains("audit_event_count"));
+    assert!(!compact_evidence.contains("body"));
+    let full_evidence = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":3"))
+        .unwrap();
+    assert!(full_evidence.contains("body"));
+    let compact_doctrine = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":4"))
+        .unwrap();
+    assert!(compact_doctrine.contains("summary"));
+    assert!(!compact_doctrine.contains("body"));
+    let full_doctrine = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":5"))
+        .unwrap();
+    assert!(full_doctrine.contains("body"));
 
     let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
         .arg("--db")

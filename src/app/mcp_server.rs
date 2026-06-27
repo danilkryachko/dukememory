@@ -118,8 +118,8 @@ fn mcp_tools() -> Value {
         {"name":"memory_context_pack","description":"Return a compact relevant memory pack","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_agent_context","description":"Return agent-native context with planner defaults","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_snapshot","description":"Return compact project snapshot","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
-        {"name":"memory_doctrine","description":"Return active decision doctrine and supersession chains","inputSchema":{"type":"object","properties":{"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
-        {"name":"memory_evidence","description":"Return provenance for one memory card","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
+        {"name":"memory_doctrine","description":"Return compact active decision doctrine by default","inputSchema":{"type":"object","properties":{"scope":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_evidence","description":"Return compact provenance for one memory card by default","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_auto_ingest","description":"Scan agent session files into pending inbox suggestions without duplicates","inputSchema":{"type":"object","properties":{"input":{"type":"string"},"scope":{"type":"string"},"dry_run":{"type":"boolean"}}}},
         {"name":"memory_get","description":"Get one memory card as compact summary by default","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_review","description":"Review stale/conflicting memory","inputSchema":{"type":"object","properties":{"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
@@ -311,13 +311,35 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         }
         "memory_doctrine" => {
             let scope = mcp_memory_scope(&args);
+            let query = json_string(&args, "query").unwrap_or_default();
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let include_body = args
+                .get("include_body")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let report = doctrine_report(&conn, scope.as_deref()).map_err(|err| err.to_string())?;
-            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+            if include_body {
+                serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+            } else {
+                compact_mcp_doctrine_response(&report, &query, max_chars)
+                    .map_err(|err| err.to_string())?
+            }
         }
         "memory_evidence" => {
             let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            let query = json_string(&args, "query").unwrap_or_default();
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let include_body = args
+                .get("include_body")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let report = evidence_report(&conn, &id).map_err(|err| err.to_string())?;
-            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+            if include_body {
+                serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+            } else {
+                compact_mcp_evidence_response(&report, &query, max_chars)
+                    .map_err(|err| err.to_string())?
+            }
         }
         "memory_auto_ingest" => {
             let input =
@@ -424,6 +446,108 @@ fn compact_mcp_memory_value(memory: &Memory, links: &[MemoryLink], query: &str) 
         "updated_at": memory.updated_at,
         "links": links,
     })
+}
+
+fn compact_mcp_evidence_response(
+    report: &EvidenceReport,
+    query: &str,
+    max_chars: usize,
+) -> Result<String> {
+    let memory = &report.memory.memory;
+    let query_terms = relevance_terms(query);
+    let audit_events = report
+        .audit_events
+        .iter()
+        .take(5)
+        .map(|event| {
+            json!({
+                "id": event.id,
+                "event_type": event.event_type,
+                "detail": truncate_chars(&event.detail, 160),
+                "created_at": event.created_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    let value = json!({
+        "memory": {
+            "id": memory.id,
+            "type": memory.memory_type,
+            "scope": memory.scope,
+            "status": memory.status,
+            "title": memory.title,
+            "summary": query_focused_summary(&memory.body, &query_terms, 180),
+            "confidence": memory.confidence,
+            "updated_at": memory.updated_at,
+            "links": report.memory.links,
+        },
+        "source": report.source,
+        "supersedes_chain": report.supersedes_chain,
+        "superseded_by": report.superseded_by,
+        "audit_event_count": report.audit_events.len(),
+        "audit_events": audit_events,
+        "receipt": report.receipt,
+    });
+    Ok(truncate_chars(
+        &serde_json::to_string_pretty(&value)?,
+        max_chars,
+    ))
+}
+
+fn compact_mcp_doctrine_response(
+    report: &DoctrineReport,
+    query: &str,
+    max_chars: usize,
+) -> Result<String> {
+    let mut value = serde_json::to_value(report)?;
+    let query_terms = relevance_terms(query);
+    compact_doctrine_section(&mut value, "active", &query_terms);
+    compact_doctrine_section(&mut value, "superseded", &query_terms);
+    fit_json_array_sections(
+        &mut value,
+        max_chars,
+        &["superseded", "conflicts", "active"],
+    )?;
+    Ok(serde_json::to_string_pretty(&value)?)
+}
+
+fn compact_doctrine_section(value: &mut Value, key: &str, query_terms: &HashSet<String>) {
+    let Some(items) = value.get_mut(key).and_then(Value::as_array_mut) else {
+        return;
+    };
+    for item in items {
+        if let Some(body) = item.get("body").and_then(Value::as_str).map(str::to_string)
+            && let Some(object) = item.as_object_mut()
+        {
+            object.remove("body");
+            object.insert(
+                "summary".to_string(),
+                Value::String(query_focused_summary(&body, query_terms, 180)),
+            );
+        }
+    }
+}
+
+fn fit_json_array_sections(value: &mut Value, max_chars: usize, sections: &[&str]) -> Result<()> {
+    let mut truncated = false;
+    while serde_json::to_string_pretty(value)?.len() > max_chars {
+        let mut removed = false;
+        for section in sections {
+            if let Some(items) = value.get_mut(*section).and_then(Value::as_array_mut)
+                && items.pop().is_some()
+            {
+                truncated = true;
+                removed = true;
+                break;
+            }
+        }
+        if !removed {
+            break;
+        }
+    }
+    if truncated && let Some(object) = value.as_object_mut() {
+        object.insert("truncated".to_string(), Value::Bool(true));
+    }
+    Ok(())
 }
 
 fn mcp_selected_db(default_db: &Path, args: &Value) -> PathBuf {
