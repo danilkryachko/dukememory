@@ -90,6 +90,12 @@ pub(crate) enum Command {
         scope: Option<String>,
         #[arg(long, default_value_t = 10)]
         limit: usize,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        model: String,
         #[arg(long)]
         json: bool,
     },

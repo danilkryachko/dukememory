@@ -196,20 +196,59 @@ pub(crate) fn run() -> Result<()> {
             status,
             scope,
             limit,
+            provider,
+            endpoint,
+            model,
             json,
         } => {
-            let fetch_limit = limit.saturating_mul(2).max(limit);
-            let rows = query_memories(
+            let started = Instant::now();
+            let types = split_csv(memory_type.as_deref());
+            let statuses = split_csv(Some(&status));
+            let (rows, semantic_used) = search_rows_with_semantic_fallback(
                 &conn,
-                Some(&query),
-                &split_csv(memory_type.as_deref()),
-                &split_csv(Some(&status)),
-                scope.as_deref(),
-                fetch_limit,
+                SearchRowsRequest {
+                    query: &query,
+                    types: &types,
+                    statuses: &statuses,
+                    scope: scope.as_deref(),
+                    limit,
+                    budget: 1_200,
+                    provider: select_cli_or_config(
+                        &provider,
+                        DEFAULT_EMBED_PROVIDER,
+                        &runtime.config.embeddings.provider,
+                    ),
+                    endpoint: select_cli_or_config(
+                        &endpoint,
+                        DEFAULT_EMBED_ENDPOINT,
+                        &runtime.config.embeddings.endpoint,
+                    ),
+                    model: select_cli_or_config(
+                        &model,
+                        DEFAULT_EMBED_MODEL,
+                        &runtime.config.embeddings.model,
+                    ),
+                },
             )?;
             let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
             let mut rows = filter_query_useless_memories(rows, &query, &quality_signals);
             rows.truncate(limit);
+            let ids = rows
+                .iter()
+                .map(|memory| memory.id.clone())
+                .collect::<Vec<_>>();
+            log_read_event(
+                &conn,
+                ReadEventInput {
+                    command: "search",
+                    query: &query,
+                    ids: &ids,
+                    semantic_used,
+                    result_count: ids.len(),
+                    budget: 1_200,
+                    elapsed_ms: started.elapsed().as_millis(),
+                },
+            )?;
             print_rows(&conn, &rows, json)?;
         }
         Command::List {

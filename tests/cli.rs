@@ -5009,6 +5009,83 @@ fn impact_uses_semantic_fallback_for_underfilled_natural_queries() {
 }
 
 #[test]
+fn search_and_mcp_search_use_semantic_fallback_for_underfilled_queries() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Semantic search fallback")
+        .arg("semantic search useful memory should be found through embeddings")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("embed-index")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .assert()
+        .success();
+
+    let search = stdout(
+        cmd(&db)
+            .arg("search")
+            .arg("semantic search fallback orchard")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let search_json: Value = serde_json::from_str(&search).unwrap();
+    assert!(
+        search_json
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["title"] == "Semantic search fallback")
+    );
+
+    let usage = stdout(cmd(&db).arg("usage-report").arg("--json"));
+    let usage_json: Value = serde_json::from_str(&usage).unwrap();
+    assert_eq!(usage_json["recent_reads"][0]["command"], "search");
+    assert_eq!(usage_json["recent_reads"][0]["semantic_used"], true);
+
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
+        .arg("--db")
+        .arg(&db)
+        .arg("serve-mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_search","arguments":{"query":"semantic search fallback orchard","max_chars":1000,"provider":"mock","endpoint":"local","model":"mock-small"}}})
+        )
+        .unwrap();
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let value: Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+    let text = value["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("Semantic search fallback"));
+}
+
+#[test]
 fn agent_context_json_is_compact_and_query_focused() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

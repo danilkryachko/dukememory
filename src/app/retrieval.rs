@@ -73,6 +73,175 @@ fn context_candidate_limit(limit: usize) -> usize {
     limit.saturating_mul(2).max(limit).max(1)
 }
 
+pub(crate) struct SearchRowsRequest<'a> {
+    pub(crate) query: &'a str,
+    pub(crate) types: &'a [String],
+    pub(crate) statuses: &'a [String],
+    pub(crate) scope: Option<&'a str>,
+    pub(crate) limit: usize,
+    pub(crate) budget: usize,
+    pub(crate) provider: &'a str,
+    pub(crate) endpoint: &'a str,
+    pub(crate) model: &'a str,
+}
+
+pub(crate) fn search_rows_with_semantic_fallback(
+    conn: &Connection,
+    request: SearchRowsRequest<'_>,
+) -> Result<(Vec<Memory>, bool)> {
+    let limit = request.limit.max(1);
+    let fetch_limit = search_candidate_limit(limit, request.budget);
+    let mut rows = query_memories(
+        conn,
+        Some(request.query),
+        request.types,
+        request.statuses,
+        request.scope,
+        fetch_limit,
+    )?;
+    let mut semantic_used = false;
+    if rows.len() < limit && search_semantic_should_run(conn, &request, &rows)? {
+        let target_terms = relevance_terms(request.query);
+        let remaining = limit.saturating_sub(rows.len()).max(1);
+        let max_additions = search_semantic_add_limit(remaining, request.budget);
+        let mut added = 0;
+        for item in embeddings::semantic_search(
+            conn,
+            request.provider,
+            request.endpoint,
+            request.model,
+            request.query,
+            search_semantic_candidate_scan_limit(limit, request.budget),
+        )? {
+            if item.score < search_semantic_score_threshold(request.budget)
+                || !search_semantic_candidate_matches(
+                    &item.memory,
+                    &target_terms,
+                    item.score,
+                    request.budget,
+                )
+            {
+                continue;
+            }
+            let memory = item.memory.memory;
+            if !memory_matches_search_filters(
+                &memory,
+                request.types,
+                request.statuses,
+                request.scope,
+            ) || rows.iter().any(|existing| existing.id == memory.id)
+            {
+                continue;
+            }
+            rows.push(memory);
+            semantic_used = true;
+            added += 1;
+            if added >= max_additions {
+                break;
+            }
+        }
+    }
+    Ok((rows, semantic_used))
+}
+
+fn search_semantic_should_run(
+    conn: &Connection,
+    request: &SearchRowsRequest<'_>,
+    rows: &[Memory],
+) -> Result<bool> {
+    let terms = relevance_terms(request.query);
+    if terms.len() < 2 || is_search_code_identifier_query(request.query) {
+        return Ok(false);
+    }
+    if request.budget <= 1_200 && rows.len() >= request.limit.max(1) {
+        return Ok(false);
+    }
+    embeddings::semantic_index_ready(conn, request.provider, request.endpoint, request.model)
+}
+
+fn search_candidate_limit(limit: usize, budget: usize) -> usize {
+    if budget <= 1_200 {
+        limit.saturating_mul(2).max(limit).min(24)
+    } else if budget <= 3_000 {
+        limit.saturating_mul(3).max(limit).min(64)
+    } else {
+        limit.saturating_mul(4).max(limit).min(128)
+    }
+}
+
+fn search_semantic_candidate_scan_limit(limit: usize, budget: usize) -> usize {
+    if budget <= 1_200 {
+        limit.saturating_mul(2).clamp(1, 12)
+    } else if budget <= 3_000 {
+        limit.saturating_mul(3).clamp(1, 32)
+    } else {
+        limit.clamp(1, 64)
+    }
+}
+
+fn search_semantic_add_limit(remaining: usize, budget: usize) -> usize {
+    let budget_limit = if budget <= 1_200 {
+        1
+    } else if budget <= 3_000 {
+        2
+    } else {
+        4
+    };
+    remaining.min(budget_limit).max(1)
+}
+
+fn search_semantic_score_threshold(budget: usize) -> f64 {
+    if budget <= 1_200 {
+        0.18
+    } else if budget <= 3_000 {
+        0.12
+    } else {
+        0.05
+    }
+}
+
+fn search_semantic_candidate_matches(
+    item: &MemoryWithLinks,
+    terms: &HashSet<String>,
+    semantic_score: f64,
+    budget: usize,
+) -> bool {
+    if budget > 1_200 || semantic_score >= 0.32 {
+        return true;
+    }
+    let required_overlap = terms.len().min(2);
+    let mut tokens = tokenize(&format!("{} {}", item.memory.title, item.memory.body));
+    for link in &item.links {
+        tokens.extend(tokenize(&format!("{} {}", link.kind, link.target)));
+    }
+    terms.intersection(&tokens).count() >= required_overlap
+}
+
+fn memory_matches_search_filters(
+    memory: &Memory,
+    types: &[String],
+    statuses: &[String],
+    scope: Option<&str>,
+) -> bool {
+    (types.is_empty() || types.iter().any(|value| value == &memory.memory_type))
+        && (statuses.is_empty() || statuses.iter().any(|value| value == &memory.status))
+        && scope.is_none_or(|value| value == memory.scope)
+}
+
+fn is_search_code_identifier_query(query: &str) -> bool {
+    let query = query.trim();
+    !query.is_empty()
+        && !query.chars().any(char::is_whitespace)
+        && (query.contains("::")
+            || query.contains('/')
+            || query.contains('\\')
+            || query.contains('.')
+            || query.contains('_')
+            || query
+                .chars()
+                .any(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit()))
+}
+
 fn context_recent_fallback_matches_task(
     conn: &Connection,
     memory: &Memory,

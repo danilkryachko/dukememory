@@ -116,7 +116,7 @@ fn mcp_tools() -> Value {
         {"name":"memory_drift","description":"Detect cheap local memory drift before coding as bounded summary by default","inputSchema":{"type":"object","properties":{"changed_only":{"type":"boolean"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"}}}},
         {"name":"memory_add","description":"Add a typed memory card","inputSchema":{"type":"object","properties":{"type":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"scope":{"type":"string"},"source":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["type","title","body"]}},
         {"name":"memory_remember","description":"Remember plain text as local memory","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"type":{"type":"string"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["text"]}},
-        {"name":"memory_search","description":"Search local memory with compact query-focused summaries","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
+        {"name":"memory_search","description":"Search local memory with compact query-focused summaries","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
         {"name":"memory_context_pack","description":"Return a compact relevant memory pack","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_agent_context","description":"Return agent-native context with planner defaults","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_snapshot","description":"Return compact bounded project snapshot","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
@@ -191,23 +191,52 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             .map_err(|err| err.to_string())?
         }
         "memory_search" => {
+            let started = Instant::now();
             let query = json_string(&args, "query").ok_or_else(|| "missing query".to_string())?;
             let limit = json_usize(&args, "limit").unwrap_or(10);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
             let effective_limit = mcp_effective_limit(limit, max_chars);
-            let fetch_limit = effective_limit.saturating_mul(2).max(effective_limit);
-            let rows = query_memories(
+            let provider = json_string(&args, "provider")
+                .unwrap_or_else(|| DEFAULT_EMBED_PROVIDER.to_string());
+            let endpoint = json_string(&args, "endpoint")
+                .unwrap_or_else(|| DEFAULT_EMBED_ENDPOINT.to_string());
+            let model =
+                json_string(&args, "model").unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
+            let (rows, semantic_used) = search_rows_with_semantic_fallback(
                 &conn,
-                Some(&query),
-                &[],
-                &["active".to_string()],
-                None,
-                fetch_limit,
+                SearchRowsRequest {
+                    query: &query,
+                    types: &[],
+                    statuses: &["active".to_string()],
+                    scope: None,
+                    limit: effective_limit,
+                    budget: max_chars,
+                    provider: &provider,
+                    endpoint: &endpoint,
+                    model: &model,
+                },
             )
             .map_err(|err| err.to_string())?;
             let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
             let mut rows = filter_query_useless_memories(rows, &query, &quality_signals);
             rows.truncate(effective_limit);
+            let ids = rows
+                .iter()
+                .map(|memory| memory.id.clone())
+                .collect::<Vec<_>>();
+            log_read_event(
+                &conn,
+                ReadEventInput {
+                    command: "memory_search",
+                    query: &query,
+                    ids: &ids,
+                    semantic_used,
+                    result_count: ids.len(),
+                    budget: max_chars,
+                    elapsed_ms: started.elapsed().as_millis(),
+                },
+            )
+            .map_err(|err| err.to_string())?;
             compact_mcp_search_response(&rows, &query, max_chars).map_err(|err| err.to_string())?
         }
         "memory_context_pack" => {

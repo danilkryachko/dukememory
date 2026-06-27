@@ -172,15 +172,40 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 .get("stale_days")
                 .and_then(|value| value.parse::<i64>().ok())
                 .unwrap_or(30);
-            let mut fetch_limit = if usage != "all" || sort != "updated_desc" {
-                500
+            let rows = if let Some(query) = q {
+                search_rows_with_semantic_fallback(
+                    &conn,
+                    SearchRowsRequest {
+                        query,
+                        types: &types,
+                        statuses: &statuses,
+                        scope,
+                        limit: if usage != "all" || sort != "updated_desc" {
+                            500
+                        } else {
+                            limit
+                        },
+                        budget: 1_200,
+                        provider: DEFAULT_EMBED_PROVIDER,
+                        endpoint: DEFAULT_EMBED_ENDPOINT,
+                        model: DEFAULT_EMBED_MODEL,
+                    },
+                )?
+                .0
             } else {
-                limit
+                query_memories(
+                    &conn,
+                    None,
+                    &types,
+                    &statuses,
+                    scope,
+                    if usage != "all" || sort != "updated_desc" {
+                        500
+                    } else {
+                        limit
+                    },
+                )?
             };
-            if q.is_some() {
-                fetch_limit = fetch_limit.saturating_mul(2).min(500).max(fetch_limit);
-            }
-            let rows = query_memories(&conn, q, &types, &statuses, scope, fetch_limit)?;
             let rows = if let Some(query) = q {
                 let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
                 filter_query_useless_memories(rows, query, &quality_signals)
@@ -968,14 +993,19 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 .map(|value| value as usize)
                 .unwrap_or(10)
                 .min(100);
-            let fetch_limit = limit.saturating_mul(2).max(limit).min(200);
-            let rows = query_memories(
+            let (rows, _) = search_rows_with_semantic_fallback(
                 &conn,
-                Some(query),
-                &[],
-                &["active".to_string(), "uncertain".to_string()],
-                None,
-                fetch_limit,
+                SearchRowsRequest {
+                    query,
+                    types: &[],
+                    statuses: &["active".to_string(), "uncertain".to_string()],
+                    scope: None,
+                    limit,
+                    budget: 1_200,
+                    provider: DEFAULT_EMBED_PROVIDER,
+                    endpoint: DEFAULT_EMBED_ENDPOINT,
+                    model: DEFAULT_EMBED_MODEL,
+                },
             )?;
             let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
             let mut rows = filter_query_useless_memories(rows, query, &quality_signals);
