@@ -1057,6 +1057,76 @@ fn mcp_snapshot_filters_query_useless_feedback() {
 }
 
 #[test]
+fn mcp_snapshot_filters_noisy_top_candidates() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let query = "snapshot overfetch token budget";
+
+    cmd(&db)
+        .arg("add")
+        .arg("task_state")
+        .arg("Useful snapshot overfetch memory")
+        .arg("snapshot overfetch token budget useful card should remain in MCP snapshot")
+        .assert()
+        .success();
+    let mut noisy_ids = Vec::new();
+    for index in 0..10 {
+        let id = stdout(
+            cmd(&db)
+                .arg("add")
+                .arg("task_state")
+                .arg(format!("Noisy snapshot overfetch memory {index}"))
+                .arg("snapshot overfetch token budget noisy card should be suppressed from MCP snapshot"),
+        )
+        .trim()
+        .to_string();
+        noisy_ids.push(id);
+    }
+    for id in noisy_ids {
+        cmd(&db)
+            .arg("feedback")
+            .arg("--id")
+            .arg(id)
+            .arg("--rating")
+            .arg("useless")
+            .arg("--command")
+            .arg("memory_snapshot")
+            .arg("--query")
+            .arg(query)
+            .assert()
+            .success();
+    }
+
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
+        .arg("--db")
+        .arg(&db)
+        .arg("serve-mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_snapshot","arguments":{"query":query,"limit":4,"max_chars":1000}}})
+        )
+        .unwrap();
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let value: Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+    let text = value["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("Useful snapshot overfetch memory"));
+    assert!(!text.contains("Noisy snapshot overfetch memory"));
+}
+
+#[test]
 fn http_search_filters_noisy_top_candidates() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

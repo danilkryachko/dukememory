@@ -260,13 +260,18 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
             let effective_limit = mcp_effective_limit(limit, max_chars);
             let query_filter = (!query.trim().is_empty()).then_some(query.as_str());
+            let fetch_limit = if query_filter.is_some() {
+                mcp_snapshot_query_candidate_limit(effective_limit, max_chars)
+            } else {
+                effective_limit
+            };
             let mut rows = query_memories(
                 &conn,
                 query_filter,
                 &[],
                 &["active".to_string(), "uncertain".to_string()],
                 None,
-                effective_limit,
+                fetch_limit,
             )
             .map_err(|err| err.to_string())?;
             if query.trim().is_empty() {
@@ -274,6 +279,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             } else {
                 let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
                 rows = filter_query_useless_memories(rows, &query, &quality_signals);
+                rows.truncate(effective_limit);
                 render_context_pack_for_task(&conn, &rows, max_chars, &query)
                     .map_err(|err| err.to_string())?
             }
@@ -599,6 +605,18 @@ fn budgeted_mcp_json_response<T: Serialize>(
 
 fn mcp_effective_limit(limit: usize, max_chars: usize) -> usize {
     context_effective_limit(limit, max_chars)
+}
+
+fn mcp_snapshot_query_candidate_limit(effective_limit: usize, max_chars: usize) -> usize {
+    let effective_limit = effective_limit.max(1);
+    let scan = if max_chars <= 1_200 {
+        effective_limit.saturating_mul(3).min(24)
+    } else if max_chars <= 3_000 {
+        effective_limit.saturating_mul(3).min(48)
+    } else {
+        effective_limit.saturating_mul(2).min(64)
+    };
+    scan.max(effective_limit)
 }
 
 fn compact_mcp_drift_response(report: &DriftReport, max_chars: usize) -> Result<String> {
@@ -954,5 +972,9 @@ mod tests {
         assert_eq!(mcp_effective_limit(20, 5_000), 20);
         assert_eq!(mcp_effective_limit(3, 900), 3);
         assert_eq!(mcp_effective_limit(0, 900), 1);
+        assert_eq!(mcp_snapshot_query_candidate_limit(4, 900), 12);
+        assert_eq!(mcp_snapshot_query_candidate_limit(8, 3_000), 24);
+        assert_eq!(mcp_snapshot_query_candidate_limit(100, 3_000), 100);
+        assert_eq!(mcp_snapshot_query_candidate_limit(20, 5_000), 40);
     }
 }
