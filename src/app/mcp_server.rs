@@ -258,13 +258,14 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let query = json_string(&args, "query").unwrap_or_default();
             let limit = json_usize(&args, "limit").unwrap_or(12);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let effective_limit = mcp_effective_limit(limit, max_chars);
             let mut rows = query_memories(
                 &conn,
                 None,
                 &[],
                 &["active".to_string(), "uncertain".to_string()],
                 None,
-                limit,
+                effective_limit,
             )
             .map_err(|err| err.to_string())?;
             if query.trim().is_empty() {
