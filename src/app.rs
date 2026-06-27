@@ -281,11 +281,12 @@ pub(crate) fn run() -> Result<()> {
             json,
             with_codegraph,
             rules,
-            semantic,
+            semantic: _,
             embed_provider,
             embed_endpoint,
             embed_model,
         } => {
+            let started = Instant::now();
             let types = split_csv(memory_type.as_deref());
             let statuses = split_csv(Some(&status));
             let max_chars = budget_profile_chars(budget_profile).unwrap_or(max_chars);
@@ -302,21 +303,35 @@ pub(crate) fn run() -> Result<()> {
                     rules: rules.as_deref(),
                 },
             )?;
-            if semantic {
-                append_semantic_context_rows(
-                    &conn,
-                    &mut rows,
-                    SemanticContextRequest {
-                        task: &task,
-                        limit: effective_limit,
-                        budget: max_chars,
-                        provider: &embed_provider,
-                        endpoint: &embed_endpoint,
-                        model: &embed_model,
-                        rules: rules.as_deref(),
-                    },
-                )?;
-            }
+            let semantic_used = append_semantic_context_rows(
+                &conn,
+                &mut rows,
+                SemanticContextRequest {
+                    task: &task,
+                    limit: effective_limit,
+                    budget: max_chars,
+                    provider: &embed_provider,
+                    endpoint: &embed_endpoint,
+                    model: &embed_model,
+                    rules: rules.as_deref(),
+                },
+            )?;
+            let ids = rows
+                .iter()
+                .map(|memory| memory.id.clone())
+                .collect::<Vec<_>>();
+            log_read_event(
+                &conn,
+                ReadEventInput {
+                    command: "context-pack",
+                    query: &task,
+                    ids: &ids,
+                    semantic_used,
+                    result_count: ids.len(),
+                    budget: max_chars,
+                    elapsed_ms: started.elapsed().as_millis(),
+                },
+            )?;
             if json {
                 println!(
                     "{}",
@@ -2977,7 +2992,7 @@ fn print_vec_status() {
     println!("default provider: {DEFAULT_EMBED_PROVIDER}");
     println!("default endpoint: {DEFAULT_EMBED_ENDPOINT}");
     println!("default model: {DEFAULT_EMBED_MODEL}");
-    println!("commands: embed-index, embed-search, context-pack --semantic");
+    println!("commands: embed-index, embed-search, context-pack");
 }
 
 fn print_completions(shell: CompletionShell) {

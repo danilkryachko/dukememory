@@ -5218,6 +5218,56 @@ fn mcp_snapshot_query_uses_semantic_supplement() {
 }
 
 #[test]
+fn context_pack_uses_semantic_supplement_by_default() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Semantic context fallback")
+        .arg("semantic context fallback useful memory should be found through embeddings")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("embed-index")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .assert()
+        .success();
+
+    let context_pack = stdout(
+        cmd(&db)
+            .arg("context-pack")
+            .arg("semantic context fallback orchard")
+            .arg("--json")
+            .arg("--embed-provider")
+            .arg("mock")
+            .arg("--embed-endpoint")
+            .arg("local")
+            .arg("--embed-model")
+            .arg("mock-small"),
+    );
+    let context_json: Value = serde_json::from_str(&context_pack).unwrap();
+    assert!(
+        context_json
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["title"] == "Semantic context fallback")
+    );
+
+    let usage = stdout(cmd(&db).arg("usage-report").arg("--json"));
+    let usage_json: Value = serde_json::from_str(&usage).unwrap();
+    assert_eq!(usage_json["recent_reads"][0]["command"], "context-pack");
+    assert_eq!(usage_json["recent_reads"][0]["semantic_used"], true);
+}
+
+#[test]
 fn agent_context_json_is_compact_and_query_focused() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
