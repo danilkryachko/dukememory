@@ -138,7 +138,7 @@ pub(crate) fn retrieve_report(
         request.scope,
         request.limit.saturating_mul(2).max(request.limit),
     )?;
-    let direct_fts_count = non_redundant_memory_count(&fts_rows, request.budget);
+    let direct_fts_count = non_redundant_memory_count(&fts_rows, request.budget, &task_terms);
     for row in fts_rows {
         candidates.entry(row.id.clone()).or_insert((row, None));
     }
@@ -321,13 +321,23 @@ fn semantic_score_threshold(budget: usize) -> f64 {
     }
 }
 
-fn non_redundant_memory_count(rows: &[Memory], budget: usize) -> usize {
+fn non_redundant_memory_count(
+    rows: &[Memory],
+    budget: usize,
+    required_terms: &HashSet<String>,
+) -> usize {
     let Some(threshold) = redundancy_threshold_for_budget(budget) else {
-        return rows.len();
+        return rows
+            .iter()
+            .filter(|row| required_terms.is_subset(&memory_signature(row)))
+            .count();
     };
     let mut signatures: Vec<HashSet<String>> = Vec::new();
     for row in rows {
         let signature = memory_signature(row);
+        if !required_terms.is_subset(&signature) {
+            continue;
+        }
         if signature.len() >= 4
             && signatures
                 .iter()
