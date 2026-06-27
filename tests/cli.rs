@@ -375,6 +375,17 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         .arg("MCP can retrieve this card.")
         .assert()
         .success();
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("MCP long search card")
+        .arg(format!(
+            "{} needle mcp exact detail should be visible {}",
+            "mcp prefix noise ".repeat(80),
+            "mcp tail noise ".repeat(80)
+        ))
+        .assert()
+        .success();
 
     let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
         .arg("--db")
@@ -399,6 +410,12 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
             serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_context_pack","arguments":{"task":"retrieve mcp","max_chars":1000}}})
         )
         .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memory_search","arguments":{"query":"needle mcp","max_chars":1000}}})
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
 
@@ -411,6 +428,8 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
     assert!(stdout.contains("memory_context_pack"));
     assert!(stdout.find("memory_brief") < stdout.find("memory_context_pack"));
     assert!(stdout.contains("MCP decision"));
+    assert!(stdout.contains("needle mcp exact detail"));
+    assert!(!stdout.contains(&"mcp prefix noise ".repeat(10)));
 }
 
 #[test]
@@ -3541,7 +3560,7 @@ fn v14_recall_uses_query_focused_summaries() {
         .arg("design_note")
         .arg("Recall focused long note")
         .arg(format!(
-            "{} recall needle exact useful detail should be visible {}",
+            "{} needle exact useful detail should be visible {}",
             "prefix noise ".repeat(80),
             "tail noise ".repeat(80)
         ))
@@ -3551,7 +3570,7 @@ fn v14_recall_uses_query_focused_summaries() {
     let recall = stdout(
         cmd(&db)
             .arg("recall")
-            .arg("recall needle")
+            .arg("needle exact")
             .arg("--max-chars")
             .arg("800")
             .arg("--provider")
@@ -3564,7 +3583,7 @@ fn v14_recall_uses_query_focused_summaries() {
     );
     let recall_json: Value = serde_json::from_str(&recall).unwrap();
     let summary = recall_json["items"][0]["summary"].as_str().unwrap();
-    assert!(summary.contains("recall needle exact useful detail"));
+    assert!(summary.contains("needle exact useful detail"));
     assert!(!summary.contains(&"prefix noise ".repeat(8)));
 }
 

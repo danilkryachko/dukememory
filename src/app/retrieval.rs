@@ -1220,27 +1220,47 @@ fn focused_text_window(
     if words.is_empty() {
         return None;
     }
-    let center = words.iter().position(|word| {
-        tokenize(word)
-            .iter()
-            .any(|token| query_terms.contains(token))
-    })?;
-    let mut start = center.saturating_sub(8);
-    let mut end = start;
     let target_chars = max_chars.saturating_sub(6).max(20);
-    while end < words.len() {
-        let candidate_end = end + 1;
-        if window_words_len(&words[start..candidate_end]) > target_chars {
-            break;
-        }
-        end = candidate_end;
-    }
-    while center >= end && start < center {
-        start += 1;
+    let mut best: Option<(usize, usize, usize, usize, usize, usize)> = None;
+    for start in 0..words.len() {
+        let mut end = start;
         while end < words.len() && window_words_len(&words[start..end + 1]) <= target_chars {
             end += 1;
         }
+        if end == start {
+            end += 1;
+        }
+        let (distinct_matches, query_span, first_offset, total_matches) =
+            query_window_score(&words[start..end], query_terms);
+        if distinct_matches == 0 {
+            continue;
+        }
+        let candidate = (
+            distinct_matches,
+            query_span,
+            first_offset,
+            total_matches,
+            start,
+            end,
+        );
+        let should_replace = best
+            .map(|current| {
+                distinct_matches > current.0
+                    || (distinct_matches == current.0
+                        && (query_span < current.1
+                            || (query_span == current.1
+                                && (first_offset < current.2
+                                    || (first_offset == current.2
+                                        && (total_matches > current.3
+                                            || (total_matches == current.3
+                                                && start < current.4)))))))
+            })
+            .unwrap_or(true);
+        if should_replace {
+            best = Some(candidate);
+        }
     }
+    let (_, _, _, _, start, end) = best?;
     let mut out = words[start..end].join(" ");
     if start > 0 {
         out = format!("...{out}");
@@ -1249,6 +1269,36 @@ fn focused_text_window(
         out.push_str("...");
     }
     Some(truncate_chars(&out, max_chars))
+}
+
+fn query_window_score(
+    words: &[&str],
+    query_terms: &HashSet<String>,
+) -> (usize, usize, usize, usize) {
+    let mut distinct = HashSet::new();
+    let mut total = 0;
+    let mut first_match = None;
+    let mut last_match = None;
+    for (index, word) in words.iter().enumerate() {
+        for token in tokenize(word) {
+            if query_terms.contains(&token) {
+                distinct.insert(token);
+                total += 1;
+                first_match.get_or_insert(index);
+                last_match = Some(index);
+            }
+        }
+    }
+    let query_span = match (first_match, last_match) {
+        (Some(first), Some(last)) => last.saturating_sub(first),
+        _ => usize::MAX,
+    };
+    (
+        distinct.len(),
+        query_span,
+        first_match.unwrap_or(usize::MAX),
+        total,
+    )
 }
 
 fn window_words_len(words: &[&str]) -> usize {
