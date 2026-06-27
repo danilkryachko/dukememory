@@ -1042,6 +1042,46 @@ pub(crate) fn feedback_summary(conn: &Connection, since_days: i64) -> Result<Fee
     })
 }
 
+fn missing_feedback_query_count(conn: &Connection, task: &str, since_days: i64) -> Result<usize> {
+    let task_terms = tokenize(task);
+    if task_terms.len() < 2 {
+        return Ok(0);
+    }
+    let since_ms = now_ms().saturating_sub(since_days.max(0).saturating_mul(86_400_000));
+    let mut stmt = conn.prepare(
+        "SELECT detail FROM memory_events WHERE event_type = 'memory_feedback' AND created_at >= ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![since_ms], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let required_overlap = task_terms.len().min(2);
+    let mut count = 0;
+    for detail in rows {
+        let Ok(value) = serde_json::from_str::<Value>(&detail) else {
+            continue;
+        };
+        if value.get("rating").and_then(Value::as_str) != Some("missing") {
+            continue;
+        }
+        let has_ids = value
+            .get("ids")
+            .and_then(Value::as_array)
+            .is_some_and(|ids| !ids.is_empty());
+        if has_ids {
+            continue;
+        }
+        let feedback_terms = value
+            .get("query")
+            .and_then(Value::as_str)
+            .map(tokenize)
+            .unwrap_or_default();
+        if task_terms.intersection(&feedback_terms).count() >= required_overlap {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
 pub(crate) fn print_feedback_report(
     conn: &Connection,
     ids: &[String],
@@ -1127,8 +1167,9 @@ pub(crate) fn budget_plan(
         500,
     )?
     .len();
+    let missing_feedback = missing_feedback_query_count(conn, task, 30)?;
     let mut reasons = Vec::new();
-    let profile = if broad || terms.len() > 14 {
+    let mut profile = if broad || terms.len() > 14 {
         reasons.push("broad or risky task needs more doctrine and impact memory".to_string());
         BudgetProfile::Deep
     } else if pending > 20 || active_count > 80 || terms.len() > 8 {
@@ -1138,6 +1179,12 @@ pub(crate) fn budget_plan(
         reasons.push("small task should stay token-light".to_string());
         BudgetProfile::Tiny
     };
+    if missing_feedback > 0 && matches!(profile, BudgetProfile::Tiny) {
+        profile = BudgetProfile::Normal;
+        reasons.push(format!(
+            "{missing_feedback} recent missing feedback event(s) for a similar task; use the next smallest budget"
+        ));
+    }
     if pending > 0 {
         reasons.push(format!(
             "{pending} pending inbox item(s) may affect context freshness"

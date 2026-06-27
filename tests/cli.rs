@@ -210,6 +210,48 @@ fn search_filters_query_useless_feedback() {
 }
 
 #[test]
+fn budget_plan_uses_missing_feedback_without_overexpanding() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let baseline = stdout(
+        cmd(&db)
+            .arg("budget-plan")
+            .arg("checkout validation")
+            .arg("--json"),
+    );
+    let baseline_json: Value = serde_json::from_str(&baseline).unwrap();
+    assert_eq!(baseline_json["profile"], "tiny");
+
+    cmd(&db)
+        .arg("feedback")
+        .arg("--rating")
+        .arg("missing")
+        .arg("--command")
+        .arg("brief")
+        .arg("--query")
+        .arg("checkout validation memory gap")
+        .assert()
+        .success();
+
+    let planned = stdout(
+        cmd(&db)
+            .arg("budget-plan")
+            .arg("checkout validation")
+            .arg("--json"),
+    );
+    let planned_json: Value = serde_json::from_str(&planned).unwrap();
+    assert_eq!(planned_json["profile"], "normal");
+    assert_eq!(planned_json["max_chars"], 3000);
+    assert!(
+        planned_json["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason.as_str().unwrap().contains("missing feedback"))
+    );
+}
+
+#[test]
 fn init_update_get_delete_and_privacy_guard() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
