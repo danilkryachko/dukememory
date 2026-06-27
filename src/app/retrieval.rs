@@ -25,23 +25,34 @@ pub(crate) fn build_context_rows(
     )?;
     let has_direct_matches = !rows.is_empty();
     if query.include_recent > 0 {
+        let mut recent_added = 0usize;
+        let recent_keep_limit = if has_direct_matches {
+            query.include_recent
+        } else {
+            1
+        };
         let recent = query_memories(
             conn,
             None,
             query.types,
             &["active".to_string()],
             query.scope,
-            if has_direct_matches {
-                query.include_recent
-            } else {
-                1
-            },
+            query.include_recent,
         )?;
         for row in recent {
             if !rows.iter().any(|existing| existing.id == row.id)
-                && (!has_direct_matches || context_recent_matches_task(conn, &row, &task_terms)?)
+                && context_recent_fallback_matches_task(
+                    conn,
+                    &row,
+                    &task_terms,
+                    has_direct_matches,
+                )?
             {
                 rows.push(row);
+                recent_added += 1;
+                if recent_added >= recent_keep_limit {
+                    break;
+                }
             }
         }
     }
@@ -56,6 +67,31 @@ pub(crate) fn build_context_rows(
     );
     rows = select_diverse_memories(rows, query.limit);
     Ok(rows)
+}
+
+fn context_recent_fallback_matches_task(
+    conn: &Connection,
+    memory: &Memory,
+    task_terms: &HashSet<String>,
+    has_direct_matches: bool,
+) -> Result<bool> {
+    if context_recent_matches_task(conn, memory, task_terms)? {
+        return Ok(true);
+    }
+    Ok(!has_direct_matches && task_terms.len() >= 2 && context_bootstrap_candidate(memory))
+}
+
+fn context_bootstrap_candidate(memory: &Memory) -> bool {
+    memory.status == "active"
+        && memory.confidence >= 0.8
+        && matches!(
+            memory.memory_type.as_str(),
+            "decision" | "constraint" | "product_goal" | "user_preference" | "known_issue"
+        )
+        && matches!(
+            memory.scope.as_str(),
+            "project" | "repo" | "user" | "global" | "default"
+        )
 }
 
 fn context_recent_matches_task(

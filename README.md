@@ -79,6 +79,7 @@ Transcript-based memory quickly turns into noise.
 - tiny lexical-saturated retrieval skips unrelated recent fallback candidates
 - tiny multi-term retrieval drops partial lexical noise without semantic support
 - context packs keep recent fallback relevant, with one-card bootstrap only when direct matches are empty
+- agent context recent fallback requires task overlap or one durable bootstrap card
 - agent context and semantic context packs share budgeted semantic thresholds
 - compressed recall summaries focus on the query window instead of leading body text
 - agent context next actions are relevance-filtered and budget-bounded

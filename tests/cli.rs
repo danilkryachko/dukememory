@@ -4365,6 +4365,65 @@ fn v14_agent_context_filters_next_actions() {
 }
 
 #[test]
+fn v14_agent_context_recent_fallback_requires_task_overlap() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("task_state")
+        .arg("Billing export recent")
+        .arg("billing export follow-up should not enter an unrelated checkout task")
+        .assert()
+        .success();
+
+    let unrelated_context = stdout(
+        cmd(&db)
+            .arg("context")
+            .arg("checkout validation")
+            .arg("--mode")
+            .arg("fast")
+            .arg("--json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let unrelated_json: Value = serde_json::from_str(&unrelated_context).unwrap();
+    assert!(
+        unrelated_json["memories"].as_array().unwrap().is_empty(),
+        "agent context should not bootstrap unrelated recent cards when direct matches are empty"
+    );
+
+    cmd(&db)
+        .arg("add")
+        .arg("command")
+        .arg("Linked checkout command")
+        .arg("Run the focused validation command before changing this area.")
+        .arg("--link")
+        .arg("file:src/checkout/validation.rs")
+        .assert()
+        .success();
+
+    let linked_context = stdout(
+        cmd(&db)
+            .arg("context")
+            .arg("checkout validation")
+            .arg("--mode")
+            .arg("fast")
+            .arg("--json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let linked_json: Value = serde_json::from_str(&linked_context).unwrap();
+    let titles = linked_json["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|memory| memory["title"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(titles, vec!["Linked checkout command"]);
+}
+
+#[test]
 fn v14_retrieve_does_not_count_duplicate_fts_as_saturated() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
