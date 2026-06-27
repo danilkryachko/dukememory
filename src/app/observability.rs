@@ -1075,11 +1075,29 @@ fn missing_feedback_query_count(conn: &Connection, task: &str, since_days: i64) 
             .and_then(Value::as_str)
             .map(tokenize)
             .unwrap_or_default();
-        if task_terms.intersection(&feedback_terms).count() >= required_overlap {
+        let query = value.get("query").and_then(Value::as_str).unwrap_or("");
+        if task_terms.intersection(&feedback_terms).count() >= required_overlap
+            && !missing_feedback_query_resolved(conn, query)?
+        {
             count += 1;
         }
     }
     Ok(count)
+}
+
+fn missing_feedback_query_resolved(conn: &Connection, query: &str) -> Result<bool> {
+    if query.trim().is_empty() {
+        return Ok(false);
+    }
+    Ok(!query_memories(
+        conn,
+        Some(query),
+        &[],
+        &["active".to_string(), "uncertain".to_string()],
+        None,
+        1,
+    )?
+    .is_empty())
 }
 
 pub(crate) fn print_feedback_report(

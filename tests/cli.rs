@@ -249,6 +249,29 @@ fn budget_plan_uses_missing_feedback_without_overexpanding() {
             .iter()
             .any(|reason| reason.as_str().unwrap().contains("missing feedback"))
     );
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Checkout validation memory gap resolved")
+        .arg("This active card resolves the checkout validation memory gap.")
+        .assert()
+        .success();
+    let resolved = stdout(
+        cmd(&db)
+            .arg("budget-plan")
+            .arg("checkout validation")
+            .arg("--json"),
+    );
+    let resolved_json: Value = serde_json::from_str(&resolved).unwrap();
+    assert_eq!(resolved_json["profile"], "tiny");
+    assert!(
+        resolved_json["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|reason| !reason.as_str().unwrap().contains("missing feedback"))
+    );
 }
 
 #[test]
