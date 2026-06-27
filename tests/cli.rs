@@ -3326,7 +3326,7 @@ fn v14_retrieve_filters_weak_semantic_candidates() {
 }
 
 #[test]
-fn v14_retrieve_skips_semantic_when_tiny_fts_is_saturated() {
+fn v14_retrieve_does_not_count_duplicate_fts_as_saturated() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
 
@@ -3336,6 +3336,82 @@ fn v14_retrieve_skips_semantic_when_tiny_fts_is_saturated() {
             .arg("design_note")
             .arg(format!("Saturated lexical {index}"))
             .arg("saturated lexical match keeps tiny retrieval local and fast")
+            .assert()
+            .success();
+    }
+    cmd(&db)
+        .arg("embed-index")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .assert()
+        .success();
+
+    let retrieved = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("saturated lexical")
+            .arg("--strategy")
+            .arg("hybrid")
+            .arg("--format")
+            .arg("json")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let retrieved_json: Value = serde_json::from_str(&retrieved).unwrap();
+    assert_eq!(retrieved_json["semantic_used"], true);
+    assert_eq!(retrieved_json["semantic_skipped"], false);
+    assert!(retrieved_json["semantic_skip_reason"].is_null());
+    assert!(
+        retrieved_json["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["semantic_score"].as_f64().is_some())
+    );
+}
+
+#[test]
+fn v14_retrieve_skips_semantic_when_tiny_fts_is_saturated() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for (title, body) in [
+        (
+            "Saturated lexical api",
+            "saturated lexical api gateway routing auth headers circuit breaker",
+        ),
+        (
+            "Saturated lexical cache",
+            "saturated lexical cache eviction redis ttl invalidation warmup",
+        ),
+        (
+            "Saturated lexical schema",
+            "saturated lexical schema migration columns indexes constraints rollback",
+        ),
+        (
+            "Saturated lexical deploy",
+            "saturated lexical deploy release healthcheck rollback service monitor",
+        ),
+        (
+            "Saturated lexical worker",
+            "saturated lexical worker queue retry backoff jobs throughput",
+        ),
+    ] {
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(title)
+            .arg(body)
             .assert()
             .success();
     }
