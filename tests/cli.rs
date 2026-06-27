@@ -508,6 +508,12 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
             serde_json::json!({"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"memory_auto_ingest","arguments":{"input":transcript.display().to_string(),"dry_run":true,"max_chars":900}}})
         )
         .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"memory_budget_plan","arguments":{"task":"needle mcp","max_chars":600}}})
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
 
@@ -516,6 +522,7 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("memory_brief"));
     assert!(stdout.contains("memory_impact"));
+    assert!(stdout.contains("memory_budget_plan"));
     assert!(stdout.contains("memory_drift"));
     assert!(stdout.contains("memory_context_pack"));
     assert!(stdout.find("memory_brief") < stdout.find("memory_context_pack"));
@@ -594,6 +601,13 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         .unwrap();
     assert!(auto_ingest.contains("scanned"));
     assert!(auto_ingest.contains("returned_files"));
+    let budget_plan = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":15"))
+        .unwrap();
+    assert!(budget_plan.contains("profile"));
+    assert!(budget_plan.contains("max_chars"));
+    assert!(budget_plan.contains("reasons"));
 }
 
 #[test]

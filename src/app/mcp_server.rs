@@ -90,7 +90,7 @@ fn handle_mcp_request(db: &Path, request: Value) -> Value {
                 "name": "dukememory",
                 "version": env!("CARGO_PKG_VERSION")
             },
-            "instructions": "Call memory_brief first for coding tasks. Use memory_impact for a touched file/symbol, memory_drift before larger edits, memory_doctrine for active project decisions, memory_agent_context for broader recall, memory_evidence for provenance, memory_auto_ingest after session logs are written, and memory_doctor before long sessions."
+            "instructions": "Call memory_budget_plan when budget is unclear, then memory_brief first for coding tasks. Use memory_impact for a touched file/symbol, memory_drift before larger edits, memory_doctrine for active project decisions, memory_agent_context for broader recall, memory_evidence for provenance, memory_auto_ingest after session logs are written, and memory_doctor before long sessions."
         })),
         "tools/list" => Ok(json!({"tools": mcp_tools()})),
         "tools/call" => {
@@ -111,6 +111,7 @@ fn mcp_tools() -> Value {
     json!([
         {"name":"memory_brief","description":"Return a tiny verified task brief","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"max_chars":{"type":"number"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_impact","description":"Return lightweight impact memory for a file, symbol, or topic","inputSchema":{"type":"object","properties":{"target":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"max_chars":{"type":"number"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["target"]}},
+        {"name":"memory_budget_plan","description":"Choose the smallest useful memory budget for a task","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"scope":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_drift","description":"Detect cheap local memory drift before coding as bounded summary by default","inputSchema":{"type":"object","properties":{"changed_only":{"type":"boolean"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"}}}},
         {"name":"memory_add","description":"Add a typed memory card","inputSchema":{"type":"object","properties":{"type":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"scope":{"type":"string"},"source":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["type","title","body"]}},
         {"name":"memory_remember","description":"Remember plain text as local memory","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"type":{"type":"string"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["text"]}},
@@ -264,6 +265,15 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 render_context_pack_for_task(&conn, &rows, max_chars, &query)
                     .map_err(|err| err.to_string())?
             }
+        }
+        "memory_budget_plan" => {
+            let task = json_string(&args, "task").ok_or_else(|| "missing task".to_string())?;
+            let scope = mcp_memory_scope(&args);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(800);
+            let plan =
+                budget_plan(&conn, &task, scope.as_deref()).map_err(|err| err.to_string())?;
+            let rendered = serde_json::to_string_pretty(&plan).map_err(|err| err.to_string())?;
+            truncate_chars(&rendered, max_chars)
         }
         "memory_brief" => {
             let task = json_string(&args, "task").ok_or_else(|| "missing task".to_string())?;
