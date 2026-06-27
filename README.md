@@ -63,6 +63,7 @@ Transcript-based memory quickly turns into noise.
 - oldest pending gap-inbox age in dashboard and ops status
 - stale gap-inbox recommendations for autonomous repair prioritization
 - stale gap-inbox volume counters for dashboard and ops prioritization
+- dashboard repair priority ordering for stale gap-inbox projects
 
 ## What It Remembers
 

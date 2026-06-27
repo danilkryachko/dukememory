@@ -5476,10 +5476,28 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(dashboard_repair_json["safe_actions"].as_u64().is_some());
     assert!(dashboard_repair_json["applied_actions"].as_u64().is_some());
     assert!(dashboard_repair_json["skipped_actions"].as_u64().is_some());
+    let repair_projects = dashboard_repair_json["projects"].as_array().unwrap();
+    assert!(repair_projects.iter().all(|project| {
+        project["priority"].as_i64().is_some()
+            && project["gap_inbox_stale_pending"].as_u64().is_some()
+            && (project["gap_inbox_oldest_pending_age_secs"].is_number()
+                || project["gap_inbox_oldest_pending_age_secs"].is_null())
+    }));
     assert!(
-        dashboard_repair_json["projects"]
-            .as_array()
-            .unwrap()
+        repair_projects
+            .windows(2)
+            .all(|pair| pair[0]["priority"].as_i64().unwrap()
+                >= pair[1]["priority"].as_i64().unwrap())
+    );
+    assert!(repair_projects.iter().any(|project| {
+        project["priority"].as_i64().unwrap() > 0
+            && project["gap_inbox_stale_pending"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 1
+    }));
+    assert!(
+        repair_projects
             .iter()
             .flat_map(|project| project["actions"].as_array().unwrap().iter())
             .all(|action| action["applied"] == false && action["skipped"] == true)
@@ -5611,6 +5629,8 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let dashboard_repair_text = stdout(cmd(&db).arg("dashboard-repair"));
     assert!(dashboard_repair_text.contains("dukememory. Dashboard Repair"));
     assert!(dashboard_repair_text.contains("summary: apply=false"));
+    assert!(dashboard_repair_text.contains("priority="));
+    assert!(dashboard_repair_text.contains("gap_inbox_stale="));
 
     let onboard_root = dir.path().join("onboarded");
     fs::create_dir_all(&onboard_root).unwrap();

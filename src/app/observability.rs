@@ -232,6 +232,9 @@ pub(crate) struct DashboardRepairProject {
     pub(crate) name: String,
     pub(crate) root: String,
     pub(crate) db: String,
+    pub(crate) priority: i64,
+    pub(crate) gap_inbox_stale_pending: usize,
+    pub(crate) gap_inbox_oldest_pending_age_secs: Option<i64>,
     pub(crate) actions: Vec<DashboardRepairResult>,
 }
 
@@ -1407,8 +1410,11 @@ pub(crate) fn print_dashboard_repair(
         for project in report.projects {
             for action in project.actions {
                 println!(
-                    "- {} action={} reason={} safe={} applied={} skipped={} ok={} detail={}",
+                    "- {} priority={} gap_inbox_stale={} gap_inbox_oldest_age={} action={} reason={} safe={} applied={} skipped={} ok={} detail={}",
                     project.name,
+                    project.priority,
+                    project.gap_inbox_stale_pending,
+                    format_optional_secs(project.gap_inbox_oldest_pending_age_secs),
                     action.code,
                     action.reason,
                     action.safe_auto,
@@ -1657,10 +1663,19 @@ pub(crate) fn dashboard_repair_report(
 ) -> Result<DashboardRepairReport> {
     let dashboard = dashboard_report(default_db)?;
     let mut projects = Vec::new();
-    for project in dashboard.projects {
+    let mut dashboard_projects = dashboard.projects;
+    dashboard_projects.sort_by(|left, right| {
+        dashboard_repair_priority(right)
+            .cmp(&dashboard_repair_priority(left))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    for project in dashboard_projects {
         if !dashboard_project_matches(&project, project_filter) {
             continue;
         }
+        let priority = dashboard_repair_priority(&project);
+        let gap_inbox_stale_pending = project.gap_inbox.stale_pending;
+        let gap_inbox_oldest_pending_age_secs = project.gap_inbox.oldest_pending_age_secs;
         let mut actions = Vec::new();
         for action in &project.repair_actions {
             actions.push(run_dashboard_repair_action(
@@ -1675,6 +1690,9 @@ pub(crate) fn dashboard_repair_report(
                 name: project.name,
                 root: project.root,
                 db: project.db,
+                priority,
+                gap_inbox_stale_pending,
+                gap_inbox_oldest_pending_age_secs,
                 actions,
             });
         }
@@ -1716,6 +1734,23 @@ pub(crate) fn dashboard_repair_report(
     })
 }
 
+fn dashboard_repair_priority(project: &ProjectDashboardItem) -> i64 {
+    let safe_actions = project
+        .repair_actions
+        .iter()
+        .filter(|action| action.safe_auto)
+        .count() as i64;
+    let oldest_minutes = project
+        .gap_inbox
+        .oldest_pending_age_secs
+        .unwrap_or_default()
+        .saturating_div(60);
+    (project.gap_inbox.stale_pending as i64)
+        .saturating_mul(100_000)
+        .saturating_add(oldest_minutes)
+        .saturating_add(safe_actions.saturating_mul(10))
+}
+
 fn log_dashboard_repair_project(
     project: &ProjectDashboardItem,
     actions: &[DashboardRepairResult],
@@ -1727,6 +1762,9 @@ fn log_dashboard_repair_project(
         "source": source,
         "project": project.name,
         "root": project.root,
+        "priority": dashboard_repair_priority(project),
+        "gap_inbox_stale_pending": project.gap_inbox.stale_pending,
+        "gap_inbox_oldest_pending_age_secs": project.gap_inbox.oldest_pending_age_secs,
         "total_actions": actions.len(),
         "safe_actions": actions.iter().filter(|action| action.safe_auto).count(),
         "applied_actions": actions.iter().filter(|action| action.applied).count(),
