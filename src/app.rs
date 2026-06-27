@@ -2202,11 +2202,10 @@ fn print_snapshot(
     }
     rank_context_rows(&mut rows, "project snapshot", None, None);
     if json_out {
-        let full = rows
-            .iter()
-            .map(|m| get_memory_with_links(conn, &m.id))
-            .collect::<Result<Vec<_>>>()?;
-        println!("{}", serde_json::to_string_pretty(&full)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&compact_snapshot_rows(conn, &rows, max_chars)?)?
+        );
         return Ok(());
     }
     let mut out = String::from("Project Snapshot\n");
@@ -2220,6 +2219,48 @@ fn print_snapshot(
     }
     println!("{out}");
     Ok(())
+}
+
+#[derive(Serialize)]
+struct SnapshotMemory {
+    id: String,
+    #[serde(rename = "type")]
+    memory_type: String,
+    scope: String,
+    title: String,
+    summary: String,
+    status: String,
+    confidence: f64,
+    links: Vec<MemoryLink>,
+}
+
+fn compact_snapshot_rows(
+    conn: &Connection,
+    rows: &[Memory],
+    max_chars: usize,
+) -> Result<Vec<SnapshotMemory>> {
+    let summary_limit = if max_chars <= 1_200 {
+        180
+    } else if max_chars <= 3_000 {
+        260
+    } else {
+        420
+    };
+    let query_terms = HashSet::new();
+    rows.iter()
+        .map(|memory| {
+            Ok(SnapshotMemory {
+                id: memory.id.clone(),
+                memory_type: memory.memory_type.clone(),
+                scope: memory.scope.clone(),
+                title: memory.title.clone(),
+                summary: query_focused_summary(&memory.body, &query_terms, summary_limit),
+                status: memory.status.clone(),
+                confidence: memory.confidence,
+                links: get_links(conn, &memory.id)?,
+            })
+        })
+        .collect()
 }
 
 fn print_stats(conn: &Connection, db: &Path) -> Result<()> {

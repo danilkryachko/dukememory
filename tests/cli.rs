@@ -1498,10 +1498,47 @@ fn v5_agent_native_commands_snapshot_doctor_and_packaging() {
         .stdout(contains("local and fast"));
 
     cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Snapshot JSON long body")
+        .arg(format!(
+            "snapshot json compact summary should stay readable {}",
+            "snapshot json tail noise ".repeat(80)
+        ))
+        .arg("--link")
+        .arg("file:src/snapshot.rs")
+        .assert()
+        .success();
+
+    cmd(&db)
         .arg("snapshot")
         .assert()
         .success()
         .stdout(contains("Project Snapshot"));
+
+    let snapshot_json = stdout(
+        cmd(&db)
+            .arg("snapshot")
+            .arg("--max-chars")
+            .arg("1200")
+            .arg("--json"),
+    );
+    let snapshot_value: Value = serde_json::from_str(&snapshot_json).unwrap();
+    let snapshot_items = snapshot_value.as_array().unwrap();
+    assert!(!snapshot_items.is_empty());
+    let long_item = snapshot_items
+        .iter()
+        .find(|item| item["title"] == "Snapshot JSON long body")
+        .unwrap();
+    assert!(long_item.get("body").is_none());
+    assert!(
+        long_item["summary"]
+            .as_str()
+            .unwrap()
+            .contains("snapshot json compact summary")
+    );
+    assert_eq!(long_item["links"][0]["target"], "src/snapshot.rs");
+    assert!(!snapshot_json.contains(&"snapshot json tail noise ".repeat(20)));
 
     cmd(&db)
         .arg("doctor")
@@ -1520,8 +1557,8 @@ fn v5_agent_native_commands_snapshot_doctor_and_packaging() {
         .arg("mock-small")
         .assert()
         .success()
-        .stdout(contains("eligible: 1"))
-        .stdout(contains("missing: 1"));
+        .stdout(contains("eligible: 2"))
+        .stdout(contains("missing: 2"));
 
     cmd(&db)
         .arg("embed-watch")
@@ -1534,7 +1571,7 @@ fn v5_agent_native_commands_snapshot_doctor_and_packaging() {
         .arg("--once")
         .assert()
         .success()
-        .stdout(contains("indexed=1"));
+        .stdout(contains("indexed=2"));
 
     cmd(&db)
         .arg("forget")
