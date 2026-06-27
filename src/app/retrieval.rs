@@ -105,15 +105,22 @@ pub(crate) fn search_rows_with_semantic_fallback(
         let remaining = limit.saturating_sub(rows.len()).max(1);
         let max_additions = search_semantic_add_limit(remaining, request.budget);
         let mut added = 0;
-        for item in embeddings::semantic_search(
+        let semantic = embeddings::semantic_search(
             conn,
             request.provider,
             request.endpoint,
             request.model,
             request.query,
             search_semantic_candidate_scan_limit(limit, request.budget),
-        )? {
+        )?;
+        let semantic_floor = semantic_relative_score_floor(
+            request.budget,
+            search_semantic_score_threshold(request.budget),
+            semantic.first().map(|item| item.score),
+        );
+        for item in semantic {
             if item.score < search_semantic_score_threshold(request.budget)
+                || item.score < semantic_floor
                 || !search_semantic_candidate_matches(
                     &item.memory,
                     &target_terms,
@@ -431,8 +438,13 @@ pub(crate) fn retrieve_report(
                     ),
                 ) {
                     Ok(semantic) => {
+                        let semantic_floor = semantic_relative_score_floor(
+                            request.budget,
+                            semantic_threshold,
+                            semantic.first().map(|item| item.score),
+                        );
                         for item in semantic {
-                            if item.score < semantic_threshold {
+                            if item.score < semantic_threshold || item.score < semantic_floor {
                                 continue;
                             }
                             let memory = item.memory.memory;
@@ -575,6 +587,23 @@ fn semantic_score_threshold(budget: usize) -> f64 {
         0.12
     } else {
         0.05
+    }
+}
+
+fn semantic_relative_score_floor(
+    budget: usize,
+    absolute_floor: f64,
+    best_score: Option<f64>,
+) -> f64 {
+    let Some(best_score) = best_score else {
+        return absolute_floor;
+    };
+    if budget <= 1_200 {
+        absolute_floor.max(best_score - 0.12)
+    } else if budget <= 2_500 {
+        absolute_floor.max(best_score - 0.20)
+    } else {
+        absolute_floor
     }
 }
 
@@ -1574,15 +1603,21 @@ pub(crate) fn append_semantic_context_rows(
     let max_additions = semantic_context_add_limit(request.limit, request.budget);
     let quality_signals = retrieval_feedback_signals(conn, 30).unwrap_or_default();
     let mut added = 0;
-    for item in embeddings::semantic_search(
+    let semantic = embeddings::semantic_search(
         conn,
         request.provider,
         request.endpoint,
         request.model,
         request.task,
         semantic_context_candidate_scan_limit(request.limit, request.budget),
-    )? {
-        if item.score < threshold {
+    )?;
+    let semantic_floor = semantic_relative_score_floor(
+        request.budget,
+        threshold,
+        semantic.first().map(|item| item.score),
+    );
+    for item in semantic {
+        if item.score < threshold || item.score < semantic_floor {
             continue;
         }
         if !semantic_context_candidate_matches(

@@ -4282,6 +4282,82 @@ fn v14_retrieve_filters_weak_semantic_candidates() {
 }
 
 #[test]
+fn v14_tiny_retrieval_applies_relative_semantic_score_floor() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Exact embedding target")
+        .arg("orchard vector needle alpha beta gamma delta")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Loose embedding tail")
+        .arg("orchard vector cache invoice export dashboard beta")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Far embedding tail")
+        .arg("invoice sqlite browser payment export csv")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("embed-index")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .assert()
+        .success();
+
+    let retrieved = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("orchard vector needle alpha")
+            .arg("--strategy")
+            .arg("hybrid")
+            .arg("--format")
+            .arg("json")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let retrieved_json: Value = serde_json::from_str(&retrieved).unwrap();
+    assert_eq!(retrieved_json["semantic_used"], true);
+    let hits = retrieved_json["hits"].as_array().unwrap();
+    let exact = hits
+        .iter()
+        .find(|hit| hit["memory"]["title"] == "Exact embedding target")
+        .expect("exact semantic target should be retained");
+    assert!(
+        exact["semantic_score"].as_f64().unwrap() >= 0.36,
+        "best semantic target should keep its embedding score"
+    );
+    if let Some(loose) = hits
+        .iter()
+        .find(|hit| hit["memory"]["title"] == "Loose embedding tail")
+    {
+        assert!(
+            loose["semantic_score"].is_null(),
+            "weak semantic tail can remain only as lexical retrieval, not semantic"
+        );
+    }
+}
+
+#[test]
 fn v14_tiny_relevance_floor_can_keep_one_strong_card() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
