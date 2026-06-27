@@ -3352,6 +3352,63 @@ fn v14_retrieve_filters_weak_semantic_candidates() {
             .filter_map(|hit| hit["semantic_score"].as_f64())
             .all(|score| score >= 0.18)
     );
+
+    let agent_context = stdout(
+        cmd(&db)
+            .arg("context")
+            .arg("auth rate limit")
+            .arg("--mode")
+            .arg("agent")
+            .arg("--json")
+            .arg("--budget-profile")
+            .arg("tiny")
+            .arg("--embed-provider")
+            .arg("mock")
+            .arg("--embed-endpoint")
+            .arg("local")
+            .arg("--embed-model")
+            .arg("mock-small"),
+    );
+    let agent_context_json: Value = serde_json::from_str(&agent_context).unwrap();
+    let agent_titles = agent_context_json["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|memory| memory["title"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(agent_titles.contains(&"Strong auth rate"));
+    assert!(
+        !agent_titles.contains(&"Weak billing cache"),
+        "tiny agent context should filter weak semantic-only candidates"
+    );
+
+    let semantic_context_pack = stdout(
+        cmd(&db)
+            .arg("context-pack")
+            .arg("auth rate limit")
+            .arg("--semantic")
+            .arg("--json")
+            .arg("--budget-profile")
+            .arg("tiny")
+            .arg("--embed-provider")
+            .arg("mock")
+            .arg("--embed-endpoint")
+            .arg("local")
+            .arg("--embed-model")
+            .arg("mock-small"),
+    );
+    let semantic_context_pack_json: Value = serde_json::from_str(&semantic_context_pack).unwrap();
+    let context_pack_titles = semantic_context_pack_json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|memory| memory["title"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(context_pack_titles.contains(&"Strong auth rate"));
+    assert!(
+        !context_pack_titles.contains(&"Weak billing cache"),
+        "tiny context-pack semantic should filter weak semantic-only candidates"
+    );
 }
 
 #[test]

@@ -962,6 +962,78 @@ pub(crate) fn render_context_pack(
     Ok(out)
 }
 
+pub(crate) struct SemanticContextRequest<'a> {
+    pub(crate) task: &'a str,
+    pub(crate) limit: usize,
+    pub(crate) budget: usize,
+    pub(crate) provider: &'a str,
+    pub(crate) endpoint: &'a str,
+    pub(crate) model: &'a str,
+    pub(crate) rules: Option<&'a Path>,
+}
+
+pub(crate) fn append_semantic_context_rows(
+    conn: &Connection,
+    rows: &mut Vec<Memory>,
+    request: SemanticContextRequest<'_>,
+) -> Result<bool> {
+    let task_terms = relevance_terms(request.task);
+    if task_terms.len() < 2
+        || !embeddings::semantic_index_ready(
+            conn,
+            request.provider,
+            request.endpoint,
+            request.model,
+        )
+        .unwrap_or(false)
+    {
+        return Ok(false);
+    }
+    let threshold = semantic_score_threshold(request.budget);
+    let max_additions = semantic_context_add_limit(request.limit, request.budget);
+    let mut added = 0;
+    for item in embeddings::semantic_search(
+        conn,
+        request.provider,
+        request.endpoint,
+        request.model,
+        request.task,
+        request.limit.saturating_mul(2).max(request.limit),
+    )? {
+        if item.score < threshold {
+            continue;
+        }
+        let memory = item.memory.memory;
+        if !matches!(memory.status.as_str(), "active" | "uncertain") {
+            continue;
+        }
+        if rows.iter().any(|existing| existing.id == memory.id) {
+            continue;
+        }
+        rows.push(memory);
+        added += 1;
+        if added >= max_additions {
+            break;
+        }
+    }
+    if added > 0 {
+        rank_context_rows(rows, request.task, None, request.rules);
+        rows.truncate(request.limit);
+    }
+    Ok(added > 0)
+}
+
+fn semantic_context_add_limit(limit: usize, budget: usize) -> usize {
+    let budget_limit = if budget <= 1_200 {
+        1
+    } else if budget <= 2_500 {
+        2
+    } else {
+        4
+    };
+    limit.min(budget_limit).max(1)
+}
+
 fn render_retrieval_pack(
     hits: &[RetrievalHit],
     max_chars: usize,
@@ -1215,28 +1287,20 @@ pub(crate) fn print_agent_context(
             rules: request.rules,
         },
     )?;
-    if !matches!(request.mode, ContextMode::Fast)
-        && embeddings::semantic_index_ready(conn, request.provider, request.endpoint, request.model)
-            .unwrap_or(false)
-        && let Ok(semantic_rows) = embeddings::semantic_search(
+    if !matches!(request.mode, ContextMode::Fast) {
+        append_semantic_context_rows(
             conn,
-            request.provider,
-            request.endpoint,
-            request.model,
-            request.task,
-            request.limit,
-        )
-    {
-        for item in semantic_rows {
-            if !rows
-                .iter()
-                .any(|existing| existing.id == item.memory.memory.id)
-            {
-                rows.push(item.memory.memory);
-            }
-        }
-        rank_context_rows(&mut rows, request.task, None, request.rules);
-        rows.truncate(request.limit);
+            &mut rows,
+            SemanticContextRequest {
+                task: request.task,
+                limit: request.limit,
+                budget: request.max_chars,
+                provider: request.provider,
+                endpoint: request.endpoint,
+                model: request.model,
+                rules: request.rules,
+            },
+        )?;
     }
     if request.json_out || matches!(request.format, OutputFormat::Json) {
         let full = rows

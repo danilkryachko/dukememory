@@ -257,34 +257,22 @@ pub(crate) fn run() -> Result<()> {
                     rules: rules.as_deref(),
                 },
             )?;
-            if semantic
-                && embeddings::semantic_index_ready(
-                    &conn,
-                    &embed_provider,
-                    &embed_endpoint,
-                    &embed_model,
-                )
-                .unwrap_or(false)
-            {
-                let semantic_rows = embeddings::semantic_search(
-                    &conn,
-                    &embed_provider,
-                    &embed_endpoint,
-                    &embed_model,
-                    &task,
-                    limit,
-                )?;
-                for item in semantic_rows {
-                    if !rows
-                        .iter()
-                        .any(|existing| existing.id == item.memory.memory.id)
-                    {
-                        rows.push(item.memory.memory);
-                    }
-                }
-                rows.truncate(limit);
-            }
             let max_chars = budget_profile_chars(budget_profile).unwrap_or(max_chars);
+            if semantic {
+                append_semantic_context_rows(
+                    &conn,
+                    &mut rows,
+                    SemanticContextRequest {
+                        task: &task,
+                        limit,
+                        budget: max_chars,
+                        provider: &embed_provider,
+                        endpoint: &embed_endpoint,
+                        model: &embed_model,
+                        rules: rules.as_deref(),
+                    },
+                )?;
+            }
             if json {
                 let full = rows
                     .iter()
