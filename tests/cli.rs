@@ -2800,6 +2800,8 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
             .arg("local")
             .arg("--model")
             .arg("mock-small")
+            .arg("--budget-profile")
+            .arg("tiny")
             .arg("--scope")
             .arg("project"),
     );
@@ -2896,6 +2898,10 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
             .arg("project"),
     );
     let quality_ranked_json: Value = serde_json::from_str(&quality_ranked).unwrap();
+    assert!(
+        quality_ranked_json["hits"].as_array().unwrap().len() <= 5,
+        "tiny retrieval should keep a compact hit list"
+    );
     let quality_reasons = quality_ranked_json["hits"]
         .as_array()
         .unwrap()
@@ -2912,7 +2918,6 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
             .iter()
             .any(|reason| reason.as_str().unwrap().starts_with("useful_feedback:"))
     );
-
     let tiny = stdout(
         cmd(&db)
             .arg("retrieve")
@@ -2963,6 +2968,44 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
             .iter()
             .any(|reason| reason.as_str().unwrap().starts_with("rhai_score:"))
     );
+
+    for index in 0..4 {
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(format!("Diversity note {index}"))
+            .arg(
+                "Diversity budget target should not let one memory type fill every retrieval slot.",
+            )
+            .assert()
+            .success();
+    }
+    cmd(&db)
+        .arg("add")
+        .arg("command")
+        .arg("Diversity command")
+        .arg("Run diversity budget target check before release.")
+        .assert()
+        .success();
+    let diverse = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("diversity budget target")
+            .arg("--strategy")
+            .arg("fts")
+            .arg("--format")
+            .arg("json")
+            .arg("--limit")
+            .arg("3"),
+    );
+    let diverse_json: Value = serde_json::from_str(&diverse).unwrap();
+    let diverse_types = diverse_json["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["memory"]["type"].as_str().unwrap())
+        .collect::<std::collections::HashSet<_>>();
+    assert!(diverse_types.len() >= 2);
 }
 
 #[test]

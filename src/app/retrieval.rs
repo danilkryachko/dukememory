@@ -45,7 +45,7 @@ pub(crate) fn build_context_rows(
         query.rules,
         Some(&quality_signals),
     );
-    rows.truncate(query.limit);
+    rows = select_diverse_memories(rows, query.limit);
     Ok(rows)
 }
 
@@ -214,7 +214,8 @@ pub(crate) fn retrieve_report(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| b.memory.memory.updated_at.cmp(&a.memory.memory.updated_at))
     });
-    hits.truncate(request.limit);
+    let effective_limit = budget_aware_hit_limit(request.limit, request.budget);
+    hits = select_diverse_hits(hits, effective_limit);
     let ids = hits
         .iter()
         .map(|hit| hit.memory.memory.id.clone())
@@ -548,6 +549,62 @@ pub(crate) fn retrieval_quality_adjustment(
         score -= penalty;
     }
     score
+}
+
+fn select_diverse_hits(hits: Vec<RetrievalHit>, limit: usize) -> Vec<RetrievalHit> {
+    select_diverse_by_type(hits, limit, |hit| &hit.memory.memory.memory_type)
+}
+
+fn budget_aware_hit_limit(limit: usize, budget: usize) -> usize {
+    let budget_limit = if budget <= 1_200 {
+        5
+    } else if budget <= 2_500 {
+        8
+    } else {
+        limit
+    };
+    limit.min(budget_limit).max(1)
+}
+
+fn select_diverse_memories(rows: Vec<Memory>, limit: usize) -> Vec<Memory> {
+    select_diverse_by_type(rows, limit, |memory| &memory.memory_type)
+}
+
+fn select_diverse_by_type<T, F>(items: Vec<T>, limit: usize, memory_type: F) -> Vec<T>
+where
+    F: Fn(&T) -> &str,
+{
+    if items.len() <= limit {
+        return items;
+    }
+    let per_type_limit = if limit <= 5 { 2 } else { 3 };
+    let mut selected = Vec::new();
+    let mut deferred = Vec::new();
+    let mut type_counts: HashMap<String, usize> = HashMap::new();
+    for item in items {
+        if selected.len() >= limit {
+            deferred.push(item);
+            continue;
+        }
+        let kind = memory_type(&item).to_string();
+        let count = type_counts.get(&kind).copied().unwrap_or_default();
+        if count < per_type_limit {
+            *type_counts.entry(kind).or_insert(0) += 1;
+            selected.push(item);
+        } else {
+            deferred.push(item);
+        }
+    }
+    if limit <= 5 {
+        return selected;
+    }
+    for item in deferred {
+        if selected.len() >= limit {
+            break;
+        }
+        selected.push(item);
+    }
+    selected
 }
 
 pub(crate) fn rank_context_rows(

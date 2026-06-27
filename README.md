@@ -65,6 +65,7 @@ Transcript-based memory quickly turns into noise.
 - stale gap-inbox volume counters for dashboard and ops prioritization
 - dashboard repair priority ordering for stale gap-inbox projects
 - quality-aware retrieval ranking from recent reads and feedback
+- diverse retrieval selection so one memory type cannot crowd out the brief
 
 ## What It Remembers
 
