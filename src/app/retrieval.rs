@@ -507,7 +507,7 @@ pub(crate) struct RecallRequest<'a> {
 pub(crate) fn print_recall(conn: &Connection, request: RecallRequest<'_>) -> Result<()> {
     let report = recall_report(conn, &request)?;
     if request.json_out {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        println!("{}", render_recall_json(&report)?);
     } else {
         println!("{}", render_recall_report(&report));
     }
@@ -590,6 +590,42 @@ fn render_recall_report(report: &RecallReport) -> String {
         out.push_str(&line);
     }
     truncate_chars(&out, report.max_chars)
+}
+
+fn render_recall_json(report: &RecallReport) -> Result<String> {
+    let mut report = report.clone();
+    let max_chars = report.max_chars;
+    trim_recall_report_json_strings(&mut report, recall_summary_json_limit(max_chars));
+    loop {
+        let rendered = serde_json::to_string_pretty(&report)?;
+        if rendered.len() <= max_chars || report.items.is_empty() {
+            return Ok(rendered);
+        }
+        report.items.pop();
+    }
+}
+
+fn trim_recall_report_json_strings(report: &mut RecallReport, summary_chars: usize) {
+    report.query = truncate_chars(&report.query, 120);
+    report.receipt = truncate_chars(&report.receipt, 160);
+    for item in &mut report.items {
+        item.title = truncate_chars(&item.title, 120);
+        item.summary = truncate_chars(&item.summary, summary_chars);
+        item.reasons.truncate(2);
+        for reason in &mut item.reasons {
+            *reason = truncate_chars(reason, 80);
+        }
+    }
+}
+
+fn recall_summary_json_limit(max_chars: usize) -> usize {
+    if max_chars <= 400 {
+        60
+    } else if max_chars <= 800 {
+        90
+    } else {
+        120
+    }
 }
 
 struct RetrievalScoreContext<'a> {

@@ -4528,6 +4528,47 @@ fn v14_recall_uses_query_focused_summaries() {
 }
 
 #[test]
+fn recall_json_respects_tight_max_chars() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for index in 0..4 {
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(format!("Recall json budget {index}"))
+            .arg(format!(
+                "recall json budget exact useful detail variant{index} {}",
+                "tail noise ".repeat(30)
+            ))
+            .assert()
+            .success();
+    }
+
+    let recall = stdout(
+        cmd(&db)
+            .arg("recall")
+            .arg("recall json budget")
+            .arg("--max-chars")
+            .arg("360")
+            .arg("--limit")
+            .arg("8")
+            .arg("--json"),
+    );
+    assert!(
+        recall.len() <= 360,
+        "recall JSON exceeded budget: {}",
+        recall.len()
+    );
+    let recall_json: Value = serde_json::from_str(&recall).unwrap();
+    assert_eq!(recall_json["max_chars"], 360);
+    assert!(recall_json["items"].as_array().unwrap().len() <= 1);
+    if let Some(item) = recall_json["items"].as_array().unwrap().first() {
+        assert!(item["summary"].as_str().unwrap().len() <= 90);
+    }
+}
+
+#[test]
 fn recall_items_are_budget_aware() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
