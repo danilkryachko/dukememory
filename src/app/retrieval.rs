@@ -1255,7 +1255,7 @@ pub(crate) fn append_semantic_context_rows(
         request.endpoint,
         request.model,
         request.task,
-        request.limit.saturating_mul(2).max(request.limit),
+        semantic_context_candidate_scan_limit(request.limit, request.budget),
     )? {
         if item.score < threshold {
             continue;
@@ -1285,10 +1285,28 @@ pub(crate) fn append_semantic_context_rows(
         }
     }
     if added > 0 {
-        rank_context_rows(rows, request.task, None, request.rules);
+        rank_context_rows_with_quality(
+            rows,
+            request.task,
+            None,
+            request.rules,
+            Some(&quality_signals),
+        );
         rows.truncate(request.limit);
     }
     Ok(added > 0)
+}
+
+fn semantic_context_candidate_scan_limit(limit: usize, budget: usize) -> usize {
+    let limit = limit.max(1);
+    let scan = if budget <= 1_200 {
+        limit.saturating_mul(2).min(12)
+    } else if budget <= 2_500 {
+        limit.saturating_mul(3).min(32)
+    } else {
+        limit.saturating_mul(2).min(64)
+    };
+    scan.max(limit)
 }
 
 fn semantic_context_add_limit(limit: usize, budget: usize) -> usize {
@@ -1807,5 +1825,13 @@ mod tests {
             retrieval_recent_candidate_limit(100, deep_effective, 8_000),
             33
         );
+    }
+
+    #[test]
+    fn semantic_context_scan_windows_stay_budget_bounded() {
+        assert_eq!(semantic_context_candidate_scan_limit(4, 1_200), 8);
+        assert_eq!(semantic_context_candidate_scan_limit(8, 2_500), 24);
+        assert_eq!(semantic_context_candidate_scan_limit(16, 8_000), 32);
+        assert_eq!(semantic_context_candidate_scan_limit(100, 2_500), 100);
     }
 }
