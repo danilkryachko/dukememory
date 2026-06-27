@@ -37,7 +37,14 @@ pub(crate) fn build_context_rows(
             }
         }
     }
-    rank_context_rows(&mut rows, query.task, query.scope, query.rules);
+    let quality_signals = retrieval_quality_signals(conn, 30).unwrap_or_default();
+    rank_context_rows_with_quality(
+        &mut rows,
+        query.task,
+        query.scope,
+        query.rules,
+        Some(&quality_signals),
+    );
     rows.truncate(query.limit);
     Ok(rows)
 }
@@ -147,6 +154,14 @@ pub(crate) fn retrieve_report(
                         semantic_used = !semantic.is_empty();
                         for item in semantic {
                             let memory = item.memory.memory;
+                            if !matches!(memory.status.as_str(), "active" | "uncertain") {
+                                continue;
+                            }
+                            if let Some(scope) = request.scope
+                                && memory.scope != scope
+                            {
+                                continue;
+                            }
                             candidates
                                 .entry(memory.id.clone())
                                 .and_modify(|existing| existing.1 = Some(item.score))
@@ -165,6 +180,7 @@ pub(crate) fn retrieve_report(
     }
     let rhai = request.rules.and_then(|path| load_rhai_rules(path).ok());
     let task_terms = tokenize(request.query);
+    let quality_signals = retrieval_quality_signals(conn, 30).unwrap_or_default();
     let mut hits = Vec::new();
     for (_, (memory, semantic_score)) in candidates {
         if !rhai_should_include(rhai.as_ref(), &memory, request.query)? {
@@ -174,13 +190,16 @@ pub(crate) fn retrieve_report(
         let (score, reasons) = retrieval_score(
             &memory,
             &links,
-            &task_terms,
-            request.scope,
-            semantic_score,
-            rhai.as_ref(),
-            request.query,
+            RetrievalScoreContext {
+                task_terms: &task_terms,
+                requested_scope: request.scope,
+                semantic_score,
+                rules: rhai.as_ref(),
+                task: request.query,
+                quality_signals: Some(&quality_signals),
+            },
         );
-        let utility_score = memory_utility_score(&memory, links.len());
+        let utility_score = memory_utility_score(&memory, links.len(), Some(&quality_signals));
         hits.push(RetrievalHit {
             memory: MemoryWithLinks { memory, links },
             score,
@@ -365,16 +384,21 @@ fn render_recall_report(report: &RecallReport) -> String {
     truncate_chars(&out, report.max_chars)
 }
 
+struct RetrievalScoreContext<'a> {
+    task_terms: &'a HashSet<String>,
+    requested_scope: Option<&'a str>,
+    semantic_score: Option<f64>,
+    rules: Option<&'a RhaiRules>,
+    task: &'a str,
+    quality_signals: Option<&'a RetrievalQualitySignals>,
+}
+
 fn retrieval_score(
     memory: &Memory,
     links: &[MemoryLink],
-    task_terms: &HashSet<String>,
-    requested_scope: Option<&str>,
-    semantic_score: Option<f64>,
-    rules: Option<&RhaiRules>,
-    task: &str,
+    context: RetrievalScoreContext<'_>,
 ) -> (f64, Vec<String>) {
-    let mut score = context_score(memory, task_terms, requested_scope);
+    let mut score = context_score(memory, context.task_terms, context.requested_scope);
     let mut reasons = Vec::new();
     reasons.push(format!("type:{}", memory.memory_type));
     reasons.push(format!("status:{}", memory.status));
@@ -383,13 +407,13 @@ fn retrieval_score(
     } else if memory.confidence < 0.5 {
         reasons.push("low_confidence".to_string());
     }
-    if let Some(scope) = requested_scope
+    if let Some(scope) = context.requested_scope
         && memory.scope == scope
     {
         reasons.push("scope_match".to_string());
     }
     let haystack = tokenize(&format!("{} {}", memory.title, memory.body));
-    let overlap = task_terms.intersection(&haystack).count();
+    let overlap = context.task_terms.intersection(&haystack).count();
     if overlap > 0 {
         reasons.push(format!("text_match:{overlap}"));
         score += overlap as f64;
@@ -397,15 +421,22 @@ fn retrieval_score(
     let link_overlap = links
         .iter()
         .map(|link| tokenize(&format!("{} {}", link.kind, link.target)))
-        .map(|tokens| task_terms.intersection(&tokens).count())
+        .map(|tokens| context.task_terms.intersection(&tokens).count())
         .sum::<usize>();
     if link_overlap > 0 {
         reasons.push(format!("link_match:{link_overlap}"));
         score += link_overlap as f64 * 3.0;
     }
-    if let Some(value) = semantic_score {
+    if let Some(value) = context.semantic_score {
         reasons.push(format!("semantic:{value:.3}"));
         score += value * 12.0;
+    }
+    score += retrieval_quality_adjustment(&memory.id, context.quality_signals, &mut reasons);
+    let body_chars = memory.body.chars().count();
+    if body_chars > 1_600 {
+        let penalty = ((body_chars - 1_600) as f64 / 800.0).min(4.0);
+        reasons.push(format!("token_heavy:-{penalty:.1}"));
+        score -= penalty;
     }
     if let Some(id) = &memory.superseded_by {
         reasons.push(format!("superseded_by:{id}"));
@@ -419,7 +450,7 @@ fn retrieval_score(
     if age_days <= 7.0 {
         reasons.push("fresh".to_string());
     }
-    let rhai = rhai_score(rules, memory, task).unwrap_or(0.0);
+    let rhai = rhai_score(context.rules, memory, context.task).unwrap_or(0.0);
     if rhai != 0.0 {
         reasons.push(format!("rhai_score:{rhai:.2}"));
         score += rhai;
@@ -427,7 +458,11 @@ fn retrieval_score(
     (score, reasons)
 }
 
-fn memory_utility_score(memory: &Memory, link_count: usize) -> f64 {
+fn memory_utility_score(
+    memory: &Memory,
+    link_count: usize,
+    quality_signals: Option<&RetrievalQualitySignals>,
+) -> f64 {
     let mut score = memory.confidence * 10.0;
     score += link_count.min(6) as f64 * 1.5;
     score += match memory.memory_type.as_str() {
@@ -438,8 +473,81 @@ fn memory_utility_score(memory: &Memory, link_count: usize) -> f64 {
     if memory.superseded_by.is_some() {
         score -= 8.0;
     }
+    let mut reasons = Vec::new();
+    score += retrieval_quality_adjustment(&memory.id, quality_signals, &mut reasons) * 0.5;
     let age_days = ((now_ms() - memory.updated_at).max(0) as f64) / 86_400_000.0;
     score - (age_days / 14.0).min(4.0)
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RetrievalQualitySignals {
+    reads: HashMap<String, usize>,
+    useful: HashMap<String, usize>,
+    useless: HashMap<String, usize>,
+}
+
+pub(crate) fn retrieval_quality_signals(
+    conn: &Connection,
+    since_days: i64,
+) -> Result<RetrievalQualitySignals> {
+    let since_ms = now_ms().saturating_sub(since_days.max(0).saturating_mul(86_400_000));
+    let mut stmt =
+        conn.prepare("SELECT memory_ids FROM memory_read_events WHERE created_at >= ?1")?;
+    let rows = stmt
+        .query_map(params![since_ms], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut reads = HashMap::new();
+    for row in rows {
+        for id in split_csv(Some(&row)) {
+            *reads.entry(id).or_insert(0) += 1;
+        }
+    }
+    let feedback = memory_feedback_counts(conn, since_ms)?;
+    let mut useful = HashMap::new();
+    let mut useless = HashMap::new();
+    for (id, (positive, negative, _missing)) in feedback {
+        if positive > 0 {
+            useful.insert(id.clone(), positive);
+        }
+        if negative > 0 {
+            useless.insert(id, negative);
+        }
+    }
+    Ok(RetrievalQualitySignals {
+        reads,
+        useful,
+        useless,
+    })
+}
+
+pub(crate) fn retrieval_quality_adjustment(
+    memory_id: &str,
+    signals: Option<&RetrievalQualitySignals>,
+    reasons: &mut Vec<String>,
+) -> f64 {
+    let Some(signals) = signals else {
+        return 0.0;
+    };
+    let reads = signals.reads.get(memory_id).copied().unwrap_or_default();
+    let useful = signals.useful.get(memory_id).copied().unwrap_or_default();
+    let useless = signals.useless.get(memory_id).copied().unwrap_or_default();
+    let mut score = 0.0;
+    if reads > 0 {
+        let boost = (reads.min(8) as f64) * 0.6;
+        reasons.push(format!("recent_reads:{reads}"));
+        score += boost;
+    }
+    if useful > 0 {
+        let boost = (useful.min(4) as f64) * 2.5;
+        reasons.push(format!("useful_feedback:+{useful}"));
+        score += boost;
+    }
+    if useless > 0 {
+        let penalty = (useless.min(4) as f64) * 4.0;
+        reasons.push(format!("useless_feedback:-{useless}"));
+        score -= penalty;
+    }
+    score
 }
 
 pub(crate) fn rank_context_rows(
@@ -448,13 +556,27 @@ pub(crate) fn rank_context_rows(
     requested_scope: Option<&str>,
     rules: Option<&Path>,
 ) {
+    rank_context_rows_with_quality(rows, task, requested_scope, rules, None);
+}
+
+fn rank_context_rows_with_quality(
+    rows: &mut [Memory],
+    task: &str,
+    requested_scope: Option<&str>,
+    rules: Option<&Path>,
+    quality_signals: Option<&RetrievalQualitySignals>,
+) {
     let task_terms = tokenize(task);
     let rhai = rules.and_then(|path| load_rhai_rules(path).ok());
     rows.sort_by(|a, b| {
+        let mut a_reasons = Vec::new();
+        let mut b_reasons = Vec::new();
         let a_score = context_score(a, &task_terms, requested_scope)
-            + rhai_score(rhai.as_ref(), a, task).unwrap_or(0.0);
+            + rhai_score(rhai.as_ref(), a, task).unwrap_or(0.0)
+            + retrieval_quality_adjustment(&a.id, quality_signals, &mut a_reasons);
         let b_score = context_score(b, &task_terms, requested_scope)
-            + rhai_score(rhai.as_ref(), b, task).unwrap_or(0.0);
+            + rhai_score(rhai.as_ref(), b, task).unwrap_or(0.0)
+            + retrieval_quality_adjustment(&b.id, quality_signals, &mut b_reasons);
         b_score
             .partial_cmp(&a_score)
             .unwrap_or(std::cmp::Ordering::Equal)

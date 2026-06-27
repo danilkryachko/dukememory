@@ -2862,6 +2862,56 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
             .iter()
             .any(|reason| reason.as_str().unwrap().starts_with("link_match:"))
     );
+    let useful_id = retrieve_json["hits"][0]["memory"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    stdout(
+        cmd(&db)
+            .arg("feedback")
+            .arg("--id")
+            .arg(&useful_id)
+            .arg("--rating")
+            .arg("useful")
+            .arg("--command")
+            .arg("retrieve")
+            .arg("--query")
+            .arg("src app grouped retrieval constraints"),
+    );
+    let quality_ranked = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("src app grouped retrieval constraints")
+            .arg("--strategy")
+            .arg("hybrid")
+            .arg("--format")
+            .arg("json")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--scope")
+            .arg("project"),
+    );
+    let quality_ranked_json: Value = serde_json::from_str(&quality_ranked).unwrap();
+    let quality_reasons = quality_ranked_json["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|hit| hit["reasons"].as_array().unwrap().iter())
+        .collect::<Vec<_>>();
+    assert!(
+        quality_reasons
+            .iter()
+            .any(|reason| reason.as_str().unwrap().starts_with("recent_reads:"))
+    );
+    assert!(
+        quality_reasons
+            .iter()
+            .any(|reason| reason.as_str().unwrap().starts_with("useful_feedback:"))
+    );
 
     let tiny = stdout(
         cmd(&db)
@@ -3204,6 +3254,17 @@ fn v14_5_impact_and_drift_are_lightweight_and_structured() {
             .contains("Memory: read impact")
     );
     assert!(!impact_value["constraints"].as_array().unwrap().is_empty());
+    let impact_reasons = impact_value["constraints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|item| item["reasons"].as_array().unwrap().iter())
+        .collect::<Vec<_>>();
+    assert!(
+        impact_reasons
+            .iter()
+            .any(|reason| reason.as_str().unwrap() == "linked_target")
+    );
 
     let drift = stdout(cmd(&db).arg("drift").arg("--root").arg(&root));
     assert!(drift.contains("Drift: needs_attention"));

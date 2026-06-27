@@ -531,7 +531,31 @@ pub(crate) fn impact_report(
             rows.push(row);
         }
     }
-    rows.truncate(request.limit.max(1));
+    let quality_signals = retrieval_quality_signals(conn, 30).unwrap_or_default();
+    let mut scored_rows = Vec::new();
+    for memory in rows {
+        let linked = memory_links_target(conn, &memory.id, request.target)?;
+        let mut quality_reasons = Vec::new();
+        let quality =
+            retrieval_quality_adjustment(&memory.id, Some(&quality_signals), &mut quality_reasons);
+        let type_score = match memory.memory_type.as_str() {
+            "decision" | "constraint" | "product_goal" => 8.0,
+            "known_issue" => 6.0,
+            "command" | "task_state" => 4.0,
+            _ => 2.0,
+        };
+        let score = if linked { 100.0 } else { 20.0 } + type_score + quality;
+        scored_rows.push((memory, linked, quality_reasons, score));
+    }
+    scored_rows.sort_by(|a, b| {
+        b.3.partial_cmp(&a.3)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.0.updated_at.cmp(&a.0.updated_at))
+    });
+    let scored_rows = scored_rows
+        .into_iter()
+        .take(request.limit.max(1))
+        .collect::<Vec<_>>();
 
     let mut decisions = Vec::new();
     let mut constraints = Vec::new();
@@ -543,14 +567,15 @@ pub(crate) fn impact_report(
     let mut seen_checks = HashSet::new();
     let mut seen_links = HashSet::new();
 
-    for (index, memory) in rows.iter().enumerate() {
-        let reason = if memory_links_target(conn, &memory.id, request.target)? {
-            "linked target"
+    for (memory, linked, quality_reasons, rank_score) in &scored_rows {
+        let reason = if *linked {
+            "linked_target"
         } else {
-            "fts match"
+            "fts_match"
         };
-        let score = 100.0 - index as f64;
-        let item = brief_item_from_memory(memory, score, vec![reason.to_string()]);
+        let mut reasons = vec![reason.to_string()];
+        reasons.extend(quality_reasons.iter().cloned());
+        let item = brief_item_from_memory(memory, *rank_score, reasons);
         match memory.memory_type.as_str() {
             "decision" | "product_goal" => {
                 push_unique_brief_item(&mut decisions, &mut seen_items, item, 5);
