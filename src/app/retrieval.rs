@@ -852,7 +852,10 @@ fn apply_tiny_lexical_precision_gate(
     let required_overlap = task_terms.len().min(2);
     hits.into_iter()
         .filter(|hit| {
-            hit.semantic_score.is_some() || hit_lexical_overlap(hit, task_terms) >= required_overlap
+            hit_lexical_overlap(hit, task_terms) >= required_overlap
+                || hit
+                    .semantic_score
+                    .is_some_and(|score| score >= semantic_tiny_strong_score(budget))
         })
         .collect()
 }
@@ -1208,6 +1211,14 @@ pub(crate) fn append_semantic_context_rows(
         if item.score < threshold {
             continue;
         }
+        if !semantic_context_candidate_matches(
+            &item.memory,
+            &task_terms,
+            item.score,
+            request.budget,
+        ) {
+            continue;
+        }
         let memory = item.memory.memory;
         if !matches!(memory.status.as_str(), "active" | "uncertain") {
             continue;
@@ -1240,6 +1251,28 @@ fn semantic_context_add_limit(limit: usize, budget: usize) -> usize {
         4
     };
     limit.min(budget_limit).max(1)
+}
+
+fn semantic_context_candidate_matches(
+    item: &MemoryWithLinks,
+    task_terms: &HashSet<String>,
+    semantic_score: f64,
+    budget: usize,
+) -> bool {
+    if budget > 1_200 || task_terms.len() < 2 {
+        return true;
+    }
+    let required_overlap = task_terms.len().min(2);
+    let mut tokens = memory_signature(&item.memory);
+    for link in &item.links {
+        tokens.extend(tokenize(&format!("{} {}", link.kind, link.target)));
+    }
+    task_terms.intersection(&tokens).count() >= required_overlap
+        || semantic_score >= semantic_tiny_strong_score(budget)
+}
+
+fn semantic_tiny_strong_score(budget: usize) -> f64 {
+    if budget <= 1_200 { 0.32 } else { 0.0 }
 }
 
 fn render_retrieval_pack(

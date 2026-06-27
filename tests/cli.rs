@@ -3943,6 +3943,13 @@ fn v14_retrieve_filters_weak_semantic_candidates() {
         .arg("auth rate limit local fast verified release")
         .assert()
         .success();
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Semantic distractor")
+        .arg("invoice sqlite browser")
+        .assert()
+        .success();
     let weak_id = stdout(
         cmd(&db)
             .arg("add")
@@ -3997,6 +4004,10 @@ fn v14_retrieve_filters_weak_semantic_candidates() {
         .collect::<Vec<_>>();
     assert!(titles.contains(&"Strong auth rate"));
     assert!(
+        !titles.contains(&"Semantic distractor"),
+        "tiny hybrid retrieval should filter medium-score semantic-only candidates without lexical anchors"
+    );
+    assert!(
         !titles.contains(&"Weak billing cache"),
         "tiny hybrid retrieval should filter weak semantic-only candidates"
     );
@@ -4034,6 +4045,10 @@ fn v14_retrieve_filters_weak_semantic_candidates() {
         .collect::<Vec<_>>();
     assert!(agent_titles.contains(&"Strong auth rate"));
     assert!(
+        !agent_titles.contains(&"Semantic distractor"),
+        "tiny agent context should filter medium-score semantic-only candidates without lexical anchors"
+    );
+    assert!(
         !agent_titles.contains(&"Weak billing cache"),
         "tiny agent context should filter weak semantic-only candidates"
     );
@@ -4061,6 +4076,10 @@ fn v14_retrieve_filters_weak_semantic_candidates() {
         .map(|memory| memory["title"].as_str().unwrap())
         .collect::<Vec<_>>();
     assert!(context_pack_titles.contains(&"Strong auth rate"));
+    assert!(
+        !context_pack_titles.contains(&"Semantic distractor"),
+        "tiny context-pack semantic should filter medium-score semantic-only candidates without lexical anchors"
+    );
     assert!(
         !context_pack_titles.contains(&"Weak billing cache"),
         "tiny context-pack semantic should filter weak semantic-only candidates"
