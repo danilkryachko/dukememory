@@ -478,6 +478,36 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
             serde_json::json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"memory_inbox_list","arguments":{"include_body":true}}})
         )
         .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"memory_brief","arguments":{"task":"needle mcp","budget":900,"max_chars":900}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"memory_impact","arguments":{"target":"needle mcp","budget":900,"max_chars":900}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"memory_drift","arguments":{"max_chars":900}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"memory_doctor","arguments":{"max_chars":900}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"memory_auto_ingest","arguments":{"input":transcript.display().to_string(),"dry_run":true,"max_chars":900}}})
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
 
@@ -534,6 +564,36 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         .find(|line| line.contains("\"id\":9"))
         .unwrap();
     assert!(full_inbox.contains("body"));
+    let brief = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":10"))
+        .unwrap();
+    assert!(brief.contains("budget"));
+    assert!(!brief.contains(&"mcp prefix noise ".repeat(10)));
+    let impact = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":11"))
+        .unwrap();
+    assert!(impact.contains("target"));
+    assert!(!impact.contains(&"mcp prefix noise ".repeat(10)));
+    let drift = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":12"))
+        .unwrap();
+    assert!(drift.contains("counts"));
+    assert!(drift.contains("missing_links"));
+    let doctor = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":13"))
+        .unwrap();
+    assert!(doctor.contains("review_issues"));
+    assert!(doctor.contains("pending_inbox"));
+    let auto_ingest = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":14"))
+        .unwrap();
+    assert!(auto_ingest.contains("scanned"));
+    assert!(auto_ingest.contains("returned_files"));
 }
 
 #[test]
