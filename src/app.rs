@@ -279,11 +279,12 @@ pub(crate) fn run() -> Result<()> {
                 )?;
             }
             if json {
-                let full = rows
-                    .iter()
-                    .map(|m| get_memory_with_links(&conn, &m.id))
-                    .collect::<Result<Vec<_>>>()?;
-                println!("{}", serde_json::to_string_pretty(&full)?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&compact_context_rows(
+                        &conn, &rows, &task, max_chars
+                    )?)?
+                );
             } else {
                 let mut rendered = render_context_pack_for_task(&conn, &rows, max_chars, &task)?;
                 if with_codegraph {
@@ -2232,6 +2233,49 @@ struct SnapshotMemory {
     status: String,
     confidence: f64,
     links: Vec<MemoryLink>,
+}
+
+#[derive(Serialize)]
+struct CompactContextMemory {
+    id: String,
+    #[serde(rename = "type")]
+    memory_type: String,
+    scope: String,
+    title: String,
+    summary: String,
+    status: String,
+    confidence: f64,
+    links: Vec<MemoryLink>,
+}
+
+fn compact_context_rows(
+    conn: &Connection,
+    rows: &[Memory],
+    task: &str,
+    max_chars: usize,
+) -> Result<Vec<CompactContextMemory>> {
+    let query_terms = relevance_terms(task);
+    let summary_limit = if max_chars <= 1_200 {
+        180
+    } else if max_chars <= 3_000 {
+        260
+    } else {
+        420
+    };
+    rows.iter()
+        .map(|memory| {
+            Ok(CompactContextMemory {
+                id: memory.id.clone(),
+                memory_type: memory.memory_type.clone(),
+                scope: memory.scope.clone(),
+                title: memory.title.clone(),
+                summary: query_focused_summary(&memory.body, &query_terms, summary_limit),
+                status: memory.status.clone(),
+                confidence: memory.confidence,
+                links: get_links(conn, &memory.id)?,
+            })
+        })
+        .collect()
 }
 
 fn compact_snapshot_rows(

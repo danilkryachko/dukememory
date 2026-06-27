@@ -4874,6 +4874,46 @@ fn context_rows_are_budget_aware() {
 }
 
 #[test]
+fn context_pack_json_is_compact_and_query_focused() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Context pack JSON long body")
+        .arg(format!(
+            "{} context pack exact useful detail should be visible {}",
+            "context pack prefix noise ".repeat(80),
+            "context pack tail noise ".repeat(80)
+        ))
+        .arg("--link")
+        .arg("file:src/context_pack.rs")
+        .assert()
+        .success();
+
+    let context_pack = stdout(
+        cmd(&db)
+            .arg("context-pack")
+            .arg("context pack exact")
+            .arg("--budget-profile")
+            .arg("tiny")
+            .arg("--json"),
+    );
+    let context_json: Value = serde_json::from_str(&context_pack).unwrap();
+    let memory = &context_json.as_array().unwrap()[0];
+    assert!(memory.get("body").is_none());
+    assert!(
+        memory["summary"]
+            .as_str()
+            .unwrap()
+            .contains("exact useful detail")
+    );
+    assert_eq!(memory["links"][0]["target"], "src/context_pack.rs");
+    assert!(!context_pack.contains(&"context pack prefix noise ".repeat(20)));
+}
+
+#[test]
 fn agent_context_json_is_compact_and_query_focused() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
