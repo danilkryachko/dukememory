@@ -21,7 +21,7 @@ pub(crate) fn build_context_rows(
         query.types,
         query.statuses,
         query.scope,
-        query.limit,
+        context_candidate_limit(query.limit),
     )?;
     let has_direct_matches = !rows.is_empty();
     if query.include_recent > 0 {
@@ -37,7 +37,7 @@ pub(crate) fn build_context_rows(
             query.types,
             &["active".to_string()],
             query.scope,
-            query.include_recent,
+            context_candidate_limit(query.include_recent),
         )?;
         for row in recent {
             if !rows.iter().any(|existing| existing.id == row.id)
@@ -67,6 +67,10 @@ pub(crate) fn build_context_rows(
     );
     rows = select_diverse_memories(rows, query.limit);
     Ok(rows)
+}
+
+fn context_candidate_limit(limit: usize) -> usize {
+    limit.saturating_mul(2).max(limit).max(1)
 }
 
 fn context_recent_fallback_matches_task(

@@ -4285,6 +4285,7 @@ fn v14_context_and_impact_filter_query_useless_feedback() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
     let query = "checkout validation token budget";
+    let mut noisy_ids: Vec<String> = Vec::new();
     let noisy_id = stdout(
         cmd(&db)
             .arg("add")
@@ -4296,6 +4297,7 @@ fn v14_context_and_impact_filter_query_useless_feedback() {
     )
     .trim()
     .to_string();
+    noisy_ids.push(noisy_id);
     cmd(&db)
         .arg("add")
         .arg("design_note")
@@ -4305,19 +4307,35 @@ fn v14_context_and_impact_filter_query_useless_feedback() {
         .arg("file:src/checkout.rs")
         .assert()
         .success();
+    for index in 0..4 {
+        let noisy_id = stdout(
+            cmd(&db)
+                .arg("add")
+                .arg("design_note")
+                .arg(format!("Noisy context memory {index}"))
+                .arg("checkout validation token budget noisy context card should be suppressed")
+                .arg("--link")
+                .arg("file:src/checkout.rs"),
+        )
+        .trim()
+        .to_string();
+        noisy_ids.push(noisy_id);
+    }
 
-    cmd(&db)
-        .arg("feedback")
-        .arg("--id")
-        .arg(&noisy_id)
-        .arg("--rating")
-        .arg("useless")
-        .arg("--command")
-        .arg("context-pack")
-        .arg("--query")
-        .arg(query)
-        .assert()
-        .success();
+    for noisy_id in noisy_ids {
+        cmd(&db)
+            .arg("feedback")
+            .arg("--id")
+            .arg(&noisy_id)
+            .arg("--rating")
+            .arg("useless")
+            .arg("--command")
+            .arg("context-pack")
+            .arg("--query")
+            .arg(query)
+            .assert()
+            .success();
+    }
 
     let context = stdout(
         cmd(&db)
@@ -4327,6 +4345,7 @@ fn v14_context_and_impact_filter_query_useless_feedback() {
             .arg("tiny"),
     );
     assert!(!context.contains("Noisy context memory"));
+    assert!(!context.contains("Noisy context memory 0"));
     assert!(context.contains("Useful context memory"));
 
     let impact = stdout(
