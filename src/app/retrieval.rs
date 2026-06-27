@@ -1330,23 +1330,71 @@ pub(crate) fn print_agent_context(
     let mut out = String::from("Agent Context\n");
     out.push_str(&render_context_pack(conn, &rows, request.max_chars)?);
     if matches!(request.mode, ContextMode::Agent | ContextMode::Deep) {
-        out.push_str("\n\nNext Actions:\n");
-        for row in query_memories(
-            conn,
-            None,
-            &["task_state".to_string()],
-            &["active".to_string()],
-            None,
-            5,
-        )? {
-            out.push_str("- ");
-            out.push_str(&row.title);
-            out.push('\n');
-        }
+        append_relevant_next_actions(conn, &mut out, request.task, request.max_chars)?;
     }
     if matches!(request.mode, ContextMode::Deep) {
         out.push_str(&render_codegraph_hints(&rows, request.task, Path::new(".")));
     }
+    let out = truncate_chars(&out, request.max_chars);
     println!("{out}");
     Ok(())
+}
+
+fn append_relevant_next_actions(
+    conn: &Connection,
+    out: &mut String,
+    task: &str,
+    max_chars: usize,
+) -> Result<()> {
+    let task_terms = relevance_terms(task);
+    if task_terms.len() < 2 {
+        return Ok(());
+    }
+    let max_actions = next_action_limit(max_chars);
+    let mut actions = Vec::new();
+    for row in query_memories(
+        conn,
+        None,
+        &["task_state".to_string()],
+        &["active".to_string()],
+        None,
+        12,
+    )? {
+        if context_recent_matches_task(conn, &row, &task_terms)? {
+            actions.push(row.title);
+            if actions.len() >= max_actions {
+                break;
+            }
+        }
+    }
+    if actions.is_empty() || !push_agent_context_line(out, max_chars, "\nNext Actions:") {
+        return Ok(());
+    }
+    for action in actions {
+        if !push_agent_context_line(out, max_chars, &format!("- {action}")) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn next_action_limit(max_chars: usize) -> usize {
+    if max_chars <= 1_200 {
+        1
+    } else if max_chars <= 2_500 {
+        2
+    } else {
+        5
+    }
+}
+
+fn push_agent_context_line(out: &mut String, max_chars: usize, line: &str) -> bool {
+    let needed = line.len() + 1;
+    if out.len() + needed <= max_chars {
+        out.push_str(line);
+        out.push('\n');
+        true
+    } else {
+        false
+    }
 }

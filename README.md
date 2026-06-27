@@ -81,6 +81,7 @@ Transcript-based memory quickly turns into noise.
 - context packs keep recent fallback relevant, with one-card bootstrap only when direct matches are empty
 - agent context and semantic context packs share budgeted semantic thresholds
 - compressed recall summaries focus on the query window instead of leading body text
+- agent context next actions are relevance-filtered and budget-bounded
 - generic-only empty reads ignored by inferred memory-gap QA
 - zero-card generic-only outputs explain why memory was not injected
 - weak one-term retrieval skips unrelated recent fallback candidates

@@ -3546,6 +3546,48 @@ fn v14_recall_uses_query_focused_summaries() {
 }
 
 #[test]
+fn v14_agent_context_filters_next_actions() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("constraint")
+        .arg("Checkout validation rule")
+        .arg("checkout validation must stay fast and deterministic")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("task_state")
+        .arg("Checkout validation next action")
+        .arg("checkout validation follow-up should be visible in next actions")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("task_state")
+        .arg("Billing export unrelated action")
+        .arg("billing export follow-up should not enter checkout context")
+        .assert()
+        .success();
+
+    let context = stdout(
+        cmd(&db)
+            .arg("context")
+            .arg("checkout validation")
+            .arg("--mode")
+            .arg("agent")
+            .arg("--max-chars")
+            .arg("1200"),
+    );
+    assert!(context.len() <= 1200);
+    assert!(context.contains("Next Actions:"));
+    assert!(context.contains("- Checkout validation next action"));
+    assert!(!context.contains("Billing export unrelated action"));
+}
+
+#[test]
 fn v14_retrieve_does_not_count_duplicate_fts_as_saturated() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
