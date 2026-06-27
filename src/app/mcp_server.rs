@@ -117,8 +117,8 @@ fn mcp_tools() -> Value {
         {"name":"memory_add","description":"Add a typed memory card","inputSchema":{"type":"object","properties":{"type":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"scope":{"type":"string"},"source":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["type","title","body"]}},
         {"name":"memory_remember","description":"Remember plain text as local memory","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"type":{"type":"string"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["text"]}},
         {"name":"memory_search","description":"Search local memory with compact query-focused summaries","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
-        {"name":"memory_context_pack","description":"Return a compact relevant memory pack","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
-        {"name":"memory_agent_context","description":"Return agent-native context with planner defaults","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
+        {"name":"memory_context_pack","description":"Return a compact relevant memory pack","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
+        {"name":"memory_agent_context","description":"Return agent-native context with planner defaults","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_snapshot","description":"Return compact bounded project snapshot","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_doctrine","description":"Return compact active decision doctrine by default","inputSchema":{"type":"object","properties":{"scope":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_evidence","description":"Return compact provenance for one memory card by default","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
@@ -240,12 +240,19 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             compact_mcp_search_response(&rows, &query, max_chars).map_err(|err| err.to_string())?
         }
         "memory_context_pack" => {
+            let started = Instant::now();
             let task = json_string(&args, "task").ok_or_else(|| "missing task".to_string())?;
             let limit = json_usize(&args, "limit").unwrap_or(12);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(4000);
             let effective_limit = mcp_effective_limit(limit, max_chars);
             let statuses = ["active".to_string(), "uncertain".to_string()];
-            let rows = build_context_rows(
+            let provider = json_string(&args, "provider")
+                .unwrap_or_else(|| DEFAULT_EMBED_PROVIDER.to_string());
+            let endpoint = json_string(&args, "endpoint")
+                .unwrap_or_else(|| DEFAULT_EMBED_ENDPOINT.to_string());
+            let model =
+                json_string(&args, "model").unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
+            let mut rows = build_context_rows(
                 &conn,
                 ContextQuery {
                     task: &task,
@@ -258,16 +265,47 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 },
             )
             .map_err(|err| err.to_string())?;
+            let semantic_used = append_semantic_context_rows(
+                &conn,
+                &mut rows,
+                SemanticContextRequest {
+                    task: &task,
+                    limit: effective_limit,
+                    budget: max_chars,
+                    provider: &provider,
+                    endpoint: &endpoint,
+                    model: &model,
+                    rules: None,
+                },
+            )
+            .map_err(|err| err.to_string())?;
+            log_mcp_context_read(
+                &conn,
+                "memory_context_pack",
+                &task,
+                &rows,
+                semantic_used,
+                max_chars,
+                started,
+            )
+            .map_err(|err| err.to_string())?;
             render_context_pack_for_task(&conn, &rows, max_chars, &task)
                 .map_err(|err| err.to_string())?
         }
         "memory_agent_context" => {
+            let started = Instant::now();
             let task = json_string(&args, "task").ok_or_else(|| "missing task".to_string())?;
             let limit = json_usize(&args, "limit").unwrap_or(12);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(5000);
             let effective_limit = mcp_effective_limit(limit, max_chars);
             let statuses = ["active".to_string(), "uncertain".to_string()];
-            let rows = build_context_rows(
+            let provider = json_string(&args, "provider")
+                .unwrap_or_else(|| DEFAULT_EMBED_PROVIDER.to_string());
+            let endpoint = json_string(&args, "endpoint")
+                .unwrap_or_else(|| DEFAULT_EMBED_ENDPOINT.to_string());
+            let model =
+                json_string(&args, "model").unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
+            let mut rows = build_context_rows(
                 &conn,
                 ContextQuery {
                     task: &task,
@@ -278,6 +316,30 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     include_recent: 4,
                     rules: None,
                 },
+            )
+            .map_err(|err| err.to_string())?;
+            let semantic_used = append_semantic_context_rows(
+                &conn,
+                &mut rows,
+                SemanticContextRequest {
+                    task: &task,
+                    limit: effective_limit,
+                    budget: max_chars,
+                    provider: &provider,
+                    endpoint: &endpoint,
+                    model: &model,
+                    rules: None,
+                },
+            )
+            .map_err(|err| err.to_string())?;
+            log_mcp_context_read(
+                &conn,
+                "memory_agent_context",
+                &task,
+                &rows,
+                semantic_used,
+                max_chars,
+                started,
             )
             .map_err(|err| err.to_string())?;
             render_context_pack_for_task(&conn, &rows, max_chars, &task)
@@ -591,6 +653,33 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         other => return Err(format!("unsupported tool: {other}")),
     };
     Ok(json!({"content":[{"type":"text","text":text}]}))
+}
+
+fn log_mcp_context_read(
+    conn: &Connection,
+    command: &str,
+    query: &str,
+    rows: &[Memory],
+    semantic_used: bool,
+    budget: usize,
+    started: Instant,
+) -> Result<()> {
+    let ids = rows
+        .iter()
+        .map(|memory| memory.id.clone())
+        .collect::<Vec<_>>();
+    log_read_event(
+        conn,
+        ReadEventInput {
+            command,
+            query,
+            ids: &ids,
+            semantic_used,
+            result_count: ids.len(),
+            budget,
+            elapsed_ms: started.elapsed().as_millis(),
+        },
+    )
 }
 
 fn compact_mcp_search_response(rows: &[Memory], query: &str, max_chars: usize) -> Result<String> {

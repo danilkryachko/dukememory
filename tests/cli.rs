@@ -5086,6 +5086,77 @@ fn search_and_mcp_search_use_semantic_fallback_for_underfilled_queries() {
 }
 
 #[test]
+fn mcp_context_surfaces_use_semantic_supplement() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Semantic context fallback")
+        .arg("semantic context fallback useful memory should be found through embeddings")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("embed-index")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .assert()
+        .success();
+
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
+        .arg("--db")
+        .arg(&db)
+        .arg("serve-mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        for (id, name) in [(1, "memory_context_pack"), (2, "memory_agent_context")] {
+            writeln!(
+                stdin,
+                "{}",
+                serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":{"task":"semantic context fallback orchard","max_chars":1000,"provider":"mock","endpoint":"local","model":"mock-small"}}})
+            )
+            .unwrap();
+        }
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let mcp_stdout = String::from_utf8(output.stdout).unwrap();
+    let values = mcp_stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    for value in values {
+        let text = value["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Semantic context fallback"));
+    }
+
+    let usage = stdout(cmd(&db).arg("usage-report").arg("--json"));
+    let usage_json: Value = serde_json::from_str(&usage).unwrap();
+    for command in ["memory_context_pack", "memory_agent_context"] {
+        assert!(
+            usage_json["recent_reads"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|read| read["command"] == command && read["semantic_used"] == true),
+            "expected semantic read event for {command}"
+        );
+    }
+}
+
+#[test]
 fn agent_context_json_is_compact_and_query_focused() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
