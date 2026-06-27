@@ -375,17 +375,19 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         .arg("MCP can retrieve this card.")
         .assert()
         .success();
-    cmd(&db)
-        .arg("add")
-        .arg("design_note")
-        .arg("MCP long search card")
-        .arg(format!(
-            "{} needle mcp exact detail should be visible {}",
-            "mcp prefix noise ".repeat(80),
-            "mcp tail noise ".repeat(80)
-        ))
-        .assert()
-        .success();
+    let long_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("MCP long search card")
+            .arg(format!(
+                "{} needle mcp exact detail should be visible {}",
+                "mcp prefix noise ".repeat(80),
+                "mcp tail noise ".repeat(80)
+            )),
+    )
+    .trim()
+    .to_string();
 
     let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
         .arg("--db")
@@ -416,6 +418,18 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
             serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memory_search","arguments":{"query":"needle mcp","max_chars":1000}}})
         )
         .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"memory_get","arguments":{"id":long_id.clone(),"query":"needle mcp","max_chars":1000}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"memory_get","arguments":{"id":long_id,"include_body":true}}})
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
 
@@ -429,7 +443,23 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
     assert!(stdout.find("memory_brief") < stdout.find("memory_context_pack"));
     assert!(stdout.contains("MCP decision"));
     assert!(stdout.contains("needle mcp exact detail"));
-    assert!(!stdout.contains(&"mcp prefix noise ".repeat(10)));
+    let compact_search = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":3"))
+        .unwrap();
+    assert!(!compact_search.contains(&"mcp prefix noise ".repeat(10)));
+    let compact_get = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":4"))
+        .unwrap();
+    assert!(compact_get.contains("summary"));
+    assert!(!compact_get.contains("body"));
+    assert!(!compact_get.contains(&"mcp prefix noise ".repeat(10)));
+    let full_get = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":5"))
+        .unwrap();
+    assert!(full_get.contains("body"));
 }
 
 #[test]

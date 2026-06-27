@@ -121,7 +121,7 @@ fn mcp_tools() -> Value {
         {"name":"memory_doctrine","description":"Return active decision doctrine and supersession chains","inputSchema":{"type":"object","properties":{"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_evidence","description":"Return provenance for one memory card","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_auto_ingest","description":"Scan agent session files into pending inbox suggestions without duplicates","inputSchema":{"type":"object","properties":{"input":{"type":"string"},"scope":{"type":"string"},"dry_run":{"type":"boolean"}}}},
-        {"name":"memory_get","description":"Get one memory card","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
+        {"name":"memory_get","description":"Get one memory card as compact summary by default","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_review","description":"Review stale/conflicting memory","inputSchema":{"type":"object","properties":{"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_doctor","description":"Run memory health checks","inputSchema":{"type":"object","properties":{"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_inbox_list","description":"List pending inbox items","inputSchema":{"type":"object","properties":{"limit":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}
@@ -341,8 +341,19 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         }
         "memory_get" => {
             let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            let query = json_string(&args, "query").unwrap_or_default();
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let include_body = args
+                .get("include_body")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let memory = get_memory_with_links(&conn, &id).map_err(|err| err.to_string())?;
-            serde_json::to_string_pretty(&memory).map_err(|err| err.to_string())?
+            if include_body {
+                serde_json::to_string_pretty(&memory).map_err(|err| err.to_string())?
+            } else {
+                compact_mcp_memory_response(&memory, &query, max_chars)
+                    .map_err(|err| err.to_string())?
+            }
         }
         "memory_review" => {
             let mut issues = Vec::new();
@@ -374,19 +385,9 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
 }
 
 fn compact_mcp_search_response(rows: &[Memory], query: &str, max_chars: usize) -> Result<String> {
-    let query_terms = relevance_terms(query);
     let mut items = Vec::new();
     for row in rows {
-        items.push(json!({
-            "id": row.id,
-            "type": row.memory_type,
-            "scope": row.scope,
-            "status": row.status,
-            "title": row.title,
-            "summary": query_focused_summary(&row.body, &query_terms, 160),
-            "confidence": row.confidence,
-            "updated_at": row.updated_at,
-        }));
+        items.push(compact_mcp_memory_value(row, &[], query));
         let rendered = serde_json::to_string_pretty(&items)?;
         if rendered.len() > max_chars {
             items.pop();
@@ -395,6 +396,34 @@ fn compact_mcp_search_response(rows: &[Memory], query: &str, max_chars: usize) -
     }
     let rendered = serde_json::to_string_pretty(&items)?;
     Ok(truncate_chars(&rendered, max_chars))
+}
+
+fn compact_mcp_memory_response(
+    memory: &MemoryWithLinks,
+    query: &str,
+    max_chars: usize,
+) -> Result<String> {
+    let rendered = serde_json::to_string_pretty(&compact_mcp_memory_value(
+        &memory.memory,
+        &memory.links,
+        query,
+    ))?;
+    Ok(truncate_chars(&rendered, max_chars))
+}
+
+fn compact_mcp_memory_value(memory: &Memory, links: &[MemoryLink], query: &str) -> Value {
+    let query_terms = relevance_terms(query);
+    json!({
+        "id": memory.id,
+        "type": memory.memory_type,
+        "scope": memory.scope,
+        "status": memory.status,
+        "title": memory.title,
+        "summary": query_focused_summary(&memory.body, &query_terms, 160),
+        "confidence": memory.confidence,
+        "updated_at": memory.updated_at,
+        "links": links,
+    })
 }
 
 fn mcp_selected_db(default_db: &Path, args: &Value) -> PathBuf {

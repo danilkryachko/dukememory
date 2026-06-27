@@ -84,6 +84,7 @@ Transcript-based memory quickly turns into noise.
 - agent context next actions are relevance-filtered and budget-bounded
 - context-pack cards render query-focused body windows for task-aware surfaces
 - MCP memory search returns compact query-focused summaries instead of full bodies
+- MCP memory get is compact by default, with explicit include_body for full cards
 - generic-only empty reads ignored by inferred memory-gap QA
 - zero-card generic-only outputs explain why memory was not injected
 - weak one-term retrieval skips unrelated recent fallback candidates
