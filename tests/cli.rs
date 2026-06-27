@@ -4726,6 +4726,50 @@ fn context_rows_are_budget_aware() {
 }
 
 #[test]
+fn agent_context_json_is_compact_and_query_focused() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Agent context long body")
+        .arg(format!(
+            "{} agent context exact useful detail should be visible {}",
+            "agent json prefix noise ".repeat(80),
+            "agent json tail noise ".repeat(80)
+        ))
+        .arg("--link")
+        .arg("file:src/agent/context.rs")
+        .assert()
+        .success();
+
+    let context = stdout(
+        cmd(&db)
+            .arg("context")
+            .arg("agent context exact")
+            .arg("--mode")
+            .arg("fast")
+            .arg("--budget-profile")
+            .arg("tiny")
+            .arg("--json"),
+    );
+    let context_json: Value = serde_json::from_str(&context).unwrap();
+    assert_eq!(context_json["compact"], true);
+    assert_eq!(context_json["max_chars"], 1200);
+    let memory = &context_json["memories"].as_array().unwrap()[0];
+    assert!(memory.get("body").is_none());
+    assert!(
+        memory["summary"]
+            .as_str()
+            .unwrap()
+            .contains("exact useful detail")
+    );
+    assert!(!context.contains(&"agent json prefix noise ".repeat(20)));
+    assert_eq!(memory["links"][0]["target"], "src/agent/context.rs");
+}
+
+#[test]
 fn v14_agent_context_recent_fallback_requires_task_overlap() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

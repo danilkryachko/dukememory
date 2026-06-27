@@ -1623,6 +1623,19 @@ pub(crate) struct AgentContextRequest<'a> {
     pub(crate) rules: Option<&'a Path>,
 }
 
+#[derive(Serialize)]
+struct AgentContextMemory {
+    id: String,
+    #[serde(rename = "type")]
+    memory_type: String,
+    scope: String,
+    title: String,
+    summary: String,
+    status: String,
+    confidence: f64,
+    links: Vec<MemoryLink>,
+}
+
 pub(crate) fn print_agent_context(
     conn: &Connection,
     request: AgentContextRequest<'_>,
@@ -1662,16 +1675,16 @@ pub(crate) fn print_agent_context(
         )?;
     }
     if request.json_out || matches!(request.format, OutputFormat::Json) {
-        let full = rows
-            .iter()
-            .map(|m| get_memory_with_links(conn, &m.id))
-            .collect::<Result<Vec<_>>>()?;
+        let memories =
+            compact_agent_context_memories(conn, &rows, request.task, request.max_chars)?;
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "mode": format!("{:?}", request.mode).to_lowercase(),
                 "task": request.task,
-                "memories": full
+                "max_chars": request.max_chars,
+                "compact": true,
+                "memories": memories
             }))?
         );
         return Ok(());
@@ -1701,6 +1714,30 @@ pub(crate) fn print_agent_context(
     let out = truncate_chars(&out, request.max_chars);
     println!("{out}");
     Ok(())
+}
+
+fn compact_agent_context_memories(
+    conn: &Connection,
+    rows: &[Memory],
+    task: &str,
+    max_chars: usize,
+) -> Result<Vec<AgentContextMemory>> {
+    let query_terms = relevance_terms(task);
+    let summary_limit = retrieval_body_char_limit(max_chars);
+    rows.iter()
+        .map(|memory| {
+            Ok(AgentContextMemory {
+                id: memory.id.clone(),
+                memory_type: memory.memory_type.clone(),
+                scope: memory.scope.clone(),
+                title: memory.title.clone(),
+                summary: query_focused_summary(&memory.body, &query_terms, summary_limit),
+                status: memory.status.clone(),
+                confidence: memory.confidence,
+                links: get_links(conn, &memory.id)?,
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn context_effective_limit(limit: usize, max_chars: usize) -> usize {
