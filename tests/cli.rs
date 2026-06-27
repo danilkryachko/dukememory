@@ -5120,9 +5120,53 @@ fn recall_json_respects_tight_max_chars() {
     let recall_json: Value = serde_json::from_str(&recall).unwrap();
     assert_eq!(recall_json["max_chars"], 360);
     assert!(recall_json["items"].as_array().unwrap().len() <= 1);
+    let item_count = recall_json["items"].as_array().unwrap().len();
+    let expected_receipt_count = match item_count {
+        1 => "matched 1 card".to_string(),
+        count => format!("matched {count} cards"),
+    };
+    assert!(
+        recall_json["receipt"]
+            .as_str()
+            .unwrap()
+            .contains(&expected_receipt_count),
+        "tight recall receipt should match the rendered item count"
+    );
     if let Some(item) = recall_json["items"].as_array().unwrap().first() {
         assert!(item["summary"].as_str().unwrap().len() <= 90);
     }
+
+    let long_query_recall = stdout(
+        cmd(&db)
+            .arg("recall")
+            .arg(format!(
+                "recall json budget {}",
+                "memory quality embedding ".repeat(20)
+            ))
+            .arg("--max-chars")
+            .arg("360")
+            .arg("--limit")
+            .arg("8")
+            .arg("--json"),
+    );
+    assert!(
+        long_query_recall.len() <= 360,
+        "long-query recall JSON exceeded budget: {}",
+        long_query_recall.len()
+    );
+    let long_query_json: Value = serde_json::from_str(&long_query_recall).unwrap();
+    let long_query_item_count = long_query_json["items"].as_array().unwrap().len();
+    let expected_receipt_count = match long_query_item_count {
+        1 => "matched 1 card".to_string(),
+        count => format!("matched {count} cards"),
+    };
+    assert!(
+        long_query_json["receipt"]
+            .as_str()
+            .unwrap()
+            .contains(&expected_receipt_count),
+        "recall receipt should match the rendered item count"
+    );
 }
 
 #[test]

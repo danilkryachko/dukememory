@@ -470,7 +470,7 @@ pub(crate) fn memory_receipt(
     memory_receipt_with_semantic(command, semantic, ids, wrote)
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) enum MemorySemanticStatus {
     #[default]
     None,

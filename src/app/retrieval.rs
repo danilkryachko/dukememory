@@ -682,6 +682,8 @@ pub(crate) struct RecallReport {
     token_saving_estimate: usize,
     receipt: String,
     items: Vec<RecallItem>,
+    #[serde(skip)]
+    semantic_status: MemorySemanticStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -752,17 +754,36 @@ pub(crate) fn recall_report(
         });
     }
     let token_saving_estimate = raw_chars.saturating_sub(request.max_chars) / 4;
+    let semantic_status = recall_semantic_status(&retrieval);
+    let ids = items.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
     Ok(RecallReport {
         query: request.query.to_string(),
         max_chars: request.max_chars,
         token_saving_estimate,
-        receipt: retrieval.receipt,
+        receipt: memory_receipt_with_semantic("recall", semantic_status, &ids, "none"),
         items,
+        semantic_status,
     })
 }
 
+fn recall_semantic_status(retrieval: &RetrievalReport) -> MemorySemanticStatus {
+    if retrieval.semantic_skipped {
+        MemorySemanticStatus::Skipped
+    } else if retrieval.semantic_used {
+        MemorySemanticStatus::Used
+    } else if retrieval.strategy == "hybrid" {
+        MemorySemanticStatus::Fallback
+    } else {
+        MemorySemanticStatus::None
+    }
+}
+
 fn recall_effective_limit(limit: usize, max_chars: usize) -> usize {
-    let budget_limit = if max_chars <= 1_200 {
+    let budget_limit = if max_chars <= 500 {
+        1
+    } else if max_chars <= 900 {
+        2
+    } else if max_chars <= 1_200 {
         3
     } else if max_chars <= 3_000 {
         5
@@ -799,12 +820,22 @@ fn render_recall_json(report: &RecallReport) -> Result<String> {
     let max_chars = report.max_chars;
     trim_recall_report_json_strings(&mut report, recall_summary_json_limit(max_chars));
     loop {
+        refresh_recall_receipt(&mut report);
         let rendered = serde_json::to_string_pretty(&report)?;
         if rendered.len() <= max_chars || report.items.is_empty() {
             return Ok(rendered);
         }
         report.items.pop();
     }
+}
+
+fn refresh_recall_receipt(report: &mut RecallReport) {
+    let ids = report
+        .items
+        .iter()
+        .map(|item| item.id.clone())
+        .collect::<Vec<_>>();
+    report.receipt = memory_receipt_with_semantic("recall", report.semantic_status, &ids, "none");
 }
 
 fn trim_recall_report_json_strings(report: &mut RecallReport, summary_chars: usize) {
