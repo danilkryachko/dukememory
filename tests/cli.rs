@@ -2994,7 +2994,7 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
     let boosted = stdout(
         cmd(&db)
             .arg("retrieve")
-            .arg("grouped retrieval")
+            .arg("ranking risk grouped")
             .arg("--format")
             .arg("json")
             .arg("--rules")
@@ -3094,6 +3094,43 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
     );
     assert!(generic_empty_plain.contains("Relevant Memory:"));
     assert!(generic_empty_plain.contains("none (generic query; semantic search skipped)"));
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Single anchor relevant")
+        .arg("singleanchor detail should be the only one-term retrieval match")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("task_state")
+        .arg("Recent unrelated one term fallback")
+        .arg("fresh unrelated task state should not appear for weak one-term retrieval")
+        .assert()
+        .success();
+    let one_term = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("singleanchor")
+            .arg("--strategy")
+            .arg("fts")
+            .arg("--format")
+            .arg("json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let one_term_json: Value = serde_json::from_str(&one_term).unwrap();
+    let one_term_titles = one_term_json["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["memory"]["title"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(one_term_titles.contains(&"Single anchor relevant"));
+    assert!(
+        !one_term_titles.contains(&"Recent unrelated one term fallback"),
+        "weak one-term retrieval should not add unrelated recent fallback cards"
+    );
 
     for index in 0..4 {
         cmd(&db)

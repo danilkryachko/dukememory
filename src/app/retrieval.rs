@@ -139,7 +139,7 @@ pub(crate) fn retrieve_report(
     )? {
         candidates.entry(row.id.clone()).or_insert((row, None));
     }
-    if !task_terms.is_empty() {
+    if should_include_recent_fallback(&task_terms) {
         for row in query_memories(
             conn,
             None,
@@ -274,6 +274,10 @@ pub(crate) fn retrieve_report(
         receipt,
         hits,
     })
+}
+
+fn should_include_recent_fallback(task_terms: &HashSet<String>) -> bool {
+    task_terms.len() >= 2
 }
 
 pub(crate) fn retrieve_rows(
