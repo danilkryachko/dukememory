@@ -221,6 +221,7 @@ pub(crate) fn retrieve_report(
             .then_with(|| b.memory.memory.updated_at.cmp(&a.memory.memory.updated_at))
     });
     hits = apply_relevance_floor(hits, request.budget);
+    hits = filter_redundant_hits(hits, request.budget);
     let effective_limit = budget_aware_hit_limit(request.limit, request.budget);
     hits = select_diverse_hits(hits, effective_limit);
     let ids = hits
@@ -600,6 +601,50 @@ fn relevance_floor_for_budget(budget: usize, top_score: f64) -> Option<f64> {
     } else {
         None
     }
+}
+
+fn filter_redundant_hits(hits: Vec<RetrievalHit>, budget: usize) -> Vec<RetrievalHit> {
+    let Some(threshold) = redundancy_threshold_for_budget(budget) else {
+        return hits;
+    };
+    let mut selected = Vec::new();
+    let mut signatures: Vec<HashSet<String>> = Vec::new();
+    for hit in hits {
+        let signature = memory_signature(&hit.memory.memory);
+        if signature.len() >= 4
+            && signatures
+                .iter()
+                .any(|existing| containment_overlap(&signature, existing) >= threshold)
+        {
+            continue;
+        }
+        signatures.push(signature);
+        selected.push(hit);
+    }
+    selected
+}
+
+fn redundancy_threshold_for_budget(budget: usize) -> Option<f64> {
+    if budget <= 1_200 {
+        Some(0.72)
+    } else if budget <= 2_500 {
+        Some(0.84)
+    } else {
+        None
+    }
+}
+
+fn memory_signature(memory: &Memory) -> HashSet<String> {
+    tokenize(&format!("{} {}", memory.title, memory.body))
+}
+
+fn containment_overlap(left: &HashSet<String>, right: &HashSet<String>) -> f64 {
+    let smaller = left.len().min(right.len());
+    if smaller == 0 {
+        return 0.0;
+    }
+    let overlap = left.intersection(right).count();
+    overlap as f64 / smaller as f64
 }
 
 fn select_diverse_memories(rows: Vec<Memory>, limit: usize) -> Vec<Memory> {

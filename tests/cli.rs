@@ -3047,6 +3047,52 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
         .map(|hit| hit["memory"]["type"].as_str().unwrap())
         .collect::<std::collections::HashSet<_>>();
     assert!(diverse_types.len() >= 2);
+
+    for index in 0..3 {
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(format!("Duplicate quality note {index}"))
+            .arg("Duplicate quality budget target should appear once in a tiny retrieval pack.")
+            .assert()
+            .success();
+    }
+    cmd(&db)
+        .arg("add")
+        .arg("command")
+        .arg("Duplicate quality command")
+        .arg("Run duplicate quality budget target validation command.")
+        .assert()
+        .success();
+    let deduped = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("duplicate quality budget target")
+            .arg("--strategy")
+            .arg("fts")
+            .arg("--format")
+            .arg("json")
+            .arg("--limit")
+            .arg("5")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let deduped_json: Value = serde_json::from_str(&deduped).unwrap();
+    let duplicate_notes = deduped_json["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|hit| {
+            hit["memory"]["title"]
+                .as_str()
+                .unwrap()
+                .starts_with("Duplicate quality note")
+        })
+        .count();
+    assert_eq!(
+        duplicate_notes, 1,
+        "tiny retrieval should keep only one near-duplicate card"
+    );
 }
 
 #[test]

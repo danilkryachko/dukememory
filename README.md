@@ -69,6 +69,7 @@ Transcript-based memory quickly turns into noise.
 - adaptive relevance floors so tiny retrieval drops weak low-score tails
 - query-focused retrieval snippets so long cards stay token-light
 - query-focused brief and impact summaries for first-hop agent memory
+- runtime near-duplicate suppression for smaller focused retrieval packs
 
 ## What It Remembers
 
