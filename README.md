@@ -66,6 +66,7 @@ Transcript-based memory quickly turns into noise.
 - dashboard repair priority ordering for stale gap-inbox projects
 - quality-aware retrieval ranking from recent reads and feedback
 - diverse retrieval selection so one memory type cannot crowd out the brief
+- adaptive relevance floors so tiny retrieval drops weak low-score tails
 
 ## What It Remembers
 

@@ -214,6 +214,7 @@ pub(crate) fn retrieve_report(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| b.memory.memory.updated_at.cmp(&a.memory.memory.updated_at))
     });
+    hits = apply_relevance_floor(hits, request.budget);
     let effective_limit = budget_aware_hit_limit(request.limit, request.budget);
     hits = select_diverse_hits(hits, effective_limit);
     let ids = hits
@@ -564,6 +565,35 @@ fn budget_aware_hit_limit(limit: usize, budget: usize) -> usize {
         limit
     };
     limit.min(budget_limit).max(1)
+}
+
+fn apply_relevance_floor(hits: Vec<RetrievalHit>, budget: usize) -> Vec<RetrievalHit> {
+    if hits.len() <= 2 {
+        return hits;
+    }
+    let Some(top_score) = hits.first().map(|hit| hit.score) else {
+        return hits;
+    };
+    let Some(floor) = relevance_floor_for_budget(budget, top_score) else {
+        return hits;
+    };
+    let mut kept = Vec::new();
+    for hit in hits {
+        if kept.len() < 2 || hit.score >= floor {
+            kept.push(hit);
+        }
+    }
+    kept
+}
+
+fn relevance_floor_for_budget(budget: usize, top_score: f64) -> Option<f64> {
+    if budget <= 1_200 {
+        Some((top_score - 18.0).max(8.0))
+    } else if budget <= 2_500 {
+        Some((top_score - 24.0).max(4.0))
+    } else {
+        None
+    }
 }
 
 fn select_diverse_memories(rows: Vec<Memory>, limit: usize) -> Vec<Memory> {

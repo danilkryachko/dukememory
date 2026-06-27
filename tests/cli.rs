@@ -2801,7 +2801,7 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
             .arg("--model")
             .arg("mock-small")
             .arg("--budget-profile")
-            .arg("tiny")
+            .arg("deep")
             .arg("--scope")
             .arg("project"),
     );
@@ -2839,6 +2839,8 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
             .arg("local")
             .arg("--model")
             .arg("mock-small")
+            .arg("--budget-profile")
+            .arg("deep")
             .arg("--scope")
             .arg("project"),
     );
@@ -2894,6 +2896,8 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
             .arg("local")
             .arg("--model")
             .arg("mock-small")
+            .arg("--budget-profile")
+            .arg("tiny")
             .arg("--scope")
             .arg("project"),
     );
@@ -2902,6 +2906,18 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
         quality_ranked_json["hits"].as_array().unwrap().len() <= 5,
         "tiny retrieval should keep a compact hit list"
     );
+    let quality_hits = quality_ranked_json["hits"].as_array().unwrap();
+    if quality_hits.len() > 2 {
+        let top_score = quality_hits[0]["score"].as_f64().unwrap();
+        let relevance_floor = (top_score - 18.0).max(8.0);
+        assert!(
+            quality_hits
+                .iter()
+                .skip(2)
+                .all(|hit| hit["score"].as_f64().unwrap() >= relevance_floor),
+            "tiny retrieval should drop weak low-relevance tails"
+        );
+    }
     let quality_reasons = quality_ranked_json["hits"]
         .as_array()
         .unwrap()
