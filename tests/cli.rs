@@ -3804,6 +3804,93 @@ fn v14_tiny_retrieval_drops_partial_lexical_noise() {
 }
 
 #[test]
+fn v14_tiny_retrieval_filters_query_useless_feedback() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let query = "checkout validation token budget";
+    let noisy_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Noisy checkout memory")
+            .arg("checkout validation token budget noisy card should be suppressed after same-query feedback"),
+    )
+    .trim()
+    .to_string();
+    let useful_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Useful checkout memory")
+            .arg("checkout validation token budget useful card should remain in tiny retrieval"),
+    )
+    .trim()
+    .to_string();
+    let reusable_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Reusable checkout memory")
+            .arg("checkout validation token budget reusable card should not be globally banned"),
+    )
+    .trim()
+    .to_string();
+
+    cmd(&db)
+        .arg("feedback")
+        .arg("--id")
+        .arg(&noisy_id)
+        .arg("--rating")
+        .arg("useless")
+        .arg("--command")
+        .arg("retrieve")
+        .arg("--query")
+        .arg(query)
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("feedback")
+        .arg("--id")
+        .arg(&reusable_id)
+        .arg("--rating")
+        .arg("useless")
+        .arg("--command")
+        .arg("retrieve")
+        .arg("--query")
+        .arg("billing invoice export")
+        .assert()
+        .success();
+
+    let retrieved = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg(query)
+            .arg("--strategy")
+            .arg("fts")
+            .arg("--format")
+            .arg("json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let retrieved_json: Value = serde_json::from_str(&retrieved).unwrap();
+    let ids = retrieved_json["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["memory"]["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        !ids.contains(&noisy_id.as_str()),
+        "same-query useless feedback should suppress noisy tiny hits"
+    );
+    assert!(ids.contains(&useful_id.as_str()));
+    assert!(
+        ids.contains(&reusable_id.as_str()),
+        "unrelated useless feedback should not globally ban a memory card"
+    );
+}
+
+#[test]
 fn v14_recall_uses_query_focused_summaries() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

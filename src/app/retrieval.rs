@@ -281,6 +281,7 @@ pub(crate) fn retrieve_report(
             .then_with(|| b.memory.memory.updated_at.cmp(&a.memory.memory.updated_at))
     });
     hits = apply_tiny_lexical_precision_gate(hits, request.budget, &task_terms);
+    hits = apply_tiny_feedback_precision_gate(hits, request.budget, &task_terms, &quality_signals);
     hits = apply_relevance_floor(hits, request.budget);
     hits = filter_redundant_hits(hits, request.budget);
     hits = select_diverse_hits(hits, effective_limit);
@@ -633,6 +634,7 @@ pub(crate) struct RetrievalQualitySignals {
     reads: HashMap<String, usize>,
     useful: HashMap<String, usize>,
     useless: HashMap<String, usize>,
+    useless_query_terms: HashMap<String, Vec<HashSet<String>>>,
 }
 
 pub(crate) fn retrieval_quality_signals(
@@ -651,21 +653,56 @@ pub(crate) fn retrieval_quality_signals(
             *reads.entry(id).or_insert(0) += 1;
         }
     }
-    let feedback = memory_feedback_counts(conn, since_ms)?;
     let mut useful = HashMap::new();
     let mut useless = HashMap::new();
-    for (id, (positive, negative, _missing)) in feedback {
-        if positive > 0 {
-            useful.insert(id.clone(), positive);
-        }
-        if negative > 0 {
-            useless.insert(id, negative);
+    let mut useless_query_terms: HashMap<String, Vec<HashSet<String>>> = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT detail FROM memory_events WHERE event_type = 'memory_feedback' AND created_at >= ?1",
+    )?;
+    let feedback_rows = stmt
+        .query_map(params![since_ms], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for detail in feedback_rows {
+        let Ok(value) = serde_json::from_str::<Value>(&detail) else {
+            continue;
+        };
+        let rating = value.get("rating").and_then(Value::as_str).unwrap_or("");
+        let ids = value
+            .get("ids")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let query_terms = value
+            .get("query")
+            .and_then(Value::as_str)
+            .map(relevance_terms)
+            .unwrap_or_default();
+        for id in ids
+            .into_iter()
+            .filter_map(|id| id.as_str().map(str::to_string))
+        {
+            match rating {
+                "useful" => {
+                    *useful.entry(id).or_insert(0) += 1;
+                }
+                "useless" => {
+                    *useless.entry(id.clone()).or_insert(0) += 1;
+                    if !query_terms.is_empty() {
+                        useless_query_terms
+                            .entry(id)
+                            .or_default()
+                            .push(query_terms.clone());
+                    }
+                }
+                _ => {}
+            }
         }
     }
     Ok(RetrievalQualitySignals {
         reads,
         useful,
         useless,
+        useless_query_terms,
     })
 }
 
@@ -753,6 +790,45 @@ fn apply_tiny_lexical_precision_gate(
             hit.semantic_score.is_some() || hit_lexical_overlap(hit, task_terms) >= required_overlap
         })
         .collect()
+}
+
+fn apply_tiny_feedback_precision_gate(
+    hits: Vec<RetrievalHit>,
+    budget: usize,
+    task_terms: &HashSet<String>,
+    signals: &RetrievalQualitySignals,
+) -> Vec<RetrievalHit> {
+    if budget > 1_200 || task_terms.len() < 2 {
+        return hits;
+    }
+    hits.into_iter()
+        .filter(|hit| {
+            let id = &hit.memory.memory.id;
+            let useless = signals.useless.get(id).copied().unwrap_or_default();
+            if useless == 0 {
+                return true;
+            }
+            let useful = signals.useful.get(id).copied().unwrap_or_default();
+            if useful >= useless {
+                return true;
+            }
+            !feedback_query_matches_task(id, task_terms, signals)
+        })
+        .collect()
+}
+
+fn feedback_query_matches_task(
+    memory_id: &str,
+    task_terms: &HashSet<String>,
+    signals: &RetrievalQualitySignals,
+) -> bool {
+    let Some(feedback_queries) = signals.useless_query_terms.get(memory_id) else {
+        return false;
+    };
+    let required_overlap = task_terms.len().min(2);
+    feedback_queries
+        .iter()
+        .any(|terms| task_terms.intersection(terms).count() >= required_overlap)
 }
 
 fn hit_lexical_overlap(hit: &RetrievalHit, task_terms: &HashSet<String>) -> usize {
