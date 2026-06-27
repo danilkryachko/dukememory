@@ -3509,6 +3509,43 @@ fn v14_tiny_retrieval_drops_partial_lexical_noise() {
 }
 
 #[test]
+fn v14_recall_uses_query_focused_summaries() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Recall focused long note")
+        .arg(format!(
+            "{} recall needle exact useful detail should be visible {}",
+            "prefix noise ".repeat(80),
+            "tail noise ".repeat(80)
+        ))
+        .assert()
+        .success();
+
+    let recall = stdout(
+        cmd(&db)
+            .arg("recall")
+            .arg("recall needle")
+            .arg("--max-chars")
+            .arg("800")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let recall_json: Value = serde_json::from_str(&recall).unwrap();
+    let summary = recall_json["items"][0]["summary"].as_str().unwrap();
+    assert!(summary.contains("recall needle exact useful detail"));
+    assert!(!summary.contains(&"prefix noise ".repeat(8)));
+}
+
+#[test]
 fn v14_retrieve_does_not_count_duplicate_fts_as_saturated() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

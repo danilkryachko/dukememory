@@ -488,6 +488,7 @@ pub(crate) fn recall_report(
     )?;
     let mut raw_chars = 0;
     let mut items = Vec::new();
+    let query_terms = relevance_terms(request.query);
     for hit in &retrieval.hits {
         let memory = &hit.memory.memory;
         raw_chars += memory.body.chars().count();
@@ -495,7 +496,7 @@ pub(crate) fn recall_report(
             id: memory.id.clone(),
             memory_type: memory.memory_type.clone(),
             title: memory.title.clone(),
-            summary: truncate_chars(&one_line_summary(&memory.body), 120),
+            summary: query_focused_summary(&memory.body, &query_terms, 120),
             score: hit.score,
             reasons: hit.reasons.iter().take(3).cloned().collect(),
         });
