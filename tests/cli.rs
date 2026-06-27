@@ -3247,6 +3247,85 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
 }
 
 #[test]
+fn v14_retrieve_filters_weak_semantic_candidates() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Strong auth rate")
+        .arg("auth rate limit local fast verified release")
+        .assert()
+        .success();
+    let weak_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Weak billing cache")
+            .arg("billing invoice cache export csv unrelated payment"),
+    )
+    .trim()
+    .to_string();
+    cmd(&db)
+        .arg("update")
+        .arg(&weak_id)
+        .arg("--status")
+        .arg("uncertain")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("embed-index")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .assert()
+        .success();
+
+    let retrieved = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("auth rate limit")
+            .arg("--strategy")
+            .arg("hybrid")
+            .arg("--format")
+            .arg("json")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let retrieved_json: Value = serde_json::from_str(&retrieved).unwrap();
+    assert_eq!(retrieved_json["semantic_used"], true);
+    let titles = retrieved_json["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["memory"]["title"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(titles.contains(&"Strong auth rate"));
+    assert!(
+        !titles.contains(&"Weak billing cache"),
+        "tiny hybrid retrieval should filter weak semantic-only candidates"
+    );
+    assert!(
+        retrieved_json["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|hit| hit["semantic_score"].as_f64())
+            .all(|score| score >= 0.18)
+    );
+}
+
+#[test]
 fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

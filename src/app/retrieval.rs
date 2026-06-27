@@ -160,6 +160,7 @@ pub(crate) fn retrieve_report(
     let semantic_skipped = semantic_skip_reason.is_some();
     let mut semantic_error = None;
     if matches!(request.strategy, RetrievalStrategy::Hybrid) && !semantic_skipped {
+        let semantic_threshold = semantic_score_threshold(request.budget);
         match embeddings::semantic_index_ready(
             conn,
             request.provider,
@@ -176,8 +177,10 @@ pub(crate) fn retrieve_report(
                     request.limit,
                 ) {
                     Ok(semantic) => {
-                        semantic_used = !semantic.is_empty();
                         for item in semantic {
+                            if item.score < semantic_threshold {
+                                continue;
+                            }
                             let memory = item.memory.memory;
                             if !matches!(memory.status.as_str(), "active" | "uncertain") {
                                 continue;
@@ -191,6 +194,7 @@ pub(crate) fn retrieve_report(
                                 .entry(memory.id.clone())
                                 .and_modify(|existing| existing.1 = Some(item.score))
                                 .or_insert((memory, Some(item.score)));
+                            semantic_used = true;
                         }
                     }
                     Err(err) => semantic_error = Some(err.to_string()),
@@ -290,6 +294,16 @@ fn semantic_skip_reason_for_terms(task_terms: &HashSet<String>) -> Option<&'stat
         0 => Some("generic_query"),
         1 => Some("weak_query"),
         _ => None,
+    }
+}
+
+fn semantic_score_threshold(budget: usize) -> f64 {
+    if budget <= 1_200 {
+        0.18
+    } else if budget <= 2_500 {
+        0.12
+    } else {
+        0.05
     }
 }
 

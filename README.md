@@ -80,6 +80,7 @@ Transcript-based memory quickly turns into noise.
 - zero-card generic-only outputs explain why memory was not injected
 - weak one-term retrieval skips unrelated recent fallback candidates
 - weak one-term hybrid queries skip semantic search
+- budget-aware semantic score floors filter weak semantic-only candidates
 
 ## What It Remembers
 
