@@ -76,6 +76,7 @@ Transcript-based memory quickly turns into noise.
 - semantic skip for generic-only hybrid queries
 - explicit semantic skipped receipts for clearer memory observability
 - generic-only retrieval skips unrelated recent fallback candidates
+- generic-only empty reads ignored by inferred memory-gap QA
 
 ## What It Remembers
 

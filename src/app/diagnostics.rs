@@ -1121,7 +1121,7 @@ pub(crate) fn materialize_inferred_feedback(
             log_event(conn, "memory_feedback", None, &detail)?;
             report.written += 1;
             report.useful += 1;
-        } else if unresolved_memory_gap(conn, &read.query)? {
+        } else if should_infer_missing_memory_gap(conn, &read.query)? {
             let detail = serde_json::to_string(&json!({
                 "rating": "missing",
                 "ids": [],
@@ -1173,7 +1173,7 @@ fn inferred_live_signals(
         total += 1;
         if read.result_count > 0 && !read.memory_ids.is_empty() {
             useful += 1;
-        } else if unresolved_memory_gap(conn, &read.query)? {
+        } else if should_infer_missing_memory_gap(conn, &read.query)? {
             missing_queries.push(truncate_chars(&read.query, 140));
         }
     }
@@ -1185,6 +1185,13 @@ fn inferred_live_signals(
         total,
         missing_queries,
     })
+}
+
+fn should_infer_missing_memory_gap(conn: &Connection, query: &str) -> Result<bool> {
+    if relevance_terms(query).is_empty() {
+        return Ok(false);
+    }
+    unresolved_memory_gap(conn, query)
 }
 
 pub(crate) fn unresolved_memory_gap(conn: &Connection, query: &str) -> Result<bool> {

@@ -5152,6 +5152,11 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(!recall_json["items"].as_array().unwrap().is_empty());
 
     insert_empty_read_event(&db, "impact", "missing autonomous rollback memory");
+    insert_empty_read_event(
+        &db,
+        "brief",
+        "memory agent project retrieval token quality context recall brief semantic",
+    );
     let missing_feedback = stdout(
         cmd(&db)
             .arg("feedback")
@@ -5208,6 +5213,14 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(
         eval_live_json["inferred_missing_queries"][0],
         "missing autonomous rollback memory"
+    );
+    assert!(
+        !eval_live_json["inferred_missing_queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item
+                == "memory agent project retrieval token quality context recall brief semantic")
     );
     assert!(
         eval_live_json["missing_queries"]
