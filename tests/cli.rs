@@ -3081,6 +3081,17 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
         .arg("cargo test auth_rate_limit")
         .assert()
         .success();
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Auth focused long note")
+        .arg(format!(
+            "{} auth rate limit focused summary keeps the useful detail {}",
+            "intro noise ".repeat(80),
+            "tail noise ".repeat(80)
+        ))
+        .assert()
+        .success();
 
     let brief = stdout(
         cmd(&db)
@@ -3096,6 +3107,8 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
     assert!(brief.contains("Risks:"));
     assert!(brief.contains("Files:"));
     assert!(brief.contains("Checks:"));
+    assert!(brief.contains("auth rate limit focused summary keeps the useful detail"));
+    assert!(!brief.contains(&"intro noise ".repeat(20)));
 
     let brief_json = stdout(cmd(&db).arg("brief").arg("auth rate limit").arg("--json"));
     let brief_value: Value = serde_json::from_str(&brief_json).unwrap();
@@ -3113,6 +3126,22 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
             .as_str()
             .unwrap()
             .contains("semantic index not ready")
+    );
+    let relevant_summaries = brief_value["relevant"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["summary"].as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        relevant_summaries
+            .iter()
+            .any(|summary| summary.contains("auth rate limit focused summary"))
+    );
+    assert!(
+        !relevant_summaries
+            .iter()
+            .any(|summary| summary.contains(&"intro noise ".repeat(20)))
     );
 
     cmd(&db)

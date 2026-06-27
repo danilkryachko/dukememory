@@ -264,10 +264,11 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
     let mut seen_items = HashSet::new();
     let mut seen_files = HashSet::new();
     let mut seen_checks = HashSet::new();
+    let task_terms = tokenize(request.task);
 
     for hit in &retrieval.hits {
         let memory = &hit.memory.memory;
-        let item = brief_item_from_hit(hit);
+        let item = brief_item_from_hit(hit, &task_terms);
         match memory.memory_type.as_str() {
             "decision" | "constraint" | "product_goal" => {
                 push_unique_brief_item(&mut must_follow, &mut seen_items, item, 5);
@@ -331,21 +332,27 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
     })
 }
 
-fn brief_item_from_hit(hit: &RetrievalHit) -> BriefItem {
+fn brief_item_from_hit(hit: &RetrievalHit, query_terms: &HashSet<String>) -> BriefItem {
     let memory = &hit.memory.memory;
     brief_item_from_memory(
         memory,
         hit.score,
         hit.reasons.iter().take(4).cloned().collect(),
+        query_terms,
     )
 }
 
-fn brief_item_from_memory(memory: &Memory, score: f64, reasons: Vec<String>) -> BriefItem {
+fn brief_item_from_memory(
+    memory: &Memory,
+    score: f64,
+    reasons: Vec<String>,
+    query_terms: &HashSet<String>,
+) -> BriefItem {
     BriefItem {
         id: memory.id.clone(),
         memory_type: memory.memory_type.clone(),
         title: memory.title.clone(),
-        summary: truncate_chars(&one_line_summary(&memory.body), 180),
+        summary: query_focused_summary(&memory.body, query_terms, 180),
         score,
         reasons,
     }
@@ -566,6 +573,7 @@ pub(crate) fn impact_report(
     let mut seen_items = HashSet::new();
     let mut seen_checks = HashSet::new();
     let mut seen_links = HashSet::new();
+    let target_terms = tokenize(request.target);
 
     for (memory, linked, quality_reasons, rank_score) in &scored_rows {
         let reason = if *linked {
@@ -575,7 +583,7 @@ pub(crate) fn impact_report(
         };
         let mut reasons = vec![reason.to_string()];
         reasons.extend(quality_reasons.iter().cloned());
-        let item = brief_item_from_memory(memory, *rank_score, reasons);
+        let item = brief_item_from_memory(memory, *rank_score, reasons, &target_terms);
         match memory.memory_type.as_str() {
             "decision" | "product_goal" => {
                 push_unique_brief_item(&mut decisions, &mut seen_items, item, 5);
@@ -793,6 +801,7 @@ pub(crate) fn drift_report(
     missing_links.truncate(20);
 
     let conflicts = merge_candidates(conn, 10)?;
+    let empty_terms = HashSet::new();
     let stale_active = stale_active_memories(conn, 10)?
         .into_iter()
         .enumerate()
@@ -801,6 +810,7 @@ pub(crate) fn drift_report(
                 &memory,
                 100.0 - index as f64,
                 vec!["active superseded_by".into()],
+                &empty_terms,
             )
         })
         .collect::<Vec<_>>();

@@ -780,16 +780,11 @@ fn render_retrieval_pack(hits: &[RetrievalHit], max_chars: usize, query: &str) -
 }
 
 fn query_focused_body(memory: &Memory, query_terms: &HashSet<String>, max_chars: usize) -> String {
-    let body = one_line_summary(&memory.body);
-    let body_limit = retrieval_body_char_limit(max_chars);
-    if body.chars().count() <= body_limit {
-        return body;
-    }
-    if query_terms.is_empty() {
-        return truncate_chars(&body, body_limit);
-    }
-    focused_text_window(&body, query_terms, body_limit)
-        .unwrap_or_else(|| truncate_chars(&body, body_limit))
+    query_focused_summary(
+        &memory.body,
+        query_terms,
+        retrieval_body_char_limit(max_chars),
+    )
 }
 
 fn retrieval_body_char_limit(max_chars: usize) -> usize {
@@ -802,6 +797,22 @@ fn retrieval_body_char_limit(max_chars: usize) -> usize {
     } else {
         800
     }
+}
+
+pub(crate) fn query_focused_summary(
+    text: &str,
+    query_terms: &HashSet<String>,
+    max_chars: usize,
+) -> String {
+    let body = one_line_summary(text);
+    if body.chars().count() <= max_chars {
+        return body;
+    }
+    if query_terms.is_empty() {
+        return truncate_chars(&body, max_chars);
+    }
+    focused_text_window(&body, query_terms, max_chars)
+        .unwrap_or_else(|| truncate_chars(&body, max_chars))
 }
 
 fn focused_text_window(
