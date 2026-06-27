@@ -75,6 +75,7 @@ Transcript-based memory quickly turns into noise.
 - specificity-aware brief file and check limits
 - semantic skip for generic-only hybrid queries
 - explicit semantic skipped receipts for clearer memory observability
+- generic-only retrieval skips unrelated recent fallback candidates
 
 ## What It Remembers
 

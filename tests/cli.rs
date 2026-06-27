@@ -2978,10 +2978,50 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
     assert!(!focused_snippet.contains(&"prefix noise ".repeat(20)));
 
     cmd(&db)
+        .arg("context-pack")
+        .arg("constraints memory")
+        .arg("--budget-profile")
+        .arg("normal")
+        .arg("--max-chars")
+        .arg("3000")
+        .assert()
+        .success()
+        .stdout(contains("Decisions:"))
+        .stdout(contains("Constraints:"))
+        .stdout(contains("Risks:"))
+        .stdout(contains("Recent Work:"));
+
+    let boosted = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("grouped retrieval")
+            .arg("--format")
+            .arg("json")
+            .arg("--rules")
+            .arg(&rules),
+    );
+    let boosted_json: Value = serde_json::from_str(&boosted).unwrap();
+    assert_eq!(boosted_json["hits"][0]["memory"]["type"], "known_issue");
+    assert!(
+        boosted_json["hits"][0]["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason.as_str().unwrap().starts_with("rhai_score:"))
+    );
+
+    cmd(&db)
         .arg("add")
         .arg("design_note")
         .arg("Generic scoring terms")
         .arg("memory agent project retrieval token quality context recall brief semantic")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Recent unrelated fallback")
+        .arg("fresh unrelated note should not appear for generic-only memory requests")
         .assert()
         .success();
     let generic_scoring = stdout(
@@ -3018,6 +3058,14 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
             .contains("semantic search fallback")
     );
     assert!(
+        generic_scoring_json["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|hit| hit["memory"]["title"] != "Recent unrelated fallback"),
+        "generic-only retrieval should not add unrelated recent fallback cards"
+    );
+    assert!(
         generic_scoring_json["hits"].as_array().unwrap().len() <= 2,
         "generic-only tiny retrieval should stay extra compact"
     );
@@ -3028,39 +3076,6 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
             .iter()
             .flat_map(|hit| hit["reasons"].as_array().unwrap().iter())
             .all(|reason| !reason.as_str().unwrap().starts_with("text_match:"))
-    );
-
-    cmd(&db)
-        .arg("context-pack")
-        .arg("constraints memory")
-        .arg("--budget-profile")
-        .arg("normal")
-        .arg("--max-chars")
-        .arg("3000")
-        .assert()
-        .success()
-        .stdout(contains("Decisions:"))
-        .stdout(contains("Constraints:"))
-        .stdout(contains("Risks:"))
-        .stdout(contains("Recent Work:"));
-
-    let boosted = stdout(
-        cmd(&db)
-            .arg("retrieve")
-            .arg("grouped retrieval")
-            .arg("--format")
-            .arg("json")
-            .arg("--rules")
-            .arg(&rules),
-    );
-    let boosted_json: Value = serde_json::from_str(&boosted).unwrap();
-    assert_eq!(boosted_json["hits"][0]["memory"]["type"], "known_issue");
-    assert!(
-        boosted_json["hits"][0]["reasons"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|reason| reason.as_str().unwrap().starts_with("rhai_score:"))
     );
 
     for index in 0..4 {

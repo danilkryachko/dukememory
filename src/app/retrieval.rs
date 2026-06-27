@@ -117,6 +117,7 @@ pub(crate) fn retrieve_report(
     request: &RetrieveRequest<'_>,
 ) -> Result<RetrievalReport> {
     let started = Instant::now();
+    let task_terms = relevance_terms(request.query);
     let mut candidates: HashMap<String, (Memory, Option<f64>)> = HashMap::new();
     for row in query_memories(
         conn,
@@ -128,17 +129,18 @@ pub(crate) fn retrieve_report(
     )? {
         candidates.entry(row.id.clone()).or_insert((row, None));
     }
-    for row in query_memories(
-        conn,
-        None,
-        &[],
-        &["active".to_string()],
-        request.scope,
-        (request.limit / 3).max(2),
-    )? {
-        candidates.entry(row.id.clone()).or_insert((row, None));
+    if !task_terms.is_empty() {
+        for row in query_memories(
+            conn,
+            None,
+            &[],
+            &["active".to_string()],
+            request.scope,
+            (request.limit / 3).max(2),
+        )? {
+            candidates.entry(row.id.clone()).or_insert((row, None));
+        }
     }
-    let task_terms = relevance_terms(request.query);
     let mut semantic_used = false;
     let semantic_skipped =
         matches!(request.strategy, RetrievalStrategy::Hybrid) && task_terms.is_empty();
