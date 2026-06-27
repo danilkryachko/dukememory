@@ -4358,6 +4358,81 @@ fn v14_tiny_retrieval_applies_relative_semantic_score_floor() {
 }
 
 #[test]
+fn v14_tiny_retrieval_deduplicates_semantic_overlap() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Semantic overlap alpha one")
+        .arg("anchor beta gamma delta copper ivory cobalt")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Semantic overlap alpha two")
+        .arg("anchor beta gamma epsilon copper topaz ruby")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("command")
+        .arg("Different command target")
+        .arg("memory qa recall policy install release")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("embed-index")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .assert()
+        .success();
+
+    let retrieved = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("semantic overlap alpha anchor beta gamma")
+            .arg("--strategy")
+            .arg("hybrid")
+            .arg("--format")
+            .arg("json")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let retrieved_json: Value = serde_json::from_str(&retrieved).unwrap();
+    assert_eq!(retrieved_json["semantic_used"], true);
+    let overlap_hits = retrieved_json["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|hit| {
+            hit["memory"]["title"]
+                .as_str()
+                .unwrap()
+                .starts_with("Semantic overlap alpha")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        overlap_hits.len(),
+        1,
+        "tiny retrieval should keep the strongest semantic card from a redundant cluster"
+    );
+    assert!(overlap_hits[0]["semantic_score"].as_f64().unwrap() > 0.7);
+}
+
+#[test]
 fn v14_tiny_relevance_floor_can_keep_one_strong_card() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

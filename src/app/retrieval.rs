@@ -514,6 +514,7 @@ pub(crate) fn retrieve_report(
     hits = apply_tiny_contract_memory_gate(hits, request.budget, &task_terms);
     hits = apply_tiny_feedback_precision_gate(hits, request.budget, &task_terms, &quality_signals);
     hits = apply_relevance_floor(hits, request.budget);
+    hits = filter_semantic_redundant_hits(hits, request.budget);
     hits = filter_redundant_hits(hits, request.budget);
     hits = select_diverse_hits(hits, effective_limit);
     let ids = hits
@@ -1351,11 +1352,45 @@ fn filter_redundant_hits(hits: Vec<RetrievalHit>, budget: usize) -> Vec<Retrieva
     selected
 }
 
+fn filter_semantic_redundant_hits(hits: Vec<RetrievalHit>, budget: usize) -> Vec<RetrievalHit> {
+    let Some(threshold) = semantic_redundancy_threshold_for_budget(budget) else {
+        return hits;
+    };
+    let mut selected = Vec::new();
+    let mut semantic_signatures: Vec<(String, HashSet<String>)> = Vec::new();
+    for hit in hits {
+        if hit.semantic_score.is_some() {
+            let signature = memory_signature(&hit.memory.memory);
+            if signature.len() >= 6
+                && semantic_signatures.iter().any(|(memory_type, existing)| {
+                    memory_type == &hit.memory.memory.memory_type
+                        && containment_overlap(&signature, existing) >= threshold
+                })
+            {
+                continue;
+            }
+            semantic_signatures.push((hit.memory.memory.memory_type.clone(), signature));
+        }
+        selected.push(hit);
+    }
+    selected
+}
+
 fn redundancy_threshold_for_budget(budget: usize) -> Option<f64> {
     if budget <= 1_200 {
         Some(0.72)
     } else if budget <= 2_500 {
         Some(0.84)
+    } else {
+        None
+    }
+}
+
+fn semantic_redundancy_threshold_for_budget(budget: usize) -> Option<f64> {
+    if budget <= 1_200 {
+        Some(0.58)
+    } else if budget <= 2_500 {
+        Some(0.70)
     } else {
         None
     }
