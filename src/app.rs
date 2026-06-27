@@ -249,6 +249,8 @@ pub(crate) fn run() -> Result<()> {
         } => {
             let types = split_csv(memory_type.as_deref());
             let statuses = split_csv(Some(&status));
+            let max_chars = budget_profile_chars(budget_profile).unwrap_or(max_chars);
+            let effective_limit = context_effective_limit(limit, max_chars);
             let mut rows = build_context_rows(
                 &conn,
                 ContextQuery {
@@ -256,19 +258,18 @@ pub(crate) fn run() -> Result<()> {
                     types: &types,
                     statuses: &statuses,
                     scope: scope.as_deref(),
-                    limit,
+                    limit: effective_limit,
                     include_recent,
                     rules: rules.as_deref(),
                 },
             )?;
-            let max_chars = budget_profile_chars(budget_profile).unwrap_or(max_chars);
             if semantic {
                 append_semantic_context_rows(
                     &conn,
                     &mut rows,
                     SemanticContextRequest {
                         task: &task,
-                        limit,
+                        limit: effective_limit,
                         budget: max_chars,
                         provider: &embed_provider,
                         endpoint: &embed_endpoint,

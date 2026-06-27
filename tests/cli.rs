@@ -4535,6 +4535,93 @@ fn v14_agent_context_filters_next_actions() {
 }
 
 #[test]
+fn context_rows_are_budget_aware() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for index in 0..10 {
+        let memory_type = match index % 5 {
+            0 => "decision",
+            1 => "constraint",
+            2 => "known_issue",
+            3 => "task_state",
+            _ => "design_note",
+        };
+        cmd(&db)
+            .arg("add")
+            .arg(memory_type)
+            .arg(format!("Context budget card {index}"))
+            .arg(format!(
+                "context budget signal useful detail variant{index} area{index}"
+            ))
+            .assert()
+            .success();
+    }
+
+    let tiny_context = stdout(
+        cmd(&db)
+            .arg("context")
+            .arg("context budget signal")
+            .arg("--mode")
+            .arg("fast")
+            .arg("--budget-profile")
+            .arg("tiny")
+            .arg("--limit")
+            .arg("10")
+            .arg("--json"),
+    );
+    let tiny_context_json: Value = serde_json::from_str(&tiny_context).unwrap();
+    let tiny_context_len = tiny_context_json["memories"].as_array().unwrap().len();
+    assert!(tiny_context_len <= 4);
+
+    let normal_context = stdout(
+        cmd(&db)
+            .arg("context")
+            .arg("context budget signal")
+            .arg("--mode")
+            .arg("fast")
+            .arg("--budget-profile")
+            .arg("normal")
+            .arg("--limit")
+            .arg("10")
+            .arg("--json"),
+    );
+    let normal_context_json: Value = serde_json::from_str(&normal_context).unwrap();
+    let normal_context_len = normal_context_json["memories"].as_array().unwrap().len();
+    assert!(normal_context_len <= 8);
+    assert!(normal_context_len >= tiny_context_len);
+
+    let tiny_pack = stdout(
+        cmd(&db)
+            .arg("context-pack")
+            .arg("context budget signal")
+            .arg("--budget-profile")
+            .arg("tiny")
+            .arg("--limit")
+            .arg("10")
+            .arg("--json"),
+    );
+    let tiny_pack_json: Value = serde_json::from_str(&tiny_pack).unwrap();
+    let tiny_pack_len = tiny_pack_json.as_array().unwrap().len();
+    assert!(tiny_pack_len <= 4);
+
+    let normal_pack = stdout(
+        cmd(&db)
+            .arg("context-pack")
+            .arg("context budget signal")
+            .arg("--budget-profile")
+            .arg("normal")
+            .arg("--limit")
+            .arg("10")
+            .arg("--json"),
+    );
+    let normal_pack_json: Value = serde_json::from_str(&normal_pack).unwrap();
+    let normal_pack_len = normal_pack_json.as_array().unwrap().len();
+    assert!(normal_pack_len <= 8);
+    assert!(normal_pack_len >= tiny_pack_len);
+}
+
+#[test]
 fn v14_agent_context_recent_fallback_requires_task_overlap() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

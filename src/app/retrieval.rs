@@ -1528,6 +1528,7 @@ pub(crate) fn print_agent_context(
     request: AgentContextRequest<'_>,
 ) -> Result<()> {
     let statuses = ["active".to_string(), "uncertain".to_string()];
+    let effective_limit = context_effective_limit(request.limit, request.max_chars);
     let include_recent = match request.mode {
         ContextMode::Fast => 2,
         ContextMode::Agent => 4,
@@ -1540,7 +1541,7 @@ pub(crate) fn print_agent_context(
             types: &[],
             statuses: &statuses,
             scope: None,
-            limit: request.limit,
+            limit: effective_limit,
             include_recent,
             rules: request.rules,
         },
@@ -1551,7 +1552,7 @@ pub(crate) fn print_agent_context(
             &mut rows,
             SemanticContextRequest {
                 task: request.task,
-                limit: request.limit,
+                limit: effective_limit,
                 budget: request.max_chars,
                 provider: request.provider,
                 endpoint: request.endpoint,
@@ -1600,6 +1601,17 @@ pub(crate) fn print_agent_context(
     let out = truncate_chars(&out, request.max_chars);
     println!("{out}");
     Ok(())
+}
+
+pub(crate) fn context_effective_limit(limit: usize, max_chars: usize) -> usize {
+    let budget_limit = if max_chars <= 1_200 {
+        4
+    } else if max_chars <= 3_000 {
+        8
+    } else {
+        limit
+    };
+    limit.min(budget_limit).max(1)
 }
 
 fn append_relevant_next_actions(
