@@ -3461,6 +3461,15 @@ fn v14_retrieve_skips_semantic_when_tiny_fts_is_saturated() {
             .success();
     }
     cmd(&db)
+        .arg("add")
+        .arg("constraint")
+        .arg("Recent unrelated fallback guard")
+        .arg("fresh unrelated fallback should not be added when direct evidence is enough")
+        .arg("--confidence")
+        .arg("1.0")
+        .assert()
+        .success();
+    cmd(&db)
         .arg("embed-index")
         .arg("--provider")
         .arg("mock")
@@ -3492,6 +3501,13 @@ fn v14_retrieve_skips_semantic_when_tiny_fts_is_saturated() {
     assert_eq!(retrieved_json["semantic_used"], false);
     assert_eq!(retrieved_json["semantic_skipped"], true);
     assert_eq!(retrieved_json["semantic_skip_reason"], "lexical_saturated");
+    assert!(
+        retrieved_json["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|hit| hit["memory"]["title"] != "Recent unrelated fallback guard")
+    );
     assert!(!retrieved_json["hits"].as_array().unwrap().is_empty());
     assert!(
         retrieved_json["hits"]

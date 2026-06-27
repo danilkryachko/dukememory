@@ -142,7 +142,12 @@ pub(crate) fn retrieve_report(
     for row in fts_rows {
         candidates.entry(row.id.clone()).or_insert((row, None));
     }
-    if should_include_recent_fallback(&task_terms) {
+    if should_include_recent_fallback(
+        &task_terms,
+        request.budget,
+        direct_fts_count,
+        effective_limit,
+    ) {
         for row in query_memories(
             conn,
             None,
@@ -293,8 +298,15 @@ pub(crate) fn retrieve_report(
     })
 }
 
-fn should_include_recent_fallback(task_terms: &HashSet<String>) -> bool {
+fn should_include_recent_fallback(
+    task_terms: &HashSet<String>,
+    budget: usize,
+    direct_fts_count: usize,
+    effective_limit: usize,
+) -> bool {
     task_terms.len() >= 2
+        && semantic_skip_reason_for_query(task_terms, budget, direct_fts_count, effective_limit)
+            != Some("lexical_saturated")
 }
 
 fn semantic_skip_reason_for_query(
