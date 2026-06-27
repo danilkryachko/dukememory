@@ -1550,14 +1550,16 @@ fn append_relevant_next_actions(
     }
     let max_actions = next_action_limit(max_chars);
     let mut actions = Vec::new();
-    for row in query_memories(
+    let quality_signals = retrieval_quality_signals(conn, 30).unwrap_or_default();
+    let rows = query_memories(
         conn,
         None,
         &["task_state".to_string()],
         &["active".to_string()],
         None,
         12,
-    )? {
+    )?;
+    for row in filter_query_useless_memories(rows, task, &quality_signals) {
         if context_recent_matches_task(conn, &row, &task_terms)? {
             actions.push(row.title);
             if actions.len() >= max_actions {

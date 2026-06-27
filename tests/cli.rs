@@ -796,6 +796,69 @@ fn mcp_memory_search_filters_query_useless_feedback() {
 }
 
 #[test]
+fn mcp_snapshot_filters_query_useless_feedback() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let query = "snapshot token budget";
+    let noisy_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("task_state")
+            .arg("Noisy snapshot memory")
+            .arg("snapshot token budget noisy card should be suppressed from MCP snapshot"),
+    )
+    .trim()
+    .to_string();
+    cmd(&db)
+        .arg("add")
+        .arg("task_state")
+        .arg("Useful snapshot memory")
+        .arg("snapshot token budget useful card should remain in MCP snapshot")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("feedback")
+        .arg("--id")
+        .arg(&noisy_id)
+        .arg("--rating")
+        .arg("useless")
+        .arg("--command")
+        .arg("memory_snapshot")
+        .arg("--query")
+        .arg(query)
+        .assert()
+        .success();
+
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
+        .arg("--db")
+        .arg(&db)
+        .arg("serve-mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_snapshot","arguments":{"query":query,"max_chars":1000}}})
+        )
+        .unwrap();
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let value: Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+    let text = value["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(!text.contains("Noisy snapshot memory"));
+    assert!(text.contains("Useful snapshot memory"));
+}
+
+#[test]
 fn mcp_tool_calls_can_select_project_db_by_root_or_path_scope() {
     let dir = tempdir().unwrap();
     let default_root = dir.path().join("default");
@@ -4191,11 +4254,32 @@ fn v14_agent_context_filters_next_actions() {
         .arg("checkout validation follow-up should be visible in next actions")
         .assert()
         .success();
+    let noisy_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("task_state")
+            .arg("Checkout validation noisy action")
+            .arg("checkout validation noisy follow-up should be filtered from next actions"),
+    )
+    .trim()
+    .to_string();
     cmd(&db)
         .arg("add")
         .arg("task_state")
         .arg("Billing export unrelated action")
         .arg("billing export follow-up should not enter checkout context")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("feedback")
+        .arg("--id")
+        .arg(&noisy_id)
+        .arg("--rating")
+        .arg("useless")
+        .arg("--command")
+        .arg("context")
+        .arg("--query")
+        .arg("checkout validation")
         .assert()
         .success();
 
@@ -4211,6 +4295,7 @@ fn v14_agent_context_filters_next_actions() {
     assert!(context.len() <= 1200);
     assert!(context.contains("Next Actions:"));
     assert!(context.contains("- Checkout validation next action"));
+    assert!(!context.contains("Checkout validation noisy action"));
     assert!(!context.contains("Billing export unrelated action"));
 }
 
