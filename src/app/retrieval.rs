@@ -190,6 +190,8 @@ pub(crate) fn retrieve_report(
     let started = Instant::now();
     let task_terms = relevance_terms(request.query);
     let effective_limit = budget_aware_hit_limit(request.limit, request.budget, task_terms.len());
+    let fts_candidate_limit =
+        retrieval_fts_candidate_limit(request.limit, effective_limit, request.budget);
     let mut candidates: HashMap<String, (Memory, Option<f64>)> = HashMap::new();
     let fts_rows = query_memories(
         conn,
@@ -197,7 +199,7 @@ pub(crate) fn retrieve_report(
         &[],
         &["active".to_string(), "uncertain".to_string()],
         request.scope,
-        request.limit.saturating_mul(2).max(request.limit),
+        fts_candidate_limit,
     )?;
     let direct_fts_count = non_redundant_memory_count(&fts_rows, request.budget, &task_terms);
     for row in fts_rows {
@@ -215,7 +217,7 @@ pub(crate) fn retrieve_report(
             &[],
             &["active".to_string()],
             request.scope,
-            (request.limit / 3).max(2),
+            retrieval_recent_candidate_limit(request.limit, effective_limit, request.budget),
         )? {
             candidates.entry(row.id.clone()).or_insert((row, None));
         }
@@ -249,7 +251,11 @@ pub(crate) fn retrieve_report(
                     request.endpoint,
                     request.model,
                     request.query,
-                    request.limit,
+                    retrieval_semantic_candidate_limit(
+                        request.limit,
+                        effective_limit,
+                        request.budget,
+                    ),
                 ) {
                     Ok(semantic) => {
                         for item in semantic {
@@ -822,6 +828,45 @@ fn budget_aware_hit_limit(limit: usize, budget: usize, relevance_term_count: usi
         limit
     };
     limit.min(budget_limit).max(1)
+}
+
+fn retrieval_fts_candidate_limit(limit: usize, effective_limit: usize, budget: usize) -> usize {
+    let requested_scan = limit.saturating_mul(2).max(limit).max(1);
+    let budget_scan = if budget <= 1_200 {
+        effective_limit.saturating_mul(2).max(effective_limit)
+    } else if budget <= 2_500 {
+        effective_limit.saturating_mul(3).max(effective_limit)
+    } else {
+        requested_scan
+    };
+    requested_scan.min(budget_scan).max(1)
+}
+
+fn retrieval_recent_candidate_limit(limit: usize, effective_limit: usize, budget: usize) -> usize {
+    let requested_recent = (limit / 3).max(2).min(limit.max(1));
+    let budget_recent = if budget <= 1_200 {
+        (effective_limit / 2).max(1)
+    } else if budget <= 2_500 {
+        effective_limit.clamp(1, 4)
+    } else {
+        requested_recent
+    };
+    requested_recent.min(budget_recent).max(1)
+}
+
+fn retrieval_semantic_candidate_limit(
+    limit: usize,
+    effective_limit: usize,
+    budget: usize,
+) -> usize {
+    let budget_scan = if budget <= 1_200 {
+        effective_limit.saturating_mul(2).max(effective_limit)
+    } else if budget <= 2_500 {
+        effective_limit.saturating_mul(3).max(effective_limit)
+    } else {
+        limit
+    };
+    limit.min(budget_scan).max(1)
 }
 
 fn apply_relevance_floor(hits: Vec<RetrievalHit>, budget: usize) -> Vec<RetrievalHit> {
@@ -1705,5 +1750,58 @@ fn push_agent_context_line(out: &mut String, max_chars: usize, line: &str) -> bo
         true
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retrieval_candidate_windows_follow_effective_budget() {
+        let tiny_effective = budget_aware_hit_limit(100, 1_200, 3);
+        assert_eq!(tiny_effective, 5);
+        assert_eq!(
+            retrieval_fts_candidate_limit(100, tiny_effective, 1_200),
+            10
+        );
+        assert_eq!(
+            retrieval_semantic_candidate_limit(100, tiny_effective, 1_200),
+            10
+        );
+        assert_eq!(
+            retrieval_recent_candidate_limit(100, tiny_effective, 1_200),
+            2
+        );
+
+        let normal_effective = budget_aware_hit_limit(100, 2_500, 3);
+        assert_eq!(normal_effective, 8);
+        assert_eq!(
+            retrieval_fts_candidate_limit(100, normal_effective, 2_500),
+            24
+        );
+        assert_eq!(
+            retrieval_semantic_candidate_limit(100, normal_effective, 2_500),
+            24
+        );
+        assert_eq!(
+            retrieval_recent_candidate_limit(100, normal_effective, 2_500),
+            4
+        );
+
+        let deep_effective = budget_aware_hit_limit(100, 8_000, 3);
+        assert_eq!(deep_effective, 100);
+        assert_eq!(
+            retrieval_fts_candidate_limit(100, deep_effective, 8_000),
+            200
+        );
+        assert_eq!(
+            retrieval_semantic_candidate_limit(100, deep_effective, 8_000),
+            100
+        );
+        assert_eq!(
+            retrieval_recent_candidate_limit(100, deep_effective, 8_000),
+            33
+        );
     }
 }
