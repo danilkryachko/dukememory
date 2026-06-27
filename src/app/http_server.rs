@@ -172,12 +172,21 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 .get("stale_days")
                 .and_then(|value| value.parse::<i64>().ok())
                 .unwrap_or(30);
-            let fetch_limit = if usage != "all" || sort != "updated_desc" {
+            let mut fetch_limit = if usage != "all" || sort != "updated_desc" {
                 500
             } else {
                 limit
             };
+            if q.is_some() {
+                fetch_limit = fetch_limit.saturating_mul(2).min(500).max(fetch_limit);
+            }
             let rows = query_memories(&conn, q, &types, &statuses, scope, fetch_limit)?;
+            let rows = if let Some(query) = q {
+                let quality_signals = retrieval_quality_signals(&conn, 30).unwrap_or_default();
+                filter_query_useless_memories(rows, query, &quality_signals)
+            } else {
+                rows
+            };
             HttpResponse::ok(
                 json!({"memories": filter_sort_memory_rows(&conn, rows, usage, sort, stale_days, limit)?}),
             )

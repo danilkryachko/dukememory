@@ -198,14 +198,18 @@ pub(crate) fn run() -> Result<()> {
             limit,
             json,
         } => {
+            let fetch_limit = limit.saturating_mul(2).max(limit);
             let rows = query_memories(
                 &conn,
                 Some(&query),
                 &split_csv(memory_type.as_deref()),
                 &split_csv(Some(&status)),
                 scope.as_deref(),
-                limit,
+                fetch_limit,
             )?;
+            let quality_signals = retrieval_quality_signals(&conn, 30).unwrap_or_default();
+            let mut rows = filter_query_useless_memories(rows, &query, &quality_signals);
+            rows.truncate(limit);
             print_rows(&conn, &rows, json)?;
         }
         Command::List {

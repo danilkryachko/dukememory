@@ -94,6 +94,7 @@ Transcript-based memory quickly turns into noise.
 - tiny retrieval suppresses same-query useless feedback hits
 - context and impact suppress same-query useless feedback hits
 - semantic context additions suppress same-query useless feedback hits
+- CLI, MCP, and web search suppress same-query useless feedback hits
 - generic-only empty reads ignored by inferred memory-gap QA
 - zero-card generic-only outputs explain why memory was not injected
 - weak one-term retrieval skips unrelated recent fallback candidates

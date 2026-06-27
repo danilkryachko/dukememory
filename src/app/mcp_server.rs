@@ -194,15 +194,19 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let query = json_string(&args, "query").ok_or_else(|| "missing query".to_string())?;
             let limit = json_usize(&args, "limit").unwrap_or(10);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let fetch_limit = limit.saturating_mul(2).max(limit);
             let rows = query_memories(
                 &conn,
                 Some(&query),
                 &[],
                 &["active".to_string()],
                 None,
-                limit,
+                fetch_limit,
             )
             .map_err(|err| err.to_string())?;
+            let quality_signals = retrieval_quality_signals(&conn, 30).unwrap_or_default();
+            let mut rows = filter_query_useless_memories(rows, &query, &quality_signals);
+            rows.truncate(limit);
             compact_mcp_search_response(&rows, &query, max_chars).map_err(|err| err.to_string())?
         }
         "memory_context_pack" => {

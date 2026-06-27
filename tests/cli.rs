@@ -164,6 +164,52 @@ fn links_and_stats() {
 }
 
 #[test]
+fn search_filters_query_useless_feedback() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let query = "checkout search token budget";
+    let noisy_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Noisy search memory")
+            .arg("checkout search token budget noisy card should be suppressed from search"),
+    )
+    .trim()
+    .to_string();
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Useful search memory")
+        .arg("checkout search token budget useful card should remain in search")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("feedback")
+        .arg("--id")
+        .arg(&noisy_id)
+        .arg("--rating")
+        .arg("useless")
+        .arg("--command")
+        .arg("search")
+        .arg("--query")
+        .arg(query)
+        .assert()
+        .success();
+
+    let search = stdout(cmd(&db).arg("search").arg(query).arg("--json"));
+    let rows: Value = serde_json::from_str(&search).unwrap();
+    let titles = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["title"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(!titles.contains(&"Noisy search memory"));
+    assert!(titles.contains(&"Useful search memory"));
+}
+
+#[test]
 fn init_update_get_delete_and_privacy_guard() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
@@ -683,6 +729,70 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         serde_json::from_str::<Value>(&text)
             .unwrap_or_else(|err| panic!("MCP id {id} returned invalid JSON text: {err}: {text}"));
     }
+}
+
+#[test]
+fn mcp_memory_search_filters_query_useless_feedback() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let query = "mcp search token budget";
+    let noisy_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Noisy MCP search memory")
+            .arg("mcp search token budget noisy card should be suppressed from MCP search"),
+    )
+    .trim()
+    .to_string();
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Useful MCP search memory")
+        .arg("mcp search token budget useful card should remain in MCP search")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("feedback")
+        .arg("--id")
+        .arg(&noisy_id)
+        .arg("--rating")
+        .arg("useless")
+        .arg("--command")
+        .arg("memory_search")
+        .arg("--query")
+        .arg(query)
+        .assert()
+        .success();
+
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
+        .arg("--db")
+        .arg(&db)
+        .arg("serve-mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_search","arguments":{"query":query,"max_chars":1000}}})
+        )
+        .unwrap();
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let value: Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+    let text = value["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(!text.contains("Noisy MCP search memory"));
+    assert!(text.contains("Useful MCP search memory"));
+    serde_json::from_str::<Value>(text).unwrap();
 }
 
 #[test]
