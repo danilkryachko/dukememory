@@ -71,6 +71,7 @@ Transcript-based memory quickly turns into noise.
 - query-focused brief and impact summaries for first-hop agent memory
 - runtime near-duplicate suppression for smaller focused retrieval packs
 - generic query-term filtering for cleaner relevance scoring
+- specificity-aware hit caps for extra-compact generic queries
 
 ## What It Remembers
 

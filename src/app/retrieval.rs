@@ -222,7 +222,7 @@ pub(crate) fn retrieve_report(
     });
     hits = apply_relevance_floor(hits, request.budget);
     hits = filter_redundant_hits(hits, request.budget);
-    let effective_limit = budget_aware_hit_limit(request.limit, request.budget);
+    let effective_limit = budget_aware_hit_limit(request.limit, request.budget, task_terms.len());
     hits = select_diverse_hits(hits, effective_limit);
     let ids = hits
         .iter()
@@ -563,11 +563,19 @@ fn select_diverse_hits(hits: Vec<RetrievalHit>, limit: usize) -> Vec<RetrievalHi
     select_diverse_by_type(hits, limit, |hit| &hit.memory.memory.memory_type)
 }
 
-fn budget_aware_hit_limit(limit: usize, budget: usize) -> usize {
+fn budget_aware_hit_limit(limit: usize, budget: usize, relevance_term_count: usize) -> usize {
     let budget_limit = if budget <= 1_200 {
-        5
+        match relevance_term_count {
+            0 => 2,
+            1 => 3,
+            _ => 5,
+        }
     } else if budget <= 2_500 {
-        8
+        match relevance_term_count {
+            0 => 3,
+            1 => 5,
+            _ => 8,
+        }
     } else {
         limit
     };

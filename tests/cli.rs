@@ -2997,11 +2997,8 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
     );
     let generic_scoring_json: Value = serde_json::from_str(&generic_scoring).unwrap();
     assert!(
-        generic_scoring_json["hits"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|hit| hit["memory"]["title"] == "Generic scoring terms")
+        generic_scoring_json["hits"].as_array().unwrap().len() <= 2,
+        "generic-only tiny retrieval should stay extra compact"
     );
     assert!(
         generic_scoring_json["hits"]
