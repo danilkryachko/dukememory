@@ -3044,6 +3044,10 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
     let generic_scoring_json: Value = serde_json::from_str(&generic_scoring).unwrap();
     assert_eq!(generic_scoring_json["semantic_used"], false);
     assert_eq!(generic_scoring_json["semantic_skipped"], true);
+    assert_eq!(
+        generic_scoring_json["semantic_skip_reason"],
+        "generic_query"
+    );
     assert!(generic_scoring_json["semantic_error"].is_null());
     assert!(
         generic_scoring_json["receipt"]
@@ -3113,13 +3117,22 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
             .arg("retrieve")
             .arg("singleanchor")
             .arg("--strategy")
-            .arg("fts")
+            .arg("hybrid")
             .arg("--format")
             .arg("json")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
             .arg("--budget-profile")
             .arg("tiny"),
     );
     let one_term_json: Value = serde_json::from_str(&one_term).unwrap();
+    assert_eq!(one_term_json["semantic_used"], false);
+    assert_eq!(one_term_json["semantic_skipped"], true);
+    assert_eq!(one_term_json["semantic_skip_reason"], "weak_query");
     let one_term_titles = one_term_json["hits"]
         .as_array()
         .unwrap()
@@ -3131,6 +3144,22 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
         !one_term_titles.contains(&"Recent unrelated one term fallback"),
         "weak one-term retrieval should not add unrelated recent fallback cards"
     );
+    let one_term_plain = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("unmatchedanchor")
+            .arg("--strategy")
+            .arg("hybrid")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    assert!(one_term_plain.contains("none (weak query; semantic search skipped)"));
 
     for index in 0..4 {
         cmd(&db)
@@ -3296,6 +3325,14 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
     assert!(
         generic_empty_brief.contains("Relevant: none (generic query; semantic search skipped)")
     );
+    let weak_empty_brief = stdout(
+        cmd(&db)
+            .arg("brief")
+            .arg("singleanchor")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    assert!(weak_empty_brief.contains("Relevant: none (weak query; semantic search skipped)"));
 
     let brief = stdout(
         cmd(&db)

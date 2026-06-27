@@ -76,7 +76,7 @@ pub(crate) fn print_retrieve(conn: &Connection, request: RetrieveRequest<'_>) ->
                     &report.hits,
                     request.budget,
                     request.query,
-                    report.semantic_skipped
+                    report.semantic_skip_reason.as_deref()
                 )?
             );
             println!("\nSelection Reasons:");
@@ -113,7 +113,7 @@ pub(crate) fn print_retrieve(conn: &Connection, request: RetrieveRequest<'_>) ->
                     &report.hits,
                     request.budget,
                     request.query,
-                    report.semantic_skipped
+                    report.semantic_skip_reason.as_deref()
                 )?
             );
             println!("{}", report.receipt);
@@ -152,8 +152,12 @@ pub(crate) fn retrieve_report(
         }
     }
     let mut semantic_used = false;
-    let semantic_skipped =
-        matches!(request.strategy, RetrievalStrategy::Hybrid) && task_terms.is_empty();
+    let semantic_skip_reason = if matches!(request.strategy, RetrievalStrategy::Hybrid) {
+        semantic_skip_reason_for_terms(&task_terms).map(ToOwned::to_owned)
+    } else {
+        None
+    };
+    let semantic_skipped = semantic_skip_reason.is_some();
     let mut semantic_error = None;
     if matches!(request.strategy, RetrievalStrategy::Hybrid) && !semantic_skipped {
         match embeddings::semantic_index_ready(
@@ -270,6 +274,7 @@ pub(crate) fn retrieve_report(
         scope: request.scope.map(ToOwned::to_owned),
         semantic_used,
         semantic_skipped,
+        semantic_skip_reason,
         semantic_error,
         receipt,
         hits,
@@ -278,6 +283,14 @@ pub(crate) fn retrieve_report(
 
 fn should_include_recent_fallback(task_terms: &HashSet<String>) -> bool {
     task_terms.len() >= 2
+}
+
+fn semantic_skip_reason_for_terms(task_terms: &HashSet<String>) -> Option<&'static str> {
+    match task_terms.len() {
+        0 => Some("generic_query"),
+        1 => Some("weak_query"),
+        _ => None,
+    }
 }
 
 pub(crate) fn retrieve_rows(
@@ -825,13 +838,14 @@ fn render_retrieval_pack(
     hits: &[RetrievalHit],
     max_chars: usize,
     query: &str,
-    semantic_skipped: bool,
+    semantic_skip_reason: Option<&str>,
 ) -> Result<String> {
     if hits.is_empty() {
-        if semantic_skipped {
-            return Ok(
-                "Relevant Memory:\n- none (generic query; semantic search skipped)".to_string(),
-            );
+        if let Some(reason) = semantic_skip_reason {
+            return Ok(format!(
+                "Relevant Memory:\n- none ({}; semantic search skipped)",
+                semantic_skip_label(reason)
+            ));
         }
         return Ok("Relevant Memory:\n- none".to_string());
     }
@@ -865,6 +879,14 @@ fn render_retrieval_pack(
         out.push_str(&card);
     }
     Ok(out)
+}
+
+pub(crate) fn semantic_skip_label(reason: &str) -> &'static str {
+    match reason {
+        "generic_query" => "generic query",
+        "weak_query" => "weak query",
+        _ => "query",
+    }
 }
 
 fn query_focused_body(memory: &Memory, query_terms: &HashSet<String>, max_chars: usize) -> String {

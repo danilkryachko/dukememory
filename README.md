@@ -79,6 +79,7 @@ Transcript-based memory quickly turns into noise.
 - generic-only empty reads ignored by inferred memory-gap QA
 - zero-card generic-only outputs explain why memory was not injected
 - weak one-term retrieval skips unrelated recent fallback candidates
+- weak one-term hybrid queries skip semantic search
 
 ## What It Remembers
 

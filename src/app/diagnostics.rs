@@ -331,6 +331,7 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
         budget: request.budget,
         semantic_used: retrieval.semantic_used,
         semantic_skipped: retrieval.semantic_skipped,
+        semantic_skip_reason: retrieval.semantic_skip_reason,
         semantic_error: retrieval.semantic_error,
         receipt,
         must_follow,
@@ -430,10 +431,15 @@ fn render_brief(report: &BriefReport) -> String {
     }
     push_line_budget(&mut out, report.budget, &report.receipt);
     if report.semantic_skipped && brief_is_empty(report) {
+        let reason = report
+            .semantic_skip_reason
+            .as_deref()
+            .map(semantic_skip_label)
+            .unwrap_or("query");
         push_line_budget(
             &mut out,
             report.budget,
-            "Relevant: none (generic query; semantic search skipped)",
+            &format!("Relevant: none ({reason}; semantic search skipped)"),
         );
     }
     render_brief_items(&mut out, report.budget, "Must Follow", &report.must_follow);
