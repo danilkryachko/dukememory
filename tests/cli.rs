@@ -4455,6 +4455,69 @@ fn v14_tiny_retrieval_filters_query_useless_feedback() {
 }
 
 #[test]
+fn tiny_retrieval_suppresses_compacted_history_unless_requested() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Budget target policy")
+        .arg("Budget target policy keeps recall precise for the current agent task.")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("task_state")
+        .arg("Autonomous compacted project release history")
+        .arg("Autonomously compacted release history: budget target policy appeared in an old release note.")
+        .assert()
+        .success();
+
+    let focused = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("budget target policy")
+            .arg("--strategy")
+            .arg("fts")
+            .arg("--format")
+            .arg("json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let focused_json: Value = serde_json::from_str(&focused).unwrap();
+    assert!(
+        focused_json["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|hit| hit["memory"]["title"] != "Autonomous compacted project release history"),
+        "tiny task recall should not include compacted release history unless requested"
+    );
+
+    let history = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("release history budget target")
+            .arg("--strategy")
+            .arg("fts")
+            .arg("--format")
+            .arg("json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let history_json: Value = serde_json::from_str(&history).unwrap();
+    assert!(
+        history_json["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["memory"]["title"] == "Autonomous compacted project release history"),
+        "explicit release-history queries should still reach compacted history cards"
+    );
+}
+
+#[test]
 fn v14_context_and_impact_filter_query_useless_feedback() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

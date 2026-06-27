@@ -497,6 +497,7 @@ pub(crate) fn retrieve_report(
             .then_with(|| b.memory.memory.updated_at.cmp(&a.memory.memory.updated_at))
     });
     hits = apply_tiny_lexical_precision_gate(hits, request.budget, &task_terms);
+    hits = apply_tiny_operational_history_gate(hits, request.budget, &task_terms);
     hits = apply_tiny_feedback_precision_gate(hits, request.budget, &task_terms, &quality_signals);
     hits = apply_relevance_floor(hits, request.budget);
     hits = filter_redundant_hits(hits, request.budget);
@@ -1129,6 +1130,52 @@ fn apply_tiny_feedback_precision_gate(
             !should_suppress_for_query_feedback(id, task_terms, signals)
         })
         .collect()
+}
+
+fn apply_tiny_operational_history_gate(
+    hits: Vec<RetrievalHit>,
+    budget: usize,
+    task_terms: &HashSet<String>,
+) -> Vec<RetrievalHit> {
+    if budget > 1_200 || task_terms.len() < 2 || query_seeks_operational_history(task_terms) {
+        return hits;
+    }
+    hits.into_iter()
+        .filter(|hit| !is_compacted_operational_task_state(&hit.memory.memory))
+        .collect()
+}
+
+fn query_seeks_operational_history(task_terms: &HashSet<String>) -> bool {
+    task_terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "autonomous"
+                | "autonomously"
+                | "compact"
+                | "compacted"
+                | "history"
+                | "maintenance"
+                | "operational"
+                | "release"
+                | "released"
+                | "rollback"
+                | "upgrade"
+                | "version"
+        )
+    })
+}
+
+fn is_compacted_operational_task_state(memory: &Memory) -> bool {
+    if memory.memory_type != "task_state" {
+        return false;
+    }
+    let title = memory.title.to_lowercase();
+    let body = memory.body.to_lowercase();
+    title.contains("autonomous compacted")
+        || title.contains("compacted project")
+        || title.contains("release history")
+        || title.contains("operational memory")
+        || body.starts_with("autonomously compacted")
 }
 
 fn should_suppress_for_query_feedback(
