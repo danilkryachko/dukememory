@@ -46,6 +46,7 @@ pub(crate) fn build_context_rows(
         }
     }
     let quality_signals = retrieval_quality_signals(conn, 30).unwrap_or_default();
+    rows = filter_query_useless_memories(rows, query.task, &quality_signals);
     rank_context_rows_with_quality(
         &mut rows,
         query.task,
@@ -804,17 +805,22 @@ fn apply_tiny_feedback_precision_gate(
     hits.into_iter()
         .filter(|hit| {
             let id = &hit.memory.memory.id;
-            let useless = signals.useless.get(id).copied().unwrap_or_default();
-            if useless == 0 {
-                return true;
-            }
-            let useful = signals.useful.get(id).copied().unwrap_or_default();
-            if useful >= useless {
-                return true;
-            }
-            !feedback_query_matches_task(id, task_terms, signals)
+            !should_suppress_for_query_feedback(id, task_terms, signals)
         })
         .collect()
+}
+
+fn should_suppress_for_query_feedback(
+    memory_id: &str,
+    task_terms: &HashSet<String>,
+    signals: &RetrievalQualitySignals,
+) -> bool {
+    let useless = signals.useless.get(memory_id).copied().unwrap_or_default();
+    if useless == 0 {
+        return false;
+    }
+    let useful = signals.useful.get(memory_id).copied().unwrap_or_default();
+    useless > useful && feedback_query_matches_task(memory_id, task_terms, signals)
 }
 
 fn feedback_query_matches_task(
@@ -900,6 +906,20 @@ fn containment_overlap(left: &HashSet<String>, right: &HashSet<String>) -> f64 {
 
 fn select_diverse_memories(rows: Vec<Memory>, limit: usize) -> Vec<Memory> {
     select_diverse_by_type(rows, limit, |memory| &memory.memory_type)
+}
+
+pub(crate) fn filter_query_useless_memories(
+    rows: Vec<Memory>,
+    task: &str,
+    signals: &RetrievalQualitySignals,
+) -> Vec<Memory> {
+    let task_terms = relevance_terms(task);
+    if task_terms.len() < 2 {
+        return rows;
+    }
+    rows.into_iter()
+        .filter(|memory| !should_suppress_for_query_feedback(&memory.id, &task_terms, signals))
+        .collect()
 }
 
 fn select_diverse_by_type<T, F>(items: Vec<T>, limit: usize, memory_type: F) -> Vec<T>

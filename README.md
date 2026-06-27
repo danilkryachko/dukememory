@@ -92,6 +92,7 @@ Transcript-based memory quickly turns into noise.
 - MCP compact JSON responses stay valid under very small max_chars budgets
 - MCP feedback lets agents record useful/useless/missing memory signals
 - tiny retrieval suppresses same-query useless feedback hits
+- context and impact suppress same-query useless feedback hits
 - generic-only empty reads ignored by inferred memory-gap QA
 - zero-card generic-only outputs explain why memory was not injected
 - weak one-term retrieval skips unrelated recent fallback candidates

@@ -577,6 +577,7 @@ pub(crate) fn impact_report(
         }
     }
     let quality_signals = retrieval_quality_signals(conn, 30).unwrap_or_default();
+    rows = filter_query_useless_memories(rows, request.target, &quality_signals);
     let mut scored_rows = Vec::new();
     for memory in rows {
         let linked = memory_links_target(conn, &memory.id, request.target)?;

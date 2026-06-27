@@ -3891,6 +3891,66 @@ fn v14_tiny_retrieval_filters_query_useless_feedback() {
 }
 
 #[test]
+fn v14_context_and_impact_filter_query_useless_feedback() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let query = "checkout validation token budget";
+    let noisy_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Noisy context memory")
+            .arg("checkout validation token budget noisy context card should be suppressed")
+            .arg("--link")
+            .arg("file:src/checkout.rs"),
+    )
+    .trim()
+    .to_string();
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Useful context memory")
+        .arg("checkout validation token budget useful context card should remain")
+        .arg("--link")
+        .arg("file:src/checkout.rs")
+        .assert()
+        .success();
+
+    cmd(&db)
+        .arg("feedback")
+        .arg("--id")
+        .arg(&noisy_id)
+        .arg("--rating")
+        .arg("useless")
+        .arg("--command")
+        .arg("context-pack")
+        .arg("--query")
+        .arg(query)
+        .assert()
+        .success();
+
+    let context = stdout(
+        cmd(&db)
+            .arg("context-pack")
+            .arg(query)
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    assert!(!context.contains("Noisy context memory"));
+    assert!(context.contains("Useful context memory"));
+
+    let impact = stdout(
+        cmd(&db)
+            .arg("impact")
+            .arg(query)
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    assert!(!impact.contains("Noisy context memory"));
+    assert!(impact.contains("Useful context memory"));
+}
+
+#[test]
 fn v14_recall_uses_query_focused_summaries() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
