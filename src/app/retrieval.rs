@@ -514,7 +514,7 @@ pub(crate) fn recall_report(
             query: request.query,
             strategy: RetrievalStrategy::Hybrid,
             format: OutputFormat::Plain,
-            limit: request.limit,
+            limit: recall_effective_limit(request.limit, request.max_chars),
             budget: request.max_chars,
             scope: request.scope,
             rules: None,
@@ -547,6 +547,17 @@ pub(crate) fn recall_report(
         receipt: retrieval.receipt,
         items,
     })
+}
+
+fn recall_effective_limit(limit: usize, max_chars: usize) -> usize {
+    let budget_limit = if max_chars <= 1_200 {
+        3
+    } else if max_chars <= 3_000 {
+        5
+    } else {
+        limit
+    };
+    limit.min(budget_limit).max(1)
 }
 
 fn render_recall_report(report: &RecallReport) -> String {

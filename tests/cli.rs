@@ -4424,6 +4424,53 @@ fn v14_recall_uses_query_focused_summaries() {
 }
 
 #[test]
+fn recall_items_are_budget_aware() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for index in 0..8 {
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(format!("Recall budget note {index}"))
+            .arg(format!(
+                "recall budget signal useful detail variant{index} area{index} path{index}"
+            ))
+            .assert()
+            .success();
+    }
+
+    let tiny = stdout(
+        cmd(&db)
+            .arg("recall")
+            .arg("recall budget signal")
+            .arg("--max-chars")
+            .arg("1200")
+            .arg("--limit")
+            .arg("8")
+            .arg("--json"),
+    );
+    let tiny_json: Value = serde_json::from_str(&tiny).unwrap();
+    let tiny_len = tiny_json["items"].as_array().unwrap().len();
+    assert!(tiny_len <= 3);
+
+    let normal = stdout(
+        cmd(&db)
+            .arg("recall")
+            .arg("recall budget signal")
+            .arg("--max-chars")
+            .arg("3000")
+            .arg("--limit")
+            .arg("8")
+            .arg("--json"),
+    );
+    let normal_json: Value = serde_json::from_str(&normal).unwrap();
+    let normal_len = normal_json["items"].as_array().unwrap().len();
+    assert!(normal_len <= 5);
+    assert!(normal_len >= tiny_len);
+}
+
+#[test]
 fn v14_agent_context_filters_next_actions() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
