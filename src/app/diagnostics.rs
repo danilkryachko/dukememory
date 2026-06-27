@@ -246,7 +246,7 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
             query: request.task,
             strategy: RetrievalStrategy::Hybrid,
             format: OutputFormat::Plain,
-            limit: request.limit.max(6),
+            limit: request.limit.max(brief_retrieval_floor(request.budget)),
             budget: request.budget,
             scope: request.scope,
             rules: request.rules,
@@ -266,23 +266,39 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
     let mut seen_checks = HashSet::new();
     let task_terms = relevance_terms(request.task);
     let (file_limit, check_limit) = brief_artifact_limits(task_terms.len());
+    let section_limits = brief_section_limits(request.budget);
 
     for hit in &retrieval.hits {
         let memory = &hit.memory.memory;
         let item = brief_item_from_hit(hit, &task_terms);
         match memory.memory_type.as_str() {
             "decision" | "constraint" | "product_goal" => {
-                push_unique_brief_item(&mut must_follow, &mut seen_items, item, 5);
+                push_unique_brief_item(
+                    &mut must_follow,
+                    &mut seen_items,
+                    item,
+                    section_limits.must_follow,
+                );
             }
             "known_issue" => {
-                push_unique_brief_item(&mut risks, &mut seen_items, item, 3);
+                push_unique_brief_item(&mut risks, &mut seen_items, item, section_limits.risks);
             }
             "command" => {
                 push_unique_check(&mut checks, &mut seen_checks, &memory.body, check_limit);
-                push_unique_brief_item(&mut relevant, &mut seen_items, item, 5);
+                push_unique_brief_item(
+                    &mut relevant,
+                    &mut seen_items,
+                    item,
+                    section_limits.relevant,
+                );
             }
             _ => {
-                push_unique_brief_item(&mut relevant, &mut seen_items, item, 5);
+                push_unique_brief_item(
+                    &mut relevant,
+                    &mut seen_items,
+                    item,
+                    section_limits.relevant,
+                );
             }
         }
         for link in &hit.memory.links {
@@ -340,6 +356,39 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
         files,
         checks,
     })
+}
+
+#[derive(Clone, Copy)]
+struct BriefSectionLimits {
+    must_follow: usize,
+    relevant: usize,
+    risks: usize,
+}
+
+fn brief_retrieval_floor(budget: usize) -> usize {
+    if budget <= 1_200 { 4 } else { 6 }
+}
+
+fn brief_section_limits(budget: usize) -> BriefSectionLimits {
+    if budget <= 1_200 {
+        BriefSectionLimits {
+            must_follow: 3,
+            relevant: 3,
+            risks: 2,
+        }
+    } else if budget <= 3_000 {
+        BriefSectionLimits {
+            must_follow: 5,
+            relevant: 5,
+            risks: 3,
+        }
+    } else {
+        BriefSectionLimits {
+            must_follow: 8,
+            relevant: 8,
+            risks: 5,
+        }
+    }
 }
 
 fn brief_artifact_limits(relevance_term_count: usize) -> (usize, usize) {

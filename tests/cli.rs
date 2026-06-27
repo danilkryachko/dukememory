@@ -5114,6 +5114,66 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
 }
 
 #[test]
+fn brief_sections_are_budget_aware() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for index in 0..6 {
+        cmd(&db)
+            .arg("add")
+            .arg("decision")
+            .arg(format!("Checkout budget decision {index}"))
+            .arg("checkout budget signal must stay compact and relevant")
+            .assert()
+            .success();
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(format!("Checkout budget note {index}"))
+            .arg("checkout budget signal implementation detail for focused recall")
+            .assert()
+            .success();
+        cmd(&db)
+            .arg("add")
+            .arg("known_issue")
+            .arg(format!("Checkout budget risk {index}"))
+            .arg("checkout budget signal risk should be visible but bounded")
+            .assert()
+            .success();
+    }
+
+    let tiny = stdout(
+        cmd(&db)
+            .arg("brief")
+            .arg("checkout budget signal")
+            .arg("--budget-profile")
+            .arg("tiny")
+            .arg("--limit")
+            .arg("18")
+            .arg("--json"),
+    );
+    let tiny_json: Value = serde_json::from_str(&tiny).unwrap();
+    assert!(tiny_json["must_follow"].as_array().unwrap().len() <= 3);
+    assert!(tiny_json["relevant"].as_array().unwrap().len() <= 3);
+    assert!(tiny_json["risks"].as_array().unwrap().len() <= 2);
+
+    let normal = stdout(
+        cmd(&db)
+            .arg("brief")
+            .arg("checkout budget signal")
+            .arg("--budget-profile")
+            .arg("normal")
+            .arg("--limit")
+            .arg("18")
+            .arg("--json"),
+    );
+    let normal_json: Value = serde_json::from_str(&normal).unwrap();
+    assert!(normal_json["must_follow"].as_array().unwrap().len() >= 4);
+    assert!(normal_json["relevant"].as_array().unwrap().len() >= 4);
+    assert!(normal_json["risks"].as_array().unwrap().len() >= 3);
+}
+
+#[test]
 fn v14_5_impact_and_drift_are_lightweight_and_structured() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
