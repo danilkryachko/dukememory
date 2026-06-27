@@ -2532,13 +2532,22 @@ pub(crate) fn memory_qa_report(
         issues.push("latest autonomous status is not ok".to_string());
         recommendations.push("run dukememory autonomous explain --json".to_string());
     }
-    if live.missing > 0 {
+    let mut actionable_missing_queries = Vec::new();
+    for query in &live.missing_queries {
+        if should_infer_missing_memory_gap(conn, query)? {
+            actionable_missing_queries.push(query.clone());
+        }
+    }
+    actionable_missing_queries.sort();
+    actionable_missing_queries.dedup();
+    if !actionable_missing_queries.is_empty() {
         issues.push(format!(
-            "{} feedback event(s) reported missing memory",
-            live.missing
+            "{} unresolved missing feedback query(s)",
+            actionable_missing_queries.len()
         ));
-        recommendations
-            .push("convert repeated missing facts into durable memory cards".to_string());
+        recommendations.push(
+            "convert repeated unresolved missing facts into durable memory cards".to_string(),
+        );
     }
     if live.inferred_missing > 0 {
         issues.push(format!(

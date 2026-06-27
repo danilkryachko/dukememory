@@ -1209,7 +1209,7 @@ fn inferred_live_signals(
     })
 }
 
-fn should_infer_missing_memory_gap(conn: &Connection, query: &str) -> Result<bool> {
+pub(crate) fn should_infer_missing_memory_gap(conn: &Connection, query: &str) -> Result<bool> {
     let terms = relevance_terms(query);
     if terms.is_empty() || is_code_identifier_query(query) {
         return Ok(false);

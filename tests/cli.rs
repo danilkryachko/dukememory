@@ -344,6 +344,60 @@ fn live_eval_ignores_code_identifier_empty_reads() {
 }
 
 #[test]
+fn memory_qa_reports_only_actionable_missing_feedback() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Initialize schema")
+        .arg("Create the memory database before recording feedback.")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("feedback")
+        .arg("--rating")
+        .arg("missing")
+        .arg("--command")
+        .arg("brief")
+        .arg("--query")
+        .arg("live_eval_report")
+        .assert()
+        .success();
+
+    let code_only_qa = stdout(cmd(&db).arg("memory-qa").arg("--json"));
+    let code_only_json: Value = serde_json::from_str(&code_only_qa).unwrap();
+    assert!(
+        code_only_json["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|issue| !issue.as_str().unwrap().contains("missing feedback"))
+    );
+
+    cmd(&db)
+        .arg("feedback")
+        .arg("--rating")
+        .arg("missing")
+        .arg("--command")
+        .arg("brief")
+        .arg("--query")
+        .arg("missing checkout policy")
+        .assert()
+        .success();
+    let actionable_qa = stdout(cmd(&db).arg("memory-qa").arg("--json"));
+    let actionable_json: Value = serde_json::from_str(&actionable_qa).unwrap();
+    assert!(
+        actionable_json["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue.as_str().unwrap() == "1 unresolved missing feedback query(s)")
+    );
+}
+
+#[test]
 fn init_update_get_delete_and_privacy_guard() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
