@@ -630,6 +630,7 @@ pub(crate) fn impact_report(
     let quality_signals = retrieval_quality_signals(conn, 30).unwrap_or_default();
     rows = filter_query_useless_memories(rows, request.target, &quality_signals);
     let mut scored_rows = Vec::new();
+    let target_terms = relevance_terms(request.target);
     for memory in rows {
         let linked = memory_links_target(conn, &memory.id, request.target)?;
         let mut quality_reasons = Vec::new();
@@ -641,7 +642,8 @@ pub(crate) fn impact_report(
             "command" | "task_state" => 4.0,
             _ => 2.0,
         };
-        let score = if linked { 100.0 } else { 20.0 } + type_score + quality;
+        let lexical_score = impact_lexical_overlap_score(&memory, &target_terms);
+        let score = if linked { 100.0 } else { 20.0 } + type_score + quality + lexical_score;
         scored_rows.push((memory, linked, quality_reasons, score));
     }
     scored_rows.sort_by(|a, b| {
@@ -663,7 +665,6 @@ pub(crate) fn impact_report(
     let mut seen_items = HashSet::new();
     let mut seen_checks = HashSet::new();
     let mut seen_links = HashSet::new();
-    let target_terms = relevance_terms(request.target);
     let section_limits = impact_section_limits(request.budget);
 
     for (memory, linked, quality_reasons, rank_score) in &scored_rows {
@@ -760,6 +761,18 @@ pub(crate) fn impact_report(
         related,
         links,
     })
+}
+
+fn impact_lexical_overlap_score(memory: &Memory, terms: &HashSet<String>) -> f64 {
+    if terms.is_empty() {
+        return 0.0;
+    }
+    let haystack = format!("{} {}", memory.title, memory.body).to_lowercase();
+    let overlap = terms
+        .iter()
+        .filter(|term| haystack.contains(term.as_str()))
+        .count();
+    (overlap.min(8) as f64) * 3.0
 }
 
 #[derive(Clone, Copy)]

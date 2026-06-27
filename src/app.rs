@@ -2065,6 +2065,17 @@ fn sanitize_fts_query(query: &str) -> String {
     }
 }
 
+fn sanitize_fts_any_query(query: &str) -> Option<String> {
+    let mut terms = relevance_terms(query).into_iter().collect::<Vec<_>>();
+    terms.sort();
+    terms.dedup();
+    terms.truncate(8);
+    if terms.len() < 2 {
+        return None;
+    }
+    Some(terms.join(" OR "))
+}
+
 fn print_rows(conn: &Connection, rows: &[Memory], json: bool) -> Result<()> {
     if json {
         let full = rows

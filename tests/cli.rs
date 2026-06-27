@@ -4914,6 +4914,55 @@ fn context_pack_json_is_compact_and_query_focused() {
 }
 
 #[test]
+fn search_falls_back_to_bounded_overlap_for_long_queries() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Context pack machine readable path")
+        .arg(
+            "Context-pack JSON full body removal uses compact summaries and token budget behavior.",
+        )
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Unrelated token budget note")
+        .arg("Token budget alone is not enough to satisfy a focused request.")
+        .assert()
+        .success();
+
+    let search = stdout(
+        cmd(&db)
+            .arg("search")
+            .arg("context-pack json full body compact summary token budget")
+            .arg("--json"),
+    );
+    let search_json: Value = serde_json::from_str(&search).unwrap();
+    let titles = search_json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["title"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(titles.contains(&"Context pack machine readable path"));
+    assert!(!titles.contains(&"Unrelated token budget note"));
+
+    let impact = stdout(
+        cmd(&db)
+            .arg("impact")
+            .arg("context-pack json full body compact summary token budget")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    assert!(impact.contains("Context pack machine readable path"));
+    assert!(!impact.contains("Unrelated token budget note"));
+}
+
+#[test]
 fn agent_context_json_is_compact_and_query_focused() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

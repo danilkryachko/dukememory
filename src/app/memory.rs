@@ -1,5 +1,6 @@
 use super::{
-    Memory, MemoryLink, MemoryWithLinks, log_event, now_ms, placeholders, sanitize_fts_query,
+    Memory, MemoryLink, MemoryWithLinks, log_event, now_ms, placeholders, relevance_terms,
+    sanitize_fts_any_query, sanitize_fts_query,
 };
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -202,14 +203,58 @@ pub(crate) fn query_memories(
     scope: Option<&str>,
     limit: usize,
 ) -> Result<Vec<Memory>> {
+    let rows = query_memories_with_fts(
+        conn,
+        query.map(sanitize_fts_query),
+        types,
+        statuses,
+        scope,
+        limit,
+    )?;
+    if !rows.is_empty() || query.is_none() {
+        return Ok(rows);
+    }
+    let query = query.unwrap_or_default();
+    let Some(fallback_query) = sanitize_fts_any_query(query) else {
+        return Ok(rows);
+    };
+    let candidate_limit = limit.saturating_mul(6).clamp(limit.max(1), 50);
+    let candidates = query_memories_with_fts(
+        conn,
+        Some(fallback_query),
+        types,
+        statuses,
+        scope,
+        candidate_limit,
+    )?;
+    let mut terms = relevance_terms(query).into_iter().collect::<Vec<_>>();
+    terms.sort();
+    terms.dedup();
+    let threshold = terms.len().clamp(1, 3);
+    Ok(candidates
+        .into_iter()
+        .filter(|memory| memory_text_overlap(memory, &terms) >= threshold)
+        .take(limit)
+        .collect())
+}
+
+fn query_memories_with_fts(
+    conn: &Connection,
+    fts_query: Option<String>,
+    types: &[String],
+    statuses: &[String],
+    scope: Option<&str>,
+    limit: usize,
+) -> Result<Vec<Memory>> {
     let mut sql = String::from("SELECT m.* FROM memories m ");
     let mut where_parts = Vec::new();
     let mut values = Vec::new();
+    let has_fts = fts_query.is_some();
 
-    if let Some(query) = query {
+    if let Some(query) = fts_query {
         sql.push_str("JOIN memories_fts fts ON fts.rowid = m.rowid ");
         where_parts.push("memories_fts MATCH ?".to_string());
-        values.push(sanitize_fts_query(query));
+        values.push(query);
     }
     if !types.is_empty() {
         where_parts.push(format!("m.type IN ({})", placeholders(types.len())));
@@ -228,7 +273,7 @@ pub(crate) fn query_memories(
         sql.push_str(&where_parts.join(" AND "));
         sql.push(' ');
     }
-    if query.is_some() {
+    if has_fts {
         sql.push_str("ORDER BY bm25(memories_fts), m.confidence DESC, m.updated_at DESC ");
     } else {
         sql.push_str("ORDER BY m.updated_at DESC ");
@@ -240,6 +285,14 @@ pub(crate) fn query_memories(
     let rows = stmt.query_map(rusqlite::params_from_iter(values), row_to_memory)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+fn memory_text_overlap(memory: &Memory, terms: &[String]) -> usize {
+    let haystack = format!("{} {}", memory.title, memory.body).to_lowercase();
+    terms
+        .iter()
+        .filter(|term| haystack.contains(term.as_str()))
+        .count()
 }
 
 pub(crate) fn row_to_memory(row: &Row<'_>) -> rusqlite::Result<Memory> {
