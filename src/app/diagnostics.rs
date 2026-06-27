@@ -304,7 +304,14 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
         .collect::<Vec<_>>();
     ids.sort();
     ids.dedup();
-    let receipt = memory_receipt("brief", Some(retrieval.semantic_used), &ids, "none");
+    let semantic_status = if retrieval.semantic_skipped {
+        MemorySemanticStatus::Skipped
+    } else if retrieval.semantic_used {
+        MemorySemanticStatus::Used
+    } else {
+        MemorySemanticStatus::Fallback
+    };
+    let receipt = memory_receipt_with_semantic("brief", semantic_status, &ids, "none");
     log_read_event(
         conn,
         ReadEventInput {
@@ -323,6 +330,7 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
         task: request.task.to_string(),
         budget: request.budget,
         semantic_used: retrieval.semantic_used,
+        semantic_skipped: retrieval.semantic_skipped,
         semantic_error: retrieval.semantic_error,
         receipt,
         must_follow,

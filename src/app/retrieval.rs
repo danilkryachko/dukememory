@@ -140,8 +140,10 @@ pub(crate) fn retrieve_report(
     }
     let task_terms = relevance_terms(request.query);
     let mut semantic_used = false;
+    let semantic_skipped =
+        matches!(request.strategy, RetrievalStrategy::Hybrid) && task_terms.is_empty();
     let mut semantic_error = None;
-    if matches!(request.strategy, RetrievalStrategy::Hybrid) && !task_terms.is_empty() {
+    if matches!(request.strategy, RetrievalStrategy::Hybrid) && !semantic_skipped {
         match embeddings::semantic_index_ready(
             conn,
             request.provider,
@@ -228,7 +230,13 @@ pub(crate) fn retrieve_report(
         .iter()
         .map(|hit| hit.memory.memory.id.clone())
         .collect::<Vec<_>>();
-    let receipt = memory_receipt("retrieve", Some(semantic_used), &ids, "none");
+    let semantic_status = match request.strategy {
+        RetrievalStrategy::Hybrid if semantic_skipped => MemorySemanticStatus::Skipped,
+        RetrievalStrategy::Hybrid if semantic_used => MemorySemanticStatus::Used,
+        RetrievalStrategy::Hybrid => MemorySemanticStatus::Fallback,
+        RetrievalStrategy::Fts => MemorySemanticStatus::None,
+    };
+    let receipt = memory_receipt_with_semantic("retrieve", semantic_status, &ids, "none");
     if request.audit_read {
         log_read_event(
             conn,
@@ -249,6 +257,7 @@ pub(crate) fn retrieve_report(
         strategy: format!("{:?}", request.strategy).to_lowercase(),
         scope: request.scope.map(ToOwned::to_owned),
         semantic_used,
+        semantic_skipped,
         semantic_error,
         receipt,
         hits,

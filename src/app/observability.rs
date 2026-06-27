@@ -461,14 +461,38 @@ pub(crate) fn memory_receipt(
     wrote: &str,
 ) -> String {
     let semantic = semantic_used
-        .map(|used| {
-            if used {
-                "; semantic search used"
-            } else {
-                "; semantic search fallback"
-            }
-        })
+        .map(MemorySemanticStatus::from)
         .unwrap_or_default();
+    memory_receipt_with_semantic(command, semantic, ids, wrote)
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) enum MemorySemanticStatus {
+    #[default]
+    None,
+    Used,
+    Fallback,
+    Skipped,
+}
+
+impl From<bool> for MemorySemanticStatus {
+    fn from(value: bool) -> Self {
+        if value { Self::Used } else { Self::Fallback }
+    }
+}
+
+pub(crate) fn memory_receipt_with_semantic(
+    command: &str,
+    semantic_status: MemorySemanticStatus,
+    ids: &[String],
+    wrote: &str,
+) -> String {
+    let semantic = match semantic_status {
+        MemorySemanticStatus::None => "",
+        MemorySemanticStatus::Used => "; semantic search used",
+        MemorySemanticStatus::Fallback => "; semantic search fallback",
+        MemorySemanticStatus::Skipped => "; semantic search skipped",
+    };
     let matched = match ids.len() {
         1 => "1 card".to_string(),
         count => format!("{count} cards"),
