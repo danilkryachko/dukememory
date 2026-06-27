@@ -611,14 +611,15 @@ pub(crate) fn impact_report(
     request: &ImpactRequest<'_>,
 ) -> Result<ImpactReport> {
     let started = Instant::now();
-    let mut rows = linked_memories(conn, request.target, request.scope, request.limit)?;
+    let effective_limit = impact_effective_limit(request.limit, request.budget);
+    let mut rows = linked_memories(conn, request.target, request.scope, effective_limit)?;
     let fts_rows = query_memories(
         conn,
         Some(request.target),
         &[],
         &["active".to_string(), "uncertain".to_string()],
         request.scope,
-        request.limit,
+        effective_limit,
     )?;
     for row in fts_rows {
         if !rows.iter().any(|existing| existing.id == row.id) {
@@ -649,7 +650,7 @@ pub(crate) fn impact_report(
     });
     let scored_rows = scored_rows
         .into_iter()
-        .take(request.limit.max(1))
+        .take(effective_limit)
         .collect::<Vec<_>>();
 
     let mut decisions = Vec::new();
@@ -799,6 +800,17 @@ fn impact_section_limits(budget: usize) -> ImpactSectionLimits {
             links: 14,
         }
     }
+}
+
+fn impact_effective_limit(limit: usize, budget: usize) -> usize {
+    let budget_limit = if budget <= 1_200 {
+        8
+    } else if budget <= 3_000 {
+        24
+    } else {
+        limit
+    };
+    limit.min(budget_limit).max(1)
 }
 
 pub(crate) fn print_evidence(conn: &Connection, id: &str, json_out: bool) -> Result<()> {
@@ -2063,4 +2075,18 @@ pub(crate) fn print_review_tui(conn: &Connection, stale_days: i64) -> Result<()>
     println!("- inbox-reject <id>");
     println!("- scan-secrets --fix-redact");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn impact_effective_limit_follows_budget() {
+        assert_eq!(impact_effective_limit(30, 1_200), 8);
+        assert_eq!(impact_effective_limit(30, 3_000), 24);
+        assert_eq!(impact_effective_limit(30, 8_000), 30);
+        assert_eq!(impact_effective_limit(3, 1_200), 3);
+        assert_eq!(impact_effective_limit(0, 1_200), 1);
+    }
 }
