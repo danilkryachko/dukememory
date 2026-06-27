@@ -128,15 +128,18 @@ pub(crate) fn retrieve_report(
 ) -> Result<RetrievalReport> {
     let started = Instant::now();
     let task_terms = relevance_terms(request.query);
+    let effective_limit = budget_aware_hit_limit(request.limit, request.budget, task_terms.len());
     let mut candidates: HashMap<String, (Memory, Option<f64>)> = HashMap::new();
-    for row in query_memories(
+    let fts_rows = query_memories(
         conn,
         Some(request.query),
         &[],
         &["active".to_string(), "uncertain".to_string()],
         request.scope,
         request.limit.saturating_mul(2).max(request.limit),
-    )? {
+    )?;
+    let direct_fts_count = fts_rows.len();
+    for row in fts_rows {
         candidates.entry(row.id.clone()).or_insert((row, None));
     }
     if should_include_recent_fallback(&task_terms) {
@@ -153,7 +156,13 @@ pub(crate) fn retrieve_report(
     }
     let mut semantic_used = false;
     let semantic_skip_reason = if matches!(request.strategy, RetrievalStrategy::Hybrid) {
-        semantic_skip_reason_for_terms(&task_terms).map(ToOwned::to_owned)
+        semantic_skip_reason_for_query(
+            &task_terms,
+            request.budget,
+            direct_fts_count,
+            effective_limit,
+        )
+        .map(ToOwned::to_owned)
     } else {
         None
     };
@@ -244,7 +253,6 @@ pub(crate) fn retrieve_report(
     });
     hits = apply_relevance_floor(hits, request.budget);
     hits = filter_redundant_hits(hits, request.budget);
-    let effective_limit = budget_aware_hit_limit(request.limit, request.budget, task_terms.len());
     hits = select_diverse_hits(hits, effective_limit);
     let ids = hits
         .iter()
@@ -289,10 +297,16 @@ fn should_include_recent_fallback(task_terms: &HashSet<String>) -> bool {
     task_terms.len() >= 2
 }
 
-fn semantic_skip_reason_for_terms(task_terms: &HashSet<String>) -> Option<&'static str> {
+fn semantic_skip_reason_for_query(
+    task_terms: &HashSet<String>,
+    budget: usize,
+    direct_fts_count: usize,
+    effective_limit: usize,
+) -> Option<&'static str> {
     match task_terms.len() {
         0 => Some("generic_query"),
         1 => Some("weak_query"),
+        _ if budget <= 1_200 && direct_fts_count >= effective_limit => Some("lexical_saturated"),
         _ => None,
     }
 }
@@ -899,6 +913,7 @@ pub(crate) fn semantic_skip_label(reason: &str) -> &'static str {
     match reason {
         "generic_query" => "generic query",
         "weak_query" => "weak query",
+        "lexical_saturated" => "lexical matches saturated",
         _ => "query",
     }
 }

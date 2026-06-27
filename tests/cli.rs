@@ -3326,6 +3326,68 @@ fn v14_retrieve_filters_weak_semantic_candidates() {
 }
 
 #[test]
+fn v14_retrieve_skips_semantic_when_tiny_fts_is_saturated() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for index in 0..5 {
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(format!("Saturated lexical {index}"))
+            .arg("saturated lexical match keeps tiny retrieval local and fast")
+            .assert()
+            .success();
+    }
+    cmd(&db)
+        .arg("embed-index")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .assert()
+        .success();
+
+    let retrieved = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("saturated lexical")
+            .arg("--strategy")
+            .arg("hybrid")
+            .arg("--format")
+            .arg("json")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let retrieved_json: Value = serde_json::from_str(&retrieved).unwrap();
+    assert_eq!(retrieved_json["semantic_used"], false);
+    assert_eq!(retrieved_json["semantic_skipped"], true);
+    assert_eq!(retrieved_json["semantic_skip_reason"], "lexical_saturated");
+    assert!(!retrieved_json["hits"].as_array().unwrap().is_empty());
+    assert!(
+        retrieved_json["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|hit| hit["semantic_score"].is_null())
+    );
+    assert!(
+        retrieved_json["receipt"]
+            .as_str()
+            .unwrap()
+            .contains("semantic search skipped")
+    );
+}
+
+#[test]
 fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

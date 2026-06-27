@@ -81,6 +81,7 @@ Transcript-based memory quickly turns into noise.
 - weak one-term retrieval skips unrelated recent fallback candidates
 - weak one-term hybrid queries skip semantic search
 - budget-aware semantic score floors filter weak semantic-only candidates
+- tiny hybrid retrieval skips semantic search when lexical matches are saturated
 
 ## What It Remembers
 
