@@ -947,14 +947,24 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
             if query.is_empty() {
                 return Ok(HttpResponse::bad_request("missing query"));
             }
+            let limit = value
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map(|value| value as usize)
+                .unwrap_or(10)
+                .min(100);
+            let fetch_limit = limit.saturating_mul(2).max(limit).min(200);
             let rows = query_memories(
                 &conn,
                 Some(query),
                 &[],
                 &["active".to_string(), "uncertain".to_string()],
                 None,
-                10,
+                fetch_limit,
             )?;
+            let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
+            let mut rows = filter_query_useless_memories(rows, query, &quality_signals);
+            rows.truncate(limit);
             HttpResponse::ok(json!({"results": memory_rows_with_request_counts(&conn, rows)?}))
         }
         ("POST", "/inbox/approve") => {

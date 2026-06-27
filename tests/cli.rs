@@ -1057,6 +1057,62 @@ fn mcp_snapshot_filters_query_useless_feedback() {
 }
 
 #[test]
+fn http_search_filters_noisy_top_candidates() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let query = "http search token budget";
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Useful HTTP search memory")
+        .arg("http search token budget useful card should remain in HTTP search")
+        .assert()
+        .success();
+
+    let mut noisy_ids = Vec::new();
+    for index in 0..10 {
+        let noisy_id = stdout(
+            cmd(&db)
+                .arg("add")
+                .arg("design_note")
+                .arg(format!("Noisy HTTP search memory {index}"))
+                .arg("http search token budget noisy card should be suppressed from HTTP search"),
+        )
+        .trim()
+        .to_string();
+        noisy_ids.push(noisy_id);
+    }
+    for noisy_id in noisy_ids {
+        cmd(&db)
+            .arg("feedback")
+            .arg("--id")
+            .arg(&noisy_id)
+            .arg("--rating")
+            .arg("useless")
+            .arg("--command")
+            .arg("search")
+            .arg("--query")
+            .arg(query)
+            .assert()
+            .success();
+    }
+
+    let body = serde_json::json!({"query": query, "limit": 10}).to_string();
+    let response = http_once(
+        &db,
+        &format!(
+            "POST /search HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        ),
+    );
+    assert!(response.contains("200 OK"));
+    assert!(response.contains("Useful HTTP search memory"));
+    assert!(!response.contains("Noisy HTTP search memory"));
+}
+
+#[test]
 fn mcp_tool_calls_can_select_project_db_by_root_or_path_scope() {
     let dir = tempdir().unwrap();
     let default_root = dir.path().join("default");
