@@ -117,14 +117,14 @@ fn mcp_tools() -> Value {
         {"name":"memory_search","description":"Search local memory with compact query-focused summaries","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
         {"name":"memory_context_pack","description":"Return a compact relevant memory pack","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_agent_context","description":"Return agent-native context with planner defaults","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
-        {"name":"memory_snapshot","description":"Return compact project snapshot","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_snapshot","description":"Return compact bounded project snapshot","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_doctrine","description":"Return compact active decision doctrine by default","inputSchema":{"type":"object","properties":{"scope":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_evidence","description":"Return compact provenance for one memory card by default","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_auto_ingest","description":"Scan agent session files into pending inbox suggestions without duplicates","inputSchema":{"type":"object","properties":{"input":{"type":"string"},"scope":{"type":"string"},"dry_run":{"type":"boolean"}}}},
         {"name":"memory_get","description":"Get one memory card as compact summary by default","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
-        {"name":"memory_review","description":"Review stale/conflicting memory","inputSchema":{"type":"object","properties":{"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_review","description":"Review stale/conflicting memory as a bounded summary","inputSchema":{"type":"object","properties":{"limit":{"type":"number"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_doctor","description":"Run memory health checks","inputSchema":{"type":"object","properties":{"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
-        {"name":"memory_inbox_list","description":"List pending inbox items","inputSchema":{"type":"object","properties":{"limit":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}
+        {"name":"memory_inbox_list","description":"List pending inbox items as compact summaries by default","inputSchema":{"type":"object","properties":{"limit":{"type":"number"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}
     ])
 }
 
@@ -246,17 +246,24 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 .map_err(|err| err.to_string())?
         }
         "memory_snapshot" => {
-            let max_chars = json_usize(&args, "max_chars").unwrap_or(8000);
+            let query = json_string(&args, "query").unwrap_or_default();
+            let limit = json_usize(&args, "limit").unwrap_or(12);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
             let rows = query_memories(
                 &conn,
                 None,
                 &[],
                 &["active".to_string(), "uncertain".to_string()],
                 None,
-                30,
+                limit,
             )
             .map_err(|err| err.to_string())?;
-            render_context_pack(&conn, &rows, max_chars).map_err(|err| err.to_string())?
+            if query.trim().is_empty() {
+                render_context_pack(&conn, &rows, max_chars).map_err(|err| err.to_string())?
+            } else {
+                render_context_pack_for_task(&conn, &rows, max_chars, &query)
+                    .map_err(|err| err.to_string())?
+            }
         }
         "memory_brief" => {
             let task = json_string(&args, "task").ok_or_else(|| "missing task".to_string())?;
@@ -378,12 +385,23 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             }
         }
         "memory_review" => {
+            let limit = json_usize(&args, "limit").unwrap_or(20);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let include_body = args
+                .get("include_body")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let mut issues = Vec::new();
             issues.extend(review_stale(&conn, 30).map_err(|err| err.to_string())?);
             issues.extend(review_uncertain(&conn).map_err(|err| err.to_string())?);
             issues.extend(review_low_confidence(&conn).map_err(|err| err.to_string())?);
             issues.extend(review_duplicates(&conn).map_err(|err| err.to_string())?);
-            serde_json::to_string_pretty(&issues).map_err(|err| err.to_string())?
+            if include_body {
+                serde_json::to_string_pretty(&issues).map_err(|err| err.to_string())?
+            } else {
+                compact_mcp_review_response(&issues, limit, max_chars)
+                    .map_err(|err| err.to_string())?
+            }
         }
         "memory_doctor" => {
             let secrets = scan_secret_findings(&conn).map_err(|err| err.to_string())?;
@@ -398,8 +416,19 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         }
         "memory_inbox_list" => {
             let limit = json_usize(&args, "limit").unwrap_or(20);
+            let query = json_string(&args, "query").unwrap_or_default();
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let include_body = args
+                .get("include_body")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let rows = list_inbox(&conn, "pending", limit).map_err(|err| err.to_string())?;
-            serde_json::to_string_pretty(&rows).map_err(|err| err.to_string())?
+            if include_body {
+                serde_json::to_string_pretty(&rows).map_err(|err| err.to_string())?
+            } else {
+                compact_mcp_inbox_response(&rows, &query, max_chars)
+                    .map_err(|err| err.to_string())?
+            }
         }
         other => return Err(format!("unsupported tool: {other}")),
     };
@@ -510,6 +539,63 @@ fn compact_mcp_doctrine_response(
     Ok(serde_json::to_string_pretty(&value)?)
 }
 
+fn compact_mcp_review_response(
+    issues: &[ReviewIssue],
+    limit: usize,
+    max_chars: usize,
+) -> Result<String> {
+    let items = issues
+        .iter()
+        .take(limit)
+        .map(|issue| {
+            json!({
+                "kind": issue.kind,
+                "id": issue.id,
+                "title": issue.title,
+                "detail": truncate_chars(&issue.detail, 160),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut value = json!({
+        "total": issues.len(),
+        "returned": items.len(),
+        "truncated": issues.len() > items.len(),
+        "issues": items,
+    });
+    fit_json_array_sections(&mut value, max_chars, &["issues"])?;
+    update_returned_count(&mut value, "issues", "returned");
+    Ok(serde_json::to_string_pretty(&value)?)
+}
+
+fn compact_mcp_inbox_response(rows: &[InboxItem], query: &str, max_chars: usize) -> Result<String> {
+    let query_terms = relevance_terms(query);
+    let items = rows
+        .iter()
+        .map(|row| {
+            json!({
+                "id": row.id,
+                "type": row.memory_type,
+                "scope": row.scope,
+                "status": row.status,
+                "title": row.title,
+                "summary": query_focused_summary(&row.body, &query_terms, 180),
+                "source": row.source,
+                "confidence": row.confidence,
+                "updated_at": row.updated_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut value = json!({
+        "total": rows.len(),
+        "returned": items.len(),
+        "truncated": false,
+        "items": items,
+    });
+    fit_json_array_sections(&mut value, max_chars, &["items"])?;
+    update_returned_count(&mut value, "items", "returned");
+    Ok(serde_json::to_string_pretty(&value)?)
+}
+
 fn compact_doctrine_section(value: &mut Value, key: &str, query_terms: &HashSet<String>) {
     let Some(items) = value.get_mut(key).and_then(Value::as_array_mut) else {
         return;
@@ -548,6 +634,17 @@ fn fit_json_array_sections(value: &mut Value, max_chars: usize, sections: &[&str
         object.insert("truncated".to_string(), Value::Bool(true));
     }
     Ok(())
+}
+
+fn update_returned_count(value: &mut Value, array_key: &str, count_key: &str) {
+    let count = value
+        .get(array_key)
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    if let Some(object) = value.as_object_mut() {
+        object.insert(count_key.to_string(), json!(count));
+    }
 }
 
 fn mcp_selected_db(default_db: &Path, args: &Value) -> PathBuf {

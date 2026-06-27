@@ -86,6 +86,7 @@ Transcript-based memory quickly turns into noise.
 - MCP memory search returns compact query-focused summaries instead of full bodies
 - MCP memory get is compact by default, with explicit include_body for full cards
 - MCP evidence and doctrine are compact by default, with explicit include_body for audits
+- MCP snapshot, review, and inbox list are bounded for token-light agent reads
 - generic-only empty reads ignored by inferred memory-gap QA
 - zero-card generic-only outputs explain why memory was not injected
 - weak one-term retrieval skips unrelated recent fallback candidates

@@ -375,6 +375,15 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         .arg("MCP can retrieve this card.")
         .assert()
         .success();
+    cmd(&db)
+        .arg("add")
+        .arg("note")
+        .arg("MCP uncertain review")
+        .arg("MCP review should report this uncertain memory.")
+        .arg("--status")
+        .arg("uncertain")
+        .assert()
+        .success();
     let long_id = stdout(
         cmd(&db)
             .arg("add")
@@ -388,6 +397,21 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
     )
     .trim()
     .to_string();
+    let transcript = dir.path().join("mcp-transcript.md");
+    fs::write(
+        &transcript,
+        format!(
+            "We decided {} needle inbox exact detail should be visible {}\nTODO approve MCP inbox items.\n",
+            "inbox prefix noise ".repeat(80),
+            "inbox tail noise ".repeat(80)
+        ),
+    )
+    .unwrap();
+    cmd(&db)
+        .arg("ingest-transcript")
+        .arg(&transcript)
+        .assert()
+        .success();
 
     let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
         .arg("--db")
@@ -430,6 +454,30 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
             serde_json::json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"memory_get","arguments":{"id":long_id,"include_body":true}}})
         )
         .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"memory_snapshot","arguments":{"query":"needle mcp","max_chars":800}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"memory_review","arguments":{"max_chars":800}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"memory_inbox_list","arguments":{"query":"needle inbox","max_chars":1000}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"memory_inbox_list","arguments":{"include_body":true}}})
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
 
@@ -460,6 +508,32 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         .find(|line| line.contains("\"id\":5"))
         .unwrap();
     assert!(full_get.contains("body"));
+    let snapshot = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":6"))
+        .unwrap();
+    assert!(snapshot.contains("Relevant Memory"));
+    assert!(!snapshot.contains(&"mcp prefix noise ".repeat(10)));
+    let review = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":7"))
+        .unwrap();
+    assert!(review.contains("total"));
+    assert!(review.contains("issues"));
+    assert!(review.contains("MCP uncertain review"));
+    let compact_inbox = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":8"))
+        .unwrap();
+    assert!(compact_inbox.contains("summary"));
+    assert!(!compact_inbox.contains("body"));
+    assert!(compact_inbox.contains("needle inbox exact detail"));
+    assert!(!compact_inbox.contains(&"inbox prefix noise ".repeat(10)));
+    let full_inbox = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":9"))
+        .unwrap();
+    assert!(full_inbox.contains("body"));
 }
 
 #[test]
