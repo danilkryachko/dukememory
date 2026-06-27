@@ -1229,7 +1229,25 @@ pub(crate) fn unresolved_memory_gap(conn: &Connection, query: &str) -> Result<bo
         None,
         1,
     )?;
-    Ok(rows.is_empty())
+    if !rows.is_empty() {
+        return Ok(false);
+    }
+    Ok(!memory_link_resolves_query(conn, query)?)
+}
+
+fn memory_link_resolves_query(conn: &Connection, query: &str) -> Result<bool> {
+    if query.chars().count() < 3 {
+        return Ok(false);
+    }
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memories m \
+         JOIN memory_links l ON l.memory_id = m.id \
+         WHERE m.status IN ('active', 'uncertain') \
+         AND (lower(l.target) = lower(?1) OR instr(lower(l.target), lower(?1)) > 0)",
+        params![query],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
 }
 
 fn is_agent_memory_read(command: &str) -> bool {

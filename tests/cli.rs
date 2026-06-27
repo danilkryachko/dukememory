@@ -275,6 +275,42 @@ fn budget_plan_uses_missing_feedback_without_overexpanding() {
 }
 
 #[test]
+fn live_eval_resolves_empty_reads_by_memory_links() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Linked implementation coverage")
+        .arg("This card covers the implementation hook through metadata.")
+        .arg("--link")
+        .arg("symbol:auth::rate_limit")
+        .assert()
+        .success();
+    insert_empty_read_event(&db, "brief", "auth::rate_limit");
+    insert_empty_read_event(&db, "brief", "missing checkout policy");
+
+    let eval_live = stdout(cmd(&db).arg("eval").arg("live").arg("--json"));
+    let eval_live_json: Value = serde_json::from_str(&eval_live).unwrap();
+    assert_eq!(eval_live_json["inferred_missing"].as_u64().unwrap(), 1);
+    assert!(
+        eval_live_json["inferred_missing_queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "missing checkout policy")
+    );
+    assert!(
+        !eval_live_json["inferred_missing_queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "auth::rate_limit")
+    );
+}
+
+#[test]
 fn init_update_get_delete_and_privacy_guard() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
