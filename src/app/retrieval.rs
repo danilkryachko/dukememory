@@ -941,6 +941,25 @@ pub(crate) fn render_context_pack(
     rows: &[Memory],
     max_chars: usize,
 ) -> Result<String> {
+    render_context_pack_with_terms(conn, rows, max_chars, &HashSet::new())
+}
+
+pub(crate) fn render_context_pack_for_task(
+    conn: &Connection,
+    rows: &[Memory],
+    max_chars: usize,
+    task: &str,
+) -> Result<String> {
+    let query_terms = relevance_terms(task);
+    render_context_pack_with_terms(conn, rows, max_chars, &query_terms)
+}
+
+fn render_context_pack_with_terms(
+    conn: &Connection,
+    rows: &[Memory],
+    max_chars: usize,
+    query_terms: &HashSet<String>,
+) -> Result<String> {
     if rows.is_empty() {
         return Ok("Relevant Memory:\n- none".to_string());
     }
@@ -952,7 +971,7 @@ pub(crate) fn render_context_pack(
         }
         out.push_str(&heading);
         for row in group {
-            let card = format_compact_card(conn, row)?;
+            let card = format_context_card(conn, row, query_terms, max_chars)?;
             if out.len() + card.len() + 1 > max_chars {
                 return Ok(out);
             }
@@ -961,6 +980,30 @@ pub(crate) fn render_context_pack(
         }
     }
     Ok(out)
+}
+
+fn format_context_card(
+    conn: &Connection,
+    row: &Memory,
+    query_terms: &HashSet<String>,
+    max_chars: usize,
+) -> Result<String> {
+    let body = query_focused_summary(&row.body, query_terms, retrieval_body_char_limit(max_chars));
+    let links = get_links(conn, &row.id)?;
+    let link_text = if links.is_empty() {
+        String::new()
+    } else {
+        let rendered = links
+            .iter()
+            .map(|link| format!("{}:{}", link.kind, link.target))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(" ({rendered})")
+    };
+    Ok(format!(
+        "- {}:{} [{}] {} -- {}{}",
+        row.memory_type, row.status, row.scope, row.title, body, link_text
+    ))
 }
 
 pub(crate) struct SemanticContextRequest<'a> {
@@ -1328,7 +1371,12 @@ pub(crate) fn print_agent_context(
         );
     }
     let mut out = String::from("Agent Context\n");
-    out.push_str(&render_context_pack(conn, &rows, request.max_chars)?);
+    out.push_str(&render_context_pack_for_task(
+        conn,
+        &rows,
+        request.max_chars,
+        request.task,
+    )?);
     if matches!(request.mode, ContextMode::Agent | ContextMode::Deep) {
         append_relevant_next_actions(conn, &mut out, request.task, request.max_chars)?;
     }

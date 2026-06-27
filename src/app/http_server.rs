@@ -832,7 +832,9 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                     rules: None,
                 },
             )?;
-            HttpResponse::ok(json!({"context": render_context_pack(&conn, &rows, 5000)?}))
+            HttpResponse::ok(
+                json!({"context": render_context_pack_for_task(&conn, &rows, 5000, task)?}),
+            )
         }
         ("POST", "/brief") => {
             let value = parse_json_body(body)?;

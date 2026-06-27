@@ -220,7 +220,8 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 },
             )
             .map_err(|err| err.to_string())?;
-            render_context_pack(&conn, &rows, max_chars).map_err(|err| err.to_string())?
+            render_context_pack_for_task(&conn, &rows, max_chars, &task)
+                .map_err(|err| err.to_string())?
         }
         "memory_agent_context" => {
             let task = json_string(&args, "task").ok_or_else(|| "missing task".to_string())?;
@@ -240,7 +241,8 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 },
             )
             .map_err(|err| err.to_string())?;
-            render_context_pack(&conn, &rows, max_chars).map_err(|err| err.to_string())?
+            render_context_pack_for_task(&conn, &rows, max_chars, &task)
+                .map_err(|err| err.to_string())?
         }
         "memory_snapshot" => {
             let max_chars = json_usize(&args, "max_chars").unwrap_or(8000);

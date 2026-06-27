@@ -280,7 +280,7 @@ pub(crate) fn run() -> Result<()> {
                     .collect::<Result<Vec<_>>>()?;
                 println!("{}", serde_json::to_string_pretty(&full)?);
             } else {
-                let mut rendered = render_context_pack(&conn, &rows, max_chars)?;
+                let mut rendered = render_context_pack_for_task(&conn, &rows, max_chars, &task)?;
                 if with_codegraph {
                     rendered.push_str(&render_codegraph_hints(&rows, &task, Path::new(".")));
                 }
@@ -2106,25 +2106,6 @@ fn format_card(row: &MemoryWithLinks) -> String {
     }
     out.push('\n');
     out
-}
-
-fn format_compact_card(conn: &Connection, row: &Memory) -> Result<String> {
-    let body = row.body.split_whitespace().collect::<Vec<_>>().join(" ");
-    let links = get_links(conn, &row.id)?;
-    let link_text = if links.is_empty() {
-        String::new()
-    } else {
-        let rendered = links
-            .iter()
-            .map(|link| format!("{}:{}", link.kind, link.target))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!(" ({rendered})")
-    };
-    Ok(format!(
-        "- {}:{} [{}] {} -- {}{}",
-        row.memory_type, row.status, row.scope, row.title, body, link_text
-    ))
 }
 
 fn remember_text(

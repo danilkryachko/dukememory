@@ -3026,6 +3026,29 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
     assert!(context_pack.contains("Risks:"));
     assert!(!context_pack.contains("Recent unrelated context"));
 
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Context focused long card")
+        .arg(format!(
+            "{} constraints memory exact context detail should be visible {}",
+            "context prefix noise ".repeat(80),
+            "context tail noise ".repeat(80)
+        ))
+        .assert()
+        .success();
+    let focused_context_pack = stdout(
+        cmd(&db)
+            .arg("context-pack")
+            .arg("constraints memory")
+            .arg("--budget-profile")
+            .arg("normal")
+            .arg("--max-chars")
+            .arg("3000"),
+    );
+    assert!(focused_context_pack.contains("constraints memory exact context detail"));
+    assert!(!focused_context_pack.contains(&"context prefix noise ".repeat(10)));
+
     let recent_context_pack = stdout(
         cmd(&db)
             .arg("context-pack")
