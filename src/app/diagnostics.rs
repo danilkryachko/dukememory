@@ -265,6 +265,7 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
     let mut seen_files = HashSet::new();
     let mut seen_checks = HashSet::new();
     let task_terms = relevance_terms(request.task);
+    let (file_limit, check_limit) = brief_artifact_limits(task_terms.len());
 
     for hit in &retrieval.hits {
         let memory = &hit.memory.memory;
@@ -277,7 +278,7 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
                 push_unique_brief_item(&mut risks, &mut seen_items, item, 3);
             }
             "command" => {
-                push_unique_check(&mut checks, &mut seen_checks, &memory.body, 5);
+                push_unique_check(&mut checks, &mut seen_checks, &memory.body, check_limit);
                 push_unique_brief_item(&mut relevant, &mut seen_items, item, 5);
             }
             _ => {
@@ -287,12 +288,12 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
         for link in &hit.memory.links {
             if matches!(link.kind.as_str(), "file" | "symbol") {
                 let rendered = format!("{}:{}", link.kind, link.target);
-                if files.len() < 8 && seen_files.insert(rendered.clone()) {
+                if files.len() < file_limit && seen_files.insert(rendered.clone()) {
                     files.push(rendered);
                 }
             }
         }
-        collect_check_hints(&mut checks, &mut seen_checks, &memory.body, 5);
+        collect_check_hints(&mut checks, &mut seen_checks, &memory.body, check_limit);
     }
 
     let mut ids = must_follow
@@ -330,6 +331,14 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
         files,
         checks,
     })
+}
+
+fn brief_artifact_limits(relevance_term_count: usize) -> (usize, usize) {
+    match relevance_term_count {
+        0 => (0, 0),
+        1 => (3, 2),
+        _ => (8, 5),
+    }
 }
 
 fn brief_item_from_hit(hit: &RetrievalHit, query_terms: &HashSet<String>) -> BriefItem {

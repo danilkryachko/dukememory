@@ -3170,6 +3170,32 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
         ))
         .assert()
         .success();
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Generic linked memory")
+        .arg("memory agent project retrieval token quality context recall brief semantic")
+        .arg("--link")
+        .arg("file:src/noisy.rs")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("command")
+        .arg("Generic command")
+        .arg("cargo test generic_memory_noise")
+        .assert()
+        .success();
+
+    let generic_brief = stdout(
+        cmd(&db)
+            .arg("brief")
+            .arg("memory agent project retrieval token quality context recall brief semantic")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    assert!(!generic_brief.contains("Files:"));
+    assert!(!generic_brief.contains("Checks:"));
 
     let brief = stdout(
         cmd(&db)

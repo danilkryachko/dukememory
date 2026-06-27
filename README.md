@@ -72,6 +72,7 @@ Transcript-based memory quickly turns into noise.
 - runtime near-duplicate suppression for smaller focused retrieval packs
 - generic query-term filtering for cleaner relevance scoring
 - specificity-aware hit caps for extra-compact generic queries
+- specificity-aware brief file and check limits
 
 ## What It Remembers
 
