@@ -654,6 +654,23 @@ pub(crate) fn retrieval_quality_signals(
             *reads.entry(id).or_insert(0) += 1;
         }
     }
+    let mut signals = retrieval_feedback_signals_since(conn, since_ms)?;
+    signals.reads = reads;
+    Ok(signals)
+}
+
+pub(crate) fn retrieval_feedback_signals(
+    conn: &Connection,
+    since_days: i64,
+) -> Result<RetrievalQualitySignals> {
+    let since_ms = now_ms().saturating_sub(since_days.max(0).saturating_mul(86_400_000));
+    retrieval_feedback_signals_since(conn, since_ms)
+}
+
+fn retrieval_feedback_signals_since(
+    conn: &Connection,
+    since_ms: i64,
+) -> Result<RetrievalQualitySignals> {
     let mut useful = HashMap::new();
     let mut useless = HashMap::new();
     let mut useless_query_terms: HashMap<String, Vec<HashSet<String>>> = HashMap::new();
@@ -700,7 +717,7 @@ pub(crate) fn retrieval_quality_signals(
         }
     }
     Ok(RetrievalQualitySignals {
-        reads,
+        reads: HashMap::new(),
         useful,
         useless,
         useless_query_terms,
@@ -1131,7 +1148,7 @@ pub(crate) fn append_semantic_context_rows(
     }
     let threshold = semantic_score_threshold(request.budget);
     let max_additions = semantic_context_add_limit(request.limit, request.budget);
-    let quality_signals = retrieval_quality_signals(conn, 30).unwrap_or_default();
+    let quality_signals = retrieval_feedback_signals(conn, 30).unwrap_or_default();
     let mut added = 0;
     for item in embeddings::semantic_search(
         conn,
@@ -1550,7 +1567,7 @@ fn append_relevant_next_actions(
     }
     let max_actions = next_action_limit(max_chars);
     let mut actions = Vec::new();
-    let quality_signals = retrieval_quality_signals(conn, 30).unwrap_or_default();
+    let quality_signals = retrieval_feedback_signals(conn, 30).unwrap_or_default();
     let rows = query_memories(
         conn,
         None,

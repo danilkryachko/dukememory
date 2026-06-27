@@ -182,7 +182,7 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
             }
             let rows = query_memories(&conn, q, &types, &statuses, scope, fetch_limit)?;
             let rows = if let Some(query) = q {
-                let quality_signals = retrieval_quality_signals(&conn, 30).unwrap_or_default();
+                let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
                 filter_query_useless_memories(rows, query, &quality_signals)
             } else {
                 rows

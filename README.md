@@ -96,6 +96,7 @@ Transcript-based memory quickly turns into noise.
 - semantic context additions suppress same-query useless feedback hits
 - CLI, MCP, and web search suppress same-query useless feedback hits
 - MCP snapshot and agent next actions suppress same-query useless feedback hits
+- search and snapshot suppression use feedback-only signals to avoid read-event scans
 - budget planning uses missing feedback to choose the next smallest useful profile
 - budget planning ignores missing feedback after the gap is resolved
 - generic-only empty reads ignored by inferred memory-gap QA

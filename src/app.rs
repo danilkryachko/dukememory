@@ -207,7 +207,7 @@ pub(crate) fn run() -> Result<()> {
                 scope.as_deref(),
                 fetch_limit,
             )?;
-            let quality_signals = retrieval_quality_signals(&conn, 30).unwrap_or_default();
+            let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
             let mut rows = filter_query_useless_memories(rows, &query, &quality_signals);
             rows.truncate(limit);
             print_rows(&conn, &rows, json)?;

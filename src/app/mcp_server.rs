@@ -204,7 +204,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 fetch_limit,
             )
             .map_err(|err| err.to_string())?;
-            let quality_signals = retrieval_quality_signals(&conn, 30).unwrap_or_default();
+            let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
             let mut rows = filter_query_useless_memories(rows, &query, &quality_signals);
             rows.truncate(limit);
             compact_mcp_search_response(&rows, &query, max_chars).map_err(|err| err.to_string())?
@@ -267,7 +267,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             if query.trim().is_empty() {
                 render_context_pack(&conn, &rows, max_chars).map_err(|err| err.to_string())?
             } else {
-                let quality_signals = retrieval_quality_signals(&conn, 30).unwrap_or_default();
+                let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
                 rows = filter_query_useless_memories(rows, &query, &quality_signals);
                 render_context_pack_for_task(&conn, &rows, max_chars, &query)
                     .map_err(|err| err.to_string())?
