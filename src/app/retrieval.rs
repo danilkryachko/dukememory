@@ -70,7 +70,10 @@ pub(crate) fn print_retrieve(conn: &Connection, request: RetrieveRequest<'_>) ->
         OutputFormat::Agent => {
             println!("Retrieved Memory:");
             println!("{}", report.receipt);
-            println!("{}", render_retrieval_pack(&report.hits, request.budget)?);
+            println!(
+                "{}",
+                render_retrieval_pack(&report.hits, request.budget, request.query)?
+            );
             println!("\nSelection Reasons:");
             for hit in &report.hits {
                 println!(
@@ -99,7 +102,10 @@ pub(crate) fn print_retrieve(conn: &Connection, request: RetrieveRequest<'_>) ->
             }
         }
         OutputFormat::Plain => {
-            println!("{}", render_retrieval_pack(&report.hits, request.budget)?);
+            println!(
+                "{}",
+                render_retrieval_pack(&report.hits, request.budget, request.query)?
+            );
             println!("{}", report.receipt);
         }
     }
@@ -737,10 +743,11 @@ pub(crate) fn render_context_pack(
     Ok(out)
 }
 
-fn render_retrieval_pack(hits: &[RetrievalHit], max_chars: usize) -> Result<String> {
+fn render_retrieval_pack(hits: &[RetrievalHit], max_chars: usize, query: &str) -> Result<String> {
     if hits.is_empty() {
         return Ok("Relevant Memory:\n- none".to_string());
     }
+    let query_terms = tokenize(query);
     let mut rows = hits
         .iter()
         .map(|hit| &hit.memory.memory)
@@ -758,7 +765,7 @@ fn render_retrieval_pack(hits: &[RetrievalHit], max_chars: usize) -> Result<Stri
             out.push_str(&heading);
             current_group = group;
         }
-        let body = row.body.split_whitespace().collect::<Vec<_>>().join(" ");
+        let body = query_focused_body(row, &query_terms, max_chars);
         let card = format!(
             "- {}:{} [{}] {} -- {}",
             row.memory_type, row.status, row.scope, row.title, body
@@ -770,6 +777,75 @@ fn render_retrieval_pack(hits: &[RetrievalHit], max_chars: usize) -> Result<Stri
         out.push_str(&card);
     }
     Ok(out)
+}
+
+fn query_focused_body(memory: &Memory, query_terms: &HashSet<String>, max_chars: usize) -> String {
+    let body = one_line_summary(&memory.body);
+    let body_limit = retrieval_body_char_limit(max_chars);
+    if body.chars().count() <= body_limit {
+        return body;
+    }
+    if query_terms.is_empty() {
+        return truncate_chars(&body, body_limit);
+    }
+    focused_text_window(&body, query_terms, body_limit)
+        .unwrap_or_else(|| truncate_chars(&body, body_limit))
+}
+
+fn retrieval_body_char_limit(max_chars: usize) -> usize {
+    if max_chars <= 1_200 {
+        180
+    } else if max_chars <= 2_500 {
+        260
+    } else if max_chars <= 8_000 {
+        520
+    } else {
+        800
+    }
+}
+
+fn focused_text_window(
+    text: &str,
+    query_terms: &HashSet<String>,
+    max_chars: usize,
+) -> Option<String> {
+    let words = text.split_whitespace().collect::<Vec<_>>();
+    if words.is_empty() {
+        return None;
+    }
+    let center = words.iter().position(|word| {
+        tokenize(word)
+            .iter()
+            .any(|token| query_terms.contains(token))
+    })?;
+    let mut start = center.saturating_sub(8);
+    let mut end = start;
+    let target_chars = max_chars.saturating_sub(6).max(20);
+    while end < words.len() {
+        let candidate_end = end + 1;
+        if window_words_len(&words[start..candidate_end]) > target_chars {
+            break;
+        }
+        end = candidate_end;
+    }
+    while center >= end && start < center {
+        start += 1;
+        while end < words.len() && window_words_len(&words[start..end + 1]) <= target_chars {
+            end += 1;
+        }
+    }
+    let mut out = words[start..end].join(" ");
+    if start > 0 {
+        out = format!("...{out}");
+    }
+    if end < words.len() {
+        out.push_str("...");
+    }
+    Some(truncate_chars(&out, max_chars))
+}
+
+fn window_words_len(words: &[&str]) -> usize {
+    words.iter().map(|word| word.len()).sum::<usize>() + words.len().saturating_sub(1)
 }
 
 fn grouped_memories(rows: &[Memory]) -> Vec<(&'static str, Vec<&Memory>)> {

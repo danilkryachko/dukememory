@@ -67,6 +67,7 @@ Transcript-based memory quickly turns into noise.
 - quality-aware retrieval ranking from recent reads and feedback
 - diverse retrieval selection so one memory type cannot crowd out the brief
 - adaptive relevance floors so tiny retrieval drops weak low-score tails
+- query-focused retrieval snippets so long cards stay token-light
 
 ## What It Remembers
 

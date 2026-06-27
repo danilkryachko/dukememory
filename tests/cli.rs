@@ -2953,6 +2953,31 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
     assert!(tiny.contains("Relevant Memory:"));
 
     cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Focused snippet card")
+        .arg(format!(
+            "{} needle relevance floor exact detail should be visible {}",
+            "prefix noise ".repeat(80),
+            "tail noise ".repeat(80)
+        ))
+        .assert()
+        .success();
+    let focused_snippet = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("needle relevance floor")
+            .arg("--strategy")
+            .arg("fts")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    assert!(focused_snippet.len() <= 1200);
+    assert!(focused_snippet.contains("Focused snippet card"));
+    assert!(focused_snippet.contains("needle relevance floor exact detail"));
+    assert!(!focused_snippet.contains(&"prefix noise ".repeat(20)));
+
+    cmd(&db)
         .arg("context-pack")
         .arg("constraints memory")
         .arg("--budget-profile")
