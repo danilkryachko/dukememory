@@ -451,7 +451,7 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         writeln!(
             stdin,
             "{}",
-            serde_json::json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"memory_get","arguments":{"id":long_id,"include_body":true}}})
+            serde_json::json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"memory_get","arguments":{"id":long_id.clone(),"include_body":true}}})
         )
         .unwrap();
         writeln!(
@@ -512,6 +512,42 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
             stdin,
             "{}",
             serde_json::json!({"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"memory_budget_plan","arguments":{"task":"needle mcp","max_chars":600}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"memory_search","arguments":{"query":"needle mcp","max_chars":80}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"memory_get","arguments":{"id":long_id.clone(),"query":"needle mcp","max_chars":80}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"memory_evidence","arguments":{"id":long_id,"query":"needle mcp","max_chars":80}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":19,"method":"tools/call","params":{"name":"memory_doctrine","arguments":{"max_chars":80}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"memory_budget_plan","arguments":{"task":"needle mcp","max_chars":80}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"memory_doctor","arguments":{"max_chars":80}}})
         )
         .unwrap();
     }
@@ -608,6 +644,22 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
     assert!(budget_plan.contains("profile"));
     assert!(budget_plan.contains("max_chars"));
     assert!(budget_plan.contains("reasons"));
+    let mcp_text = |id: i64| {
+        let line = stdout
+            .lines()
+            .find(|line| line.contains(&format!("\"id\":{id}")))
+            .unwrap();
+        let value: Value = serde_json::from_str(line).unwrap();
+        value["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    for id in 16..=21 {
+        let text = mcp_text(id);
+        serde_json::from_str::<Value>(&text)
+            .unwrap_or_else(|err| panic!("MCP id {id} returned invalid JSON text: {err}: {text}"));
+    }
 }
 
 #[test]

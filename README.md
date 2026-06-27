@@ -89,6 +89,7 @@ Transcript-based memory quickly turns into noise.
 - MCP snapshot, review, and inbox list are bounded for token-light agent reads
 - MCP brief, impact, drift, auto-ingest, and doctor share bounded agent defaults
 - MCP budget planning helps agents choose the smallest useful memory budget
+- MCP compact JSON responses stay valid under very small max_chars budgets
 - generic-only empty reads ignored by inferred memory-gap QA
 - zero-card generic-only outputs explain why memory was not injected
 - weak one-term retrieval skips unrelated recent fallback candidates

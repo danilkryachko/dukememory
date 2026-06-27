@@ -272,8 +272,8 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let max_chars = json_usize(&args, "max_chars").unwrap_or(800);
             let plan =
                 budget_plan(&conn, &task, scope.as_deref()).map_err(|err| err.to_string())?;
-            let rendered = serde_json::to_string_pretty(&plan).map_err(|err| err.to_string())?;
-            truncate_chars(&rendered, max_chars)
+            budgeted_mcp_json_response(&plan, max_chars, &["reasons"])
+                .map_err(|err| err.to_string())?
         }
         "memory_brief" => {
             let task = json_string(&args, "task").ok_or_else(|| "missing task".to_string())?;
@@ -468,8 +468,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 "review_issues": review.len(),
                 "ok": secrets.is_empty() && pending == 0 && review.is_empty(),
             });
-            let rendered = serde_json::to_string_pretty(&value).map_err(|err| err.to_string())?;
-            truncate_chars(&rendered, max_chars)
+            render_budgeted_json_value(value, max_chars, &[]).map_err(|err| err.to_string())?
         }
         "memory_inbox_list" => {
             let limit = json_usize(&args, "limit").unwrap_or(20);
@@ -502,8 +501,7 @@ fn compact_mcp_search_response(rows: &[Memory], query: &str, max_chars: usize) -
             break;
         }
     }
-    let rendered = serde_json::to_string_pretty(&items)?;
-    Ok(truncate_chars(&rendered, max_chars))
+    render_budgeted_json_value(Value::Array(items), max_chars, &[])
 }
 
 fn compact_mcp_memory_response(
@@ -511,12 +509,11 @@ fn compact_mcp_memory_response(
     query: &str,
     max_chars: usize,
 ) -> Result<String> {
-    let rendered = serde_json::to_string_pretty(&compact_mcp_memory_value(
-        &memory.memory,
-        &memory.links,
-        query,
-    ))?;
-    Ok(truncate_chars(&rendered, max_chars))
+    render_budgeted_json_value(
+        compact_mcp_memory_value(&memory.memory, &memory.links, query),
+        max_chars,
+        &["links"],
+    )
 }
 
 fn compact_mcp_memory_value(memory: &Memory, links: &[MemoryLink], query: &str) -> Value {
@@ -640,10 +637,7 @@ fn compact_mcp_evidence_response(
         "audit_events": audit_events,
         "receipt": report.receipt,
     });
-    Ok(truncate_chars(
-        &serde_json::to_string_pretty(&value)?,
-        max_chars,
-    ))
+    render_budgeted_json_value(value, max_chars, &["audit_events", "supersedes_chain"])
 }
 
 fn compact_mcp_doctrine_response(
@@ -655,12 +649,7 @@ fn compact_mcp_doctrine_response(
     let query_terms = relevance_terms(query);
     compact_doctrine_section(&mut value, "active", &query_terms);
     compact_doctrine_section(&mut value, "superseded", &query_terms);
-    fit_json_array_sections(
-        &mut value,
-        max_chars,
-        &["superseded", "conflicts", "active"],
-    )?;
-    Ok(serde_json::to_string_pretty(&value)?)
+    render_budgeted_json_value(value, max_chars, &["superseded", "conflicts", "active"])
 }
 
 fn compact_mcp_review_response(
