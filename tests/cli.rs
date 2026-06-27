@@ -311,6 +311,39 @@ fn live_eval_resolves_empty_reads_by_memory_links() {
 }
 
 #[test]
+fn live_eval_ignores_code_identifier_empty_reads() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Initialize schema")
+        .arg("Create the memory database before recording read events.")
+        .assert()
+        .success();
+    insert_empty_read_event(&db, "brief", "live_eval_report");
+    insert_empty_read_event(&db, "brief", "src/app/diagnostics.rs");
+    insert_empty_read_event(&db, "brief", "missing checkout policy");
+
+    let eval_live = stdout(cmd(&db).arg("eval").arg("live").arg("--json"));
+    let eval_live_json: Value = serde_json::from_str(&eval_live).unwrap();
+    assert_eq!(eval_live_json["inferred_missing"].as_u64().unwrap(), 1);
+    let queries = eval_live_json["inferred_missing_queries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .collect::<Vec<_>>();
+    assert!(
+        queries
+            .iter()
+            .any(|item| *item == "missing checkout policy")
+    );
+    assert!(!queries.iter().any(|item| *item == "live_eval_report"));
+    assert!(!queries.iter().any(|item| *item == "src/app/diagnostics.rs"));
+}
+
+#[test]
 fn init_update_get_delete_and_privacy_guard() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

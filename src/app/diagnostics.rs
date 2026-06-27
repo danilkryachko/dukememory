@@ -1210,10 +1210,26 @@ fn inferred_live_signals(
 }
 
 fn should_infer_missing_memory_gap(conn: &Connection, query: &str) -> Result<bool> {
-    if relevance_terms(query).is_empty() {
+    let terms = relevance_terms(query);
+    if terms.is_empty() || is_code_identifier_query(query) {
         return Ok(false);
     }
     unresolved_memory_gap(conn, query)
+}
+
+fn is_code_identifier_query(query: &str) -> bool {
+    let query = query.trim();
+    if query.len() < 3 || query.chars().any(char::is_whitespace) {
+        return false;
+    }
+    query.contains("::")
+        || query.contains('/')
+        || query.contains('\\')
+        || query.contains('.')
+        || query.contains('_')
+        || query
+            .chars()
+            .any(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
 }
 
 pub(crate) fn unresolved_memory_gap(conn: &Connection, query: &str) -> Result<bool> {
