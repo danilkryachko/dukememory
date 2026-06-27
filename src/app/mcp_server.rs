@@ -110,7 +110,7 @@ fn handle_mcp_request(db: &Path, request: Value) -> Value {
 fn mcp_tools() -> Value {
     json!([
         {"name":"memory_brief","description":"Return a tiny verified task brief","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"max_chars":{"type":"number"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
-        {"name":"memory_impact","description":"Return lightweight impact memory for a file, symbol, or topic","inputSchema":{"type":"object","properties":{"target":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"max_chars":{"type":"number"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["target"]}},
+        {"name":"memory_impact","description":"Return lightweight impact memory for a file, symbol, or topic","inputSchema":{"type":"object","properties":{"target":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"max_chars":{"type":"number"},"scope":{"type":"string"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["target"]}},
         {"name":"memory_budget_plan","description":"Choose the smallest useful memory budget for a task","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"scope":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_feedback","description":"Record lightweight useful/useless/missing feedback for memory reads","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"rating":{"type":"string"},"command":{"type":"string"},"query":{"type":"string"},"note":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["rating"]}},
         {"name":"memory_drift","description":"Detect cheap local memory drift before coding as bounded summary by default","inputSchema":{"type":"object","properties":{"changed_only":{"type":"boolean"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"}}}},
@@ -374,6 +374,12 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let budget = json_usize(&args, "budget").unwrap_or(1200);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(budget);
             let scope = mcp_memory_scope(&args);
+            let provider = json_string(&args, "provider")
+                .unwrap_or_else(|| DEFAULT_EMBED_PROVIDER.to_string());
+            let endpoint = json_string(&args, "endpoint")
+                .unwrap_or_else(|| DEFAULT_EMBED_ENDPOINT.to_string());
+            let model =
+                json_string(&args, "model").unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
             let report = impact_report(
                 &conn,
                 &ImpactRequest {
@@ -381,6 +387,9 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     limit,
                     budget,
                     scope: scope.as_deref(),
+                    provider: &provider,
+                    endpoint: &endpoint,
+                    model: &model,
                     json_out: true,
                 },
             )

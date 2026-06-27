@@ -379,6 +379,9 @@ pub(crate) fn run() -> Result<()> {
             budget,
             budget_profile,
             scope,
+            provider,
+            endpoint,
+            model,
             json,
         } => print_impact(
             &conn,
@@ -388,6 +391,21 @@ pub(crate) fn run() -> Result<()> {
                 budget: budget
                     .unwrap_or_else(|| budget_profile_chars(Some(budget_profile)).unwrap_or(1200)),
                 scope: scope.as_deref(),
+                provider: select_cli_or_config(
+                    &provider,
+                    DEFAULT_EMBED_PROVIDER,
+                    &runtime.config.embeddings.provider,
+                ),
+                endpoint: select_cli_or_config(
+                    &endpoint,
+                    DEFAULT_EMBED_ENDPOINT,
+                    &runtime.config.embeddings.endpoint,
+                ),
+                model: select_cli_or_config(
+                    &model,
+                    DEFAULT_EMBED_MODEL,
+                    &runtime.config.embeddings.model,
+                ),
                 json_out: json,
             },
         )?,

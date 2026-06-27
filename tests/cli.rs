@@ -4963,6 +4963,52 @@ fn search_falls_back_to_bounded_overlap_for_long_queries() {
 }
 
 #[test]
+fn impact_uses_semantic_fallback_for_underfilled_natural_queries() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Semantic impact fallback")
+        .arg("semantic impact useful memory should be found through embeddings")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("embed-index")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .assert()
+        .success();
+
+    let impact = stdout(
+        cmd(&db)
+            .arg("impact")
+            .arg("semantic impact fallback orchard")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let impact_json: Value = serde_json::from_str(&impact).unwrap();
+    assert_eq!(impact_json["semantic_used"], true);
+    let related_titles = impact_json["related"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["title"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(related_titles.contains(&"Semantic impact fallback"));
+}
+
+#[test]
 fn agent_context_json_is_compact_and_query_focused() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

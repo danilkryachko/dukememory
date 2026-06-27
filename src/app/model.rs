@@ -89,6 +89,7 @@ pub(crate) struct ImpactReport {
     pub(crate) version: u32,
     pub(crate) target: String,
     pub(crate) budget: usize,
+    pub(crate) semantic_used: bool,
     pub(crate) receipt: String,
     pub(crate) decisions: Vec<BriefItem>,
     pub(crate) constraints: Vec<BriefItem>,

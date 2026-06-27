@@ -69,6 +69,9 @@ pub(crate) struct ImpactRequest<'a> {
     pub(crate) limit: usize,
     pub(crate) budget: usize,
     pub(crate) scope: Option<&'a str>,
+    pub(crate) provider: &'a str,
+    pub(crate) endpoint: &'a str,
+    pub(crate) model: &'a str,
     pub(crate) json_out: bool,
 }
 
@@ -627,10 +630,18 @@ pub(crate) fn impact_report(
             rows.push(row);
         }
     }
+    let target_terms = relevance_terms(request.target);
+    let semantic_used = append_semantic_impact_rows(
+        conn,
+        &mut rows,
+        request,
+        effective_limit,
+        candidate_limit,
+        &target_terms,
+    )?;
     let quality_signals = retrieval_quality_signals(conn, 30).unwrap_or_default();
     rows = filter_query_useless_memories(rows, request.target, &quality_signals);
     let mut scored_rows = Vec::new();
-    let target_terms = relevance_terms(request.target);
     for memory in rows {
         let linked = memory_links_target(conn, &memory.id, request.target)?;
         let mut quality_reasons = Vec::new();
@@ -735,14 +746,19 @@ pub(crate) fn impact_report(
         .collect::<Vec<_>>();
     ids.sort();
     ids.dedup();
-    let receipt = memory_receipt("impact", None, &ids, "none");
+    let semantic_status = if semantic_used {
+        MemorySemanticStatus::Used
+    } else {
+        MemorySemanticStatus::Fallback
+    };
+    let receipt = memory_receipt_with_semantic("impact", semantic_status, &ids, "none");
     log_read_event(
         conn,
         ReadEventInput {
             command: "impact",
             query: request.target,
             ids: &ids,
-            semantic_used: false,
+            semantic_used,
             result_count: ids.len(),
             budget: request.budget,
             elapsed_ms: started.elapsed().as_millis(),
@@ -753,6 +769,7 @@ pub(crate) fn impact_report(
         version: 1,
         target: request.target.to_string(),
         budget: request.budget,
+        semantic_used,
         receipt,
         decisions,
         constraints,
@@ -761,6 +778,118 @@ pub(crate) fn impact_report(
         related,
         links,
     })
+}
+
+fn append_semantic_impact_rows(
+    conn: &Connection,
+    rows: &mut Vec<Memory>,
+    request: &ImpactRequest<'_>,
+    effective_limit: usize,
+    candidate_limit: usize,
+    target_terms: &HashSet<String>,
+) -> Result<bool> {
+    if rows.len() >= effective_limit
+        || target_terms.len() < 2
+        || is_code_identifier_query(request.target)
+        || !embeddings::semantic_index_ready(
+            conn,
+            request.provider,
+            request.endpoint,
+            request.model,
+        )
+        .unwrap_or(false)
+    {
+        return Ok(false);
+    }
+    let max_additions =
+        semantic_impact_add_limit(effective_limit.saturating_sub(rows.len()), request.budget);
+    let mut added = 0;
+    for item in embeddings::semantic_search(
+        conn,
+        request.provider,
+        request.endpoint,
+        request.model,
+        request.target,
+        semantic_impact_candidate_scan_limit(candidate_limit, request.budget),
+    )? {
+        if item.score < semantic_impact_score_threshold(request.budget) {
+            continue;
+        }
+        if !semantic_impact_candidate_matches(
+            &item.memory,
+            target_terms,
+            item.score,
+            request.budget,
+        ) {
+            continue;
+        }
+        let memory = item.memory.memory;
+        if !matches!(memory.status.as_str(), "active" | "uncertain") {
+            continue;
+        }
+        if let Some(scope) = request.scope
+            && memory.scope != scope
+        {
+            continue;
+        }
+        if rows.iter().any(|existing| existing.id == memory.id) {
+            continue;
+        }
+        rows.push(memory);
+        added += 1;
+        if added >= max_additions {
+            break;
+        }
+    }
+    Ok(added > 0)
+}
+
+fn semantic_impact_candidate_scan_limit(candidate_limit: usize, budget: usize) -> usize {
+    if budget <= 1_200 {
+        candidate_limit.max(1).saturating_mul(2).min(12)
+    } else if budget <= 3_000 {
+        candidate_limit.max(1).saturating_mul(2).min(32)
+    } else {
+        candidate_limit.clamp(1, 64)
+    }
+}
+
+fn semantic_impact_add_limit(remaining: usize, budget: usize) -> usize {
+    let budget_limit = if budget <= 1_200 {
+        1
+    } else if budget <= 3_000 {
+        2
+    } else {
+        4
+    };
+    remaining.min(budget_limit).max(1)
+}
+
+fn semantic_impact_score_threshold(budget: usize) -> f64 {
+    if budget <= 1_200 {
+        0.18
+    } else if budget <= 3_000 {
+        0.12
+    } else {
+        0.05
+    }
+}
+
+fn semantic_impact_candidate_matches(
+    item: &MemoryWithLinks,
+    target_terms: &HashSet<String>,
+    semantic_score: f64,
+    budget: usize,
+) -> bool {
+    if budget > 1_200 || semantic_score >= 0.32 {
+        return true;
+    }
+    let required_overlap = target_terms.len().min(2);
+    let mut tokens = tokenize(&format!("{} {}", item.memory.title, item.memory.body));
+    for link in &item.links {
+        tokens.extend(tokenize(&format!("{} {}", link.kind, link.target)));
+    }
+    target_terms.intersection(&tokens).count() >= required_overlap
 }
 
 fn impact_lexical_overlap_score(memory: &Memory, terms: &HashSet<String>) -> f64 {

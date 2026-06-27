@@ -915,6 +915,18 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 .map(|value| value as usize)
                 .unwrap_or(10);
             let scope = value.get("scope").and_then(Value::as_str);
+            let provider = value
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or(DEFAULT_EMBED_PROVIDER);
+            let endpoint = value
+                .get("endpoint")
+                .and_then(Value::as_str)
+                .unwrap_or(DEFAULT_EMBED_ENDPOINT);
+            let model = value
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or(DEFAULT_EMBED_MODEL);
             let report = impact_report(
                 &conn,
                 &ImpactRequest {
@@ -922,6 +934,9 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                     limit,
                     budget,
                     scope,
+                    provider,
+                    endpoint,
+                    model,
                     json_out: true,
                 },
             )?;
