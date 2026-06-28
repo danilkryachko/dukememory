@@ -287,6 +287,9 @@ pub(crate) struct ProjectDashboardItem {
     pub(crate) autonomous_semantic_empty_missing: Option<usize>,
     pub(crate) autonomous_semantic_empty_missing_queries: Vec<String>,
     pub(crate) embedding_missing: Option<usize>,
+    pub(crate) embedding_provider_reachable: Option<bool>,
+    pub(crate) embedding_provider_health_ms: Option<u128>,
+    pub(crate) embedding_provider_error: Option<String>,
     pub(crate) semantic_read_rate: Option<f64>,
     pub(crate) semantic_result_rate: Option<f64>,
     pub(crate) semantic_empty_read_count: Option<usize>,
@@ -411,6 +414,9 @@ pub(crate) struct OpsEmbeddingStatus {
     pub(crate) missing: usize,
     pub(crate) stale: usize,
     pub(crate) current: bool,
+    pub(crate) provider_reachable: bool,
+    pub(crate) provider_health_ms: Option<u128>,
+    pub(crate) provider_error: Option<String>,
     pub(crate) background_sync_ready: bool,
 }
 
@@ -1809,6 +1815,9 @@ pub(crate) fn dashboard_repair_history_report(
             autonomous_semantic_empty_missing: None,
             autonomous_semantic_empty_missing_queries: Vec::new(),
             embedding_missing: None,
+            embedding_provider_reachable: None,
+            embedding_provider_health_ms: None,
+            embedding_provider_error: None,
             semantic_read_rate: None,
             semantic_result_rate: None,
             semantic_empty_read_count: None,
@@ -2540,6 +2549,15 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                     .map(|live| live.semantic_empty_missing_queries.clone())
                     .unwrap_or_default(),
                 embedding_missing,
+                embedding_provider_reachable: embedding
+                    .as_ref()
+                    .map(|status| status.provider_reachable),
+                embedding_provider_health_ms: embedding
+                    .as_ref()
+                    .and_then(|status| status.provider_health_ms),
+                embedding_provider_error: embedding
+                    .as_ref()
+                    .and_then(|status| status.provider_error.clone()),
                 semantic_read_rate: usage.as_ref().map(|usage| usage.semantic_eligible_read_rate),
                 semantic_result_rate: usage.as_ref().map(|usage| usage.semantic_result_rate),
                 semantic_empty_read_count: usage
@@ -2984,10 +3002,11 @@ pub(crate) fn print_ops_status(
             report.quality_loop.reversible_cleanup_ready
         );
         println!(
-            "embeddings: {}/{} current={} missing={} stale={}",
+            "embeddings: {}/{} current={} reachable={} missing={} stale={}",
             report.embeddings.provider,
             report.embeddings.model,
             report.embeddings.current,
+            report.embeddings.provider_reachable,
             report.embeddings.missing,
             report.embeddings.stale
         );
@@ -3099,6 +3118,13 @@ pub(crate) fn ops_status_report(
     if !embedding_current {
         recommendations.push("run dukememory embed-index before cross-device sync".to_string());
     }
+    if !embedding.provider_reachable {
+        issues.push("embedding provider is not reachable".to_string());
+        recommendations.push(
+            "check embedding endpoint/model before relying on semantic recall or embed-index"
+                .to_string(),
+        );
+    }
     if repair_loop.failed_actions > 0 {
         issues.push(format!(
             "dashboard repair loop has failed actions: failed={}",
@@ -3193,6 +3219,15 @@ pub(crate) fn ops_status_report(
             embedding.missing, embedding.stale
         ));
     }
+    if !embedding.provider_reachable {
+        blockers.push(format!(
+            "embedding provider is unreachable: {}",
+            embedding
+                .provider_error
+                .as_deref()
+                .unwrap_or("health check failed")
+        ));
+    }
     if quality_loop.duplicate_candidates > 8 {
         blockers.push(format!(
             "{} duplicate candidates should be resolved before sharing",
@@ -3272,7 +3307,10 @@ pub(crate) fn ops_status_report(
             missing: embedding.missing,
             stale: embedding.stale,
             current: embedding_current,
-            background_sync_ready: embedding_current,
+            provider_reachable: embedding.provider_reachable,
+            provider_health_ms: embedding.provider_health_ms,
+            provider_error: embedding.provider_error,
+            background_sync_ready: embedding_current && embedding.provider_reachable,
         },
         autonomous: OpsAutonomousStatus {
             installed: autonomous.is_some(),

@@ -7909,6 +7909,9 @@ fn v14_1_daemon_autopilot_writes_status_backup_cleanup_and_ingests() {
     );
     let embed_json: Value = serde_json::from_str(&embed_status).unwrap();
     assert!(embed_json["indexed"].as_u64().unwrap() >= 1);
+    assert_eq!(embed_json["provider_reachable"], true);
+    assert!(embed_json["provider_health_ms"].as_u64().is_some());
+    assert_eq!(embed_json["provider_error"], Value::Null);
 }
 
 #[test]
@@ -8395,6 +8398,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("semantic empty reads"));
     assert!(html.contains("semantic result warnings"));
     assert!(html.contains("semantic empty queries"));
+    assert!(html.contains("embedding provider"));
     assert!(html.contains("gap inbox projects"));
     assert!(html.contains("gap inbox pending"));
     assert!(html.contains("gap inbox stale"));
@@ -8608,6 +8612,9 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(ops.contains("\"semantic_eligible_result_rate\""));
     assert!(ops.contains("\"semantic_eligible_empty_read_count\""));
     assert!(ops.contains("\"semantic_empty_queries\""));
+    assert!(ops.contains("\"provider_reachable\""));
+    assert!(ops.contains("\"provider_health_ms\""));
+    assert!(ops.contains("\"provider_error\""));
     assert!(ops.contains("\"agent_integration\""));
     assert!(ops.contains("\"skill_installed\""));
     assert!(ops.contains("\"fresh\""));
@@ -8640,6 +8647,9 @@ fn v14_6_local_memory_ui_and_http_actions() {
         "GET /embed-status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(embed_status.contains("\"embedding\""));
+    assert!(embed_status.contains("\"provider_reachable\""));
+    assert!(embed_status.contains("\"provider_health_ms\""));
+    assert!(embed_status.contains("\"provider_error\""));
 
     let embed_body = r#"{"provider":"mock","endpoint":"local","model":"mock-small"}"#;
     let embed_request = format!(

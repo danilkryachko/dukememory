@@ -401,6 +401,9 @@ pub(crate) struct EmbedStatusReport {
     pub(crate) indexed: usize,
     pub(crate) stale: usize,
     pub(crate) missing: usize,
+    pub(crate) provider_reachable: bool,
+    pub(crate) provider_health_ms: Option<u128>,
+    pub(crate) provider_error: Option<String>,
 }
 
 pub(crate) fn print_embed_status(
@@ -421,6 +424,17 @@ pub(crate) fn print_embed_status(
         println!("indexed: {}", report.indexed);
         println!("missing: {}", report.missing);
         println!("stale: {}", report.stale);
+        println!("provider_reachable: {}", report.provider_reachable);
+        println!(
+            "provider_health_ms: {}",
+            report
+                .provider_health_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        );
+        if let Some(error) = &report.provider_error {
+            println!("provider_error: {error}");
+        }
     }
     Ok(())
 }
@@ -465,6 +479,7 @@ pub(crate) fn embed_status(
             None => missing += 1,
         }
     }
+    let provider_health = embedding_provider_health(provider, endpoint);
     Ok(EmbedStatusReport {
         provider: provider.to_string(),
         endpoint: endpoint.to_string(),
@@ -473,7 +488,72 @@ pub(crate) fn embed_status(
         indexed,
         stale,
         missing,
+        provider_reachable: provider_health.reachable,
+        provider_health_ms: provider_health.elapsed_ms,
+        provider_error: provider_health.error,
     })
+}
+
+struct EmbeddingProviderHealth {
+    reachable: bool,
+    elapsed_ms: Option<u128>,
+    error: Option<String>,
+}
+
+fn embedding_provider_health(provider: &str, endpoint: &str) -> EmbeddingProviderHealth {
+    let started = std::time::Instant::now();
+    let result = match provider.trim().to_lowercase().as_str() {
+        "mock" => Ok(()),
+        "ollama" => {
+            let url = format!("{}/api/tags", endpoint.trim_end_matches('/'));
+            reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_millis(1500))
+                .build()
+                .and_then(|client| client.get(url).send())
+                .and_then(|response| response.error_for_status().map(|_| ()))
+                .map_err(Into::into)
+        }
+        "openai" | "openai-compatible" | "openai_compatible" => {
+            let url = format!("{}/v1/models", endpoint.trim_end_matches('/'));
+            let client = match reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_millis(1500))
+                .build()
+            {
+                Ok(client) => client,
+                Err(error) => return provider_health_error(started, error.into()),
+            };
+            let mut request = client.get(url);
+            if let Ok(key) = std::env::var("DUKEMEMORY_OPENAI_API_KEY")
+                && !key.trim().is_empty()
+            {
+                request = request.bearer_auth(key);
+            }
+            request
+                .send()
+                .and_then(|response| response.error_for_status().map(|_| ()))
+                .map_err(Into::into)
+        }
+        other => Err(anyhow::anyhow!("unsupported embedding provider: {other}")),
+    };
+    match result {
+        Ok(()) => EmbeddingProviderHealth {
+            reachable: true,
+            elapsed_ms: Some(started.elapsed().as_millis()),
+            error: None,
+        },
+        Err(error) => provider_health_error(started, error),
+    }
+}
+
+fn provider_health_error(
+    started: std::time::Instant,
+    error: anyhow::Error,
+) -> EmbeddingProviderHealth {
+    EmbeddingProviderHealth {
+        reachable: false,
+        elapsed_ms: Some(started.elapsed().as_millis()),
+        error: Some(truncate_chars(&error.to_string(), 220)),
+    }
 }
 
 pub(crate) fn embed_watch(
