@@ -1,6 +1,10 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+const PROVIDER_HEALTH_TIMEOUT_MS: u64 = 1_500;
+const PROVIDER_HEALTH_OK_CACHE_MS: i64 = 5_000;
+const PROVIDER_HEALTH_DOWN_COOLDOWN_MS: i64 = 60_000;
+
 pub(crate) fn embed_index(
     conn: &Connection,
     provider: &str,
@@ -514,7 +518,7 @@ pub(crate) fn embed_status(
             None => missing += 1,
         }
     }
-    let provider_health = embedding_provider_health(provider, endpoint);
+    let provider_health = embedding_provider_health(conn, provider, endpoint);
     Ok(EmbedStatusReport {
         provider: provider.to_string(),
         endpoint: endpoint.to_string(),
@@ -535,27 +539,46 @@ struct EmbeddingProviderHealth {
     error: Option<String>,
 }
 
-fn embedding_provider_health(provider: &str, endpoint: &str) -> EmbeddingProviderHealth {
+fn embedding_provider_health(
+    conn: &Connection,
+    provider: &str,
+    endpoint: &str,
+) -> EmbeddingProviderHealth {
+    let provider_key = provider.trim().to_lowercase();
+    let endpoint_key = endpoint.trim().trim_end_matches('/').to_string();
+    if provider_key == "mock" {
+        return EmbeddingProviderHealth {
+            reachable: true,
+            elapsed_ms: Some(0),
+            error: None,
+        };
+    }
+    if let Some(cached) = cached_embedding_provider_health(conn, &provider_key, &endpoint_key) {
+        return cached;
+    }
     let started = std::time::Instant::now();
-    let result = match provider.trim().to_lowercase().as_str() {
-        "mock" => Ok(()),
+    let result = match provider_key.as_str() {
         "ollama" => {
-            let url = format!("{}/api/tags", endpoint.trim_end_matches('/'));
+            let url = format!("{endpoint_key}/api/tags");
             reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_millis(1500))
+                .timeout(std::time::Duration::from_millis(PROVIDER_HEALTH_TIMEOUT_MS))
                 .build()
                 .and_then(|client| client.get(url).send())
                 .and_then(|response| response.error_for_status().map(|_| ()))
                 .map_err(Into::into)
         }
         "openai" | "openai-compatible" | "openai_compatible" => {
-            let url = format!("{}/v1/models", endpoint.trim_end_matches('/'));
+            let url = format!("{endpoint_key}/v1/models");
             let client = match reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_millis(1500))
+                .timeout(std::time::Duration::from_millis(PROVIDER_HEALTH_TIMEOUT_MS))
                 .build()
             {
                 Ok(client) => client,
-                Err(error) => return provider_health_error(started, error.into()),
+                Err(error) => {
+                    let health = provider_health_error(started, error.into());
+                    store_embedding_provider_health(conn, &provider_key, &endpoint_key, &health);
+                    return health;
+                }
             };
             let mut request = client.get(url);
             if let Ok(key) = std::env::var("DUKEMEMORY_OPENAI_API_KEY")
@@ -570,14 +593,92 @@ fn embedding_provider_health(provider: &str, endpoint: &str) -> EmbeddingProvide
         }
         other => Err(anyhow::anyhow!("unsupported embedding provider: {other}")),
     };
-    match result {
+    let health = match result {
         Ok(()) => EmbeddingProviderHealth {
             reachable: true,
             elapsed_ms: Some(started.elapsed().as_millis()),
             error: None,
         },
         Err(error) => provider_health_error(started, error),
+    };
+    store_embedding_provider_health(conn, &provider_key, &endpoint_key, &health);
+    health
+}
+
+fn cached_embedding_provider_health(
+    conn: &Connection,
+    provider: &str,
+    endpoint: &str,
+) -> Option<EmbeddingProviderHealth> {
+    let now = now_ms();
+    let row = conn
+        .query_row(
+            r#"
+            SELECT reachable, error, elapsed_ms, checked_at, cooldown_until
+            FROM embedding_provider_health
+            WHERE provider = ?1 AND endpoint = ?2
+            "#,
+            params![provider, endpoint],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .ok()
+        .flatten()?;
+    let (reachable, error, elapsed_ms, checked_at, cooldown_until) = row;
+    let fresh = if reachable != 0 {
+        now.saturating_sub(checked_at) <= PROVIDER_HEALTH_OK_CACHE_MS
+    } else {
+        cooldown_until > now
+    };
+    if !fresh {
+        return None;
     }
+    Some(EmbeddingProviderHealth {
+        reachable: reachable != 0,
+        elapsed_ms: elapsed_ms.map(|value| value.max(0) as u128),
+        error,
+    })
+}
+
+fn store_embedding_provider_health(
+    conn: &Connection,
+    provider: &str,
+    endpoint: &str,
+    health: &EmbeddingProviderHealth,
+) {
+    let now = now_ms();
+    let cooldown_until = if health.reachable {
+        now.saturating_add(PROVIDER_HEALTH_OK_CACHE_MS)
+    } else {
+        now.saturating_add(PROVIDER_HEALTH_DOWN_COOLDOWN_MS)
+    };
+    let elapsed_ms = health
+        .elapsed_ms
+        .map(|value| value.min(i64::MAX as u128) as i64);
+    let _ = conn.execute(
+        r#"
+        INSERT OR REPLACE INTO embedding_provider_health (
+            provider, endpoint, reachable, error, elapsed_ms, checked_at, cooldown_until
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+        params![
+            provider,
+            endpoint,
+            if health.reachable { 1 } else { 0 },
+            health.error,
+            elapsed_ms,
+            now,
+            cooldown_until,
+        ],
+    );
 }
 
 fn provider_health_error(

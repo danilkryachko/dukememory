@@ -86,6 +86,18 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model ON memory_embeddings(model, endpoint);
 
+CREATE TABLE IF NOT EXISTS embedding_provider_health (
+    provider TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    reachable INTEGER NOT NULL,
+    error TEXT,
+    elapsed_ms INTEGER,
+    checked_at INTEGER NOT NULL,
+    cooldown_until INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (provider, endpoint)
+);
+CREATE INDEX IF NOT EXISTS idx_embedding_provider_health_cooldown ON embedding_provider_health(cooldown_until);
+
 CREATE TABLE IF NOT EXISTS memory_inbox (
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL,
@@ -261,6 +273,10 @@ fn migrations() -> &'static [Migration] {
             version: 14,
             name: "Production v14 read audit and usage telemetry schema",
         },
+        Migration {
+            version: 15,
+            name: "Production v15 embedding provider health cache schema",
+        },
     ]
 }
 
@@ -317,6 +333,7 @@ pub(crate) fn verify_schema(conn: &Connection) -> Result<()> {
         "memory_inbox",
         "memory_events",
         "memory_read_events",
+        "embedding_provider_health",
         "memory_locks",
         "eval_cases",
         "memory_sources",

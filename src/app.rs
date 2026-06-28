@@ -28,7 +28,7 @@ const DEFAULT_EMBED_ENDPOINT: &str = "http://192.168.0.13:11434";
 const DEFAULT_EMBED_MODEL: &str = "bge-m3:latest";
 const DEFAULT_EMBED_PROVIDER: &str = "ollama";
 const DEFAULT_INSTALL_BACKUP_KEEP: usize = 3;
-const CURRENT_SCHEMA_VERSION: i64 = 14;
+const CURRENT_SCHEMA_VERSION: i64 = 15;
 const EXPORT_VERSION: u32 = 1;
 const VALID_SCOPES: &[&str] = &["global", "user", "project", "repo", "thread", "task"];
 
