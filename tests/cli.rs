@@ -4635,6 +4635,74 @@ fn v14_tiny_retrieval_filters_query_useless_feedback() {
 }
 
 #[test]
+fn retrieval_learns_intent_type_weights_from_feedback_events() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    let issue_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("known_issue")
+            .arg("Checkout failure issue")
+            .arg("checkout failure debug marker exact should be preferred after useful feedback"),
+    )
+    .trim()
+    .to_string();
+    cmd(&db)
+        .arg("add")
+        .arg("command")
+        .arg("Checkout failure command")
+        .arg("checkout failure debug marker exact validation command")
+        .assert()
+        .success();
+
+    for _ in 0..2 {
+        cmd(&db)
+            .arg("feedback")
+            .arg("--id")
+            .arg(&issue_id)
+            .arg("--rating")
+            .arg("useful")
+            .arg("--command")
+            .arg("retrieve")
+            .arg("--query")
+            .arg("fix checkout failure")
+            .assert()
+            .success();
+    }
+
+    let retrieved = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("fix checkout failure")
+            .arg("--strategy")
+            .arg("fts")
+            .arg("--format")
+            .arg("json")
+            .arg("--budget-profile")
+            .arg("tiny"),
+    );
+    let retrieved_json: Value = serde_json::from_str(&retrieved).unwrap();
+    let issue_hit = retrieved_json["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|hit| hit["memory"]["id"] == issue_id)
+        .unwrap();
+    assert!(
+        issue_hit["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason
+                .as_str()
+                .unwrap()
+                .starts_with("intent_feedback:debug:known_issue:")),
+        "known_issue should carry learned debug intent/type feedback"
+    );
+}
+
+#[test]
 fn tiny_retrieval_suppresses_compacted_history_unless_requested() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

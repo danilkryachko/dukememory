@@ -873,7 +873,7 @@ struct RetrievalScoreContext<'a> {
     query_intent: QueryIntent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum QueryIntent {
     Architecture,
     CodingChange,
@@ -930,6 +930,12 @@ fn retrieval_score(
         ));
         score += intent_score;
     }
+    score += retrieval_intent_type_adjustment(
+        context.query_intent,
+        &memory.memory_type,
+        context.quality_signals,
+        &mut reasons,
+    );
     score += retrieval_quality_adjustment(&memory.id, context.quality_signals, &mut reasons);
     let body_chars = memory.body.chars().count();
     if body_chars > 1_600 {
@@ -1150,6 +1156,13 @@ pub(crate) struct RetrievalQualitySignals {
     useful: HashMap<String, usize>,
     useless: HashMap<String, usize>,
     useless_query_terms: HashMap<String, Vec<HashSet<String>>>,
+    intent_type_feedback: HashMap<(QueryIntent, String), TypeFeedback>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TypeFeedback {
+    useful: usize,
+    useless: usize,
 }
 
 pub(crate) fn retrieval_quality_signals(
@@ -1188,6 +1201,8 @@ fn retrieval_feedback_signals_since(
     let mut useful = HashMap::new();
     let mut useless = HashMap::new();
     let mut useless_query_terms: HashMap<String, Vec<HashSet<String>>> = HashMap::new();
+    let mut intent_type_feedback: HashMap<(QueryIntent, String), TypeFeedback> = HashMap::new();
+    let mut memory_type_cache = HashMap::new();
     let mut stmt = conn.prepare(
         "SELECT detail FROM memory_events WHERE event_type = 'memory_feedback' AND created_at >= ?1",
     )?;
@@ -1209,16 +1224,34 @@ fn retrieval_feedback_signals_since(
             .and_then(Value::as_str)
             .map(relevance_terms)
             .unwrap_or_default();
+        let query_intent = value
+            .get("query")
+            .and_then(Value::as_str)
+            .map(infer_query_intent)
+            .unwrap_or(QueryIntent::General);
         for id in ids
             .into_iter()
             .filter_map(|id| id.as_str().map(str::to_string))
         {
+            let memory_type = cached_memory_type(conn, &mut memory_type_cache, &id)?;
             match rating {
                 "useful" => {
-                    *useful.entry(id).or_insert(0) += 1;
+                    *useful.entry(id.clone()).or_insert(0) += 1;
+                    if let Some(memory_type) = memory_type {
+                        intent_type_feedback
+                            .entry((query_intent, memory_type))
+                            .or_default()
+                            .useful += 1;
+                    }
                 }
                 "useless" => {
                     *useless.entry(id.clone()).or_insert(0) += 1;
+                    if let Some(memory_type) = memory_type {
+                        intent_type_feedback
+                            .entry((query_intent, memory_type))
+                            .or_default()
+                            .useless += 1;
+                    }
                     if !query_terms.is_empty() {
                         useless_query_terms
                             .entry(id)
@@ -1235,7 +1268,27 @@ fn retrieval_feedback_signals_since(
         useful,
         useless,
         useless_query_terms,
+        intent_type_feedback,
     })
+}
+
+fn cached_memory_type(
+    conn: &Connection,
+    cache: &mut HashMap<String, Option<String>>,
+    id: &str,
+) -> Result<Option<String>> {
+    if let Some(memory_type) = cache.get(id) {
+        return Ok(memory_type.clone());
+    }
+    let memory_type = conn
+        .query_row(
+            "SELECT type FROM memories WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    cache.insert(id.to_string(), memory_type.clone());
+    Ok(memory_type)
 }
 
 pub(crate) fn retrieval_quality_adjustment(
@@ -1264,6 +1317,37 @@ pub(crate) fn retrieval_quality_adjustment(
         let penalty = (useless.min(4) as f64) * 4.0;
         reasons.push(format!("useless_feedback:-{useless}"));
         score -= penalty;
+    }
+    score
+}
+
+fn retrieval_intent_type_adjustment(
+    query_intent: QueryIntent,
+    memory_type: &str,
+    signals: Option<&RetrievalQualitySignals>,
+    reasons: &mut Vec<String>,
+) -> f64 {
+    let Some(signals) = signals else {
+        return 0.0;
+    };
+    let Some(feedback) = signals
+        .intent_type_feedback
+        .get(&(query_intent, memory_type.to_string()))
+    else {
+        return 0.0;
+    };
+    let total = feedback.useful + feedback.useless;
+    if total < 2 {
+        return 0.0;
+    }
+    let raw = (feedback.useful.min(8) as f64 * 0.35) - (feedback.useless.min(6) as f64 * 0.9);
+    let score = raw.clamp(-4.0, 3.0);
+    if score != 0.0 {
+        reasons.push(format!(
+            "intent_feedback:{}:{}:{score:+.1}",
+            query_intent.label(),
+            memory_type
+        ));
     }
     score
 }
@@ -2785,5 +2869,63 @@ mod tests {
                 .iter()
                 .any(|reason| reason.starts_with("intent:debug"))
         );
+    }
+
+    #[test]
+    fn repeated_feedback_adapts_intent_type_weight() {
+        let mut signals = RetrievalQualitySignals::default();
+        let mut reasons = Vec::new();
+        signals.intent_type_feedback.insert(
+            (QueryIntent::Debug, "known_issue".to_string()),
+            TypeFeedback {
+                useful: 1,
+                useless: 0,
+            },
+        );
+        assert_eq!(
+            retrieval_intent_type_adjustment(
+                QueryIntent::Debug,
+                "known_issue",
+                Some(&signals),
+                &mut reasons,
+            ),
+            0.0
+        );
+        assert!(reasons.is_empty());
+
+        signals.intent_type_feedback.insert(
+            (QueryIntent::Debug, "known_issue".to_string()),
+            TypeFeedback {
+                useful: 3,
+                useless: 0,
+            },
+        );
+        let boost = retrieval_intent_type_adjustment(
+            QueryIntent::Debug,
+            "known_issue",
+            Some(&signals),
+            &mut reasons,
+        );
+        assert!(boost > 0.0);
+        assert!(
+            reasons
+                .iter()
+                .any(|reason| reason.starts_with("intent_feedback:debug:known_issue:+"))
+        );
+
+        signals.intent_type_feedback.insert(
+            (QueryIntent::Debug, "command".to_string()),
+            TypeFeedback {
+                useful: 0,
+                useless: 8,
+            },
+        );
+        let penalty = retrieval_intent_type_adjustment(
+            QueryIntent::Debug,
+            "command",
+            Some(&signals),
+            &mut reasons,
+        );
+        assert_eq!(penalty, -4.0);
     }
 }
