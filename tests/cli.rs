@@ -4341,6 +4341,49 @@ fn embed_status_caches_unreachable_provider_health_between_cli_runs() {
 }
 
 #[test]
+fn embed_index_fails_fast_when_embedding_provider_is_unreachable() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let server = std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            drop(stream);
+        }
+    });
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Embed index fail fast")
+        .arg("Embedding index should not hang when provider health is down.")
+        .assert()
+        .success();
+
+    let started = std::time::Instant::now();
+    cmd(&db)
+        .arg("embed-index")
+        .arg("--provider")
+        .arg("ollama")
+        .arg("--endpoint")
+        .arg(&endpoint)
+        .arg("--model")
+        .arg("bge-m3:latest")
+        .assert()
+        .failure()
+        .stderr(contains(
+            "embedding provider is not reachable; skipping embed-index",
+        ));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "embed-index should fail before the long embedding request timeout"
+    );
+
+    server.join().unwrap();
+}
+
+#[test]
 fn v14_retrieve_filters_weak_semantic_candidates() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

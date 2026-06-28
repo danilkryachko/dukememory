@@ -28,8 +28,8 @@ pub(crate) fn embed_index(
         None,
         limit.unwrap_or(usize::MAX),
     )?;
-    let mut indexed = 0;
     let mut skipped = 0;
+    let mut pending = Vec::new();
     for memory in rows {
         let content = embedding_content(&memory);
         let hash = content_hash(&content);
@@ -37,6 +37,24 @@ pub(crate) fn embed_index(
             skipped += 1;
             continue;
         }
+        pending.push((memory, content, hash));
+    }
+    let provider_health = if pending.is_empty() {
+        None
+    } else {
+        Some(embedding_provider_health(conn, provider, endpoint))
+    };
+    if let Some(health) = provider_health
+        && !health.reachable
+    {
+        let detail = health
+            .error
+            .map(|error| format!(": {error}"))
+            .unwrap_or_default();
+        bail!("embedding provider is not reachable; skipping embed-index{detail}");
+    }
+    let mut indexed = 0;
+    for (memory, content, hash) in pending {
         let embedding = fetch_embedding(provider, endpoint, model, &content)
             .with_context(|| format!("embedding failed for memory {}", memory.id))?;
         store_embedding(conn, &memory.id, &endpoint_key, model, &hash, &embedding)?;
