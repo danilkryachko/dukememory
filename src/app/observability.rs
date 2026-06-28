@@ -160,6 +160,9 @@ pub(crate) struct DashboardReport {
     pub(crate) missing_live_eval_projects: usize,
     pub(crate) memory_gap_projects: usize,
     pub(crate) memory_gap_count: usize,
+    pub(crate) semantic_empty_projects: usize,
+    pub(crate) semantic_empty_read_count: usize,
+    pub(crate) semantic_result_warn_projects: usize,
     pub(crate) gap_inbox_pending_projects: usize,
     pub(crate) gap_inbox_pending_count: usize,
     pub(crate) gap_inbox_stale_projects: usize,
@@ -279,6 +282,12 @@ pub(crate) struct ProjectDashboardItem {
     pub(crate) autonomous_useful_rate_source: Option<String>,
     pub(crate) autonomous_inferred_missing: Option<usize>,
     pub(crate) embedding_missing: Option<usize>,
+    pub(crate) semantic_read_rate: Option<f64>,
+    pub(crate) semantic_result_rate: Option<f64>,
+    pub(crate) semantic_empty_read_count: Option<usize>,
+    pub(crate) semantic_avg_results: Option<f64>,
+    pub(crate) semantic_eligible_result_rate: Option<f64>,
+    pub(crate) semantic_eligible_empty_read_count: Option<usize>,
     pub(crate) recommended_budget: Option<String>,
     pub(crate) repair_loop: OpsRepairLoopStatus,
     pub(crate) gap_inbox: DashboardGapInboxStatus,
@@ -1532,7 +1541,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
     } else {
         println!("dukememory. Dashboard");
         println!(
-            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} memory_gap_projects={} memory_gap_count={} gap_inbox_pending_projects={} gap_inbox_pending_count={} gap_inbox_stale_projects={} gap_inbox_stale_count={} gap_inbox_oldest_age={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={} repair_loop_projects={} repair_loop_failed={} repair_loop_safe_skipped={}",
+            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} memory_gap_projects={} memory_gap_count={} semantic_empty_projects={} semantic_empty_reads={} semantic_result_warn_projects={} gap_inbox_pending_projects={} gap_inbox_pending_count={} gap_inbox_stale_projects={} gap_inbox_stale_count={} gap_inbox_oldest_age={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={} repair_loop_projects={} repair_loop_failed={} repair_loop_safe_skipped={}",
             report.status,
             report.total_projects,
             report.ready_projects,
@@ -1541,6 +1550,9 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
             report.missing_live_eval_projects,
             report.memory_gap_projects,
             report.memory_gap_count,
+            report.semantic_empty_projects,
+            report.semantic_empty_read_count,
+            report.semantic_result_warn_projects,
             report.gap_inbox_pending_projects,
             report.gap_inbox_pending_count,
             report.gap_inbox_stale_projects,
@@ -1571,7 +1583,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
                     .join(",")
             };
             println!(
-                "- {} status={} attention={} reasons={} repairs={} repair_runs={} repair_failed={} repair_safe_skipped={} gap_inbox_pending={} gap_inbox_stale={} gap_inbox_oldest_age={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} recommendations={}",
+                "- {} status={} attention={} reasons={} repairs={} repair_runs={} repair_failed={} repair_safe_skipped={} gap_inbox_pending={} gap_inbox_stale={} gap_inbox_oldest_age={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} semantic_results={} semantic_empty={} recommendations={}",
                 project.name,
                 project.status,
                 project.attention,
@@ -1611,6 +1623,14 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
                     .unwrap_or_else(|| "-".to_string()),
                 project
                     .autonomous_inferred_missing
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                project
+                    .semantic_eligible_result_rate
+                    .map(|value| format!("{:.0}%", value * 100.0))
+                    .unwrap_or_else(|| "-".to_string()),
+                project
+                    .semantic_eligible_empty_read_count
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
                 project.recommendations.len()
@@ -1759,6 +1779,12 @@ pub(crate) fn dashboard_repair_history_report(
             autonomous_useful_rate_source: None,
             autonomous_inferred_missing: None,
             embedding_missing: None,
+            semantic_read_rate: None,
+            semantic_result_rate: None,
+            semantic_empty_read_count: None,
+            semantic_avg_results: None,
+            semantic_eligible_result_rate: None,
+            semantic_eligible_empty_read_count: None,
             recommended_budget: None,
             repair_loop: empty_repair_loop_status(),
             gap_inbox: DashboardGapInboxStatus::default(),
@@ -2270,6 +2296,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
             let conn = open_db(&db).ok()?;
             let profile = project_profile_snapshot(&conn, &root, "project").ok();
             let quality = quality_report(&conn, 30, 10).ok();
+            let usage = usage_report(&conn, 7, 10).ok();
             let autonomous =
                 read_autonomous_status(&root.join(".agent/autonomous-status.json")).ok();
             let autonomous_age_secs = autonomous
@@ -2407,6 +2434,27 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                     embed_repair_command(&db),
                 );
             }
+            if usage
+                .as_ref()
+                .is_some_and(|usage| {
+                    usage.semantic_eligible_read_count >= 3
+                        && usage.semantic_eligible_result_rate < 0.75
+                })
+            {
+                attention_reasons.push("semantic_empty_results".to_string());
+                recommendations.push(
+                    "inspect usage-report semantic empty reads, then refresh embeddings"
+                        .to_string(),
+                );
+                push_repair_action(
+                    &mut repair_actions,
+                    "embed_index",
+                    "semantic_empty_results",
+                    true,
+                    "Refresh embeddings after repeated empty semantic reads.",
+                    embed_repair_command(&db),
+                );
+            }
             if pending_inbox > 0 {
                 attention_reasons.push("pending_inbox".to_string());
                 recommendations.push("review pending memory inbox".to_string());
@@ -2454,6 +2502,18 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                     .map(|live| live.useful_rate_source.clone()),
                 autonomous_inferred_missing: live_eval.as_ref().map(|live| live.inferred_missing),
                 embedding_missing,
+                semantic_read_rate: usage.as_ref().map(|usage| usage.semantic_eligible_read_rate),
+                semantic_result_rate: usage.as_ref().map(|usage| usage.semantic_result_rate),
+                semantic_empty_read_count: usage
+                    .as_ref()
+                    .map(|usage| usage.semantic_empty_read_count),
+                semantic_avg_results: usage.as_ref().map(|usage| usage.semantic_avg_results),
+                semantic_eligible_result_rate: usage
+                    .as_ref()
+                    .map(|usage| usage.semantic_eligible_result_rate),
+                semantic_eligible_empty_read_count: usage
+                    .as_ref()
+                    .map(|usage| usage.semantic_eligible_empty_read_count),
                 recommended_budget: profile.map(|profile| profile.recommended_budget),
                 repair_loop,
                 gap_inbox,
@@ -2490,6 +2550,32 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         .iter()
         .map(|project| project.autonomous_inferred_missing.unwrap_or_default())
         .sum();
+    let semantic_empty_projects = projects
+        .iter()
+        .filter(|project| {
+            project
+                .semantic_eligible_empty_read_count
+                .unwrap_or_default()
+                > 0
+        })
+        .count();
+    let semantic_empty_read_count = projects
+        .iter()
+        .map(|project| {
+            project
+                .semantic_eligible_empty_read_count
+                .unwrap_or_default()
+        })
+        .sum();
+    let semantic_result_warn_projects = projects
+        .iter()
+        .filter(|project| {
+            project
+                .attention_reasons
+                .iter()
+                .any(|reason| reason == "semantic_empty_results")
+        })
+        .count();
     let gap_inbox_pending_projects = projects
         .iter()
         .filter(|project| project.gap_inbox.pending > 0)
@@ -2556,6 +2642,9 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         missing_live_eval_projects,
         memory_gap_projects,
         memory_gap_count,
+        semantic_empty_projects,
+        semantic_empty_read_count,
+        semantic_result_warn_projects,
         gap_inbox_pending_projects,
         gap_inbox_pending_count,
         gap_inbox_stale_projects,

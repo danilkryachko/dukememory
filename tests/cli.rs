@@ -7120,6 +7120,50 @@ fn usage_report_counts_semantic_eligible_reads_only() {
 }
 
 #[test]
+fn dashboard_reports_semantic_empty_result_attention() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Initialize schema")
+        .arg("Create db.")
+        .assert()
+        .success();
+
+    insert_read_event(&db, "brief", "checkout policy memory", true);
+    insert_read_event(&db, "search", "checkout policy memory", true);
+    insert_read_event(&db, "impact", "payment retry policy", true);
+
+    let dashboard = stdout(cmd(&db).arg("dashboard").arg("--json"));
+    let dashboard_json: Value = serde_json::from_str(&dashboard).unwrap();
+    assert_eq!(dashboard_json["semantic_empty_projects"], 1);
+    assert_eq!(dashboard_json["semantic_empty_read_count"], 3);
+    assert_eq!(dashboard_json["semantic_result_warn_projects"], 1);
+    let project = &dashboard_json["projects"][0];
+    assert_eq!(
+        project["semantic_eligible_result_rate"].as_f64().unwrap(),
+        0.0
+    );
+    assert_eq!(project["semantic_eligible_empty_read_count"], 3);
+    assert!(
+        project["attention_reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "semantic_empty_results")
+    );
+    assert!(
+        project["repair_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["code"] == "embed_index" && action["safe_auto"] == true)
+    );
+}
+
+#[test]
 fn brief_sections_are_budget_aware() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
@@ -8305,6 +8349,9 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("missing live eval"));
     assert!(html.contains("gap projects"));
     assert!(html.contains("memory gaps"));
+    assert!(html.contains("semantic empty projects"));
+    assert!(html.contains("semantic empty reads"));
+    assert!(html.contains("semantic result warnings"));
     assert!(html.contains("gap inbox projects"));
     assert!(html.contains("gap inbox pending"));
     assert!(html.contains("gap inbox stale"));
@@ -8395,6 +8442,11 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(dashboard.contains("\"repair_loop_safe_skipped_projects\""));
     assert!(dashboard.contains("\"memory_gap_projects\""));
     assert!(dashboard.contains("\"memory_gap_count\""));
+    assert!(dashboard.contains("\"semantic_empty_projects\""));
+    assert!(dashboard.contains("\"semantic_empty_read_count\""));
+    assert!(dashboard.contains("\"semantic_result_warn_projects\""));
+    assert!(dashboard.contains("\"semantic_eligible_result_rate\""));
+    assert!(dashboard.contains("\"semantic_eligible_empty_read_count\""));
     assert!(dashboard.contains("\"gap_inbox\""));
     assert!(dashboard.contains("\"gap_inbox_pending_projects\""));
     assert!(dashboard.contains("\"gap_inbox_pending_count\""));
