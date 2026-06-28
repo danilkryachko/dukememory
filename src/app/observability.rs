@@ -33,6 +33,7 @@ pub(crate) struct UsageReport {
     pub(crate) semantic_eligible_reads_with_results: usize,
     pub(crate) semantic_eligible_empty_read_count: usize,
     pub(crate) semantic_eligible_result_rate: f64,
+    pub(crate) semantic_empty_queries: Vec<String>,
     pub(crate) nonsemantic_read_count: usize,
     pub(crate) unique_memory_ids: usize,
     pub(crate) reads_by_command: BTreeMap<String, usize>,
@@ -288,6 +289,7 @@ pub(crate) struct ProjectDashboardItem {
     pub(crate) semantic_avg_results: Option<f64>,
     pub(crate) semantic_eligible_result_rate: Option<f64>,
     pub(crate) semantic_eligible_empty_read_count: Option<usize>,
+    pub(crate) semantic_empty_queries: Vec<String>,
     pub(crate) recommended_budget: Option<String>,
     pub(crate) repair_loop: OpsRepairLoopStatus,
     pub(crate) gap_inbox: DashboardGapInboxStatus,
@@ -320,6 +322,7 @@ pub(crate) struct MemoryQaReport {
     pub(crate) semantic_avg_results: f64,
     pub(crate) semantic_eligible_result_rate: f64,
     pub(crate) semantic_eligible_empty_read_count: usize,
+    pub(crate) semantic_empty_queries: Vec<String>,
     pub(crate) useful_rate: f64,
     pub(crate) useful_rate_source: String,
     pub(crate) feedback_useful_rate: f64,
@@ -372,6 +375,7 @@ pub(crate) struct OpsEffectivenessStatus {
     pub(crate) semantic_avg_results: f64,
     pub(crate) semantic_eligible_result_rate: f64,
     pub(crate) semantic_eligible_empty_read_count: usize,
+    pub(crate) semantic_empty_queries: Vec<String>,
     pub(crate) useful_rate: f64,
     pub(crate) useful_rate_source: String,
     pub(crate) feedback_useful_rate: f64,
@@ -610,6 +614,12 @@ pub(crate) fn print_usage_report(
         report.semantic_eligible_result_rate * 100.0,
         report.semantic_eligible_empty_read_count
     );
+    if !report.semantic_empty_queries.is_empty() {
+        println!("semantic_empty_queries:");
+        for query in &report.semantic_empty_queries {
+            println!("- {query}");
+        }
+    }
     println!("nonsemantic_reads: {}", report.nonsemantic_read_count);
     println!("unique_memory_ids: {}", report.unique_memory_ids);
     if !report.reads_by_command.is_empty() {
@@ -671,6 +681,8 @@ pub(crate) fn usage_report(
     let mut semantic_eligible_read_count = 0;
     let mut semantic_eligible_total = 0;
     let mut semantic_eligible_reads_with_results = 0;
+    let mut semantic_empty_queries = Vec::new();
+    let mut semantic_empty_query_seen = HashSet::new();
     for event in &all_reads {
         *reads_by_command.entry(event.command.clone()).or_insert(0) += 1;
         if event.semantic_used {
@@ -686,6 +698,11 @@ pub(crate) fn usage_report(
                 semantic_eligible_read_count += 1;
                 if event.result_count > 0 {
                     semantic_eligible_reads_with_results += 1;
+                } else if semantic_empty_queries.len() < 5 {
+                    let query = truncate_chars(event.query.trim(), 160);
+                    if semantic_empty_query_seen.insert(query.clone()) {
+                        semantic_empty_queries.push(query);
+                    }
                 }
             }
         }
@@ -735,6 +752,7 @@ pub(crate) fn usage_report(
             semantic_eligible_reads_with_results,
             semantic_eligible_read_count,
         ),
+        semantic_empty_queries,
         nonsemantic_read_count: all_reads.len().saturating_sub(semantic_eligible_total),
         unique_memory_ids: unique_ids.len(),
         reads_by_command,
@@ -1785,6 +1803,7 @@ pub(crate) fn dashboard_repair_history_report(
             semantic_avg_results: None,
             semantic_eligible_result_rate: None,
             semantic_eligible_empty_read_count: None,
+            semantic_empty_queries: Vec::new(),
             recommended_budget: None,
             repair_loop: empty_repair_loop_status(),
             gap_inbox: DashboardGapInboxStatus::default(),
@@ -2514,6 +2533,10 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                 semantic_eligible_empty_read_count: usage
                     .as_ref()
                     .map(|usage| usage.semantic_eligible_empty_read_count),
+                semantic_empty_queries: usage
+                    .as_ref()
+                    .map(|usage| usage.semantic_empty_queries.clone())
+                    .unwrap_or_default(),
                 recommended_budget: profile.map(|profile| profile.recommended_budget),
                 repair_loop,
                 gap_inbox,
@@ -2689,6 +2712,12 @@ pub(crate) fn print_memory_qa(
             report.semantic_eligible_result_rate * 100.0,
             report.semantic_eligible_empty_read_count
         );
+        if !report.semantic_empty_queries.is_empty() {
+            println!("semantic_empty_queries:");
+            for query in &report.semantic_empty_queries {
+                println!("- {query}");
+            }
+        }
         println!(
             "useful_rate: {:.1}% ({})",
             report.useful_rate * 100.0,
@@ -2731,6 +2760,7 @@ pub(crate) fn memory_qa_report(
     let semantic_avg_results = usage.semantic_avg_results;
     let semantic_eligible_result_rate = usage.semantic_eligible_result_rate;
     let semantic_eligible_empty_read_count = usage.semantic_eligible_empty_read_count;
+    let semantic_empty_queries = usage.semantic_empty_queries.clone();
     let token_saving_estimate = quality
         .items
         .iter()
@@ -2863,6 +2893,7 @@ pub(crate) fn memory_qa_report(
         semantic_avg_results,
         semantic_eligible_result_rate,
         semantic_eligible_empty_read_count,
+        semantic_empty_queries,
         useful_rate: live.useful_rate,
         useful_rate_source: live.useful_rate_source,
         feedback_useful_rate: live.feedback_useful_rate,
@@ -3184,6 +3215,7 @@ pub(crate) fn ops_status_report(
             semantic_avg_results: qa.semantic_avg_results,
             semantic_eligible_result_rate: qa.semantic_eligible_result_rate,
             semantic_eligible_empty_read_count: qa.semantic_eligible_empty_read_count,
+            semantic_empty_queries: qa.semantic_empty_queries,
             useful_rate: qa.useful_rate,
             useful_rate_source: qa.useful_rate_source,
             feedback_useful_rate: qa.feedback_useful_rate,

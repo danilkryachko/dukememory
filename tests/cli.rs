@@ -471,6 +471,13 @@ fn memory_qa_reports_semantic_empty_result_health() {
         0.0
     );
     assert_eq!(qa_json["semantic_eligible_empty_read_count"], 3);
+    assert!(
+        qa_json["semantic_empty_queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|query| query == "checkout policy memory")
+    );
     assert!(qa_json["issues"].as_array().unwrap().iter().any(|issue| {
         issue
             .as_str()
@@ -7103,6 +7110,10 @@ fn usage_report_counts_semantic_eligible_reads_only() {
     assert_eq!(usage_json["nonsemantic_read_count"], 2);
     assert_eq!(usage_json["semantic_reads_with_results"], 1);
     assert_eq!(usage_json["semantic_empty_read_count"], 1);
+    assert_eq!(
+        usage_json["semantic_empty_queries"][0],
+        "checkout policy memory"
+    );
     assert_eq!(usage_json["semantic_result_rate"].as_f64().unwrap(), 0.5);
     assert_eq!(usage_json["semantic_avg_results"].as_f64().unwrap(), 0.5);
     assert_eq!(usage_json["semantic_eligible_reads_with_results"], 1);
@@ -7147,6 +7158,13 @@ fn dashboard_reports_semantic_empty_result_attention() {
         0.0
     );
     assert_eq!(project["semantic_eligible_empty_read_count"], 3);
+    assert!(
+        project["semantic_empty_queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|query| query == "checkout policy memory")
+    );
     assert!(
         project["attention_reasons"]
             .as_array()
@@ -8352,6 +8370,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("semantic empty projects"));
     assert!(html.contains("semantic empty reads"));
     assert!(html.contains("semantic result warnings"));
+    assert!(html.contains("semantic empty queries"));
     assert!(html.contains("gap inbox projects"));
     assert!(html.contains("gap inbox pending"));
     assert!(html.contains("gap inbox stale"));
@@ -8447,6 +8466,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(dashboard.contains("\"semantic_result_warn_projects\""));
     assert!(dashboard.contains("\"semantic_eligible_result_rate\""));
     assert!(dashboard.contains("\"semantic_eligible_empty_read_count\""));
+    assert!(dashboard.contains("\"semantic_empty_queries\""));
     assert!(dashboard.contains("\"gap_inbox\""));
     assert!(dashboard.contains("\"gap_inbox_pending_projects\""));
     assert!(dashboard.contains("\"gap_inbox_pending_count\""));
@@ -8548,6 +8568,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(qa.contains("\"semantic_result_rate\""));
     assert!(qa.contains("\"semantic_eligible_result_rate\""));
     assert!(qa.contains("\"semantic_eligible_empty_read_count\""));
+    assert!(qa.contains("\"semantic_empty_queries\""));
 
     let ops = http_once(
         &db,
@@ -8558,6 +8579,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(ops.contains("\"semantic_result_rate\""));
     assert!(ops.contains("\"semantic_eligible_result_rate\""));
     assert!(ops.contains("\"semantic_eligible_empty_read_count\""));
+    assert!(ops.contains("\"semantic_empty_queries\""));
     assert!(ops.contains("\"agent_integration\""));
     assert!(ops.contains("\"skill_installed\""));
     assert!(ops.contains("\"fresh\""));
