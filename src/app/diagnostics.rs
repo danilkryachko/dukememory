@@ -62,6 +62,7 @@ pub(crate) struct BriefRequest<'a> {
     pub(crate) endpoint: &'a str,
     pub(crate) model: &'a str,
     pub(crate) json_out: bool,
+    pub(crate) audit_read: bool,
 }
 
 pub(crate) struct ImpactRequest<'a> {
@@ -73,6 +74,7 @@ pub(crate) struct ImpactRequest<'a> {
     pub(crate) endpoint: &'a str,
     pub(crate) model: &'a str,
     pub(crate) json_out: bool,
+    pub(crate) audit_read: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -344,18 +346,20 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
     } else {
         sync_brief_plain_receipt_ids(&mut report, semantic_status)
     };
-    log_read_event(
-        conn,
-        ReadEventInput {
-            command: "brief",
-            query: request.task,
-            ids: &ids,
-            semantic_used: retrieval.semantic_used,
-            result_count: ids.len(),
-            budget: request.budget,
-            elapsed_ms: started.elapsed().as_millis(),
-        },
-    )?;
+    if request.audit_read {
+        log_read_event(
+            conn,
+            ReadEventInput {
+                command: "brief",
+                query: request.task,
+                ids: &ids,
+                semantic_used: retrieval.semantic_used,
+                result_count: ids.len(),
+                budget: request.budget,
+                elapsed_ms: started.elapsed().as_millis(),
+            },
+        )?;
+    }
 
     Ok(report)
 }
@@ -921,18 +925,20 @@ pub(crate) fn impact_report(
     } else {
         sync_impact_plain_receipt_ids(&mut report, semantic_status)
     };
-    log_read_event(
-        conn,
-        ReadEventInput {
-            command: "impact",
-            query: request.target,
-            ids: &ids,
-            semantic_used,
-            result_count: ids.len(),
-            budget: request.budget,
-            elapsed_ms: started.elapsed().as_millis(),
-        },
-    )?;
+    if request.audit_read {
+        log_read_event(
+            conn,
+            ReadEventInput {
+                command: "impact",
+                query: request.target,
+                ids: &ids,
+                semantic_used,
+                result_count: ids.len(),
+                budget: request.budget,
+                elapsed_ms: started.elapsed().as_millis(),
+            },
+        )?;
+    }
 
     Ok(report)
 }

@@ -428,6 +428,7 @@ pub(crate) fn run() -> Result<()> {
                     &runtime.config.embeddings.model,
                 ),
                 json_out: json,
+                audit_read: true,
             },
         )?,
         Command::Impact {
@@ -464,6 +465,7 @@ pub(crate) fn run() -> Result<()> {
                     &runtime.config.embeddings.model,
                 ),
                 json_out: json,
+                audit_read: true,
             },
         )?,
         Command::Export {

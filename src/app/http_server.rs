@@ -915,6 +915,7 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                     endpoint,
                     model,
                     json_out: true,
+                    audit_read: true,
                 },
             )?;
             HttpResponse::ok(json!({"brief": report}))
@@ -963,6 +964,7 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                     endpoint,
                     model,
                     json_out: true,
+                    audit_read: true,
                 },
             )?;
             HttpResponse::ok(json!({"impact": report}))

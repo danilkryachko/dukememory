@@ -2,6 +2,7 @@ use assert_cmd::Command;
 use predicates::str::contains;
 use rusqlite::{Connection, params};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::io::{BufRead, BufReader, Read};
@@ -16,6 +17,23 @@ fn cmd(db: &std::path::Path) -> Command {
 
 fn stdout(command: &mut Command) -> String {
     String::from_utf8(command.assert().success().get_output().stdout.clone()).unwrap()
+}
+
+fn json_section_ids(value: &Value, sections: &[&str]) -> Vec<String> {
+    let mut ids = Vec::new();
+    for section in sections {
+        let Some(items) = value.get(*section).and_then(Value::as_array) else {
+            continue;
+        };
+        ids.extend(items.iter().filter_map(|item| {
+            item.get("id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        }));
+    }
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 fn now_ms() -> i64 {
@@ -5821,6 +5839,117 @@ fn mcp_memory_search_logs_only_rendered_items() {
     assert_eq!(read["command"], "memory_search");
     assert_eq!(read["result_count"], 0);
     assert_eq!(read["memory_ids"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn mcp_brief_and_impact_log_only_budgeted_json_items() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for index in 0..4 {
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(format!("MCP rendered JSON {index}"))
+            .arg(format!(
+                "mcp rendered json exact useful detail variant{index} {}",
+                "tail noise ".repeat(50)
+            ))
+            .arg("--link")
+            .arg("file:src/mcp_rendered.rs")
+            .assert()
+            .success();
+    }
+
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
+        .arg("--db")
+        .arg(&db)
+        .arg("serve-mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_brief","arguments":{"task":"mcp rendered json","budget":1200,"max_chars":1000}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_impact","arguments":{"target":"src/mcp_rendered.rs","budget":1200,"max_chars":1000}}})
+        )
+        .unwrap();
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let mcp_stdout = String::from_utf8(output.stdout).unwrap();
+    let mut rendered_by_id = HashMap::new();
+    for line in mcp_stdout.lines() {
+        let value: Value = serde_json::from_str(line).unwrap();
+        let id = value["id"].as_i64().unwrap();
+        let text = value["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.len() <= 1000,
+            "MCP memory JSON exceeded budget: {}",
+            text.len()
+        );
+        rendered_by_id.insert(id, serde_json::from_str::<Value>(text).unwrap());
+    }
+
+    let brief_json = rendered_by_id.get(&1).unwrap();
+    let impact_json = rendered_by_id.get(&2).unwrap();
+    let brief_ids = json_section_ids(brief_json, &["must_follow", "relevant", "risks"]);
+    let impact_ids = json_section_ids(
+        impact_json,
+        &["decisions", "constraints", "risks", "related"],
+    );
+    assert!(brief_ids.len() < 4);
+    assert!(impact_ids.len() < 4);
+    assert!(
+        brief_json["receipt"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("matched {} card", brief_ids.len()))
+    );
+    assert!(
+        impact_json["receipt"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("matched {} card", impact_ids.len()))
+    );
+
+    let usage = stdout(cmd(&db).arg("usage-report").arg("--json"));
+    let usage_json: Value = serde_json::from_str(&usage).unwrap();
+    for (command, ids) in [("brief", brief_ids), ("impact", impact_ids)] {
+        let read = usage_json["recent_reads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|read| read["command"] == command)
+            .unwrap();
+        let mut logged_ids = read["memory_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        let mut rendered_ids = ids;
+        logged_ids.sort();
+        rendered_ids.sort();
+        assert_eq!(
+            read["result_count"].as_u64().unwrap(),
+            rendered_ids.len() as u64
+        );
+        assert_eq!(logged_ids, rendered_ids);
+        assert_eq!(read["budget"], 1000);
+    }
 }
 
 #[test]

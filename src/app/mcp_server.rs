@@ -481,6 +481,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let budget = json_usize(&args, "budget").unwrap_or(1200);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(budget);
             let scope = mcp_memory_scope(&args);
+            let started = Instant::now();
             let report = brief_report(
                 &conn,
                 &BriefRequest {
@@ -493,15 +494,12 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     endpoint: DEFAULT_EMBED_ENDPOINT,
                     model: DEFAULT_EMBED_MODEL,
                     json_out: true,
+                    audit_read: false,
                 },
             )
             .map_err(|err| err.to_string())?;
-            budgeted_mcp_json_response(
-                &report,
-                max_chars,
-                &["checks", "files", "risks", "relevant", "must_follow"],
-            )
-            .map_err(|err| err.to_string())?
+            budgeted_mcp_memory_brief_response(&conn, report, &task, max_chars, started)
+                .map_err(|err| err.to_string())?
         }
         "memory_impact" => {
             let target =
@@ -516,6 +514,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 .unwrap_or_else(|| DEFAULT_EMBED_ENDPOINT.to_string());
             let model =
                 json_string(&args, "model").unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
+            let started = Instant::now();
             let report = impact_report(
                 &conn,
                 &ImpactRequest {
@@ -527,22 +526,12 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     endpoint: &endpoint,
                     model: &model,
                     json_out: true,
+                    audit_read: false,
                 },
             )
             .map_err(|err| err.to_string())?;
-            budgeted_mcp_json_response(
-                &report,
-                max_chars,
-                &[
-                    "links",
-                    "checks",
-                    "related",
-                    "risks",
-                    "constraints",
-                    "decisions",
-                ],
-            )
-            .map_err(|err| err.to_string())?
+            budgeted_mcp_memory_impact_response(&conn, report, &target, max_chars, started)
+                .map_err(|err| err.to_string())?
         }
         "memory_drift" => {
             let changed_only = args
@@ -782,6 +771,147 @@ fn budgeted_mcp_json_response<T: Serialize>(
     sections: &[&str],
 ) -> Result<String> {
     render_budgeted_json_value(serde_json::to_value(report)?, max_chars, sections)
+}
+
+fn budgeted_mcp_memory_brief_response(
+    conn: &Connection,
+    report: BriefReport,
+    query: &str,
+    max_chars: usize,
+    started: Instant,
+) -> Result<String> {
+    let semantic_status = if report.semantic_skipped {
+        MemorySemanticStatus::Skipped
+    } else if report.semantic_used {
+        MemorySemanticStatus::Used
+    } else {
+        MemorySemanticStatus::Fallback
+    };
+    budgeted_mcp_memory_report_response(McpMemoryReportRenderInput {
+        conn,
+        command: "brief",
+        query,
+        semantic_used: report.semantic_used,
+        semantic_status,
+        value: serde_json::to_value(report)?,
+        max_chars,
+        sections: &["checks", "files", "risks", "relevant", "must_follow"],
+        started,
+    })
+}
+
+fn budgeted_mcp_memory_impact_response(
+    conn: &Connection,
+    report: ImpactReport,
+    query: &str,
+    max_chars: usize,
+    started: Instant,
+) -> Result<String> {
+    let semantic_status = if report.semantic_used {
+        MemorySemanticStatus::Used
+    } else {
+        MemorySemanticStatus::Fallback
+    };
+    budgeted_mcp_memory_report_response(McpMemoryReportRenderInput {
+        conn,
+        command: "impact",
+        query,
+        semantic_used: report.semantic_used,
+        semantic_status,
+        value: serde_json::to_value(report)?,
+        max_chars,
+        sections: &[
+            "links",
+            "checks",
+            "related",
+            "risks",
+            "constraints",
+            "decisions",
+        ],
+        started,
+    })
+}
+
+struct McpMemoryReportRenderInput<'a> {
+    conn: &'a Connection,
+    command: &'a str,
+    query: &'a str,
+    semantic_used: bool,
+    semantic_status: MemorySemanticStatus,
+    value: Value,
+    max_chars: usize,
+    sections: &'a [&'a str],
+    started: Instant,
+}
+
+fn budgeted_mcp_memory_report_response(input: McpMemoryReportRenderInput<'_>) -> Result<String> {
+    let mut value = input.value;
+    let mut last_ids: Option<Vec<String>> = None;
+    for _ in 0..8 {
+        let rendered = render_budgeted_json_value(value.clone(), input.max_chars, input.sections)?;
+        let rendered_value: Value = serde_json::from_str(&rendered)?;
+        let ids = memory_ids_in_json_sections(&rendered_value, input.sections);
+        if last_ids.as_ref() == Some(&ids) {
+            log_mcp_context_read(
+                input.conn,
+                input.command,
+                input.query,
+                &ids,
+                input.semantic_used,
+                input.max_chars,
+                input.started,
+            )?;
+            return Ok(rendered);
+        }
+        set_json_receipt(
+            &mut value,
+            &memory_receipt_with_semantic(input.command, input.semantic_status, &ids, "none"),
+        );
+        last_ids = Some(ids);
+    }
+
+    let rendered = render_budgeted_json_value(value, input.max_chars, input.sections)?;
+    let rendered_value: Value = serde_json::from_str(&rendered)?;
+    let ids = memory_ids_in_json_sections(&rendered_value, input.sections);
+    log_mcp_context_read(
+        input.conn,
+        input.command,
+        input.query,
+        &ids,
+        input.semantic_used,
+        input.max_chars,
+        input.started,
+    )?;
+    Ok(rendered)
+}
+
+fn set_json_receipt(value: &mut Value, receipt: &str) {
+    if let Some(object) = value.as_object_mut() {
+        object.insert("receipt".to_string(), json!(receipt));
+    }
+}
+
+fn memory_ids_in_json_sections(value: &Value, sections: &[&str]) -> Vec<String> {
+    let mut ids = Vec::new();
+    for section in sections {
+        let Some(items) = value.get(*section).and_then(Value::as_array) else {
+            continue;
+        };
+        for item in items {
+            if let Some(id) = item.get("id").and_then(Value::as_str)
+                && is_compact_memory_id(id)
+            {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+fn is_compact_memory_id(value: &str) -> bool {
+    value.len() == 12 && value.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn mcp_effective_limit(limit: usize, max_chars: usize) -> usize {

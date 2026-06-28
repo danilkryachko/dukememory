@@ -1,6 +1,6 @@
 [package]
 name = "dukememory"
-version = "0.14.154"
+version = "0.14.155"
 edition = "2024"
 license = "Apache-2.0"
 description = "Local project memory for AI coding agents: durable context, SQLite, MCP, Codex skill, embeddings, and autonomous maintenance."
