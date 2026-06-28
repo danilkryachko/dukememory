@@ -6741,16 +6741,41 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
     assert!(usage.contains("brief:"));
     assert!(usage.contains("evidence:"));
     assert!(usage.contains("unique_memory_ids:"));
+    assert!(usage.contains("semantic_results:"));
     assert!(usage.contains("semantic_eligible_reads:"));
+    assert!(usage.contains("semantic_eligible_results:"));
     assert!(usage.contains("nonsemantic_reads:"));
 
     let usage_json = stdout(cmd(&db).arg("usage-report").arg("--json"));
     let usage_value: Value = serde_json::from_str(&usage_json).unwrap();
     assert!(usage_value["read_count"].as_u64().unwrap() >= 2);
     assert!(usage_value["unique_memory_ids"].as_u64().unwrap() >= 1);
+    assert!(
+        usage_value["semantic_reads_with_results"]
+            .as_u64()
+            .is_some()
+    );
+    assert!(usage_value["semantic_empty_read_count"].as_u64().is_some());
+    assert!(usage_value["semantic_result_rate"].as_f64().is_some());
+    assert!(usage_value["semantic_avg_results"].as_f64().is_some());
     assert!(usage_value["semantic_eligible_total"].as_u64().is_some());
     assert!(
         usage_value["semantic_eligible_read_rate"]
+            .as_f64()
+            .is_some()
+    );
+    assert!(
+        usage_value["semantic_eligible_reads_with_results"]
+            .as_u64()
+            .is_some()
+    );
+    assert!(
+        usage_value["semantic_eligible_empty_read_count"]
+            .as_u64()
+            .is_some()
+    );
+    assert!(
+        usage_value["semantic_eligible_result_rate"]
             .as_f64()
             .is_some()
     );
@@ -7020,22 +7045,35 @@ fn usage_report_counts_semantic_eligible_reads_only() {
         .assert()
         .success();
 
-    insert_read_event(&db, "brief", "checkout policy memory", true);
+    insert_read_event_with_ids(&db, "brief", "checkout policy memory", &["abc111"]);
+    insert_read_event(&db, "search", "checkout policy memory", true);
     insert_read_event(&db, "impact", "payment retry policy", false);
     insert_read_event(&db, "evidence", "abc123", false);
     insert_read_event(&db, "impact", "src/app.rs", false);
 
     let usage = stdout(cmd(&db).arg("usage-report").arg("--json"));
     let usage_json: Value = serde_json::from_str(&usage).unwrap();
-    assert_eq!(usage_json["read_count"], 4);
-    assert_eq!(usage_json["semantic_read_count"], 1);
+    assert_eq!(usage_json["read_count"], 5);
+    assert_eq!(usage_json["semantic_read_count"], 2);
     assert_eq!(usage_json["fallback_read_count"], 3);
-    assert_eq!(usage_json["semantic_eligible_total"], 2);
-    assert_eq!(usage_json["semantic_eligible_read_count"], 1);
+    assert_eq!(usage_json["semantic_eligible_total"], 3);
+    assert_eq!(usage_json["semantic_eligible_read_count"], 2);
     assert_eq!(usage_json["nonsemantic_read_count"], 2);
+    assert_eq!(usage_json["semantic_reads_with_results"], 1);
+    assert_eq!(usage_json["semantic_empty_read_count"], 1);
+    assert_eq!(usage_json["semantic_result_rate"].as_f64().unwrap(), 0.5);
+    assert_eq!(usage_json["semantic_avg_results"].as_f64().unwrap(), 0.5);
+    assert_eq!(usage_json["semantic_eligible_reads_with_results"], 1);
+    assert_eq!(usage_json["semantic_eligible_empty_read_count"], 1);
+    assert_eq!(
+        usage_json["semantic_eligible_result_rate"]
+            .as_f64()
+            .unwrap(),
+        0.5
+    );
     assert_eq!(
         usage_json["semantic_eligible_read_rate"].as_f64().unwrap(),
-        0.5
+        2.0 / 3.0
     );
 }
 

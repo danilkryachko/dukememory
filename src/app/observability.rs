@@ -26,6 +26,13 @@ pub(crate) struct UsageReport {
     pub(crate) semantic_eligible_read_count: usize,
     pub(crate) semantic_eligible_total: usize,
     pub(crate) semantic_eligible_read_rate: f64,
+    pub(crate) semantic_reads_with_results: usize,
+    pub(crate) semantic_empty_read_count: usize,
+    pub(crate) semantic_result_rate: f64,
+    pub(crate) semantic_avg_results: f64,
+    pub(crate) semantic_eligible_reads_with_results: usize,
+    pub(crate) semantic_eligible_empty_read_count: usize,
+    pub(crate) semantic_eligible_result_rate: f64,
     pub(crate) nonsemantic_read_count: usize,
     pub(crate) unique_memory_ids: usize,
     pub(crate) reads_by_command: BTreeMap<String, usize>,
@@ -564,10 +571,25 @@ pub(crate) fn print_usage_report(
     println!("semantic_reads: {}", report.semantic_read_count);
     println!("fallback_reads: {}", report.fallback_read_count);
     println!(
+        "semantic_results: {}/{} ({:.1}%), avg_results={:.2}, empty={}",
+        report.semantic_reads_with_results,
+        report.semantic_read_count,
+        report.semantic_result_rate * 100.0,
+        report.semantic_avg_results,
+        report.semantic_empty_read_count
+    );
+    println!(
         "semantic_eligible_reads: {}/{} ({:.1}%)",
         report.semantic_eligible_read_count,
         report.semantic_eligible_total,
         report.semantic_eligible_read_rate * 100.0
+    );
+    println!(
+        "semantic_eligible_results: {}/{} ({:.1}%), empty={}",
+        report.semantic_eligible_reads_with_results,
+        report.semantic_eligible_read_count,
+        report.semantic_eligible_result_rate * 100.0,
+        report.semantic_eligible_empty_read_count
     );
     println!("nonsemantic_reads: {}", report.nonsemantic_read_count);
     println!("unique_memory_ids: {}", report.unique_memory_ids);
@@ -625,17 +647,27 @@ pub(crate) fn usage_report(
     let mut reads_by_command = BTreeMap::new();
     let mut unique_ids = HashSet::new();
     let mut semantic_read_count = 0;
+    let mut semantic_reads_with_results = 0;
+    let mut semantic_result_total = 0usize;
     let mut semantic_eligible_read_count = 0;
     let mut semantic_eligible_total = 0;
+    let mut semantic_eligible_reads_with_results = 0;
     for event in &all_reads {
         *reads_by_command.entry(event.command.clone()).or_insert(0) += 1;
         if event.semantic_used {
             semantic_read_count += 1;
+            semantic_result_total = semantic_result_total.saturating_add(event.result_count);
+            if event.result_count > 0 {
+                semantic_reads_with_results += 1;
+            }
         }
         if semantic_eligible_read_event(event) {
             semantic_eligible_total += 1;
             if event.semantic_used {
                 semantic_eligible_read_count += 1;
+                if event.result_count > 0 {
+                    semantic_eligible_reads_with_results += 1;
+                }
             }
         }
         for id in &event.memory_ids {
@@ -669,6 +701,21 @@ pub(crate) fn usage_report(
         } else {
             semantic_eligible_read_count as f64 / semantic_eligible_total as f64
         },
+        semantic_reads_with_results,
+        semantic_empty_read_count: semantic_read_count.saturating_sub(semantic_reads_with_results),
+        semantic_result_rate: ratio(semantic_reads_with_results, semantic_read_count),
+        semantic_avg_results: if semantic_read_count == 0 {
+            0.0
+        } else {
+            semantic_result_total as f64 / semantic_read_count as f64
+        },
+        semantic_eligible_reads_with_results,
+        semantic_eligible_empty_read_count: semantic_eligible_read_count
+            .saturating_sub(semantic_eligible_reads_with_results),
+        semantic_eligible_result_rate: ratio(
+            semantic_eligible_reads_with_results,
+            semantic_eligible_read_count,
+        ),
         nonsemantic_read_count: all_reads.len().saturating_sub(semantic_eligible_total),
         unique_memory_ids: unique_ids.len(),
         reads_by_command,
@@ -699,6 +746,14 @@ fn semantic_eligible_read_event(event: &MemoryReadEvent) -> bool {
         return false;
     }
     relevance_terms(query).len() >= 2
+}
+
+fn ratio(numerator: usize, denominator: usize) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f64 / denominator as f64
+    }
 }
 
 fn semantic_usage_code_identifier_query(query: &str) -> bool {
