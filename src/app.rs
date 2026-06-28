@@ -316,10 +316,18 @@ pub(crate) fn run() -> Result<()> {
                     rules: rules.as_deref(),
                 },
             )?;
-            let ids = rows
-                .iter()
-                .map(|memory| memory.id.clone())
-                .collect::<Vec<_>>();
+            let (json_rendered, ids) = if json {
+                let (rendered, used_ids) =
+                    render_compact_context_rows_json(&conn, &rows, &task, max_chars)?;
+                (Some(rendered), used_ids)
+            } else {
+                (
+                    None,
+                    rows.iter()
+                        .map(|memory| memory.id.clone())
+                        .collect::<Vec<_>>(),
+                )
+            };
             log_read_event(
                 &conn,
                 ReadEventInput {
@@ -333,12 +341,7 @@ pub(crate) fn run() -> Result<()> {
                 },
             )?;
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&compact_context_rows(
-                        &conn, &rows, &task, max_chars
-                    )?)?
-                );
+                println!("{}", json_rendered.unwrap_or_else(|| "[]".to_string()));
             } else {
                 let mut rendered = render_context_pack_for_task(&conn, &rows, max_chars, &task)?;
                 if with_codegraph {
@@ -2359,6 +2362,27 @@ fn compact_context_rows(
             })
         })
         .collect()
+}
+
+fn render_compact_context_rows_json(
+    conn: &Connection,
+    rows: &[Memory],
+    task: &str,
+    max_chars: usize,
+) -> Result<(String, Vec<String>)> {
+    let mut rendered_rows = Vec::new();
+    let mut used_ids = Vec::new();
+    for row in compact_context_rows(conn, rows, task, max_chars)? {
+        let id = row.id.clone();
+        rendered_rows.push(row);
+        let rendered = serde_json::to_string_pretty(&rendered_rows)?;
+        if rendered.len() > max_chars {
+            rendered_rows.pop();
+            break;
+        }
+        used_ids.push(id);
+    }
+    Ok((serde_json::to_string_pretty(&rendered_rows)?, used_ids))
 }
 
 fn compact_snapshot_rows(

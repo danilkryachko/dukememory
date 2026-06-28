@@ -5408,6 +5408,53 @@ fn context_pack_json_is_compact_and_query_focused() {
 }
 
 #[test]
+fn context_pack_json_respects_tight_max_chars_and_usage() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for index in 0..4 {
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(format!("Context pack budget {index}"))
+            .arg(format!(
+                "context pack budget exact useful detail variant{index} {}",
+                "tail noise ".repeat(50)
+            ))
+            .assert()
+            .success();
+    }
+
+    let context_pack = stdout(
+        cmd(&db)
+            .arg("context-pack")
+            .arg("context pack budget")
+            .arg("--max-chars")
+            .arg("360")
+            .arg("--limit")
+            .arg("8")
+            .arg("--json"),
+    );
+    assert!(
+        context_pack.len() <= 360,
+        "context-pack JSON exceeded budget: {}",
+        context_pack.len()
+    );
+    let context_json: Value = serde_json::from_str(&context_pack).unwrap();
+    let rendered_count = context_json.as_array().unwrap().len();
+
+    let usage = stdout(cmd(&db).arg("usage-report").arg("--json"));
+    let usage_json: Value = serde_json::from_str(&usage).unwrap();
+    let read = &usage_json["recent_reads"][0];
+    assert_eq!(read["command"], "context-pack");
+    assert_eq!(
+        read["result_count"].as_u64().unwrap(),
+        rendered_count as u64
+    );
+    assert_eq!(read["memory_ids"].as_array().unwrap().len(), rendered_count);
+}
+
+#[test]
 fn search_falls_back_to_bounded_overlap_for_long_queries() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
