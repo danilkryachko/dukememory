@@ -475,6 +475,7 @@ pub(crate) fn retrieve_report(
     }
     let rhai = request.rules.and_then(|path| load_rhai_rules(path).ok());
     let quality_signals = retrieval_quality_signals(conn, 30).unwrap_or_default();
+    let query_intent = infer_query_intent(request.query);
     let mut hits = Vec::new();
     for (_, (memory, semantic_score)) in candidates {
         if !rhai_should_include(rhai.as_ref(), &memory, request.query)? {
@@ -491,6 +492,7 @@ pub(crate) fn retrieve_report(
                 rules: rhai.as_ref(),
                 task: request.query,
                 quality_signals: Some(&quality_signals),
+                query_intent,
             },
         );
         let utility_score = memory_utility_score(&memory, links.len(), Some(&quality_signals));
@@ -868,6 +870,18 @@ struct RetrievalScoreContext<'a> {
     rules: Option<&'a RhaiRules>,
     task: &'a str,
     quality_signals: Option<&'a RetrievalQualitySignals>,
+    query_intent: QueryIntent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueryIntent {
+    Architecture,
+    CodingChange,
+    Debug,
+    Install,
+    MemoryQuality,
+    Release,
+    General,
 }
 
 fn retrieval_score(
@@ -908,6 +922,14 @@ fn retrieval_score(
         reasons.push(format!("semantic:{value:.3}"));
         score += value * 12.0;
     }
+    let intent_score = intent_type_score(context.query_intent, &memory.memory_type);
+    if intent_score != 0.0 {
+        reasons.push(format!(
+            "intent:{}:{intent_score:+.1}",
+            context.query_intent.label()
+        ));
+        score += intent_score;
+    }
     score += retrieval_quality_adjustment(&memory.id, context.quality_signals, &mut reasons);
     let body_chars = memory.body.chars().count();
     if body_chars > 1_600 {
@@ -933,6 +955,172 @@ fn retrieval_score(
         score += rhai;
     }
     (score, reasons)
+}
+
+impl QueryIntent {
+    fn label(self) -> &'static str {
+        match self {
+            QueryIntent::Architecture => "architecture",
+            QueryIntent::CodingChange => "coding_change",
+            QueryIntent::Debug => "debug",
+            QueryIntent::Install => "install",
+            QueryIntent::MemoryQuality => "memory_quality",
+            QueryIntent::Release => "release",
+            QueryIntent::General => "general",
+        }
+    }
+}
+
+fn infer_query_intent(query: &str) -> QueryIntent {
+    let terms = tokenize(query);
+    if terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "debug"
+                | "bug"
+                | "bugs"
+                | "crash"
+                | "error"
+                | "errors"
+                | "failed"
+                | "failure"
+                | "fix"
+                | "issue"
+                | "issues"
+                | "panic"
+                | "regression"
+                | "trace"
+        )
+    }) {
+        return QueryIntent::Debug;
+    }
+    if terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "install"
+                | "installed"
+                | "installer"
+                | "onboard"
+                | "onboarding"
+                | "setup"
+                | "skill"
+                | "upgrade"
+                | "update"
+        )
+    }) {
+        return QueryIntent::Install;
+    }
+    if terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "release"
+                | "released"
+                | "version"
+                | "tag"
+                | "publish"
+                | "published"
+                | "github"
+                | "commit"
+        )
+    }) {
+        return QueryIntent::Release;
+    }
+    if terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "architecture"
+                | "architectural"
+                | "decision"
+                | "decisions"
+                | "policy"
+                | "constraint"
+                | "constraints"
+                | "doctrine"
+                | "design"
+        )
+    }) {
+        return QueryIntent::Architecture;
+    }
+    if terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "embedding"
+                | "embeddings"
+                | "quality"
+                | "ranking"
+                | "rerank"
+                | "reranking"
+                | "recall"
+                | "semantic"
+                | "token"
+                | "tokens"
+        )
+    }) {
+        return QueryIntent::MemoryQuality;
+    }
+    if terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "change"
+                | "changes"
+                | "code"
+                | "edit"
+                | "file"
+                | "files"
+                | "implement"
+                | "implementation"
+                | "refactor"
+                | "test"
+                | "tests"
+        )
+    }) {
+        return QueryIntent::CodingChange;
+    }
+    QueryIntent::General
+}
+
+fn intent_type_score(intent: QueryIntent, memory_type: &str) -> f64 {
+    match intent {
+        QueryIntent::Debug => match memory_type {
+            "known_issue" => 8.0,
+            "command" => 4.0,
+            "decision" | "constraint" => 2.0,
+            _ => 0.0,
+        },
+        QueryIntent::Install => match memory_type {
+            "command" => 8.0,
+            "known_issue" => 4.0,
+            "task_state" => 3.0,
+            "decision" | "constraint" => 2.0,
+            _ => 0.0,
+        },
+        QueryIntent::Release => match memory_type {
+            "task_state" => 6.0,
+            "command" => 4.0,
+            "known_issue" => 3.0,
+            "decision" | "constraint" => 2.0,
+            _ => 0.0,
+        },
+        QueryIntent::Architecture => match memory_type {
+            "decision" | "constraint" | "product_goal" => 7.0,
+            "design_note" => 3.0,
+            "known_issue" => 2.0,
+            _ => 0.0,
+        },
+        QueryIntent::MemoryQuality => match memory_type {
+            "design_note" | "task_state" => 4.0,
+            "known_issue" => 3.0,
+            "command" | "decision" | "constraint" => 2.0,
+            _ => 0.0,
+        },
+        QueryIntent::CodingChange => match memory_type {
+            "command" => 4.0,
+            "known_issue" => 3.0,
+            "design_note" | "decision" | "constraint" => 2.0,
+            _ => 0.0,
+        },
+        QueryIntent::General => 0.0,
+    }
 }
 
 fn memory_utility_score(
@@ -2513,5 +2701,89 @@ mod tests {
         assert!(titles.contains(&"Alpha coverage top one"));
         assert!(titles.contains(&"Beta coverage target"));
         assert!(titles.contains(&"Gamma coverage target"));
+    }
+
+    #[test]
+    fn query_intent_classifier_detects_common_agent_tasks() {
+        assert_eq!(infer_query_intent("fix checkout panic"), QueryIntent::Debug);
+        assert_eq!(
+            infer_query_intent("install memory skill"),
+            QueryIntent::Install
+        );
+        assert_eq!(
+            infer_query_intent("release version tag"),
+            QueryIntent::Release
+        );
+        assert_eq!(
+            infer_query_intent("architecture policy decision"),
+            QueryIntent::Architecture
+        );
+        assert_eq!(
+            infer_query_intent("semantic embedding ranking quality"),
+            QueryIntent::MemoryQuality
+        );
+        assert_eq!(
+            infer_query_intent("edit src file tests"),
+            QueryIntent::CodingChange
+        );
+        assert_eq!(infer_query_intent("checkout billing"), QueryIntent::General);
+    }
+
+    #[test]
+    fn debug_intent_boosts_known_issues_without_llm() {
+        let task_terms = relevance_terms("fix checkout error");
+        let known_issue = Memory {
+            id: "known".to_string(),
+            memory_type: "known_issue".to_string(),
+            scope: "project".to_string(),
+            title: "Checkout issue".to_string(),
+            body: "checkout error happens during payment".to_string(),
+            status: "active".to_string(),
+            source: None,
+            created_at: now_ms(),
+            updated_at: now_ms(),
+            supersedes: None,
+            superseded_by: None,
+            confidence: 1.0,
+        };
+        let note = Memory {
+            id: "note".to_string(),
+            memory_type: "design_note".to_string(),
+            scope: "project".to_string(),
+            title: "Checkout note".to_string(),
+            body: "checkout error happens during payment".to_string(),
+            status: "active".to_string(),
+            source: None,
+            created_at: now_ms(),
+            updated_at: now_ms(),
+            supersedes: None,
+            superseded_by: None,
+            confidence: 1.0,
+        };
+        let context = |query_intent| RetrievalScoreContext {
+            task_terms: &task_terms,
+            requested_scope: None,
+            semantic_score: None,
+            rules: None,
+            task: "fix checkout error",
+            quality_signals: None,
+            query_intent,
+        };
+
+        let (known_score, known_reasons) =
+            retrieval_score(&known_issue, &[], context(QueryIntent::Debug));
+        let (note_score, note_reasons) = retrieval_score(&note, &[], context(QueryIntent::Debug));
+
+        assert!(known_score > note_score);
+        assert!(
+            known_reasons
+                .iter()
+                .any(|reason| reason == "intent:debug:+8.0")
+        );
+        assert!(
+            !note_reasons
+                .iter()
+                .any(|reason| reason.starts_with("intent:debug"))
+        );
     }
 }
