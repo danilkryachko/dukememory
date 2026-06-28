@@ -5651,6 +5651,78 @@ fn mcp_context_surfaces_use_semantic_supplement() {
 }
 
 #[test]
+fn mcp_context_surfaces_log_only_rendered_memories() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for index in 0..4 {
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(format!("MCP tight context {index}"))
+            .arg(format!(
+                "mcp tight context exact useful detail variant{index} {}",
+                "tail noise ".repeat(50)
+            ))
+            .assert()
+            .success();
+    }
+
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
+        .arg("--db")
+        .arg(&db)
+        .arg("serve-mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        for (id, name) in [(1, "memory_context_pack"), (2, "memory_agent_context")] {
+            writeln!(
+                stdin,
+                "{}",
+                serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":{"task":"mcp tight context","max_chars":80,"limit":8}}})
+            )
+            .unwrap();
+        }
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let mcp_stdout = String::from_utf8(output.stdout).unwrap();
+    for line in mcp_stdout.lines() {
+        let value: Value = serde_json::from_str(line).unwrap();
+        let text = value["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.len() <= 80,
+            "MCP context text exceeded budget: {}",
+            text.len()
+        );
+        assert_eq!(
+            text.lines().filter(|line| line.starts_with("- ")).count(),
+            0,
+            "tight MCP context should not render memory cards that do not fit"
+        );
+    }
+
+    let usage = stdout(cmd(&db).arg("usage-report").arg("--json"));
+    let usage_json: Value = serde_json::from_str(&usage).unwrap();
+    for command in ["memory_context_pack", "memory_agent_context"] {
+        let read = usage_json["recent_reads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|read| read["command"] == command)
+            .unwrap();
+        assert_eq!(read["result_count"], 0);
+        assert_eq!(read["memory_ids"].as_array().unwrap().len(), 0);
+    }
+}
+
+#[test]
 fn mcp_snapshot_query_uses_semantic_supplement() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

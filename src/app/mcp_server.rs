@@ -279,18 +279,20 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 },
             )
             .map_err(|err| err.to_string())?;
+            let (rendered, used_ids) =
+                render_context_pack_for_task_with_used_ids(&conn, &rows, max_chars, &task)
+                    .map_err(|err| err.to_string())?;
             log_mcp_context_read(
                 &conn,
                 "memory_context_pack",
                 &task,
-                &rows,
+                &used_ids,
                 semantic_used,
                 max_chars,
                 started,
             )
             .map_err(|err| err.to_string())?;
-            render_context_pack_for_task(&conn, &rows, max_chars, &task)
-                .map_err(|err| err.to_string())?
+            rendered
         }
         "memory_agent_context" => {
             let started = Instant::now();
@@ -332,18 +334,20 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 },
             )
             .map_err(|err| err.to_string())?;
+            let (rendered, used_ids) =
+                render_context_pack_for_task_with_used_ids(&conn, &rows, max_chars, &task)
+                    .map_err(|err| err.to_string())?;
             log_mcp_context_read(
                 &conn,
                 "memory_agent_context",
                 &task,
-                &rows,
+                &used_ids,
                 semantic_used,
                 max_chars,
                 started,
             )
             .map_err(|err| err.to_string())?;
-            render_context_pack_for_task(&conn, &rows, max_chars, &task)
-                .map_err(|err| err.to_string())?
+            rendered
         }
         "memory_snapshot" => {
             let started = Instant::now();
@@ -373,11 +377,12 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             )
             .map_err(|err| err.to_string())?;
             if query.trim().is_empty() {
+                let ids = memory_row_ids(&rows);
                 log_mcp_context_read(
                     &conn,
                     "memory_snapshot",
                     "",
-                    &rows,
+                    &ids,
                     false,
                     max_chars,
                     started,
@@ -402,11 +407,12 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     },
                 )
                 .map_err(|err| err.to_string())?;
+                let ids = memory_row_ids(&rows);
                 log_mcp_context_read(
                     &conn,
                     "memory_snapshot",
                     &query,
-                    &rows,
+                    &ids,
                     semantic_used,
                     max_chars,
                     started,
@@ -700,27 +706,27 @@ fn log_mcp_context_read(
     conn: &Connection,
     command: &str,
     query: &str,
-    rows: &[Memory],
+    ids: &[String],
     semantic_used: bool,
     budget: usize,
     started: Instant,
 ) -> Result<()> {
-    let ids = rows
-        .iter()
-        .map(|memory| memory.id.clone())
-        .collect::<Vec<_>>();
     log_read_event(
         conn,
         ReadEventInput {
             command,
             query,
-            ids: &ids,
+            ids,
             semantic_used,
             result_count: ids.len(),
             budget,
             elapsed_ms: started.elapsed().as_millis(),
         },
     )
+}
+
+fn memory_row_ids(rows: &[Memory]) -> Vec<String> {
+    rows.iter().map(|memory| memory.id.clone()).collect()
 }
 
 fn compact_mcp_search_response(rows: &[Memory], query: &str, max_chars: usize) -> Result<String> {

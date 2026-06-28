@@ -1573,7 +1573,7 @@ pub(crate) fn render_context_pack(
     rows: &[Memory],
     max_chars: usize,
 ) -> Result<String> {
-    render_context_pack_with_terms(conn, rows, max_chars, &HashSet::new())
+    Ok(render_context_pack_with_terms(conn, rows, max_chars, &HashSet::new())?.0)
 }
 
 pub(crate) fn render_context_pack_for_task(
@@ -1583,6 +1583,16 @@ pub(crate) fn render_context_pack_for_task(
     task: &str,
 ) -> Result<String> {
     let query_terms = relevance_terms(task);
+    Ok(render_context_pack_with_terms(conn, rows, max_chars, &query_terms)?.0)
+}
+
+pub(crate) fn render_context_pack_for_task_with_used_ids(
+    conn: &Connection,
+    rows: &[Memory],
+    max_chars: usize,
+    task: &str,
+) -> Result<(String, Vec<String>)> {
+    let query_terms = relevance_terms(task);
     render_context_pack_with_terms(conn, rows, max_chars, &query_terms)
 }
 
@@ -1591,11 +1601,12 @@ fn render_context_pack_with_terms(
     rows: &[Memory],
     max_chars: usize,
     query_terms: &HashSet<String>,
-) -> Result<String> {
+) -> Result<(String, Vec<String>)> {
     if rows.is_empty() {
-        return Ok("Relevant Memory:\n- none".to_string());
+        return Ok(("Relevant Memory:\n- none".to_string(), Vec::new()));
     }
     let mut out = String::from("Relevant Memory:");
+    let mut used_ids = Vec::new();
     for (title, group) in grouped_memories(rows) {
         let heading = format!("\n\n{title}:");
         if out.len() + heading.len() > max_chars {
@@ -1605,13 +1616,14 @@ fn render_context_pack_with_terms(
         for row in group {
             let card = format_context_card(conn, row, query_terms, max_chars)?;
             if out.len() + card.len() + 1 > max_chars {
-                return Ok(out);
+                return Ok((out, used_ids));
             }
             out.push('\n');
             out.push_str(&card);
+            used_ids.push(row.id.clone());
         }
     }
-    Ok(out)
+    Ok((out, used_ids))
 }
 
 fn format_context_card(
