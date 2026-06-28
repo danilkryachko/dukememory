@@ -2,6 +2,7 @@ use assert_cmd::Command;
 use predicates::str::contains;
 use rusqlite::{Connection, params};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
@@ -42,6 +43,18 @@ fn now_ms() -> i64 {
         .unwrap()
         .as_millis()
         .min(i64::MAX as u128) as i64
+}
+
+fn memory_content_hash(
+    memory_type: &str,
+    scope: &str,
+    title: &str,
+    body: &str,
+    status: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{memory_type}\n{scope}\n{title}\n{body}\n{status}").as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn insert_empty_read_event(db: &std::path::Path, command: &str, query: &str) {
@@ -4201,6 +4214,73 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
     assert_eq!(
         duplicate_notes, 1,
         "tiny retrieval should keep only one near-duplicate card"
+    );
+}
+
+#[test]
+fn retrieve_skips_semantic_when_embedding_provider_is_unreachable() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let title = "Unreachable embedding provider";
+    let body = "unreachable provider fallback vector health should stay fast";
+    let endpoint = "http://127.0.0.1:9";
+    let model = "bge-m3:latest";
+
+    let memory_id = stdout(cmd(&db).arg("add").arg("design_note").arg(title).arg(body))
+        .trim()
+        .to_string();
+    let conn = Connection::open(&db).unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO memory_embeddings \
+         (memory_id, model, endpoint, dimensions, embedding, content_hash, updated_at) \
+         VALUES (?1, ?2, ?3, 3, '[0.1,0.2,0.3]', ?4, ?5)",
+        params![
+            memory_id,
+            model,
+            format!("ollama:{endpoint}"),
+            memory_content_hash("design_note", "project", title, body, "active"),
+            now_ms(),
+        ],
+    )
+    .unwrap();
+    drop(conn);
+
+    let started = std::time::Instant::now();
+    let retrieved = stdout(
+        cmd(&db)
+            .arg("retrieve")
+            .arg("unreachable provider fallback vector health")
+            .arg("--strategy")
+            .arg("hybrid")
+            .arg("--format")
+            .arg("json")
+            .arg("--provider")
+            .arg("ollama")
+            .arg("--endpoint")
+            .arg(endpoint)
+            .arg("--model")
+            .arg(model)
+            .arg("--budget-profile")
+            .arg("deep"),
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "unreachable embedding provider should fall back before the embedding request timeout"
+    );
+    let retrieved_json: Value = serde_json::from_str(&retrieved).unwrap();
+    assert_eq!(retrieved_json["semantic_used"], false);
+    assert!(
+        retrieved_json["semantic_error"]
+            .as_str()
+            .unwrap()
+            .contains("embedding provider is not reachable")
+    );
+    assert!(
+        retrieved_json["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["memory"]["title"] == title)
     );
 }
 

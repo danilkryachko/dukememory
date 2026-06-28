@@ -90,8 +90,43 @@ pub(crate) fn semantic_index_ready(
     endpoint: &str,
     model: &str,
 ) -> Result<bool> {
+    Ok(semantic_readiness(conn, provider, endpoint, model)?.ready)
+}
+
+pub(crate) struct SemanticReadiness {
+    pub(crate) ready: bool,
+    pub(crate) reason: Option<String>,
+}
+
+pub(crate) fn semantic_readiness(
+    conn: &Connection,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> Result<SemanticReadiness> {
     let report = embed_status(conn, provider, endpoint, model)?;
-    Ok(report.indexed > report.stale)
+    if report.indexed <= report.stale {
+        return Ok(SemanticReadiness {
+            ready: false,
+            reason: Some("semantic index not ready; using FTS/local ranking".to_string()),
+        });
+    }
+    if !report.provider_reachable {
+        let detail = report
+            .provider_error
+            .map(|error| format!(": {error}"))
+            .unwrap_or_default();
+        return Ok(SemanticReadiness {
+            ready: false,
+            reason: Some(format!(
+                "embedding provider is not reachable; using FTS/local ranking{detail}"
+            )),
+        });
+    }
+    Ok(SemanticReadiness {
+        ready: true,
+        reason: None,
+    })
 }
 
 fn embedding_endpoint_key(provider: &str, endpoint: &str) -> String {

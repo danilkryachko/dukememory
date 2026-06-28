@@ -418,13 +418,13 @@ pub(crate) fn retrieve_report(
     let mut semantic_error = None;
     if matches!(request.strategy, RetrievalStrategy::Hybrid) && !semantic_skipped {
         let semantic_threshold = semantic_score_threshold(request.budget);
-        match embeddings::semantic_index_ready(
+        match embeddings::semantic_readiness(
             conn,
             request.provider,
             request.endpoint,
             request.model,
         ) {
-            Ok(true) => {
+            Ok(readiness) if readiness.ready => {
                 match embeddings::semantic_search(
                     conn,
                     request.provider,
@@ -466,10 +466,7 @@ pub(crate) fn retrieve_report(
                     Err(err) => semantic_error = Some(err.to_string()),
                 }
             }
-            Ok(false) => {
-                semantic_error =
-                    Some("semantic index not ready; using FTS/local ranking".to_string());
-            }
+            Ok(readiness) => semantic_error = readiness.reason,
             Err(err) => semantic_error = Some(format!("semantic readiness check failed: {err}")),
         }
     }
