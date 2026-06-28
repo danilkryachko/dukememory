@@ -315,14 +315,6 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
         collect_check_hints(&mut checks, &mut seen_checks, &memory.body, check_limit);
     }
 
-    let mut ids = must_follow
-        .iter()
-        .chain(relevant.iter())
-        .chain(risks.iter())
-        .map(|item| item.id.clone())
-        .collect::<Vec<_>>();
-    ids.sort();
-    ids.dedup();
     let semantic_status = if retrieval.semantic_skipped {
         MemorySemanticStatus::Skipped
     } else if retrieval.semantic_used {
@@ -330,21 +322,9 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
     } else {
         MemorySemanticStatus::Fallback
     };
+    let ids = brief_report_memory_ids(&must_follow, &relevant, &risks);
     let receipt = memory_receipt_with_semantic("brief", semantic_status, &ids, "none");
-    log_read_event(
-        conn,
-        ReadEventInput {
-            command: "brief",
-            query: request.task,
-            ids: &ids,
-            semantic_used: retrieval.semantic_used,
-            result_count: ids.len(),
-            budget: request.budget,
-            elapsed_ms: started.elapsed().as_millis(),
-        },
-    )?;
-
-    Ok(BriefReport {
+    let mut report = BriefReport {
         version: 1,
         task: request.task.to_string(),
         budget: request.budget,
@@ -358,7 +338,26 @@ pub(crate) fn brief_report(conn: &Connection, request: &BriefRequest<'_>) -> Res
         risks,
         files,
         checks,
-    })
+    };
+    let ids = if request.json_out {
+        ids
+    } else {
+        sync_brief_plain_receipt_ids(&mut report, semantic_status)
+    };
+    log_read_event(
+        conn,
+        ReadEventInput {
+            command: "brief",
+            query: request.task,
+            ids: &ids,
+            semantic_used: retrieval.semantic_used,
+            result_count: ids.len(),
+            budget: request.budget,
+            elapsed_ms: started.elapsed().as_millis(),
+        },
+    )?;
+
+    Ok(report)
 }
 
 #[derive(Clone, Copy)]
@@ -596,6 +595,125 @@ fn render_impact(report: &ImpactReport) -> String {
     truncate_chars(&out, report.budget)
 }
 
+fn sync_brief_plain_receipt_ids(
+    report: &mut BriefReport,
+    semantic_status: MemorySemanticStatus,
+) -> Vec<String> {
+    sync_plain_receipt_ids(report, semantic_status, "brief", render_brief)
+}
+
+fn sync_impact_plain_receipt_ids(
+    report: &mut ImpactReport,
+    semantic_status: MemorySemanticStatus,
+) -> Vec<String> {
+    sync_plain_receipt_ids(report, semantic_status, "impact", render_impact)
+}
+
+fn sync_plain_receipt_ids<T>(
+    report: &mut T,
+    semantic_status: MemorySemanticStatus,
+    command: &str,
+    render: fn(&T) -> String,
+) -> Vec<String>
+where
+    T: ReceiptReport,
+{
+    let mut ids = rendered_memory_ids(&render(report));
+    report.set_receipt(memory_receipt_with_semantic(
+        command,
+        semantic_status,
+        &ids,
+        "none",
+    ));
+    for _ in 0..3 {
+        let next_ids = rendered_memory_ids(&render(report));
+        if next_ids == ids {
+            return ids;
+        }
+        ids = next_ids;
+        report.set_receipt(memory_receipt_with_semantic(
+            command,
+            semantic_status,
+            &ids,
+            "none",
+        ));
+    }
+    ids
+}
+
+trait ReceiptReport {
+    fn set_receipt(&mut self, receipt: String);
+}
+
+impl ReceiptReport for BriefReport {
+    fn set_receipt(&mut self, receipt: String) {
+        self.receipt = receipt;
+    }
+}
+
+impl ReceiptReport for ImpactReport {
+    fn set_receipt(&mut self, receipt: String) {
+        self.receipt = receipt;
+    }
+}
+
+fn rendered_memory_ids(rendered: &str) -> Vec<String> {
+    let mut ids = rendered
+        .lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("- ")?;
+            let id = rest.split_whitespace().next()?;
+            if is_compact_memory_id(id) {
+                Some(id.to_string())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+fn is_compact_memory_id(value: &str) -> bool {
+    value.len() == 12 && value.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn brief_report_memory_ids(
+    must_follow: &[BriefItem],
+    relevant: &[BriefItem],
+    risks: &[BriefItem],
+) -> Vec<String> {
+    collect_brief_item_ids(
+        must_follow
+            .iter()
+            .chain(relevant.iter())
+            .chain(risks.iter()),
+    )
+}
+
+fn impact_report_memory_ids(
+    decisions: &[BriefItem],
+    constraints: &[BriefItem],
+    risks: &[BriefItem],
+    related: &[BriefItem],
+) -> Vec<String> {
+    collect_brief_item_ids(
+        decisions
+            .iter()
+            .chain(constraints.iter())
+            .chain(risks.iter())
+            .chain(related.iter()),
+    )
+}
+
+fn collect_brief_item_ids<'a>(items: impl Iterator<Item = &'a BriefItem>) -> Vec<String> {
+    let mut ids = items.map(|item| item.id.clone()).collect::<Vec<_>>();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 fn render_brief_items(out: &mut String, budget: usize, title: &str, items: &[BriefItem]) {
     if items.is_empty() {
         return;
@@ -778,21 +896,31 @@ pub(crate) fn impact_report(
         }
     }
 
-    let mut ids = decisions
-        .iter()
-        .chain(constraints.iter())
-        .chain(risks.iter())
-        .chain(related.iter())
-        .map(|item| item.id.clone())
-        .collect::<Vec<_>>();
-    ids.sort();
-    ids.dedup();
     let semantic_status = if semantic_used {
         MemorySemanticStatus::Used
     } else {
         MemorySemanticStatus::Fallback
     };
+    let ids = impact_report_memory_ids(&decisions, &constraints, &risks, &related);
     let receipt = memory_receipt_with_semantic("impact", semantic_status, &ids, "none");
+    let mut report = ImpactReport {
+        version: 1,
+        target: request.target.to_string(),
+        budget: request.budget,
+        semantic_used,
+        receipt,
+        decisions,
+        constraints,
+        risks,
+        checks,
+        related,
+        links,
+    };
+    let ids = if request.json_out {
+        ids
+    } else {
+        sync_impact_plain_receipt_ids(&mut report, semantic_status)
+    };
     log_read_event(
         conn,
         ReadEventInput {
@@ -806,19 +934,7 @@ pub(crate) fn impact_report(
         },
     )?;
 
-    Ok(ImpactReport {
-        version: 1,
-        target: request.target.to_string(),
-        budget: request.budget,
-        semantic_used,
-        receipt,
-        decisions,
-        constraints,
-        risks,
-        checks,
-        related,
-        links,
-    })
+    Ok(report)
 }
 
 fn append_semantic_impact_rows(
@@ -2290,6 +2406,17 @@ pub(crate) fn print_review_tui(conn: &Connection, stale_days: i64) -> Result<()>
 mod tests {
     use super::*;
 
+    fn brief_item(id: &str, title: &str) -> BriefItem {
+        BriefItem {
+            id: id.to_string(),
+            memory_type: "design_note".to_string(),
+            title: title.to_string(),
+            summary: "long query focused summary ".repeat(8),
+            score: 1.0,
+            reasons: vec!["test".to_string()],
+        }
+    }
+
     #[test]
     fn impact_effective_limit_follows_budget() {
         assert_eq!(impact_effective_limit(30, 1_200), 8);
@@ -2301,5 +2428,84 @@ mod tests {
         assert_eq!(impact_candidate_limit(30, 24, 3_000), 30);
         assert_eq!(impact_candidate_limit(100, 24, 3_000), 48);
         assert_eq!(impact_candidate_limit(30, 30, 8_000), 30);
+    }
+
+    #[test]
+    fn brief_plain_receipt_counts_only_rendered_memory_items() {
+        let mut report = BriefReport {
+            version: 1,
+            task: "budget visible".to_string(),
+            budget: 460,
+            semantic_used: true,
+            semantic_skipped: false,
+            semantic_skip_reason: None,
+            semantic_error: None,
+            receipt: String::new(),
+            must_follow: Vec::new(),
+            relevant: vec![
+                brief_item("111111111111", "First visible"),
+                brief_item("222222222222", "Second hidden"),
+                brief_item("333333333333", "Third hidden"),
+            ],
+            risks: Vec::new(),
+            files: vec![
+                "file:src/first.rs".to_string(),
+                "file:src/second.rs".to_string(),
+            ],
+            checks: Vec::new(),
+        };
+        report.receipt = memory_receipt_with_semantic(
+            "brief",
+            MemorySemanticStatus::Used,
+            &brief_report_memory_ids(&report.must_follow, &report.relevant, &report.risks),
+            "none",
+        );
+
+        let ids = sync_brief_plain_receipt_ids(&mut report, MemorySemanticStatus::Used);
+        let rendered = render_brief(&report);
+
+        assert_eq!(ids.len(), rendered_memory_ids(&rendered).len());
+        assert!(rendered.contains(&format!("matched {} card", ids.len())));
+        assert!(!ids.contains(&"333333333333".to_string()));
+        assert!(!rendered_memory_ids(&rendered).iter().any(|id| id == "file"));
+    }
+
+    #[test]
+    fn impact_plain_receipt_counts_only_rendered_memory_items() {
+        let mut report = ImpactReport {
+            version: 1,
+            target: "src/budget.rs".to_string(),
+            budget: 430,
+            semantic_used: true,
+            receipt: String::new(),
+            decisions: Vec::new(),
+            constraints: Vec::new(),
+            risks: Vec::new(),
+            checks: Vec::new(),
+            related: vec![
+                brief_item("aaaaaaaaaaaa", "First visible"),
+                brief_item("bbbbbbbbbbbb", "Second hidden"),
+                brief_item("cccccccccccc", "Third hidden"),
+            ],
+            links: vec!["file:src/budget.rs".to_string()],
+        };
+        report.receipt = memory_receipt_with_semantic(
+            "impact",
+            MemorySemanticStatus::Used,
+            &impact_report_memory_ids(
+                &report.decisions,
+                &report.constraints,
+                &report.risks,
+                &report.related,
+            ),
+            "none",
+        );
+
+        let ids = sync_impact_plain_receipt_ids(&mut report, MemorySemanticStatus::Used);
+        let rendered = render_impact(&report);
+
+        assert_eq!(ids.len(), rendered_memory_ids(&rendered).len());
+        assert!(rendered.contains(&format!("matched {} card", ids.len())));
+        assert!(!ids.contains(&"cccccccccccc".to_string()));
     }
 }
