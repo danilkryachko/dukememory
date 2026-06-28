@@ -220,24 +220,22 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
             let mut rows = filter_query_useless_memories(rows, &query, &quality_signals);
             rows.truncate(effective_limit);
-            let ids = rows
-                .iter()
-                .map(|memory| memory.id.clone())
-                .collect::<Vec<_>>();
+            let (rendered, used_ids) = compact_mcp_search_response(&rows, &query, max_chars)
+                .map_err(|err| err.to_string())?;
             log_read_event(
                 &conn,
                 ReadEventInput {
                     command: "memory_search",
                     query: &query,
-                    ids: &ids,
+                    ids: &used_ids,
                     semantic_used,
-                    result_count: ids.len(),
+                    result_count: used_ids.len(),
                     budget: max_chars,
                     elapsed_ms: started.elapsed().as_millis(),
                 },
             )
             .map_err(|err| err.to_string())?;
-            compact_mcp_search_response(&rows, &query, max_chars).map_err(|err| err.to_string())?
+            rendered
         }
         "memory_context_pack" => {
             let started = Instant::now();
@@ -729,8 +727,13 @@ fn memory_row_ids(rows: &[Memory]) -> Vec<String> {
     rows.iter().map(|memory| memory.id.clone()).collect()
 }
 
-fn compact_mcp_search_response(rows: &[Memory], query: &str, max_chars: usize) -> Result<String> {
+fn compact_mcp_search_response(
+    rows: &[Memory],
+    query: &str,
+    max_chars: usize,
+) -> Result<(String, Vec<String>)> {
     let mut items = Vec::new();
+    let mut used_ids = Vec::new();
     for row in rows {
         items.push(compact_mcp_memory_value(row, &[], query));
         let rendered = serde_json::to_string_pretty(&items)?;
@@ -738,8 +741,12 @@ fn compact_mcp_search_response(rows: &[Memory], query: &str, max_chars: usize) -
             items.pop();
             break;
         }
+        used_ids.push(row.id.clone());
     }
-    render_budgeted_json_value(Value::Array(items), max_chars, &[])
+    Ok((
+        render_budgeted_json_value(Value::Array(items), max_chars, &[])?,
+        used_ids,
+    ))
 }
 
 fn compact_mcp_memory_response(

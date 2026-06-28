@@ -5723,6 +5723,60 @@ fn mcp_context_surfaces_log_only_rendered_memories() {
 }
 
 #[test]
+fn mcp_memory_search_logs_only_rendered_items() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for index in 0..4 {
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(format!("MCP search budget {index}"))
+            .arg(format!(
+                "mcp search budget exact useful detail variant{index} {}",
+                "tail noise ".repeat(40)
+            ))
+            .assert()
+            .success();
+    }
+
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
+        .arg("--db")
+        .arg(&db)
+        .arg("serve-mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_search","arguments":{"query":"mcp search budget","max_chars":80,"limit":8}}})
+        )
+        .unwrap();
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let mcp_stdout = String::from_utf8(output.stdout).unwrap();
+    let value: Value = serde_json::from_str(mcp_stdout.lines().next().unwrap()).unwrap();
+    let text = value["result"]["content"][0]["text"].as_str().unwrap();
+    let rendered_items: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(rendered_items.as_array().unwrap().len(), 0);
+
+    let usage = stdout(cmd(&db).arg("usage-report").arg("--json"));
+    let usage_json: Value = serde_json::from_str(&usage).unwrap();
+    let read = &usage_json["recent_reads"][0];
+    assert_eq!(read["command"], "memory_search");
+    assert_eq!(read["result_count"], 0);
+    assert_eq!(read["memory_ids"].as_array().unwrap().len(), 0);
+}
+
+#[test]
 fn mcp_snapshot_query_uses_semantic_supplement() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
