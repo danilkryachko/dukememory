@@ -8319,6 +8319,9 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("safe skipped"));
     assert!(html.contains("<span>status</span>"));
     assert!(html.contains("Memory QA"));
+    assert!(html.contains("semantic results"));
+    assert!(html.contains("semantic empty"));
+    assert!(html.contains("avg semantic results"));
     assert!(html.contains("Storage"));
     assert!(html.contains("/ops-status"));
     assert!(html.contains("/upgrade-project"));
@@ -8490,6 +8493,9 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(qa.contains("\"qa\""));
     assert!(qa.contains("\"score\""));
+    assert!(qa.contains("\"semantic_result_rate\""));
+    assert!(qa.contains("\"semantic_eligible_result_rate\""));
+    assert!(qa.contains("\"semantic_eligible_empty_read_count\""));
 
     let ops = http_once(
         &db,
@@ -8497,6 +8503,9 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(ops.contains("\"ops\""));
     assert!(ops.contains("\"effectiveness\""));
+    assert!(ops.contains("\"semantic_result_rate\""));
+    assert!(ops.contains("\"semantic_eligible_result_rate\""));
+    assert!(ops.contains("\"semantic_eligible_empty_read_count\""));
     assert!(ops.contains("\"agent_integration\""));
     assert!(ops.contains("\"skill_installed\""));
     assert!(ops.contains("\"fresh\""));

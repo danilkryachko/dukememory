@@ -634,6 +634,10 @@
       return value == null ? "-" : `${Number(value)}s`;
     }
 
+    function formatPercent(value) {
+      return `${Number((value || 0) * 100).toFixed(0)}%`;
+    }
+
     function highlight(value) {
       const text = escapeHtml(value);
       const query = $("q").value.trim();
@@ -1087,7 +1091,9 @@
       <div class="stat-grid">
         <div class="stat"><strong>${Number(ops.score || 0).toFixed(1)}</strong><span>${escapeHtml(ops.status || "-")}</span></div>
         <div class="stat"><strong>${Number(effectiveness.reads || 0)}</strong><span>reads</span></div>
-        <div class="stat"><strong>${Number((effectiveness.useful_rate || 0) * 100).toFixed(0)}%</strong><span>useful ${escapeHtml(effectiveness.useful_rate_source || "")}</span></div>
+        <div class="stat"><strong>${formatPercent(effectiveness.semantic_eligible_result_rate)}</strong><span>semantic results</span></div>
+        <div class="stat"><strong>${Number(effectiveness.semantic_eligible_empty_read_count || 0)}</strong><span>semantic empty</span></div>
+        <div class="stat"><strong>${formatPercent(effectiveness.useful_rate)}</strong><span>useful ${escapeHtml(effectiveness.useful_rate_source || "")}</span></div>
         <div class="stat"><strong>${Number(effectiveness.inferred_missing || 0)}</strong><span>memory gaps</span></div>
         <div class="stat"><strong>${Number(opsGapInbox.pending || 0)}</strong><span>gap inbox</span></div>
         <div class="stat"><strong>${opsEmbeddings.current ? "ok" : "warn"}</strong><span>${escapeHtml(t("embeddings"))}</span></div>
@@ -1118,8 +1124,11 @@
       <div class="stat-grid">
         <div class="stat"><strong>${Number(qa.score || 0).toFixed(1)}</strong><span>score</span></div>
         <div class="stat"><strong>${Number(qa.reads || 0)}</strong><span>reads</span></div>
-        <div class="stat"><strong>${Number((qa.semantic_read_rate || 0) * 100).toFixed(0)}%</strong><span>semantic</span></div>
-        <div class="stat"><strong>${Number((qa.inferred_useful_rate || 0) * 100).toFixed(0)}%</strong><span>inferred useful</span></div>
+        <div class="stat"><strong>${formatPercent(qa.semantic_read_rate)}</strong><span>semantic</span></div>
+        <div class="stat"><strong>${formatPercent(qa.semantic_eligible_result_rate)}</strong><span>semantic results</span></div>
+        <div class="stat"><strong>${Number(qa.semantic_eligible_empty_read_count || 0)}</strong><span>semantic empty</span></div>
+        <div class="stat"><strong>${Number(qa.semantic_avg_results || 0).toFixed(1)}</strong><span>avg semantic results</span></div>
+        <div class="stat"><strong>${formatPercent(qa.inferred_useful_rate)}</strong><span>inferred useful</span></div>
         <div class="stat"><strong>${Number(qa.inferred_missing || 0)}</strong><span>gaps</span></div>
         <div class="stat"><strong>${Number(qa.token_saving_estimate || 0)}</strong><span>tokens saved</span></div>
       </div>
