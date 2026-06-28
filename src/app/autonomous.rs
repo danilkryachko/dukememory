@@ -1224,7 +1224,7 @@ pub(crate) fn autonomous_run_once(
             detail: request.backup_dir.display().to_string(),
             memory_id: None,
         });
-        let embed = embeddings::embed_index(
+        match embeddings::embed_index(
             conn,
             request.provider,
             request.endpoint,
@@ -1232,13 +1232,23 @@ pub(crate) fn autonomous_run_once(
             &[],
             None,
             false,
-        )?;
-        report.actions.push(AutonomousAction {
-            kind: "embed_index".to_string(),
-            status: "ok".to_string(),
-            detail: format!("indexed={} skipped={}", embed.indexed, embed.skipped),
-            memory_id: None,
-        });
+        ) {
+            Ok(embed) => report.actions.push(AutonomousAction {
+                kind: "embed_index".to_string(),
+                status: "ok".to_string(),
+                detail: format!("indexed={} skipped={}", embed.indexed, embed.skipped),
+                memory_id: None,
+            }),
+            Err(err) if is_embedding_provider_unreachable_error(&err) => {
+                report.actions.push(AutonomousAction {
+                    kind: "embed_index".to_string(),
+                    status: "skipped".to_string(),
+                    detail: err.to_string(),
+                    memory_id: None,
+                });
+            }
+            Err(err) => return Err(err),
+        }
         ops::run_cleanup_quiet(conn, 5000, 30)?;
         report.actions.push(AutonomousAction {
             kind: "cleanup".to_string(),
@@ -1460,6 +1470,12 @@ pub(crate) fn autonomous_run_once(
     });
     write_autonomous_status(request.status_file, &report)?;
     Ok(report)
+}
+
+fn is_embedding_provider_unreachable_error(error: &anyhow::Error) -> bool {
+    error
+        .to_string()
+        .starts_with("embedding provider is not reachable; skipping embed-index")
 }
 
 fn autonomous_repair_agent_integration(

@@ -4384,6 +4384,75 @@ fn embed_index_fails_fast_when_embedding_provider_is_unreachable() {
 }
 
 #[test]
+fn autonomous_run_skips_embed_index_when_provider_is_unreachable() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let status_file = dir.path().join(".agent/autonomous-status.json");
+    let rollback_dir = dir.path().join(".agent/autonomous-rollbacks");
+    let backup_dir = dir.path().join(".agent/backups");
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let server = std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            drop(stream);
+        }
+    });
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Autonomous down provider")
+        .arg("Autonomous maintenance should continue when embedding provider is down.")
+        .assert()
+        .success();
+
+    let started = std::time::Instant::now();
+    let run = stdout(
+        cmd(&db)
+            .arg("autonomous")
+            .arg("run-once")
+            .arg("--level")
+            .arg("normal")
+            .arg("--status-file")
+            .arg(&status_file)
+            .arg("--rollback-dir")
+            .arg(&rollback_dir)
+            .arg("--backup-dir")
+            .arg(&backup_dir)
+            .arg("--provider")
+            .arg("ollama")
+            .arg("--endpoint")
+            .arg(&endpoint)
+            .arg("--model")
+            .arg("bge-m3:latest")
+            .arg("--json"),
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(6),
+        "autonomous maintenance should skip embeddings before the long embedding timeout"
+    );
+    let run_json: Value = serde_json::from_str(&run).unwrap();
+    assert_eq!(run_json["ok"], true);
+    let actions = run_json["actions"].as_array().unwrap();
+    assert!(actions.iter().any(|item| {
+        item["kind"] == "embed_index"
+            && item["status"] == "skipped"
+            && item["detail"]
+                .as_str()
+                .unwrap()
+                .contains("embedding provider is not reachable")
+    }));
+    assert!(
+        actions
+            .iter()
+            .any(|item| item["kind"] == "optimize_storage" && item["status"] == "ok")
+    );
+
+    server.join().unwrap();
+}
+
+#[test]
 fn v14_retrieve_filters_weak_semantic_candidates() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
