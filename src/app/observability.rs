@@ -161,6 +161,8 @@ pub(crate) struct DashboardReport {
     pub(crate) missing_live_eval_projects: usize,
     pub(crate) memory_gap_projects: usize,
     pub(crate) memory_gap_count: usize,
+    pub(crate) semantic_empty_gap_projects: usize,
+    pub(crate) semantic_empty_gap_count: usize,
     pub(crate) semantic_empty_projects: usize,
     pub(crate) semantic_empty_read_count: usize,
     pub(crate) semantic_result_warn_projects: usize,
@@ -282,6 +284,8 @@ pub(crate) struct ProjectDashboardItem {
     pub(crate) autonomous_useful_rate: Option<f64>,
     pub(crate) autonomous_useful_rate_source: Option<String>,
     pub(crate) autonomous_inferred_missing: Option<usize>,
+    pub(crate) autonomous_semantic_empty_missing: Option<usize>,
+    pub(crate) autonomous_semantic_empty_missing_queries: Vec<String>,
     pub(crate) embedding_missing: Option<usize>,
     pub(crate) semantic_read_rate: Option<f64>,
     pub(crate) semantic_result_rate: Option<f64>,
@@ -1559,7 +1563,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
     } else {
         println!("dukememory. Dashboard");
         println!(
-            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} memory_gap_projects={} memory_gap_count={} semantic_empty_projects={} semantic_empty_reads={} semantic_result_warn_projects={} gap_inbox_pending_projects={} gap_inbox_pending_count={} gap_inbox_stale_projects={} gap_inbox_stale_count={} gap_inbox_oldest_age={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={} repair_loop_projects={} repair_loop_failed={} repair_loop_safe_skipped={}",
+            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} memory_gap_projects={} memory_gap_count={} semantic_empty_gap_projects={} semantic_empty_gap_count={} semantic_empty_projects={} semantic_empty_reads={} semantic_result_warn_projects={} gap_inbox_pending_projects={} gap_inbox_pending_count={} gap_inbox_stale_projects={} gap_inbox_stale_count={} gap_inbox_oldest_age={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={} repair_loop_projects={} repair_loop_failed={} repair_loop_safe_skipped={}",
             report.status,
             report.total_projects,
             report.ready_projects,
@@ -1568,6 +1572,8 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
             report.missing_live_eval_projects,
             report.memory_gap_projects,
             report.memory_gap_count,
+            report.semantic_empty_gap_projects,
+            report.semantic_empty_gap_count,
             report.semantic_empty_projects,
             report.semantic_empty_read_count,
             report.semantic_result_warn_projects,
@@ -1601,7 +1607,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
                     .join(",")
             };
             println!(
-                "- {} status={} attention={} reasons={} repairs={} repair_runs={} repair_failed={} repair_safe_skipped={} gap_inbox_pending={} gap_inbox_stale={} gap_inbox_oldest_age={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} semantic_results={} semantic_empty={} recommendations={}",
+                "- {} status={} attention={} reasons={} repairs={} repair_runs={} repair_failed={} repair_safe_skipped={} gap_inbox_pending={} gap_inbox_stale={} gap_inbox_oldest_age={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} semantic_empty_gaps={} semantic_results={} semantic_empty={} recommendations={}",
                 project.name,
                 project.status,
                 project.attention,
@@ -1641,6 +1647,10 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
                     .unwrap_or_else(|| "-".to_string()),
                 project
                     .autonomous_inferred_missing
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                project
+                    .autonomous_semantic_empty_missing
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
                 project
@@ -1796,6 +1806,8 @@ pub(crate) fn dashboard_repair_history_report(
             autonomous_useful_rate: None,
             autonomous_useful_rate_source: None,
             autonomous_inferred_missing: None,
+            autonomous_semantic_empty_missing: None,
+            autonomous_semantic_empty_missing_queries: Vec::new(),
             embedding_missing: None,
             semantic_read_rate: None,
             semantic_result_rate: None,
@@ -2520,6 +2532,13 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                     .as_ref()
                     .map(|live| live.useful_rate_source.clone()),
                 autonomous_inferred_missing: live_eval.as_ref().map(|live| live.inferred_missing),
+                autonomous_semantic_empty_missing: live_eval
+                    .as_ref()
+                    .map(|live| live.semantic_empty_missing),
+                autonomous_semantic_empty_missing_queries: live_eval
+                    .as_ref()
+                    .map(|live| live.semantic_empty_missing_queries.clone())
+                    .unwrap_or_default(),
                 embedding_missing,
                 semantic_read_rate: usage.as_ref().map(|usage| usage.semantic_eligible_read_rate),
                 semantic_result_rate: usage.as_ref().map(|usage| usage.semantic_result_rate),
@@ -2572,6 +2591,23 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
     let memory_gap_count = projects
         .iter()
         .map(|project| project.autonomous_inferred_missing.unwrap_or_default())
+        .sum();
+    let semantic_empty_gap_projects = projects
+        .iter()
+        .filter(|project| {
+            project
+                .autonomous_semantic_empty_missing
+                .unwrap_or_default()
+                > 0
+        })
+        .count();
+    let semantic_empty_gap_count = projects
+        .iter()
+        .map(|project| {
+            project
+                .autonomous_semantic_empty_missing
+                .unwrap_or_default()
+        })
         .sum();
     let semantic_empty_projects = projects
         .iter()
@@ -2665,6 +2701,8 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         missing_live_eval_projects,
         memory_gap_projects,
         memory_gap_count,
+        semantic_empty_gap_projects,
+        semantic_empty_gap_count,
         semantic_empty_projects,
         semantic_empty_read_count,
         semantic_result_warn_projects,

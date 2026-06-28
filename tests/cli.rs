@@ -369,6 +369,10 @@ fn live_eval_ignores_code_identifier_empty_reads() {
     let eval_live = stdout(cmd(&db).arg("eval").arg("live").arg("--json"));
     let eval_live_json: Value = serde_json::from_str(&eval_live).unwrap();
     assert_eq!(eval_live_json["inferred_missing"].as_u64().unwrap(), 1);
+    assert_eq!(
+        eval_live_json["semantic_empty_missing"].as_u64().unwrap(),
+        1
+    );
     let queries = eval_live_json["inferred_missing_queries"]
         .as_array()
         .unwrap()
@@ -378,6 +382,13 @@ fn live_eval_ignores_code_identifier_empty_reads() {
         queries
             .iter()
             .any(|item| *item == "missing checkout policy")
+    );
+    assert!(
+        eval_live_json["semantic_empty_missing_queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "missing checkout policy")
     );
     assert!(!queries.iter().any(|item| *item == "live_eval_report"));
     assert!(!queries.iter().any(|item| *item == "src/app/diagnostics.rs"));
@@ -7152,14 +7163,24 @@ fn dashboard_reports_semantic_empty_result_attention() {
     assert_eq!(dashboard_json["semantic_empty_projects"], 1);
     assert_eq!(dashboard_json["semantic_empty_read_count"], 3);
     assert_eq!(dashboard_json["semantic_result_warn_projects"], 1);
+    assert_eq!(dashboard_json["semantic_empty_gap_projects"], 1);
+    assert_eq!(dashboard_json["semantic_empty_gap_count"], 2);
     let project = &dashboard_json["projects"][0];
     assert_eq!(
         project["semantic_eligible_result_rate"].as_f64().unwrap(),
         0.0
     );
     assert_eq!(project["semantic_eligible_empty_read_count"], 3);
+    assert_eq!(project["autonomous_semantic_empty_missing"], 2);
     assert!(
         project["semantic_empty_queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|query| query == "checkout policy memory")
+    );
+    assert!(
+        project["autonomous_semantic_empty_missing_queries"]
             .as_array()
             .unwrap()
             .iter()
@@ -8367,6 +8388,9 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("missing live eval"));
     assert!(html.contains("gap projects"));
     assert!(html.contains("memory gaps"));
+    assert!(html.contains("semantic gap projects"));
+    assert!(html.contains("semantic gaps"));
+    assert!(html.contains("semantic gap queries"));
     assert!(html.contains("semantic empty projects"));
     assert!(html.contains("semantic empty reads"));
     assert!(html.contains("semantic result warnings"));
@@ -8461,6 +8485,10 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(dashboard.contains("\"repair_loop_safe_skipped_projects\""));
     assert!(dashboard.contains("\"memory_gap_projects\""));
     assert!(dashboard.contains("\"memory_gap_count\""));
+    assert!(dashboard.contains("\"semantic_empty_gap_projects\""));
+    assert!(dashboard.contains("\"semantic_empty_gap_count\""));
+    assert!(dashboard.contains("\"autonomous_semantic_empty_missing\""));
+    assert!(dashboard.contains("\"autonomous_semantic_empty_missing_queries\""));
     assert!(dashboard.contains("\"semantic_empty_projects\""));
     assert!(dashboard.contains("\"semantic_empty_read_count\""));
     assert!(dashboard.contains("\"semantic_result_warn_projects\""));

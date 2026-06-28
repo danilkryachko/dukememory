@@ -16,9 +16,11 @@ pub(crate) struct LiveEvalReport {
     pub(crate) inferred_total: usize,
     pub(crate) inferred_useful_rate: f64,
     pub(crate) inferred_missing: usize,
+    pub(crate) semantic_empty_missing: usize,
     pub(crate) noisy_memory_ids: Vec<String>,
     pub(crate) missing_queries: Vec<String>,
     pub(crate) inferred_missing_queries: Vec<String>,
+    pub(crate) semantic_empty_missing_queries: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1471,10 +1473,17 @@ fn print_live_eval(conn: &Connection, since_days: i64, json_out: bool) -> Result
             report.inferred_total
         );
         println!("inferred_missing: {}", report.inferred_missing);
+        println!("semantic_empty_missing: {}", report.semantic_empty_missing);
         if !report.inferred_missing_queries.is_empty() {
             println!(
                 "inferred_missing_queries: {}",
                 report.inferred_missing_queries.join(" | ")
+            );
+        }
+        if !report.semantic_empty_missing_queries.is_empty() {
+            println!(
+                "semantic_empty_missing_queries: {}",
+                report.semantic_empty_missing_queries.join(" | ")
             );
         }
         println!("noisy_memory_ids: {}", report.noisy_memory_ids.join(","));
@@ -1552,9 +1561,11 @@ pub(crate) fn live_eval_report(conn: &Connection, since_days: i64) -> Result<Liv
         inferred_total: inferred.total,
         inferred_useful_rate,
         inferred_missing: inferred.missing_queries.len(),
+        semantic_empty_missing: inferred.semantic_empty_missing_queries.len(),
         noisy_memory_ids: noisy,
         missing_queries,
         inferred_missing_queries: inferred.missing_queries,
+        semantic_empty_missing_queries: inferred.semantic_empty_missing_queries,
     })
 }
 
@@ -1598,13 +1609,23 @@ pub(crate) fn materialize_inferred_feedback(
             report.written += 1;
             report.useful += 1;
         } else if should_infer_missing_memory_gap(conn, &read.query)? {
+            let empty_source = if read.semantic_used {
+                "semantic"
+            } else {
+                "nonsemantic"
+            };
             let detail = serde_json::to_string(&json!({
                 "rating": "missing",
                 "ids": [],
                 "command": read.command,
                 "query": truncate_chars(&read.query, 500),
-                "note": "autonomous inferred feedback from empty memory read",
+                "note": if read.semantic_used {
+                    "autonomous inferred feedback from empty semantic memory read"
+                } else {
+                    "autonomous inferred feedback from empty memory read"
+                },
                 "source": "autonomous_inferred",
+                "empty_source": empty_source,
                 "inferred_read_id": read.id,
             }))?;
             log_event(conn, "memory_feedback", None, &detail)?;
@@ -1633,6 +1654,7 @@ struct InferredLiveSignals {
     useful: usize,
     total: usize,
     missing_queries: Vec<String>,
+    semantic_empty_missing_queries: Vec<String>,
 }
 
 fn inferred_live_signals(
@@ -1642,6 +1664,7 @@ fn inferred_live_signals(
     let mut useful = 0;
     let mut total = 0;
     let mut missing_queries = Vec::new();
+    let mut semantic_empty_missing_queries = Vec::new();
     for read in reads {
         if !is_agent_memory_read(&read.command) {
             continue;
@@ -1650,16 +1673,24 @@ fn inferred_live_signals(
         if read.result_count > 0 && !read.memory_ids.is_empty() {
             useful += 1;
         } else if should_infer_missing_memory_gap(conn, &read.query)? {
-            missing_queries.push(truncate_chars(&read.query, 140));
+            let query = truncate_chars(&read.query, 140);
+            if read.semantic_used {
+                semantic_empty_missing_queries.push(query.clone());
+            }
+            missing_queries.push(query);
         }
     }
     missing_queries.sort();
     missing_queries.dedup();
     missing_queries.truncate(20);
+    semantic_empty_missing_queries.sort();
+    semantic_empty_missing_queries.dedup();
+    semantic_empty_missing_queries.truncate(20);
     Ok(InferredLiveSignals {
         useful,
         total,
         missing_queries,
+        semantic_empty_missing_queries,
     })
 }
 
