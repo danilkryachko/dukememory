@@ -438,6 +438,48 @@ fn memory_qa_reports_only_actionable_missing_feedback() {
 }
 
 #[test]
+fn memory_qa_reports_semantic_empty_result_health() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Initialize schema")
+        .arg("Create the memory database before recording semantic read events.")
+        .assert()
+        .success();
+
+    insert_read_event(&db, "brief", "checkout policy memory", true);
+    insert_read_event(&db, "search", "checkout policy memory", true);
+    insert_read_event(&db, "impact", "payment retry policy", true);
+
+    let qa = stdout(
+        cmd(&db)
+            .arg("memory-qa")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    );
+    let qa_json: Value = serde_json::from_str(&qa).unwrap();
+    assert_eq!(qa_json["semantic_read_rate"].as_f64().unwrap(), 1.0);
+    assert_eq!(qa_json["semantic_result_rate"].as_f64().unwrap(), 0.0);
+    assert_eq!(qa_json["semantic_empty_read_count"], 3);
+    assert_eq!(qa_json["semantic_avg_results"].as_f64().unwrap(), 0.0);
+    assert_eq!(
+        qa_json["semantic_eligible_result_rate"].as_f64().unwrap(),
+        0.0
+    );
+    assert_eq!(qa_json["semantic_eligible_empty_read_count"], 3);
+    assert!(qa_json["issues"].as_array().unwrap().iter().any(|issue| {
+        issue
+            .as_str()
+            .unwrap()
+            .contains("semantic recall returns results")
+    }));
+}
+
+#[test]
 fn init_update_get_delete_and_privacy_guard() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
@@ -9181,6 +9223,15 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let qa_json: Value = serde_json::from_str(&qa).unwrap();
     assert!(qa_json["score"].as_f64().unwrap() >= 0.0);
     assert!(qa_json["active_memories"].as_u64().unwrap() >= 1);
+    assert!(qa_json["semantic_result_rate"].as_f64().is_some());
+    assert!(qa_json["semantic_empty_read_count"].as_u64().is_some());
+    assert!(qa_json["semantic_avg_results"].as_f64().is_some());
+    assert!(qa_json["semantic_eligible_result_rate"].as_f64().is_some());
+    assert!(
+        qa_json["semantic_eligible_empty_read_count"]
+            .as_u64()
+            .is_some()
+    );
 
     let ops = stdout(
         cmd(&db)
@@ -9191,6 +9242,31 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     let ops_json: Value = serde_json::from_str(&ops).unwrap();
     assert!(ops_json["score"].as_f64().unwrap() >= 0.0);
+    assert!(
+        ops_json["effectiveness"]["semantic_result_rate"]
+            .as_f64()
+            .is_some()
+    );
+    assert!(
+        ops_json["effectiveness"]["semantic_empty_read_count"]
+            .as_u64()
+            .is_some()
+    );
+    assert!(
+        ops_json["effectiveness"]["semantic_avg_results"]
+            .as_f64()
+            .is_some()
+    );
+    assert!(
+        ops_json["effectiveness"]["semantic_eligible_result_rate"]
+            .as_f64()
+            .is_some()
+    );
+    assert!(
+        ops_json["effectiveness"]["semantic_eligible_empty_read_count"]
+            .as_u64()
+            .is_some()
+    );
     assert!(ops_json["agent_integration"]["ready"].as_bool().is_some());
     assert!(
         ops_json["agent_integration"]["project_memory_installed"]
@@ -9275,6 +9351,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(["ok", "warn"].contains(&ops_json["storage"]["pressure"].as_str().unwrap()));
     assert_eq!(ops_json["multi_device"]["local_first"], true);
     let ops_text = stdout(cmd(&db).arg("ops-status").arg("--root").arg(dir.path()));
+    assert!(ops_text.contains("semantic_results="));
     assert!(ops_text.contains("gap_inbox: pending="));
     assert!(ops_text.contains("stale_pending="));
     assert!(ops_text.contains("oldest_pending_age_secs="));

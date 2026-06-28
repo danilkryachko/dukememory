@@ -306,6 +306,11 @@ pub(crate) struct MemoryQaReport {
     pub(crate) since_days: i64,
     pub(crate) reads: usize,
     pub(crate) semantic_read_rate: f64,
+    pub(crate) semantic_result_rate: f64,
+    pub(crate) semantic_empty_read_count: usize,
+    pub(crate) semantic_avg_results: f64,
+    pub(crate) semantic_eligible_result_rate: f64,
+    pub(crate) semantic_eligible_empty_read_count: usize,
     pub(crate) useful_rate: f64,
     pub(crate) useful_rate_source: String,
     pub(crate) feedback_useful_rate: f64,
@@ -353,6 +358,11 @@ pub(crate) struct OpsEffectivenessStatus {
     pub(crate) writes: usize,
     pub(crate) unique_memory_ids: usize,
     pub(crate) semantic_read_rate: f64,
+    pub(crate) semantic_result_rate: f64,
+    pub(crate) semantic_empty_read_count: usize,
+    pub(crate) semantic_avg_results: f64,
+    pub(crate) semantic_eligible_result_rate: f64,
+    pub(crate) semantic_eligible_empty_read_count: usize,
     pub(crate) useful_rate: f64,
     pub(crate) useful_rate_source: String,
     pub(crate) feedback_useful_rate: f64,
@@ -2580,6 +2590,17 @@ pub(crate) fn print_memory_qa(
             report.semantic_read_rate * 100.0
         );
         println!(
+            "semantic_result_rate: {:.1}% empty={} avg_results={:.2}",
+            report.semantic_result_rate * 100.0,
+            report.semantic_empty_read_count,
+            report.semantic_avg_results
+        );
+        println!(
+            "semantic_eligible_result_rate: {:.1}% empty={}",
+            report.semantic_eligible_result_rate * 100.0,
+            report.semantic_eligible_empty_read_count
+        );
+        println!(
             "useful_rate: {:.1}% ({})",
             report.useful_rate * 100.0,
             report.useful_rate_source
@@ -2616,6 +2637,11 @@ pub(crate) fn memory_qa_report(
     .ok();
     let autonomous = read_autonomous_status(&root.join(".agent/autonomous-status.json")).ok();
     let semantic_read_rate = usage.semantic_eligible_read_rate;
+    let semantic_result_rate = usage.semantic_result_rate;
+    let semantic_empty_read_count = usage.semantic_empty_read_count;
+    let semantic_avg_results = usage.semantic_avg_results;
+    let semantic_eligible_result_rate = usage.semantic_eligible_result_rate;
+    let semantic_eligible_empty_read_count = usage.semantic_eligible_empty_read_count;
     let token_saving_estimate = quality
         .items
         .iter()
@@ -2637,6 +2663,16 @@ pub(crate) fn memory_qa_report(
             .push("semantic recall is used by less than half of eligible recent reads".to_string());
         recommendations
             .push("run dukememory embed-status and embed-index if missing or stale".to_string());
+    }
+    if usage.semantic_eligible_read_count >= 3 && semantic_eligible_result_rate < 0.75 {
+        issues.push(format!(
+            "semantic recall returns results for only {:.0}% of eligible semantic reads",
+            semantic_eligible_result_rate * 100.0
+        ));
+        recommendations.push(
+            "inspect usage-report semantic empty reads, then refresh embeddings or tune retrieval"
+                .to_string(),
+        );
     }
     if quality.average_score < 60.0 && quality.total > 0 {
         issues.push("average memory quality is low".to_string());
@@ -2717,6 +2753,9 @@ pub(crate) fn memory_qa_report(
     if usage.read_count == 0 {
         score -= 20.0;
     }
+    if usage.semantic_eligible_read_count >= 3 {
+        score -= semantic_eligible_empty_read_count.min(5) as f64 * 3.0;
+    }
     if autonomous.as_ref().is_some_and(|status| !status.ok) {
         score -= 12.0;
     }
@@ -2730,6 +2769,11 @@ pub(crate) fn memory_qa_report(
         since_days,
         reads: usage.read_count,
         semantic_read_rate,
+        semantic_result_rate,
+        semantic_empty_read_count,
+        semantic_avg_results,
+        semantic_eligible_result_rate,
+        semantic_eligible_empty_read_count,
         useful_rate: live.useful_rate,
         useful_rate_source: live.useful_rate_source,
         feedback_useful_rate: live.feedback_useful_rate,
@@ -2766,10 +2810,11 @@ pub(crate) fn print_ops_status(
         println!("score: {:.1}", report.score);
         println!("root: {}", report.root);
         println!(
-            "effectiveness: reads={} unique={} semantic={:.0}% useful={:.0}% saved_tokens={}",
+            "effectiveness: reads={} unique={} semantic={:.0}% semantic_results={:.0}% useful={:.0}% saved_tokens={}",
             report.effectiveness.reads,
             report.effectiveness.unique_memory_ids,
             report.effectiveness.semantic_read_rate * 100.0,
+            report.effectiveness.semantic_eligible_result_rate * 100.0,
             report.effectiveness.useful_rate * 100.0,
             report.effectiveness.token_saving_estimate
         );
@@ -3045,6 +3090,11 @@ pub(crate) fn ops_status_report(
             writes: usage.write_count,
             unique_memory_ids: usage.unique_memory_ids,
             semantic_read_rate: qa.semantic_read_rate,
+            semantic_result_rate: qa.semantic_result_rate,
+            semantic_empty_read_count: qa.semantic_empty_read_count,
+            semantic_avg_results: qa.semantic_avg_results,
+            semantic_eligible_result_rate: qa.semantic_eligible_result_rate,
+            semantic_eligible_empty_read_count: qa.semantic_eligible_empty_read_count,
             useful_rate: qa.useful_rate,
             useful_rate_source: qa.useful_rate_source,
             feedback_useful_rate: qa.feedback_useful_rate,
