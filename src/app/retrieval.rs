@@ -516,7 +516,7 @@ pub(crate) fn retrieve_report(
     hits = apply_relevance_floor(hits, request.budget);
     hits = filter_semantic_redundant_hits(hits, request.budget);
     hits = filter_redundant_hits(hits, request.budget);
-    hits = select_diverse_hits(hits, effective_limit);
+    hits = select_diverse_hits(hits, effective_limit, request.budget, &task_terms);
     let ids = hits
         .iter()
         .map(|hit| hit.memory.memory.id.clone())
@@ -1080,8 +1080,93 @@ pub(crate) fn retrieval_quality_adjustment(
     score
 }
 
-fn select_diverse_hits(hits: Vec<RetrievalHit>, limit: usize) -> Vec<RetrievalHit> {
-    select_diverse_by_type(hits, limit, |hit| &hit.memory.memory.memory_type)
+fn select_diverse_hits(
+    hits: Vec<RetrievalHit>,
+    limit: usize,
+    budget: usize,
+    task_terms: &HashSet<String>,
+) -> Vec<RetrievalHit> {
+    if budget > 2_500 || task_terms.len() < 3 || hits.len() <= limit {
+        return select_diverse_by_type(hits, limit, |hit| &hit.memory.memory.memory_type);
+    }
+    select_diverse_by_query_coverage(hits, limit, budget, task_terms)
+}
+
+fn select_diverse_by_query_coverage(
+    hits: Vec<RetrievalHit>,
+    limit: usize,
+    budget: usize,
+    task_terms: &HashSet<String>,
+) -> Vec<RetrievalHit> {
+    let mut remaining = hits;
+    let mut selected = Vec::new();
+    let mut covered_terms = HashSet::new();
+    let mut type_counts: HashMap<String, usize> = HashMap::new();
+    let best_score = remaining.first().map(|hit| hit.score).unwrap_or_default();
+    let score_floor = if budget <= 1_200 {
+        (best_score - 20.0).max(8.0)
+    } else {
+        (best_score - 28.0).max(4.0)
+    };
+
+    while selected.len() < limit && !remaining.is_empty() {
+        let mut best_index = 0usize;
+        let mut best_selection_score = f64::NEG_INFINITY;
+        for (index, hit) in remaining.iter().enumerate() {
+            let selection_score = query_coverage_selection_score(
+                hit,
+                task_terms,
+                &covered_terms,
+                &type_counts,
+                score_floor,
+            );
+            if selection_score > best_selection_score {
+                best_selection_score = selection_score;
+                best_index = index;
+            }
+        }
+        let hit = remaining.remove(best_index);
+        for term in hit_query_terms(&hit, task_terms) {
+            covered_terms.insert(term);
+        }
+        *type_counts
+            .entry(hit.memory.memory.memory_type.clone())
+            .or_insert(0) += 1;
+        selected.push(hit);
+    }
+    selected
+}
+
+fn query_coverage_selection_score(
+    hit: &RetrievalHit,
+    task_terms: &HashSet<String>,
+    covered_terms: &HashSet<String>,
+    type_counts: &HashMap<String, usize>,
+    score_floor: f64,
+) -> f64 {
+    let hit_terms = hit_query_terms(hit, task_terms);
+    let new_terms = hit_terms.difference(covered_terms).count() as f64;
+    let repeated_type_count = type_counts
+        .get(&hit.memory.memory.memory_type)
+        .copied()
+        .unwrap_or_default() as f64;
+    let weak_penalty = if hit.score < score_floor { 100.0 } else { 0.0 };
+    hit.score + (new_terms * 7.0) - (repeated_type_count * 4.0) - weak_penalty
+}
+
+fn hit_query_terms(hit: &RetrievalHit, task_terms: &HashSet<String>) -> HashSet<String> {
+    hit_query_terms_from_memory(&hit.memory.memory, &hit.memory.links)
+        .intersection(task_terms)
+        .cloned()
+        .collect()
+}
+
+fn hit_query_terms_from_memory(memory: &Memory, links: &[MemoryLink]) -> HashSet<String> {
+    let mut tokens = tokenize(&format!("{} {}", memory.title, memory.body));
+    for link in links {
+        tokens.extend(tokenize(&format!("{} {}", link.kind, link.target)));
+    }
+    tokens
 }
 
 fn budget_aware_hit_limit(limit: usize, budget: usize, relevance_term_count: usize) -> usize {
@@ -2304,6 +2389,32 @@ fn push_agent_context_line(out: &mut String, max_chars: usize, line: &str) -> bo
 mod tests {
     use super::*;
 
+    fn test_hit(id: &str, title: &str, body: &str, score: f64) -> RetrievalHit {
+        RetrievalHit {
+            memory: MemoryWithLinks {
+                memory: Memory {
+                    id: id.to_string(),
+                    memory_type: "design_note".to_string(),
+                    scope: "project".to_string(),
+                    title: title.to_string(),
+                    body: body.to_string(),
+                    status: "active".to_string(),
+                    source: None,
+                    created_at: 1,
+                    updated_at: 1,
+                    supersedes: None,
+                    superseded_by: None,
+                    confidence: 1.0,
+                },
+                links: Vec::new(),
+            },
+            score,
+            utility_score: 1.0,
+            semantic_score: None,
+            reasons: Vec::new(),
+        }
+    }
+
     #[test]
     fn retrieval_candidate_windows_follow_effective_budget() {
         let tiny_effective = budget_aware_hit_limit(100, 1_200, 3);
@@ -2358,5 +2469,49 @@ mod tests {
         assert_eq!(semantic_context_candidate_scan_limit(8, 2_500), 24);
         assert_eq!(semantic_context_candidate_scan_limit(16, 8_000), 32);
         assert_eq!(semantic_context_candidate_scan_limit(100, 2_500), 100);
+    }
+
+    #[test]
+    fn tiny_selection_diversifies_query_term_coverage_within_same_type() {
+        let task_terms = relevance_terms("alpha beta gamma coverage target");
+        let selected = select_diverse_hits(
+            vec![
+                test_hit(
+                    "alpha-one",
+                    "Alpha coverage top one",
+                    "alpha coverage target can rank first",
+                    30.0,
+                ),
+                test_hit(
+                    "alpha-two",
+                    "Alpha coverage top two",
+                    "alpha coverage target can rank second",
+                    29.0,
+                ),
+                test_hit(
+                    "beta-one",
+                    "Beta coverage target",
+                    "beta coverage target should remain visible",
+                    25.0,
+                ),
+                test_hit(
+                    "gamma-one",
+                    "Gamma coverage target",
+                    "gamma coverage target should remain visible",
+                    24.0,
+                ),
+            ],
+            3,
+            1_200,
+            &task_terms,
+        );
+        let titles = selected
+            .iter()
+            .map(|hit| hit.memory.memory.title.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(titles.contains(&"Alpha coverage top one"));
+        assert!(titles.contains(&"Beta coverage target"));
+        assert!(titles.contains(&"Gamma coverage target"));
     }
 }
