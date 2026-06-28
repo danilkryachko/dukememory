@@ -6903,6 +6903,46 @@ fn brief_sections_are_budget_aware() {
 }
 
 #[test]
+fn brief_ultra_tight_budget_logs_no_unrendered_items() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for index in 0..6 {
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(format!("Brief tight {index}"))
+            .arg(format!(
+                "brief tight exact useful detail variant{index} {}",
+                "tail noise ".repeat(40)
+            ))
+            .assert()
+            .success();
+    }
+
+    let brief = stdout(
+        cmd(&db)
+            .arg("brief")
+            .arg("brief tight")
+            .arg("--budget")
+            .arg("240"),
+    );
+    assert!(brief.len() <= 240, "brief exceeded budget: {}", brief.len());
+    assert_eq!(
+        brief.lines().filter(|line| line.starts_with("- ")).count(),
+        0
+    );
+
+    let usage = stdout(cmd(&db).arg("usage-report").arg("--json"));
+    let usage_json: Value = serde_json::from_str(&usage).unwrap();
+    let read = &usage_json["recent_reads"][0];
+    assert_eq!(read["command"], "brief");
+    assert_eq!(read["result_count"], 0);
+    assert_eq!(read["memory_ids"].as_array().unwrap().len(), 0);
+    assert_eq!(read["budget"], 240);
+}
+
+#[test]
 fn impact_sections_are_budget_aware() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
@@ -6979,6 +7019,50 @@ fn impact_sections_are_budget_aware() {
     assert!(normal_json["constraints"].as_array().unwrap().len() >= 4);
     assert!(normal_json["risks"].as_array().unwrap().len() >= 4);
     assert!(normal_json["related"].as_array().unwrap().len() >= 4);
+}
+
+#[test]
+fn impact_ultra_tight_budget_logs_no_unrendered_items() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for index in 0..6 {
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(format!("Impact tight {index}"))
+            .arg(format!(
+                "impact tight exact useful detail variant{index} {}",
+                "tail noise ".repeat(40)
+            ))
+            .assert()
+            .success();
+    }
+
+    let impact = stdout(
+        cmd(&db)
+            .arg("impact")
+            .arg("impact tight")
+            .arg("--budget")
+            .arg("240"),
+    );
+    assert!(
+        impact.len() <= 240,
+        "impact exceeded budget: {}",
+        impact.len()
+    );
+    assert_eq!(
+        impact.lines().filter(|line| line.starts_with("- ")).count(),
+        0
+    );
+
+    let usage = stdout(cmd(&db).arg("usage-report").arg("--json"));
+    let usage_json: Value = serde_json::from_str(&usage).unwrap();
+    let read = &usage_json["recent_reads"][0];
+    assert_eq!(read["command"], "impact");
+    assert_eq!(read["result_count"], 0);
+    assert_eq!(read["memory_ids"].as_array().unwrap().len(), 0);
+    assert_eq!(read["budget"], 240);
 }
 
 #[test]

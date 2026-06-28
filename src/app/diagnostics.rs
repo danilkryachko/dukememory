@@ -373,7 +373,13 @@ fn brief_retrieval_floor(budget: usize) -> usize {
 }
 
 fn brief_section_limits(budget: usize) -> BriefSectionLimits {
-    if budget <= 1_200 {
+    if budget <= 500 {
+        BriefSectionLimits {
+            must_follow: 0,
+            relevant: 0,
+            risks: 0,
+        }
+    } else if budget <= 1_200 {
         BriefSectionLimits {
             must_follow: 3,
             relevant: 3,
@@ -395,7 +401,9 @@ fn brief_section_limits(budget: usize) -> BriefSectionLimits {
 }
 
 fn brief_artifact_limits(budget: usize, relevance_term_count: usize) -> (usize, usize) {
-    if budget <= 1_200 {
+    if budget <= 500 {
+        (0, 0)
+    } else if budget <= 1_200 {
         match relevance_term_count {
             0 => (0, 0),
             1 => (2, 1),
@@ -449,7 +457,9 @@ fn brief_item_from_memory(
 }
 
 fn brief_summary_limit(budget: usize) -> usize {
-    if budget <= 1_200 {
+    if budget <= 500 {
+        48
+    } else if budget <= 1_200 {
         120
     } else if budget <= 3_000 {
         150
@@ -946,7 +956,16 @@ struct ImpactSectionLimits {
 }
 
 fn impact_section_limits(budget: usize) -> ImpactSectionLimits {
-    if budget <= 1_200 {
+    if budget <= 500 {
+        ImpactSectionLimits {
+            decisions: 0,
+            constraints: 0,
+            risks: 0,
+            related: 0,
+            checks: 0,
+            links: 0,
+        }
+    } else if budget <= 1_200 {
         ImpactSectionLimits {
             decisions: 2,
             constraints: 2,
