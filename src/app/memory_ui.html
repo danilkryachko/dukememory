@@ -1036,6 +1036,7 @@
       const repairSummary = state.dashboardRepair || {};
       const repairHistory = state.dashboardRepairHistory || {};
       const repairActionCodes = Object.entries(repairHistory.actions_by_code || {}).map(([key, value]) => `${escapeHtml(key)}=${Number(value)}`).join("<br>") || "-";
+      const manualRepairActionCodes = Object.entries(repairHistory.manual_actions_by_code || {}).map(([key, value]) => `${escapeHtml(key)}=${Number(value)}`).join("<br>") || "-";
       $("projectsPanel").innerHTML = `<div class="stat-grid">
         <div class="stat"><strong>${escapeHtml(dashSummary.status || "-")}</strong><span>status</span></div>
         <div class="stat"><strong>${Number(dashSummary.total_projects || 0)}</strong><span>projects</span></div>
@@ -1067,7 +1068,7 @@
         <div class="stat"><strong>${Object.keys(repairHistory.actions_by_code || {}).length}</strong><span>repair action types</span></div>
       </div>` + (repairHistory.projects?.length ? `<article class="card">
         <div class="row"><span class="title">Repair history</span></div>
-        <div class="kv"><b>applied</b><span>${Number(repairHistory.applied_actions || 0)}</span><b>skipped</b><span>${Number(repairHistory.skipped_actions || 0)}</span><b>failed</b><span>${Number(repairHistory.failed_actions || 0)}</span><b>sources</b><span>${Object.entries(repairHistory.runs_by_source || {}).map(([key, value]) => `${escapeHtml(key)}=${Number(value)}`).join("<br>") || "-"}</span><b>actions by code</b><span>${repairActionCodes}</span></div>
+        <div class="kv"><b>applied</b><span>${Number(repairHistory.applied_actions || 0)}</span><b>skipped</b><span>${Number(repairHistory.skipped_actions || 0)}</span><b>failed</b><span>${Number(repairHistory.failed_actions || 0)}</span><b>sources</b><span>${Object.entries(repairHistory.runs_by_source || {}).map(([key, value]) => `${escapeHtml(key)}=${Number(value)}`).join("<br>") || "-"}</span><b>actions by code</b><span>${repairActionCodes}</span><b>manual actions by code</b><span>${manualRepairActionCodes}</span></div>
       </article>` : "") + state.projects.map((project) => {
         const dash = dashboardProjects.find((item) => item.name === project.name || item.db === project.db) || {};
         const qaScore = project.key === state.project && state.qa ? Number(state.qa.score || 0).toFixed(1) : "-";
