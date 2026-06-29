@@ -1058,6 +1058,8 @@
         <div class="stat"><strong>${Object.keys(dashSummary.attention_reason_counts || {}).length}</strong><span>attention reasons</span></div>
         <div class="stat"><strong>${Number(dashSummary.repair_actions_count || 0)}</strong><span>repair actions</span></div>
         <div class="stat"><strong>${Number(dashSummary.safe_repair_actions_count || 0)}</strong><span>safe repairs</span></div>
+        <div class="stat"><strong>${Number(dashSummary.daemon_embedding_skipped_projects || 0)}</strong><span>daemon skipped</span></div>
+        <div class="stat"><strong>${Number(dashSummary.daemon_embedding_repaired_projects || 0)}</strong><span>daemon repaired</span></div>
         <div class="stat"><strong>${Number(dashSummary.repair_loop_failed_projects || 0)}</strong><span>repair failed</span></div>
         <div class="stat"><strong>${Number(dashSummary.repair_loop_safe_skipped_projects || 0)}</strong><span>safe skipped</span></div>
         <div class="stat"><strong>${Number(repairSummary.applied_actions || 0)}</strong><span>last applied</span></div>

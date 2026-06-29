@@ -8926,6 +8926,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("attention reasons"));
     assert!(html.contains("repair actions"));
     assert!(html.contains("safe repairs"));
+    assert!(html.contains("daemon skipped"));
+    assert!(html.contains("daemon repaired"));
     assert!(html.contains("Repair history"));
     assert!(html.contains("repair loop"));
     assert!(html.contains("repair failed"));
