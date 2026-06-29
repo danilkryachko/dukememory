@@ -7567,8 +7567,21 @@ fn dashboard_repair_refreshes_daemon_embedding_skip() {
         0
     );
     assert_eq!(
+        repaired_dashboard_json["daemon_embedding_repaired_projects"],
+        1
+    );
+    assert_eq!(
         repaired_dashboard_json["projects"][0]["daemon_embedding_skipped"],
         false
+    );
+    assert!(
+        repaired_dashboard_json["projects"][0]["daemon_embedding_repaired_at"]
+            .as_i64()
+            .is_some()
+    );
+    assert_eq!(
+        repaired_dashboard_json["projects"][0]["daemon_embedding_repair_source"],
+        "dashboard_repair"
     );
 
     let history = stdout(cmd(&db).arg("dashboard-repair-history").arg("--json"));
@@ -8996,6 +9009,9 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(dashboard.contains("\"daemon_embedding_skipped_projects\""));
     assert!(dashboard.contains("\"daemon_embedding_skipped\""));
     assert!(dashboard.contains("\"daemon_embedding_error\""));
+    assert!(dashboard.contains("\"daemon_embedding_repaired_projects\""));
+    assert!(dashboard.contains("\"daemon_embedding_repaired_at\""));
+    assert!(dashboard.contains("\"daemon_embedding_repair_source\""));
     assert!(dashboard.contains("\"memory_gap_projects\""));
     assert!(dashboard.contains("\"memory_gap_count\""));
     assert!(dashboard.contains("\"semantic_empty_gap_projects\""));
@@ -9935,6 +9951,14 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         ops_json["autonomous"]["daemon_embedding_error"].is_string()
             || ops_json["autonomous"]["daemon_embedding_error"].is_null()
     );
+    assert!(
+        ops_json["autonomous"]["daemon_embedding_repaired_at"].is_number()
+            || ops_json["autonomous"]["daemon_embedding_repaired_at"].is_null()
+    );
+    assert!(
+        ops_json["autonomous"]["daemon_embedding_repair_source"].is_string()
+            || ops_json["autonomous"]["daemon_embedding_repair_source"].is_null()
+    );
     assert!(ops_json["repair_loop"]["observed"].as_bool().is_some());
     assert!(ops_json["repair_loop"]["healthy"].as_bool().is_some());
     assert!(ops_json["repair_loop"]["runs"].as_u64().is_some());
@@ -10251,6 +10275,11 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .is_some()
     );
     assert!(
+        dashboard_json["daemon_embedding_repaired_projects"]
+            .as_u64()
+            .is_some()
+    );
+    assert!(
         dashboard_json["projects"]
             .as_array()
             .unwrap()
@@ -10281,6 +10310,22 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .iter()
             .any(|item| item["daemon_embedding_error"].is_string()
                 || item["daemon_embedding_error"].is_null())
+    );
+    assert!(
+        dashboard_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["daemon_embedding_repaired_at"].is_number()
+                || item["daemon_embedding_repaired_at"].is_null())
+    );
+    assert!(
+        dashboard_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["daemon_embedding_repair_source"].is_string()
+                || item["daemon_embedding_repair_source"].is_null())
     );
     assert!(
         dashboard_json["projects"]
@@ -10447,6 +10492,8 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(dashboard_text.contains("repair_failed="));
     assert!(dashboard_text.contains("repair_safe_skipped="));
     assert!(dashboard_text.contains("daemon_embedding_skipped="));
+    assert!(dashboard_text.contains("daemon_embedding_repaired="));
+    assert!(dashboard_text.contains("daemon_embedding_repaired_at="));
     assert!(dashboard_text.contains("recommendations="));
 
     let dashboard_repair = stdout(
