@@ -7451,6 +7451,112 @@ fn dashboard_reports_semantic_empty_result_attention() {
 }
 
 #[test]
+fn dashboard_repair_refreshes_daemon_embedding_skip() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let agent_dir = dir.path().join(".agent");
+    fs::create_dir_all(&agent_dir).unwrap();
+
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Daemon embedding repair")
+        .arg("Dashboard repair should refresh embeddings after daemon skipped maintenance.")
+        .assert()
+        .success();
+
+    fs::write(
+        agent_dir.join("daemon-status.json"),
+        serde_json::json!({
+            "tick_ok": true,
+            "embedding_skipped": true,
+            "embedding_error": "embedding provider was unavailable during daemon tick"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let dashboard = stdout(cmd(&db).arg("dashboard").arg("--json"));
+    let dashboard_json: Value = serde_json::from_str(&dashboard).unwrap();
+    assert_eq!(dashboard_json["daemon_embedding_skipped_projects"], 1);
+    let project = &dashboard_json["projects"][0];
+    assert_eq!(project["daemon_embedding_skipped"], true);
+    assert!(
+        project["attention_reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "daemon_embedding_skipped")
+    );
+    assert!(
+        project["repair_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["code"] == "daemon_embed_index"
+                && action["reason"] == "daemon_embedding_skipped"
+                && action["safe_auto"] == true)
+    );
+
+    let repair = stdout(
+        cmd(&db)
+            .arg("dashboard-repair")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let repair_json: Value = serde_json::from_str(&repair).unwrap();
+    assert!(
+        repair_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|project| project["actions"].as_array().unwrap().iter())
+            .any(|action| action["code"] == "daemon_embed_index"
+                && action["skipped"] == true
+                && action["detail"] == "dry run")
+    );
+
+    let repair_apply = stdout(
+        cmd(&db)
+            .arg("dashboard-repair")
+            .arg("--apply")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let repair_apply_json: Value = serde_json::from_str(&repair_apply).unwrap();
+    assert_eq!(repair_apply_json["ok"], true);
+    assert!(
+        repair_apply_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|project| project["actions"].as_array().unwrap().iter())
+            .any(|action| action["code"] == "daemon_embed_index"
+                && action["applied"] == true
+                && action["detail"].as_str().unwrap().contains("indexed="))
+    );
+
+    let history = stdout(cmd(&db).arg("dashboard-repair-history").arg("--json"));
+    let history_json: Value = serde_json::from_str(&history).unwrap();
+    assert!(
+        history_json["actions_by_code"]["daemon_embed_index"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+}
+
+#[test]
 fn brief_sections_are_budget_aware() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");

@@ -2145,6 +2145,7 @@ fn run_dashboard_repair_action(
     let result = match action.code.as_str() {
         "run_autonomous" => run_dashboard_autonomous_repair(&root, &db, provider, endpoint, model),
         "embed_index" => run_dashboard_embed_repair(&root, &db, provider, endpoint, model),
+        "daemon_embed_index" => run_dashboard_embed_repair(&root, &db, provider, endpoint, model),
         other => Err(anyhow::anyhow!("unknown safe repair action: {other}")),
     };
     match result {
@@ -2536,7 +2537,16 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
             if daemon_embedding.skipped == Some(true) {
                 attention_reasons.push("daemon_embedding_skipped".to_string());
                 recommendations.push(
-                    "check embedding provider; daemon skipped embedding maintenance".to_string(),
+                    "run dukememory dashboard-repair --apply after checking embedding provider"
+                        .to_string(),
+                );
+                push_repair_action(
+                    &mut repair_actions,
+                    "daemon_embed_index",
+                    "daemon_embedding_skipped",
+                    true,
+                    "Refresh embeddings after daemon skipped embedding maintenance.",
+                    embed_repair_command(&db),
                 );
             }
             let attention = !attention_reasons.is_empty() || !recommendations.is_empty();
