@@ -7543,7 +7543,32 @@ fn dashboard_repair_refreshes_daemon_embedding_skip() {
             .flat_map(|project| project["actions"].as_array().unwrap().iter())
             .any(|action| action["code"] == "daemon_embed_index"
                 && action["applied"] == true
-                && action["detail"].as_str().unwrap().contains("indexed="))
+                && action["detail"].as_str().unwrap().contains("indexed=")
+                && action["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("daemon_status=cleared"))
+    );
+    let repaired_status: Value =
+        serde_json::from_str(&fs::read_to_string(agent_dir.join("daemon-status.json")).unwrap())
+            .unwrap();
+    assert_eq!(repaired_status["embedding_skipped"], false);
+    assert_eq!(repaired_status["embedding_error"], Value::Null);
+    assert!(repaired_status["embedding_repaired_at"].as_i64().is_some());
+    assert_eq!(
+        repaired_status["embedding_repair_source"],
+        "dashboard_repair"
+    );
+
+    let repaired_dashboard = stdout(cmd(&db).arg("dashboard").arg("--json"));
+    let repaired_dashboard_json: Value = serde_json::from_str(&repaired_dashboard).unwrap();
+    assert_eq!(
+        repaired_dashboard_json["daemon_embedding_skipped_projects"],
+        0
+    );
+    assert_eq!(
+        repaired_dashboard_json["projects"][0]["daemon_embedding_skipped"],
+        false
     );
 
     let history = stdout(cmd(&db).arg("dashboard-repair-history").arg("--json"));

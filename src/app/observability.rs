@@ -2145,7 +2145,9 @@ fn run_dashboard_repair_action(
     let result = match action.code.as_str() {
         "run_autonomous" => run_dashboard_autonomous_repair(&root, &db, provider, endpoint, model),
         "embed_index" => run_dashboard_embed_repair(&root, &db, provider, endpoint, model),
-        "daemon_embed_index" => run_dashboard_embed_repair(&root, &db, provider, endpoint, model),
+        "daemon_embed_index" => {
+            run_dashboard_daemon_embed_repair(&root, &db, provider, endpoint, model)
+        }
         other => Err(anyhow::anyhow!("unknown safe repair action: {other}")),
     };
     match result {
@@ -2234,6 +2236,36 @@ fn run_dashboard_embed_repair(
         "indexed={} skipped={}",
         report.indexed, report.skipped
     ))
+}
+
+fn run_dashboard_daemon_embed_repair(
+    root: &Path,
+    db: &Path,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> Result<String> {
+    let detail = run_dashboard_embed_repair(root, db, provider, endpoint, model)?;
+    clear_daemon_embedding_skip(root)?;
+    Ok(format!("{detail} | daemon_status=cleared"))
+}
+
+fn clear_daemon_embedding_skip(root: &Path) -> Result<()> {
+    let path = root.join(".agent/daemon-status.json");
+    let raw = fs::read_to_string(&path)?;
+    let mut value = serde_json::from_str::<Value>(&raw)?;
+    let Some(object) = value.as_object_mut() else {
+        return Err(anyhow::anyhow!("daemon status is not a JSON object"));
+    };
+    object.insert("embedding_skipped".to_string(), Value::Bool(false));
+    object.insert("embedding_error".to_string(), Value::Null);
+    object.insert("embedding_repaired_at".to_string(), json!(now_ms()));
+    object.insert(
+        "embedding_repair_source".to_string(),
+        Value::String("dashboard_repair".to_string()),
+    );
+    fs::write(&path, serde_json::to_string_pretty(&value)?)?;
+    Ok(())
 }
 
 fn project_embedding_or_fallback(
