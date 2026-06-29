@@ -270,6 +270,8 @@ pub(crate) struct AutopilotReport {
     backups_created: usize,
     inbox_added: usize,
     current_pending: usize,
+    embedding_skipped_ticks: usize,
+    latest_embedding_error: Option<String>,
     embeddings_indexed: usize,
     embeddings_stale: usize,
     embeddings_missing: usize,
@@ -792,6 +794,29 @@ pub(crate) fn autopilot_report(
                 .unwrap_or(0) as usize
         })
         .sum();
+    let embedding_skipped_ticks = history
+        .iter()
+        .filter(|event| {
+            event.event_type == "daemon_tick"
+                && event
+                    .detail
+                    .get("embedding_skipped")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        })
+        .count();
+    let latest_embedding_error = current_status
+        .as_ref()
+        .and_then(|status| status.embedding_error.clone())
+        .or_else(|| {
+            history.iter().find_map(|event| {
+                event
+                    .detail
+                    .get("embedding_error")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+        });
     let current_pending = list_inbox(conn, "pending", usize::MAX)?.len();
     let embed = embeddings::embed_status(conn, request.provider, request.endpoint, request.model)?;
     let recommendations = doctor.recommendations.clone();
@@ -804,6 +829,8 @@ pub(crate) fn autopilot_report(
         backups_created,
         inbox_added,
         current_pending,
+        embedding_skipped_ticks,
+        latest_embedding_error,
         embeddings_indexed: embed.indexed,
         embeddings_stale: embed.stale,
         embeddings_missing: embed.missing,
@@ -883,6 +910,12 @@ pub(crate) fn autopilot_alert(
             report.embeddings_stale, request.max_embedding_stale
         ));
     }
+    if report.embedding_skipped_ticks > 0 {
+        violations.push(format!(
+            "embedding_provider_skipped:{}",
+            report.embedding_skipped_ticks
+        ));
+    }
 
     let level = if violations.is_empty() {
         "ok"
@@ -920,6 +953,13 @@ fn print_autopilot_report(report: &AutopilotReport, json_out: bool) -> Result<()
         println!("backups_created: {}", report.backups_created);
         println!("inbox_added: {}", report.inbox_added);
         println!("current_pending: {}", report.current_pending);
+        println!(
+            "embedding_skipped_ticks: {}",
+            report.embedding_skipped_ticks
+        );
+        if let Some(error) = &report.latest_embedding_error {
+            println!("latest_embedding_error: {error}");
+        }
         println!("embeddings_indexed: {}", report.embeddings_indexed);
         println!("embeddings_stale: {}", report.embeddings_stale);
         println!("embeddings_missing: {}", report.embeddings_missing);

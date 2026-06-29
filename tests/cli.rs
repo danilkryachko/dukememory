@@ -8230,6 +8230,62 @@ fn daemon_tick_skips_embed_index_when_provider_is_unreachable() {
     assert_eq!(history_json[0]["detail"]["embedding_skipped"], true);
 
     server.join().unwrap();
+
+    let report = stdout(
+        cmd(&db)
+            .arg("autopilot")
+            .arg("report")
+            .arg("--status-file")
+            .arg(&status)
+            .arg("--backup-dir")
+            .arg(&backups)
+            .arg("--provider")
+            .arg("ollama")
+            .arg("--endpoint")
+            .arg(&endpoint)
+            .arg("--model")
+            .arg("bge-m3:latest")
+            .arg("--json"),
+    );
+    let report_json: Value = serde_json::from_str(&report).unwrap();
+    assert_eq!(report_json["failed_ticks"], 0);
+    assert_eq!(report_json["embedding_skipped_ticks"], 1);
+    assert!(
+        report_json["latest_embedding_error"]
+            .as_str()
+            .unwrap()
+            .contains("embedding provider is not reachable")
+    );
+
+    let alert_output = cmd(&db)
+        .arg("autopilot")
+        .arg("alert")
+        .arg("--status-file")
+        .arg(&status)
+        .arg("--backup-dir")
+        .arg(&backups)
+        .arg("--provider")
+        .arg("ollama")
+        .arg("--endpoint")
+        .arg(&endpoint)
+        .arg("--model")
+        .arg("bge-m3:latest")
+        .arg("--json")
+        .assert()
+        .failure()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let alert_json: Value = serde_json::from_slice(&alert_output).unwrap();
+    assert_eq!(alert_json["level"], "warn");
+    assert!(
+        alert_json["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "embedding_provider_skipped:1")
+    );
 }
 
 #[test]
