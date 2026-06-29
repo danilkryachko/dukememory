@@ -8930,6 +8930,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("repair loop"));
     assert!(html.contains("repair failed"));
     assert!(html.contains("safe skipped"));
+    assert!(html.contains("repair action types"));
+    assert!(html.contains("actions by code"));
     assert!(html.contains("<span>status</span>"));
     assert!(html.contains("Memory QA"));
     assert!(html.contains("semantic results"));
