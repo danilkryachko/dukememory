@@ -178,6 +178,7 @@ pub(crate) struct DashboardReport {
     pub(crate) repair_loop_projects: usize,
     pub(crate) repair_loop_failed_projects: usize,
     pub(crate) repair_loop_safe_skipped_projects: usize,
+    pub(crate) daemon_embedding_skipped_projects: usize,
     pub(crate) projects: Vec<ProjectDashboardItem>,
 }
 
@@ -286,6 +287,8 @@ pub(crate) struct ProjectDashboardItem {
     pub(crate) autonomous_inferred_missing: Option<usize>,
     pub(crate) autonomous_semantic_empty_missing: Option<usize>,
     pub(crate) autonomous_semantic_empty_missing_queries: Vec<String>,
+    pub(crate) daemon_embedding_skipped: Option<bool>,
+    pub(crate) daemon_embedding_error: Option<String>,
     pub(crate) embedding_missing: Option<usize>,
     pub(crate) embedding_provider_reachable: Option<bool>,
     pub(crate) embedding_provider_health_ms: Option<u128>,
@@ -303,6 +306,12 @@ pub(crate) struct ProjectDashboardItem {
     pub(crate) attention_reasons: Vec<String>,
     pub(crate) repair_actions: Vec<DashboardRepairAction>,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DaemonEmbeddingSnapshot {
+    skipped: Option<bool>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -430,6 +439,8 @@ pub(crate) struct OpsAutonomousStatus {
     pub(crate) age_secs: Option<i64>,
     pub(crate) fresh: bool,
     pub(crate) last_action_count: Option<usize>,
+    pub(crate) daemon_embedding_skipped: Option<bool>,
+    pub(crate) daemon_embedding_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1569,7 +1580,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
     } else {
         println!("dukememory. Dashboard");
         println!(
-            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} memory_gap_projects={} memory_gap_count={} semantic_empty_gap_projects={} semantic_empty_gap_count={} semantic_empty_projects={} semantic_empty_reads={} semantic_result_warn_projects={} gap_inbox_pending_projects={} gap_inbox_pending_count={} gap_inbox_stale_projects={} gap_inbox_stale_count={} gap_inbox_oldest_age={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={} repair_loop_projects={} repair_loop_failed={} repair_loop_safe_skipped={}",
+            "summary: status={} total={} ready={} attention={} stale={} missing_live_eval={} memory_gap_projects={} memory_gap_count={} semantic_empty_gap_projects={} semantic_empty_gap_count={} semantic_empty_projects={} semantic_empty_reads={} semantic_result_warn_projects={} gap_inbox_pending_projects={} gap_inbox_pending_count={} gap_inbox_stale_projects={} gap_inbox_stale_count={} gap_inbox_oldest_age={} recommendations={} reason_types={} repair_actions={} safe_repair_actions={} repair_loop_projects={} repair_loop_failed={} repair_loop_safe_skipped={} daemon_embedding_skipped={}",
             report.status,
             report.total_projects,
             report.ready_projects,
@@ -1594,7 +1605,8 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
             report.safe_repair_actions_count,
             report.repair_loop_projects,
             report.repair_loop_failed_projects,
-            report.repair_loop_safe_skipped_projects
+            report.repair_loop_safe_skipped_projects,
+            report.daemon_embedding_skipped_projects
         );
         for project in report.projects {
             let reasons = if project.attention_reasons.is_empty() {
@@ -1613,7 +1625,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
                     .join(",")
             };
             println!(
-                "- {} status={} attention={} reasons={} repairs={} repair_runs={} repair_failed={} repair_safe_skipped={} gap_inbox_pending={} gap_inbox_stale={} gap_inbox_oldest_age={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} semantic_empty_gaps={} semantic_results={} semantic_empty={} recommendations={}",
+                "- {} status={} attention={} reasons={} repairs={} repair_runs={} repair_failed={} repair_safe_skipped={} daemon_embedding_skipped={} gap_inbox_pending={} gap_inbox_stale={} gap_inbox_oldest_age={} memories={} pending={} quality={} autonomous={} auto_age={} auto_fresh={} live_reads={} live_useful={} live_gaps={} semantic_empty_gaps={} semantic_results={} semantic_empty={} recommendations={}",
                 project.name,
                 project.status,
                 project.attention,
@@ -1622,6 +1634,7 @@ pub(crate) fn print_dashboard(default_db: &Path, json_out: bool) -> Result<()> {
                 project.repair_loop.runs,
                 project.repair_loop.failed_actions,
                 project.repair_loop.safe_skipped_actions,
+                project.daemon_embedding_skipped.unwrap_or(false),
                 project.gap_inbox.pending,
                 project.gap_inbox.stale_pending,
                 format_optional_secs(project.gap_inbox.oldest_pending_age_secs),
@@ -1814,6 +1827,8 @@ pub(crate) fn dashboard_repair_history_report(
             autonomous_inferred_missing: None,
             autonomous_semantic_empty_missing: None,
             autonomous_semantic_empty_missing_queries: Vec::new(),
+            daemon_embedding_skipped: None,
+            daemon_embedding_error: None,
             embedding_missing: None,
             embedding_provider_reachable: None,
             embedding_provider_health_ms: None,
@@ -2339,6 +2354,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
             let usage = usage_report(&conn, 7, 10).ok();
             let autonomous =
                 read_autonomous_status(&root.join(".agent/autonomous-status.json")).ok();
+            let daemon_embedding = daemon_embedding_snapshot(&root);
             let autonomous_age_secs = autonomous
                 .as_ref()
                 .map(|status| ((now_ms() - status.updated_at).max(0)) / 1000);
@@ -2517,6 +2533,12 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                 recommendations
                     .push("run dukememory dashboard-repair --apply for safe repairs".to_string());
             }
+            if daemon_embedding.skipped == Some(true) {
+                attention_reasons.push("daemon_embedding_skipped".to_string());
+                recommendations.push(
+                    "check embedding provider; daemon skipped embedding maintenance".to_string(),
+                );
+            }
             let attention = !attention_reasons.is_empty() || !recommendations.is_empty();
             let status = if attention { "attention" } else { "ready" }.to_string();
             Some(ProjectDashboardItem {
@@ -2548,6 +2570,8 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                     .as_ref()
                     .map(|live| live.semantic_empty_missing_queries.clone())
                     .unwrap_or_default(),
+                daemon_embedding_skipped: daemon_embedding.skipped,
+                daemon_embedding_error: daemon_embedding.error,
                 embedding_missing,
                 embedding_provider_reachable: embedding
                     .as_ref()
@@ -2705,6 +2729,10 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         .iter()
         .filter(|project| project.repair_loop.safe_skipped_actions > 0)
         .count();
+    let daemon_embedding_skipped_projects = projects
+        .iter()
+        .filter(|project| project.daemon_embedding_skipped == Some(true))
+        .count();
     let attention_projects = total_projects.saturating_sub(ready_projects);
     let ok = attention_projects == 0;
     let status = if ok { "ready" } else { "attention" }.to_string();
@@ -2736,6 +2764,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         repair_loop_projects,
         repair_loop_failed_projects,
         repair_loop_safe_skipped_projects,
+        daemon_embedding_skipped_projects,
         projects,
     })
 }
@@ -3011,14 +3040,19 @@ pub(crate) fn print_ops_status(
             report.embeddings.stale
         );
         println!(
-            "autonomous: installed={} ok={} rollback_ready={}",
+            "autonomous: installed={} ok={} rollback_ready={} daemon_embedding_skipped={}",
             report.autonomous.installed,
             report
                 .autonomous
                 .ok
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "-".to_string()),
-            report.autonomous.rollback_ready
+            report.autonomous.rollback_ready,
+            report
+                .autonomous
+                .daemon_embedding_skipped
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
         );
         println!(
             "gap_inbox: pending={} stale_pending={} total={} approved={} rejected={} oldest_pending_age_secs={}",
@@ -3073,6 +3107,7 @@ pub(crate) fn ops_status_report(
     let backup_dir = root.join(".agent/backups");
     let install_backup_dir = root.join(".agent/install-backups");
     let autonomous = read_autonomous_status(&status_file).ok();
+    let daemon_embedding = daemon_embedding_snapshot(&root);
     let embedding_current = embedding.missing == 0 && embedding.stale == 0;
     let rollback_ready = rollback_dir.is_dir();
     let storage = ops_storage_status(conn, db, &root)?;
@@ -3124,6 +3159,10 @@ pub(crate) fn ops_status_report(
             "check embedding endpoint/model before relying on semantic recall or embed-index"
                 .to_string(),
         );
+    }
+    if daemon_embedding.skipped == Some(true) {
+        issues.push("daemon skipped embedding maintenance".to_string());
+        recommendations.push("check daemon embedding_error and provider health".to_string());
     }
     if repair_loop.failed_actions > 0 {
         issues.push(format!(
@@ -3321,6 +3360,8 @@ pub(crate) fn ops_status_report(
             age_secs: autonomous_age_secs,
             fresh: autonomous_fresh,
             last_action_count: autonomous.as_ref().map(|report| report.actions.len()),
+            daemon_embedding_skipped: daemon_embedding.skipped,
+            daemon_embedding_error: daemon_embedding.error,
         },
         repair_loop,
         gap_inbox,
@@ -3399,6 +3440,23 @@ fn empty_repair_loop_status() -> OpsRepairLoopStatus {
         last_source: None,
         last_action_count: None,
         actions_by_code: BTreeMap::new(),
+    }
+}
+
+fn daemon_embedding_snapshot(root: &Path) -> DaemonEmbeddingSnapshot {
+    let path = root.join(".agent/daemon-status.json");
+    let Ok(raw) = fs::read_to_string(path) else {
+        return DaemonEmbeddingSnapshot::default();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+        return DaemonEmbeddingSnapshot::default();
+    };
+    DaemonEmbeddingSnapshot {
+        skipped: value.get("embedding_skipped").and_then(Value::as_bool),
+        error: value
+            .get("embedding_error")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
     }
 }
 
