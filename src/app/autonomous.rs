@@ -27,6 +27,10 @@ struct DaemonStatus {
     tick_ok: bool,
     indexed: usize,
     skipped: usize,
+    #[serde(default)]
+    embedding_skipped: bool,
+    #[serde(default)]
+    embedding_error: Option<String>,
     auto_inbox_added: usize,
     secrets: usize,
     pending: usize,
@@ -66,7 +70,7 @@ pub(crate) fn run_daemon(conn: &Connection, request: DaemonRequest<'_>) -> Resul
 
 fn run_daemon_tick(conn: &Connection, request: &DaemonRequest<'_>) -> Result<()> {
     let tick = (|| -> Result<DaemonStatus> {
-        let embed = embeddings::embed_index(
+        let (indexed, skipped, embedding_skipped, embedding_error) = match embeddings::embed_index(
             conn,
             request.provider,
             request.endpoint,
@@ -74,7 +78,13 @@ fn run_daemon_tick(conn: &Connection, request: &DaemonRequest<'_>) -> Result<()>
             &[],
             None,
             false,
-        )?;
+        ) {
+            Ok(embed) => (embed.indexed, embed.skipped, false, None),
+            Err(err) if is_embedding_provider_unreachable_error(&err) => {
+                (0, 0, true, Some(err.to_string()))
+            }
+            Err(err) => return Err(err),
+        };
         let auto_report = if request.auto_ingest {
             Some(auto_ingest_sessions(
                 conn,
@@ -105,8 +115,10 @@ fn run_daemon_tick(conn: &Connection, request: &DaemonRequest<'_>) -> Result<()>
             updated_at: now_ms(),
             autopilot: request.autopilot,
             tick_ok: true,
-            indexed: embed.indexed,
-            skipped: embed.skipped,
+            indexed,
+            skipped,
+            embedding_skipped,
+            embedding_error,
             auto_inbox_added: auto_added,
             secrets,
             pending,
@@ -131,6 +143,8 @@ fn run_daemon_tick(conn: &Connection, request: &DaemonRequest<'_>) -> Result<()>
                     "tick_ok": status.tick_ok,
                     "indexed": status.indexed,
                     "skipped": status.skipped,
+                    "embedding_skipped": status.embedding_skipped,
+                    "embedding_error": status.embedding_error,
                     "auto_inbox_added": status.auto_inbox_added,
                     "secrets": status.secrets,
                     "pending": status.pending,
@@ -163,6 +177,8 @@ fn run_daemon_tick(conn: &Connection, request: &DaemonRequest<'_>) -> Result<()>
                 tick_ok: false,
                 indexed: 0,
                 skipped: 0,
+                embedding_skipped: false,
+                embedding_error: None,
                 auto_inbox_added: 0,
                 secrets: 0,
                 pending: 0,
@@ -955,6 +971,10 @@ fn print_autopilot_status(path: &Path, status: &DaemonStatus, json_out: bool) ->
         println!("updated_at: {}", status.updated_at);
         println!("indexed: {}", status.indexed);
         println!("skipped: {}", status.skipped);
+        println!("embedding_skipped: {}", status.embedding_skipped);
+        if let Some(error) = &status.embedding_error {
+            println!("embedding_error: {error}");
+        }
         println!("pending: {}", status.pending);
         println!("backup_ran: {}", status.backup_ran);
         println!("cleanup_ran: {}", status.cleanup_ran);

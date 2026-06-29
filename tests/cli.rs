@@ -8163,6 +8163,76 @@ fn v14_1_daemon_autopilot_writes_status_backup_cleanup_and_ingests() {
 }
 
 #[test]
+fn daemon_tick_skips_embed_index_when_provider_is_unreachable() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let backups = dir.path().join("backups");
+    let status = dir.path().join("daemon-status.json");
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let server = std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            drop(stream);
+        }
+    });
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Daemon down provider")
+        .arg("Daemon autopilot should keep backup and cleanup running when embeddings are down.")
+        .assert()
+        .success();
+
+    let started = std::time::Instant::now();
+    cmd(&db)
+        .arg("daemon")
+        .arg("--once")
+        .arg("--provider")
+        .arg("ollama")
+        .arg("--endpoint")
+        .arg(&endpoint)
+        .arg("--model")
+        .arg("bge-m3:latest")
+        .arg("--backup-dir")
+        .arg(&backups)
+        .arg("--status-file")
+        .arg(&status)
+        .arg("--backup-every-secs")
+        .arg("0")
+        .assert()
+        .success()
+        .stdout(contains("daemon_tick"))
+        .stdout(contains("backup_ran=true"))
+        .stdout(contains("cleanup_ran=true"));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(6),
+        "daemon tick should skip embeddings before the long embedding timeout"
+    );
+
+    let status_json: Value = serde_json::from_str(&fs::read_to_string(&status).unwrap()).unwrap();
+    assert_eq!(status_json["tick_ok"], true);
+    assert_eq!(status_json["embedding_skipped"], true);
+    assert!(
+        status_json["embedding_error"]
+            .as_str()
+            .unwrap()
+            .contains("embedding provider is not reachable")
+    );
+    assert_eq!(status_json["error"], Value::Null);
+    assert_eq!(status_json["backup_ran"], true);
+    assert_eq!(status_json["cleanup_ran"], true);
+
+    let history = stdout(cmd(&db).arg("autopilot").arg("history").arg("--json"));
+    let history_json: Value = serde_json::from_str(&history).unwrap();
+    assert_eq!(history_json[0]["event_type"], "daemon_tick");
+    assert_eq!(history_json[0]["detail"]["embedding_skipped"], true);
+
+    server.join().unwrap();
+}
+
+#[test]
 fn v14_2_autopilot_control_plane_status_doctor_run_once_and_install() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
