@@ -1521,6 +1521,30 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Plan/apply the autonomous memory supervisor repair sequence.
+    AutonomousSupervisor {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render the V9 web control model with autonomous supervisor panels.
+    WebControlCenterV9 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value = "project memory")]
+        task: String,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Write starter memory configuration for a project type.
     ProjectTemplate {
         #[arg(long, default_value = ".")]

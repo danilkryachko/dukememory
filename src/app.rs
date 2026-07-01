@@ -1367,6 +1367,27 @@ pub(crate) fn run() -> Result<()> {
             since_days,
             json,
         )?,
+        Command::AutonomousSupervisor {
+            root,
+            since_days,
+            apply,
+            json,
+        } => print_autonomous_supervisor(&conn, &cli.db, &root, since_days, apply, json)?,
+        Command::WebControlCenterV9 {
+            root,
+            target,
+            task,
+            since_days,
+            json,
+        } => print_web_control_center_v9(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            &task,
+            since_days,
+            json,
+        )?,
         Command::ProjectTemplate {
             root,
             kind,
@@ -3785,6 +3806,10 @@ Use `dukememory benchmark-polish --json` to inspect polished local benchmark evi
 
 Use `dukememory web-control-center-v8 --json` to inspect the 0.27 web control model with Answer v2, autonomous usefulness, and benchmark polish panels.
 
+Use `dukememory autonomous-supervisor --json` to plan safe autonomous repair; use `--apply` to run embed-index, autonomous loop, agent enforcement, contract refresh, and doctor verification in order.
+
+Use `dukememory web-control-center-v9 --json` to inspect the 0.28 web control model with autonomous supervisor panels.
+
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
 Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens.
@@ -3929,6 +3954,8 @@ dukememory web-control-center-v7 --json
 dukememory autonomous-usefulness --json
 dukememory benchmark-polish --json
 dukememory web-control-center-v8 --json
+dukememory autonomous-supervisor --json
+dukememory web-control-center-v9 --json
 dukememory doctor-project --json
 dukememory release-gate --json
 dukememory project-watch --json
@@ -4419,6 +4446,8 @@ fn print_completions(shell: CompletionShell) {
         "autonomous-usefulness",
         "benchmark-polish",
         "web-control-center-v8",
+        "autonomous-supervisor",
+        "web-control-center-v9",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -4602,6 +4631,8 @@ fn print_manpage() {
     println!("  autonomous-usefulness --json  plan autonomous usefulness improvements");
     println!("  benchmark-polish --json       polished local benchmark evidence");
     println!("  web-control-center-v8         0.27 answer/usefulness/benchmark control model");
+    println!("  autonomous-supervisor --json  safe autonomous repair sequence");
+    println!("  web-control-center-v9         0.28 supervisor control model");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");

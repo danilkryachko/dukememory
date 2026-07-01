@@ -1636,6 +1636,48 @@ pub(crate) struct WebControlCenterV8Report {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct AutonomousSupervisorReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) applied: bool,
+    pub(crate) doctor_before: ProjectDoctorReport,
+    pub(crate) planned_actions: Vec<AutonomousSupervisorAction>,
+    pub(crate) executed_actions: Vec<AutonomousSupervisorAction>,
+    pub(crate) embed_index: Option<EmbeddingIndexReport>,
+    pub(crate) autonomous_loop: AutonomousLoopReport,
+    pub(crate) agent_enforce: AgentEnforceReport,
+    pub(crate) contract_v2: MemoryContractV2Report,
+    pub(crate) doctor_after: ProjectDoctorReport,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AutonomousSupervisorAction {
+    pub(crate) name: String,
+    pub(crate) reason: String,
+    pub(crate) safe_auto: bool,
+    pub(crate) applied: bool,
+    pub(crate) status: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WebControlCenterV9Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) target: Option<String>,
+    pub(crate) v8: WebControlCenterV8Report,
+    pub(crate) supervisor: AutonomousSupervisorReport,
+    pub(crate) panels: Vec<WebControlPanel>,
+    pub(crate) controls: Vec<WebControlAction>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct WebControlPanel {
     pub(crate) name: String,
     pub(crate) status: String,
@@ -9711,6 +9753,306 @@ pub(crate) fn web_control_center_v8_report(
     })
 }
 
+pub(crate) fn print_autonomous_supervisor(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = autonomous_supervisor_report(conn, db, root, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Autonomous Supervisor");
+    println!("status: {}", report.status);
+    println!("applied: {}", report.applied);
+    for action in &report.planned_actions {
+        println!("plan: {} - {}", action.name, action.reason);
+    }
+    for action in &report.executed_actions {
+        println!("executed: {} {}", action.name, action.status);
+    }
+    Ok(())
+}
+
+pub(crate) fn autonomous_supervisor_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+) -> Result<AutonomousSupervisorReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let doctor_before = project_doctor_report(conn, db, &root, since_days, false)?;
+    let planned_actions = autonomous_supervisor_plan(&doctor_before);
+    let mut executed_actions = Vec::new();
+    let mut embed_index = None;
+    if apply {
+        let embedding_needs_refresh = doctor_before
+            .embedding
+            .as_ref()
+            .is_some_and(|item| item.provider_reachable && (item.missing > 0 || item.stale > 0));
+        if embedding_needs_refresh {
+            let (provider, endpoint, model) = read_project_embedding_config(&root);
+            match embeddings::embed_index(conn, &provider, &endpoint, &model, &[], None, false) {
+                Ok(report) => {
+                    executed_actions.push(AutonomousSupervisorAction {
+                        name: "embed_index".to_string(),
+                        reason: "refresh missing or stale embeddings before semantic recall"
+                            .to_string(),
+                        safe_auto: true,
+                        applied: true,
+                        status: format!("indexed={} skipped={}", report.indexed, report.skipped),
+                    });
+                    embed_index = Some(report);
+                }
+                Err(err) => executed_actions.push(AutonomousSupervisorAction {
+                    name: "embed_index".to_string(),
+                    reason: "refresh missing or stale embeddings before semantic recall"
+                        .to_string(),
+                    safe_auto: true,
+                    applied: false,
+                    status: format!("failed:{err}"),
+                }),
+            }
+        }
+    }
+    let autonomous_loop =
+        autonomous_loop_report(conn, db, &root, since_days, AutonomousLevel::Normal, apply)?;
+    if apply {
+        executed_actions.push(AutonomousSupervisorAction {
+            name: "autonomous_loop".to_string(),
+            reason: "run reversible maintenance and project-watch repairs".to_string(),
+            safe_auto: true,
+            applied: true,
+            status: autonomous_loop.status.clone(),
+        });
+    }
+    let agent_enforce = agent_enforce_report(conn, db, &root, since_days, apply)?;
+    if apply {
+        executed_actions.push(AutonomousSupervisorAction {
+            name: "agent_enforce".to_string(),
+            reason: "repair future-chat memory wiring and required command coverage".to_string(),
+            safe_auto: true,
+            applied: agent_enforce.fixed,
+            status: agent_enforce.status.clone(),
+        });
+    }
+    let contract_v2 = memory_contract_v2_report(conn, &root, apply)?;
+    if apply {
+        executed_actions.push(AutonomousSupervisorAction {
+            name: "memory_contract_v2".to_string(),
+            reason: "refresh compact project contract after autonomous maintenance".to_string(),
+            safe_auto: true,
+            applied: contract_v2.written,
+            status: contract_v2.status.clone(),
+        });
+    }
+    let doctor_after = project_doctor_report(conn, db, &root, since_days, apply)?;
+    if apply {
+        executed_actions.push(AutonomousSupervisorAction {
+            name: "doctor_project".to_string(),
+            reason: "verify and repair project memory wiring after maintenance".to_string(),
+            safe_auto: true,
+            applied: doctor_after.fixed,
+            status: doctor_after.status.clone(),
+        });
+    }
+    let mut recommendations = doctor_after.recommendations.clone();
+    recommendations.extend(autonomous_loop.recommendations.clone());
+    recommendations.extend(agent_enforce.recommendations.clone());
+    recommendations.extend(contract_v2.recommendations.clone());
+    if !apply && !planned_actions.is_empty() {
+        recommendations
+            .push("rerun autonomous-supervisor --apply --json to execute safe actions".to_string());
+    }
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = if apply {
+        doctor_after.ok && autonomous_loop.ok && agent_enforce.ok && contract_v2.ok
+    } else {
+        doctor_before.ok && planned_actions.is_empty()
+    };
+    Ok(AutonomousSupervisorReport {
+        version: 1,
+        ok,
+        status: if ok {
+            "ready"
+        } else if apply {
+            "attention"
+        } else {
+            "planned"
+        }
+        .to_string(),
+        root: root.display().to_string(),
+        since_days,
+        applied: apply,
+        doctor_before,
+        planned_actions,
+        executed_actions,
+        embed_index,
+        autonomous_loop,
+        agent_enforce,
+        contract_v2,
+        doctor_after,
+        recommendations,
+    })
+}
+
+fn autonomous_supervisor_plan(doctor: &ProjectDoctorReport) -> Vec<AutonomousSupervisorAction> {
+    let mut actions = Vec::new();
+    if doctor
+        .embedding
+        .as_ref()
+        .is_some_and(|item| item.provider_reachable && (item.missing > 0 || item.stale > 0))
+    {
+        actions.push(AutonomousSupervisorAction {
+            name: "embed_index".to_string(),
+            reason: "embedding index has missing or stale rows".to_string(),
+            safe_auto: true,
+            applied: false,
+            status: "planned".to_string(),
+        });
+    }
+    if doctor
+        .issues
+        .iter()
+        .any(|issue| issue.contains("autonomous") || issue.contains("memory_qa"))
+    {
+        actions.push(AutonomousSupervisorAction {
+            name: "autonomous_loop".to_string(),
+            reason: "doctor or QA reports autonomous/quality attention".to_string(),
+            safe_auto: true,
+            applied: false,
+            status: "planned".to_string(),
+        });
+    }
+    if !doctor.ok {
+        actions.push(AutonomousSupervisorAction {
+            name: "agent_enforce".to_string(),
+            reason: "doctor has project wiring or required-command attention".to_string(),
+            safe_auto: true,
+            applied: false,
+            status: "planned".to_string(),
+        });
+        actions.push(AutonomousSupervisorAction {
+            name: "doctor_project".to_string(),
+            reason: "doctor can repair config, skill, AGENTS, contract, embeddings, and autonomous status".to_string(),
+            safe_auto: true,
+            applied: false,
+            status: "planned".to_string(),
+        });
+    }
+    actions.push(AutonomousSupervisorAction {
+        name: "memory_contract_v2".to_string(),
+        reason: "keep compact contract fresh after maintenance".to_string(),
+        safe_auto: true,
+        applied: false,
+        status: "planned".to_string(),
+    });
+    actions
+}
+
+pub(crate) fn print_web_control_center_v9(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    task: &str,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = web_control_center_v9_report(conn, db, root, target, task, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Web Control Center v9");
+    println!("status: {}", report.status);
+    for panel in &report.panels {
+        println!("{}: {}", panel.name, panel.headline);
+    }
+    Ok(())
+}
+
+pub(crate) fn web_control_center_v9_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    task: &str,
+    since_days: i64,
+) -> Result<WebControlCenterV9Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let v8 = web_control_center_v8_report(conn, db, &root, target, task, since_days)?;
+    let supervisor = autonomous_supervisor_report(conn, db, &root, since_days, false)?;
+    let mut panels = v8.panels.clone();
+    panels.push(WebControlPanel {
+        name: "autonomous_supervisor".to_string(),
+        status: supervisor.status.clone(),
+        headline: format!(
+            "{} planned safe action(s)",
+            supervisor
+                .planned_actions
+                .iter()
+                .filter(|item| item.safe_auto)
+                .count()
+        ),
+        metrics: vec![
+            MemoryEvalProofPoint {
+                name: "doctor_after".to_string(),
+                value: supervisor.doctor_after.status.clone(),
+                status: supervisor.doctor_after.status.clone(),
+            },
+            MemoryEvalProofPoint {
+                name: "planned_actions".to_string(),
+                value: supervisor.planned_actions.len().to_string(),
+                status: if supervisor.planned_actions.is_empty() {
+                    "ready"
+                } else {
+                    "planned"
+                }
+                .to_string(),
+            },
+        ],
+        actions: vec![
+            "dukememory autonomous-supervisor --json".to_string(),
+            "dukememory autonomous-supervisor --apply --json".to_string(),
+        ],
+    });
+    let mut controls = v8.controls.clone();
+    controls.push(WebControlAction {
+        name: "autonomous_supervisor".to_string(),
+        label: "Autonomous supervisor".to_string(),
+        method: "POST".to_string(),
+        endpoint: "/autonomous-supervisor/apply".to_string(),
+        cli: "dukememory autonomous-supervisor --apply --json".to_string(),
+        safe_auto: true,
+        requires_apply: true,
+        status: supervisor.status.clone(),
+    });
+    let mut recommendations = v8.recommendations.clone();
+    recommendations.extend(supervisor.recommendations.clone());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = v8.ok && supervisor.ok;
+    Ok(WebControlCenterV9Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        target: target.map(|path| path.display().to_string()),
+        v8,
+        supervisor,
+        panels,
+        controls,
+        recommendations,
+    })
+}
+
 fn auto_supersede_confidence(candidate: &MergeCandidate) -> f64 {
     let reason = candidate.reason.to_lowercase();
     let title_bonus: f64 = if reason.contains("same title") || reason.contains("duplicate") {
@@ -10808,6 +11150,8 @@ fn agent_required_commands() -> &'static [&'static str] {
         "autonomous-usefulness",
         "benchmark-polish",
         "web-control-center-v8",
+        "autonomous-supervisor",
+        "web-control-center-v9",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",

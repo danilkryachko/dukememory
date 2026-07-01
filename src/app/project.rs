@@ -715,6 +715,8 @@ For every new chat or coding task in this repository:
 - To plan autonomous memory usefulness improvements, run `dukememory autonomous-usefulness --json`; use `--apply` only for reversible feedback materialization.
 - To inspect polished local benchmark evidence, run `dukememory benchmark-polish --json`.
 - To inspect the 0.27 web control model, run `dukememory web-control-center-v8 --json`.
+- To plan safe autonomous repair, run `dukememory autonomous-supervisor --json`; use `--apply` to run safe repairs in order.
+- To inspect the 0.28 web control model, run `dukememory web-control-center-v9 --json`.
 - To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`.
 - To inspect live memory usefulness from reads and feedback, run `dukememory eval live --json`.
 - To inspect all local projects, run `dukememory dashboard --json`.
