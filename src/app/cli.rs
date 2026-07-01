@@ -1206,6 +1206,65 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Control local-first VDS/remote sync readiness, dry-runs, and guarded apply state.
+    RemoteSyncControl {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render the V4 web control model with actionable controls.
+    WebControlCenterV4 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Enforce MCP memory discipline for startup, write decisions, and after-task cleanup.
+    McpDisciplineV2 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run the second-generation autonomous feedback loop.
+    FeedbackLoopV2 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Upgrade all discovered project memories with richer version/action summaries.
+    UpgradeAllProjectsV2 {
+        #[arg(long)]
+        from: Option<PathBuf>,
+        #[arg(long, default_value = "~/.local/bin/dukememory")]
+        to: String,
+        #[arg(long, default_value = ".agent/install-backups")]
+        backup_dir: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Write starter memory configuration for a project type.
     ProjectTemplate {
         #[arg(long, default_value = ".")]

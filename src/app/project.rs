@@ -687,6 +687,11 @@ For every new chat or coding task in this repository:
 - To inspect the simplified web control model, run `dukememory web-control-center-v3 --json`.
 - To apply guarded local-first remote sync planning, run `dukememory remote-sync-apply --json`; use `--target` and `DUKEMEMORY_SYNC_PASSPHRASE` before `--apply`.
 - To inspect MCP helper tools for memory discipline, run `dukememory mcp-quality-tools --json`.
+- To inspect local-first VDS/remote sync readiness and real push/pull dry-runs, run `dukememory remote-sync-control --json`; pass `--target PATH` for target status.
+- To inspect the actionable web control model, run `dukememory web-control-center-v4 --json`.
+- To enforce startup/write/after-task memory discipline, run `dukememory mcp-discipline-v2 --json`; use `--apply` to repair wiring.
+- To inspect autonomous usefulness feedback, safe supersede, diff apply, and recall benchmark quality, run `dukememory feedback-loop-v2 --json`.
+- To inspect all installed project memories with richer version/action summaries, run `dukememory upgrade-all-projects-v2 --json`.
 - To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`.
 - To inspect live memory usefulness from reads and feedback, run `dukememory eval live --json`.
 - To inspect all local projects, run `dukememory dashboard --json`.

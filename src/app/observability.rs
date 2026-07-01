@@ -1031,6 +1031,119 @@ pub(crate) struct McpQualityToolsReport {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct RemoteSyncControlReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) target: Option<String>,
+    pub(crate) applied: bool,
+    pub(crate) local_first: bool,
+    pub(crate) target_ready: bool,
+    pub(crate) remote_bundle: String,
+    pub(crate) remote_bundle_exists: bool,
+    pub(crate) remote_memory_count: Option<usize>,
+    pub(crate) latency: SyncLatencyReport,
+    pub(crate) sync_profile: SyncProfileReport,
+    pub(crate) remote_sync: RemoteSyncV2Report,
+    pub(crate) dry_run_commands: Vec<String>,
+    pub(crate) apply_commands: Vec<String>,
+    pub(crate) rollback_hint: String,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WebControlCenterV4Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) v3: WebControlCenterV3Report,
+    pub(crate) remote_sync: RemoteSyncControlReport,
+    pub(crate) mcp_discipline: McpDisciplineV2Report,
+    pub(crate) feedback_loop: FeedbackLoopV2Report,
+    pub(crate) upgrade_all: UpgradeAllProjectsV2Report,
+    pub(crate) controls: Vec<WebControlAction>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WebControlAction {
+    pub(crate) name: String,
+    pub(crate) label: String,
+    pub(crate) method: String,
+    pub(crate) endpoint: String,
+    pub(crate) cli: String,
+    pub(crate) safe_auto: bool,
+    pub(crate) requires_apply: bool,
+    pub(crate) status: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct McpDisciplineV2Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) agent_enforce: AgentEnforceReport,
+    pub(crate) mcp_quality: McpQualityToolsReport,
+    pub(crate) budget: BudgetPlan,
+    pub(crate) startup_flow: Vec<String>,
+    pub(crate) after_task_flow: Vec<String>,
+    pub(crate) missing_commands: Vec<String>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct FeedbackLoopV2Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) qa: MemoryQaReport,
+    pub(crate) usefulness: UsefulnessEngineReport,
+    pub(crate) auto_feedback: AutoFeedbackV2Report,
+    pub(crate) supersede: AutoSupersedeV2Report,
+    pub(crate) diff_apply: MemoryDiffApplyReport,
+    pub(crate) benchmark: RecallBenchmarkSuiteReport,
+    pub(crate) actions: Vec<String>,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct UpgradeAllProjectsV2Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) dry_run: bool,
+    pub(crate) total_projects: usize,
+    pub(crate) upgraded_projects: usize,
+    pub(crate) ready_projects: usize,
+    pub(crate) attention_projects: usize,
+    pub(crate) base: UpgradeAllProjectsReport,
+    pub(crate) project_summaries: Vec<UpgradeAllProjectSummary>,
+    pub(crate) commands: Vec<String>,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct UpgradeAllProjectSummary {
+    pub(crate) root: String,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) actions: usize,
+    pub(crate) current_version: Option<String>,
+    pub(crate) target_version: String,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct ProjectTemplateReport {
     pub(crate) version: u32,
     pub(crate) ok: bool,
@@ -5882,6 +5995,566 @@ fn mcp_quality_tool_names() -> Vec<String> {
     .collect()
 }
 
+pub(crate) fn print_remote_sync_control(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = remote_sync_control_report(conn, db, root, target, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Remote Sync Control");
+    println!("status: {}", report.status);
+    println!("applied: {}", report.applied);
+    for blocker in &report.blockers {
+        println!("blocker: {blocker}");
+    }
+    for command in &report.dry_run_commands {
+        println!("dry-run: {command}");
+    }
+    Ok(())
+}
+
+pub(crate) fn remote_sync_control_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    apply: bool,
+) -> Result<RemoteSyncControlReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let target_string = target.map(|path| path.display().to_string());
+    let bundle_path = target
+        .map(remote_sync_control_bundle_path)
+        .unwrap_or_else(|| PathBuf::from("TARGET/dukememory-sync-bundle.json"));
+    let (remote_bundle_exists, remote_memory_count) =
+        remote_sync_control_bundle_summary(&bundle_path);
+    let latency = sync_latency_report(conn, db, &root, target, 3)?;
+    let sync_profile = sync_profile_report(
+        conn,
+        db,
+        &root,
+        SyncProfileMode::LocalFirstSync,
+        target,
+        false,
+        true,
+    )?;
+    let remote_sync = remote_sync_v2_report(conn, db, &root, target, since_days, false)?;
+    let mut blockers = Vec::new();
+    if target.is_none() {
+        blockers.push("target is required for VDS/local-first sync control".to_string());
+    }
+    if !latency.ok {
+        blockers.extend(latency.issues.iter().cloned());
+    }
+    if !sync_profile.local_first {
+        blockers.push("sync control requires local-first profile".to_string());
+    }
+    if !remote_sync.local_first {
+        blockers.push("remote sync must remain local-first".to_string());
+    }
+    blockers.sort();
+    blockers.dedup();
+    let target_arg = target_string.as_deref().unwrap_or("TARGET");
+    let dry_run_commands = vec![
+        format!("dukememory sync push {target_arg} --dry-run --json"),
+        format!("dukememory sync pull {target_arg} --policy manual --dry-run --json"),
+        format!("dukememory sync status {target_arg} --json"),
+    ];
+    let apply_commands = vec![
+        format!("dukememory sync push {target_arg} --json"),
+        format!("dukememory sync pull {target_arg} --policy newer-wins --dry-run --json"),
+        "dukememory embed-index".to_string(),
+    ];
+    let mut actions = Vec::new();
+    let target_ready = target.is_some() && blockers.is_empty();
+    if apply && target_ready {
+        let path = root.join(".agent/remote-sync-control.json");
+        let value = json!({
+            "version": 1,
+            "target": &target_string,
+            "local_first": true,
+            "remote_bundle": bundle_path.display().to_string(),
+            "dry_run_commands": &dry_run_commands,
+            "apply_commands": &apply_commands,
+            "updated_at": now_ms(),
+        });
+        write_file(&path, serde_json::to_string_pretty(&value)?.as_bytes())?;
+        let _ = log_event(
+            conn,
+            "remote_sync_control",
+            None,
+            &serde_json::to_string(&json!({
+                "status": "ok",
+                "target": &target_string,
+                "path": path.display().to_string(),
+            }))?,
+        );
+        actions.push(format!("remote_sync_control_written:{}", path.display()));
+    } else if apply {
+        actions.push("remote_sync_control_not_written:blockers_present".to_string());
+    } else {
+        actions.push("dry_run:remote_sync_control_not_written".to_string());
+    }
+    let mut recommendations = latency.recommendations.clone();
+    recommendations.extend(sync_profile.recommendations.clone());
+    recommendations.extend(remote_sync.recommendations.clone());
+    recommendations
+        .push("keep all agent reads local; use VDS only for explicit push/pull sync".to_string());
+    recommendations
+        .push("start with sync push dry-run, then status, then pull manual dry-run".to_string());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = blockers.is_empty();
+    Ok(RemoteSyncControlReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "blocked" }.to_string(),
+        root: root.display().to_string(),
+        target: target_string,
+        applied: apply && ok,
+        local_first: true,
+        target_ready,
+        remote_bundle: bundle_path.display().to_string(),
+        remote_bundle_exists,
+        remote_memory_count,
+        latency,
+        sync_profile,
+        remote_sync,
+        dry_run_commands,
+        apply_commands,
+        rollback_hint: ".agent/sync-rollbacks stores import rollback backups when pull applies"
+            .to_string(),
+        blockers,
+        actions,
+        recommendations,
+    })
+}
+
+fn remote_sync_control_bundle_path(target: &Path) -> PathBuf {
+    if target.extension().and_then(|value| value.to_str()) == Some("json") {
+        target.to_path_buf()
+    } else {
+        target.join("dukememory-sync-bundle.json")
+    }
+}
+
+fn remote_sync_control_bundle_summary(path: &Path) -> (bool, Option<usize>) {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return (false, None);
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+        return (true, None);
+    };
+    let count = value
+        .get("manifest")
+        .and_then(|manifest| manifest.get("memory_count"))
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            value
+                .get("memories")
+                .and_then(Value::as_array)
+                .map(|items| items.len() as u64)
+        })
+        .map(|value| value as usize);
+    (true, count)
+}
+
+pub(crate) fn print_mcp_discipline_v2(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = mcp_discipline_v2_report(conn, db, root, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("MCP Discipline v2");
+    println!("status: {}", report.status);
+    for missing in &report.missing_commands {
+        println!("missing: {missing}");
+    }
+    Ok(())
+}
+
+pub(crate) fn mcp_discipline_v2_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+) -> Result<McpDisciplineV2Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let agent_enforce = agent_enforce_report(conn, db, &root, since_days, apply)?;
+    let mcp_quality = mcp_quality_tools_report();
+    let budget = budget_plan(
+        conn,
+        "routine coding task with project memory",
+        Some("project"),
+    )?;
+    let mut missing_commands = agent_enforce.missing_commands.clone();
+    missing_commands.extend(mcp_quality.missing_quality_tools.clone());
+    missing_commands.sort();
+    missing_commands.dedup();
+    let startup_flow = vec![
+        "memory_status".to_string(),
+        "memory_project_health".to_string(),
+        "brief --budget-profile tiny".to_string(),
+    ];
+    let after_task_flow = vec![
+        "memory_should_write".to_string(),
+        "memory_after_task".to_string(),
+        "embed-index after durable writes".to_string(),
+    ];
+    let mut actions = Vec::new();
+    if apply && agent_enforce.fixed {
+        actions.push("agent_enforce_fixed".to_string());
+    } else if apply {
+        actions.push("agent_enforce_checked_no_fix_needed".to_string());
+    } else {
+        actions.push("dry_run:mcp_discipline_not_written".to_string());
+    }
+    let mut recommendations = agent_enforce.recommendations.clone();
+    recommendations.extend(mcp_quality.recommendations.clone());
+    recommendations
+        .push("agents should start with memory_status and end with memory_after_task".to_string());
+    recommendations.push("use memory_should_write before any durable memory write".to_string());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = agent_enforce.ok && mcp_quality.ok && missing_commands.is_empty();
+    Ok(McpDisciplineV2Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        applied: apply,
+        agent_enforce,
+        mcp_quality,
+        budget,
+        startup_flow,
+        after_task_flow,
+        missing_commands,
+        actions,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_feedback_loop_v2(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = feedback_loop_v2_report(conn, root, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Feedback Loop v2");
+    println!("status: {}", report.status);
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    Ok(())
+}
+
+pub(crate) fn feedback_loop_v2_report(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+) -> Result<FeedbackLoopV2Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let qa = memory_qa_report(conn, &root, since_days)?;
+    let usefulness = usefulness_engine_report(conn, &root, since_days, apply)?;
+    let auto_feedback = auto_feedback_v2_report(conn, since_days, 100, apply)?;
+    let supersede = auto_supersede_v2_report(conn, &root, since_days, apply)?;
+    let diff_apply = memory_diff_apply_report(conn, &root, apply)?;
+    let benchmark = recall_benchmark_suite_report(conn, &root, since_days, 8, apply)?;
+    let mut actions = Vec::new();
+    if apply {
+        actions.push(format!("auto_feedback_written:{}", auto_feedback.written));
+        actions.push(format!("superseded:{}", supersede.superseded.len()));
+        actions.push(format!(
+            "diff_memory_written:{}",
+            diff_apply.written_ids.len()
+        ));
+        if benchmark.baseline_written {
+            actions.push("recall_benchmark_baseline_written".to_string());
+        }
+    } else {
+        actions.push("dry_run:feedback_loop_not_applied".to_string());
+    }
+    let mut issues = qa.issues.clone();
+    if !usefulness.ok {
+        issues.extend(usefulness.issues.clone());
+    }
+    if benchmark.regression {
+        issues.push("recall benchmark regression detected".to_string());
+    }
+    issues.sort();
+    issues.dedup();
+    let mut recommendations = qa.recommendations.clone();
+    recommendations.extend(usefulness.recommendations.clone());
+    recommendations.extend(auto_feedback.recommendations.clone());
+    recommendations.extend(supersede.recommendations.clone());
+    recommendations.extend(diff_apply.recommendations.clone());
+    recommendations.extend(benchmark.recommendations.clone());
+    recommendations
+        .push("run feedback-loop-v2 --apply only after reviewing dry-run output".to_string());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = issues.is_empty() && !benchmark.regression;
+    Ok(FeedbackLoopV2Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        applied: apply,
+        qa,
+        usefulness,
+        auto_feedback,
+        supersede,
+        diff_apply,
+        benchmark,
+        actions,
+        issues,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_upgrade_all_projects_v2(
+    default_db: &Path,
+    from: Option<&Path>,
+    to: &str,
+    backup_dir: &Path,
+    dry_run: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = upgrade_all_projects_v2_report(default_db, from, to, backup_dir, dry_run)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Upgrade All Projects v2");
+    println!("status: {}", report.status);
+    println!("ready: {}/{}", report.ready_projects, report.total_projects);
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    Ok(())
+}
+
+pub(crate) fn upgrade_all_projects_v2_report(
+    default_db: &Path,
+    from: Option<&Path>,
+    to: &str,
+    backup_dir: &Path,
+    dry_run: bool,
+) -> Result<UpgradeAllProjectsV2Report> {
+    let base = upgrade_all_projects_report(default_db, from, to, backup_dir, dry_run)?;
+    let target_version = env!("CARGO_PKG_VERSION").to_string();
+    let project_summaries = base
+        .projects
+        .iter()
+        .map(|project| {
+            let root = project
+                .get("root")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            let ok = project.get("ok").and_then(Value::as_bool).unwrap_or(false);
+            let actions = project
+                .get("actions")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            let current_version = project
+                .get("current_version")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    project
+                        .get("installed_version")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                });
+            UpgradeAllProjectSummary {
+                root,
+                ok,
+                status: if ok { "ready" } else { "attention" }.to_string(),
+                actions,
+                current_version,
+                target_version: target_version.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let ready_projects = project_summaries
+        .iter()
+        .filter(|project| project.ok)
+        .count();
+    let attention_projects = base.total_projects.saturating_sub(ready_projects);
+    let mut issues = base.errors.clone();
+    if attention_projects > 0 {
+        issues.push(format!("attention_projects={attention_projects}"));
+    }
+    let commands = vec![
+        "dukememory upgrade-all-projects --dry-run --json".to_string(),
+        "dukememory upgrade-all-projects --json".to_string(),
+        "dukememory project-watch --fix --json".to_string(),
+        "dukememory release-gate-v2 --json".to_string(),
+    ];
+    let mut recommendations = base.recommendations.clone();
+    recommendations.push("review project_summaries before non-dry-run upgrades".to_string());
+    recommendations
+        .push("run project-watch --fix after upgrading all project memories".to_string());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = base.ok && issues.is_empty();
+    Ok(UpgradeAllProjectsV2Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        dry_run,
+        total_projects: base.total_projects,
+        upgraded_projects: base.upgraded_projects,
+        ready_projects,
+        attention_projects,
+        base,
+        project_summaries,
+        commands,
+        issues,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_web_control_center_v4(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = web_control_center_v4_report(conn, db, root, target, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Web Control Center v4");
+    println!("status: {}", report.status);
+    for control in &report.controls {
+        println!("{} {} {}", control.name, control.method, control.endpoint);
+    }
+    Ok(())
+}
+
+pub(crate) fn web_control_center_v4_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+) -> Result<WebControlCenterV4Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let v3 = web_control_center_v3_report(conn, db, &root, target, since_days)?;
+    let remote_sync = remote_sync_control_report(conn, db, &root, target, since_days, false)?;
+    let mcp_discipline = mcp_discipline_v2_report(conn, db, &root, since_days, false)?;
+    let feedback_loop = feedback_loop_v2_report(conn, &root, since_days, false)?;
+    let upgrade_all = upgrade_all_projects_v2_report(
+        db,
+        None,
+        "~/.local/bin/dukememory",
+        Path::new(".agent/install-backups"),
+        true,
+    )?;
+    let controls = vec![
+        WebControlAction {
+            name: "autopilot".to_string(),
+            label: "Run autopilot".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/autopilot-v3/apply".to_string(),
+            cli: "dukememory autopilot-v3 --apply --json".to_string(),
+            safe_auto: true,
+            requires_apply: true,
+            status: "ready".to_string(),
+        },
+        WebControlAction {
+            name: "remote_sync_dry_run".to_string(),
+            label: "Sync dry-run".to_string(),
+            method: "GET".to_string(),
+            endpoint: "/remote-sync-control".to_string(),
+            cli: "dukememory remote-sync-control --target TARGET --json".to_string(),
+            safe_auto: true,
+            requires_apply: false,
+            status: remote_sync.status.clone(),
+        },
+        WebControlAction {
+            name: "mcp_enforce".to_string(),
+            label: "MCP enforce".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/mcp-discipline-v2/apply".to_string(),
+            cli: "dukememory mcp-discipline-v2 --apply --json".to_string(),
+            safe_auto: true,
+            requires_apply: true,
+            status: mcp_discipline.status.clone(),
+        },
+        WebControlAction {
+            name: "feedback_loop".to_string(),
+            label: "Feedback loop".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/feedback-loop-v2/apply".to_string(),
+            cli: "dukememory feedback-loop-v2 --apply --json".to_string(),
+            safe_auto: true,
+            requires_apply: true,
+            status: feedback_loop.status.clone(),
+        },
+        WebControlAction {
+            name: "upgrade_all".to_string(),
+            label: "Upgrade projects".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/upgrade-all-projects-v2/apply".to_string(),
+            cli: "dukememory upgrade-all-projects-v2 --json".to_string(),
+            safe_auto: true,
+            requires_apply: true,
+            status: upgrade_all.status.clone(),
+        },
+    ];
+    let mut recommendations = v3.recommendations.clone();
+    recommendations.extend(remote_sync.recommendations.clone());
+    recommendations.extend(mcp_discipline.recommendations.clone());
+    recommendations.extend(feedback_loop.recommendations.clone());
+    recommendations.extend(upgrade_all.recommendations.clone());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = v3.ok && remote_sync.ok && mcp_discipline.ok && feedback_loop.ok && upgrade_all.ok;
+    Ok(WebControlCenterV4Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        v3,
+        remote_sync,
+        mcp_discipline,
+        feedback_loop,
+        upgrade_all,
+        controls,
+        recommendations,
+    })
+}
+
 fn auto_supersede_confidence(candidate: &MergeCandidate) -> f64 {
     let reason = candidate.reason.to_lowercase();
     let title_bonus: f64 = if reason.contains("same title") || reason.contains("duplicate") {
@@ -6951,6 +7624,11 @@ fn agent_required_commands() -> &'static [&'static str] {
         "web-control-center-v3",
         "remote-sync-apply",
         "mcp-quality-tools",
+        "remote-sync-control",
+        "web-control-center-v4",
+        "mcp-discipline-v2",
+        "feedback-loop-v2",
+        "upgrade-all-projects-v2",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",

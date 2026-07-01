@@ -8708,6 +8708,11 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "web-control-center-v3",
         "remote-sync-apply",
         "mcp-quality-tools",
+        "remote-sync-control",
+        "web-control-center-v4",
+        "mcp-discipline-v2",
+        "feedback-loop-v2",
+        "upgrade-all-projects-v2",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -8778,6 +8783,11 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "web-control-center-v3",
         "remote-sync-apply",
         "mcp-quality-tools",
+        "remote-sync-control",
+        "web-control-center-v4",
+        "mcp-discipline-v2",
+        "feedback-loop-v2",
+        "upgrade-all-projects-v2",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -9714,6 +9724,11 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/web-control-center-v3"));
     assert!(html.contains("/remote-sync-apply"));
     assert!(html.contains("/mcp-quality-tools"));
+    assert!(html.contains("/remote-sync-control"));
+    assert!(html.contains("/web-control-center-v4"));
+    assert!(html.contains("/mcp-discipline-v2"));
+    assert!(html.contains("/feedback-loop-v2"));
+    assert!(html.contains("/upgrade-all-projects-v2"));
     assert!(html.contains("/project-diff"));
     assert!(html.contains("/intelligence-dashboard"));
     assert!(html.contains("/remote-sync-dry-run"));
@@ -9778,6 +9793,11 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("web control center v3"));
     assert!(html.contains("remote sync apply"));
     assert!(html.contains("mcp quality tools"));
+    assert!(html.contains("remote sync control"));
+    assert!(html.contains("web control center v4"));
+    assert!(html.contains("mcp discipline v2"));
+    assert!(html.contains("feedback loop v2"));
+    assert!(html.contains("upgrade all v2"));
     assert!(html.contains("auto ranking tune"));
     assert!(html.contains("watch control"));
     assert!(html.contains("autonomy control center"));
@@ -9794,6 +9814,10 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("Loop apply"));
     assert!(html.contains("Loop v2"));
     assert!(html.contains("Autopilot v3"));
+    assert!(html.contains("Sync control"));
+    assert!(html.contains("MCP discipline"));
+    assert!(html.contains("Feedback loop"));
+    assert!(html.contains("Upgrade v2"));
     assert!(html.contains("Self learning"));
     assert!(html.contains("Role profile"));
     assert!(html.contains("Inbox reviewer"));
@@ -10397,6 +10421,46 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(mcp_quality_tools.contains("\"mcp_quality\""));
     assert!(mcp_quality_tools.contains("\"quality_tools\""));
     assert!(mcp_quality_tools.contains("\"recommended_flow\""));
+
+    let remote_sync_control = http_once(
+        &db,
+        "GET /remote-sync-control?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(remote_sync_control.contains("\"remote_sync_control\""));
+    assert!(remote_sync_control.contains("\"dry_run_commands\""));
+    assert!(remote_sync_control.contains("\"rollback_hint\""));
+
+    let web_control_v4 = http_once(
+        &db,
+        "GET /web-control-center-v4?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(web_control_v4.contains("\"control_v4\""));
+    assert!(web_control_v4.contains("\"controls\""));
+    assert!(web_control_v4.contains("\"feedback_loop\""));
+
+    let mcp_discipline_v2 = http_once(
+        &db,
+        "GET /mcp-discipline-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(mcp_discipline_v2.contains("\"discipline\""));
+    assert!(mcp_discipline_v2.contains("\"startup_flow\""));
+    assert!(mcp_discipline_v2.contains("\"after_task_flow\""));
+
+    let feedback_loop_v2 = http_once(
+        &db,
+        "GET /feedback-loop-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(feedback_loop_v2.contains("\"feedback_loop\""));
+    assert!(feedback_loop_v2.contains("\"auto_feedback\""));
+    assert!(feedback_loop_v2.contains("\"benchmark\""));
+
+    let upgrade_all_v2 = http_once(
+        &db,
+        "GET /upgrade-all-projects-v2 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(upgrade_all_v2.contains("\"upgrade_all_v2\""));
+    assert!(upgrade_all_v2.contains("\"project_summaries\""));
+    assert!(upgrade_all_v2.contains("\"dry_run\":true"));
 
     let project_template = http_once(
         &db,
@@ -12119,6 +12183,88 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .is_empty()
     );
 
+    let remote_sync_control = stdout(
+        cmd(&db)
+            .arg("remote-sync-control")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(dir.path().join("remote-sync-target"))
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let remote_sync_control_json: Value = serde_json::from_str(&remote_sync_control).unwrap();
+    assert_eq!(remote_sync_control_json["version"], 1);
+    assert!(
+        remote_sync_control_json["dry_run_commands"]
+            .as_array()
+            .is_some()
+    );
+    assert!(remote_sync_control_json["rollback_hint"].as_str().is_some());
+
+    let web_control_v4 = stdout(
+        cmd(&db)
+            .arg("web-control-center-v4")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(dir.path().join("remote-sync-target"))
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let web_control_v4_json: Value = serde_json::from_str(&web_control_v4).unwrap();
+    assert_eq!(web_control_v4_json["version"], 1);
+    assert!(web_control_v4_json["controls"].as_array().unwrap().len() >= 5);
+
+    let mcp_discipline_v2 = stdout(
+        cmd(&db)
+            .arg("mcp-discipline-v2")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let mcp_discipline_v2_json: Value = serde_json::from_str(&mcp_discipline_v2).unwrap();
+    assert_eq!(mcp_discipline_v2_json["version"], 1);
+    assert!(mcp_discipline_v2_json["startup_flow"].as_array().is_some());
+    assert!(
+        mcp_discipline_v2_json["after_task_flow"]
+            .as_array()
+            .is_some()
+    );
+
+    let feedback_loop_v2 = stdout(
+        cmd(&db)
+            .arg("feedback-loop-v2")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let feedback_loop_v2_json: Value = serde_json::from_str(&feedback_loop_v2).unwrap();
+    assert_eq!(feedback_loop_v2_json["version"], 1);
+    assert!(feedback_loop_v2_json["auto_feedback"].is_object());
+    assert!(feedback_loop_v2_json["benchmark"].is_object());
+
+    let upgrade_all_v2 = stdout(
+        cmd(&db)
+            .arg("upgrade-all-projects-v2")
+            .arg("--dry-run")
+            .arg("--json"),
+    );
+    let upgrade_all_v2_json: Value = serde_json::from_str(&upgrade_all_v2).unwrap();
+    assert_eq!(upgrade_all_v2_json["version"], 1);
+    assert_eq!(upgrade_all_v2_json["dry_run"], true);
+    assert!(
+        upgrade_all_v2_json["project_summaries"]
+            .as_array()
+            .is_some()
+    );
+
     let project_template = stdout(
         cmd(&db)
             .arg("project-template")
@@ -12336,6 +12482,11 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         "web-control-center-v3",
         "remote-sync-apply",
         "mcp-quality-tools",
+        "remote-sync-control",
+        "web-control-center-v4",
+        "mcp-discipline-v2",
+        "feedback-loop-v2",
+        "upgrade-all-projects-v2",
     ] {
         assert!(
             agent_enforce_json["required_commands"]

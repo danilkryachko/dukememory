@@ -1142,6 +1142,55 @@ pub(crate) fn run() -> Result<()> {
             json,
         )?,
         Command::McpQualityTools { json } => print_mcp_quality_tools(json)?,
+        Command::RemoteSyncControl {
+            root,
+            target,
+            since_days,
+            apply,
+            json,
+        } => print_remote_sync_control(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            since_days,
+            apply,
+            json,
+        )?,
+        Command::WebControlCenterV4 {
+            root,
+            target,
+            since_days,
+            json,
+        } => {
+            print_web_control_center_v4(&conn, &cli.db, &root, target.as_deref(), since_days, json)?
+        }
+        Command::McpDisciplineV2 {
+            root,
+            since_days,
+            apply,
+            json,
+        } => print_mcp_discipline_v2(&conn, &cli.db, &root, since_days, apply, json)?,
+        Command::FeedbackLoopV2 {
+            root,
+            since_days,
+            apply,
+            json,
+        } => print_feedback_loop_v2(&conn, &root, since_days, apply, json)?,
+        Command::UpgradeAllProjectsV2 {
+            from,
+            to,
+            backup_dir,
+            dry_run,
+            json,
+        } => print_upgrade_all_projects_v2(
+            &cli.db,
+            from.as_deref(),
+            &to,
+            &backup_dir,
+            dry_run,
+            json,
+        )?,
         Command::ProjectTemplate {
             root,
             kind,
@@ -3504,6 +3553,16 @@ Use `dukememory remote-sync-apply --json` to apply guarded local-first remote sy
 
 Use `dukememory mcp-quality-tools --json` to inspect MCP helper tools for memory discipline.
 
+Use `dukememory remote-sync-control --json` to inspect local-first VDS/remote sync readiness, real push/pull dry-run commands, remote bundle status, and rollback hints.
+
+Use `dukememory web-control-center-v4 --json` to inspect actionable Health, Autonomy, Projects, Sync, MCP, Feedback, and Upgrade controls for the web UI.
+
+Use `dukememory mcp-discipline-v2 --json` to enforce agent startup, write-decision, and after-task memory discipline; use `--apply` to repair wiring.
+
+Use `dukememory feedback-loop-v2 --json` to inspect autonomous usefulness feedback, safe supersede, diff apply candidates, and recall benchmark quality; use `--apply` after reviewing dry-run output.
+
+Use `dukememory upgrade-all-projects-v2 --json` to inspect all installed project memories with richer version/action summaries before applying upgrades.
+
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
 Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens.
@@ -3620,6 +3679,11 @@ dukememory inbox-ai-reviewer --json
 dukememory web-control-center-v3 --json
 dukememory remote-sync-apply --json
 dukememory mcp-quality-tools --json
+dukememory remote-sync-control --json
+dukememory web-control-center-v4 --json
+dukememory mcp-discipline-v2 --json
+dukememory feedback-loop-v2 --json
+dukememory upgrade-all-projects-v2 --json
 dukememory doctor-project --json
 dukememory release-gate --json
 dukememory project-watch --json
@@ -4082,6 +4146,11 @@ fn print_completions(shell: CompletionShell) {
         "web-control-center-v3",
         "remote-sync-apply",
         "mcp-quality-tools",
+        "remote-sync-control",
+        "web-control-center-v4",
+        "mcp-discipline-v2",
+        "feedback-loop-v2",
+        "upgrade-all-projects-v2",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -4235,6 +4304,13 @@ fn print_manpage() {
     println!("  web-control-center-v3         Health/Autonomy/Projects/Sync control model");
     println!("  remote-sync-apply --json      guarded local-first remote sync apply surface");
     println!("  mcp-quality-tools --json      inspect MCP helper tools for memory discipline");
+    println!("  remote-sync-control --json    local-first VDS sync control and dry-runs");
+    println!("  web-control-center-v4         actionable UI control model with apply endpoints");
+    println!("  mcp-discipline-v2 --json      enforce startup/write/after-task memory discipline");
+    println!(
+        "  feedback-loop-v2 --json       autonomous usefulness, supersede, diff, benchmark loop"
+    );
+    println!("  upgrade-all-projects-v2       richer all-project upgrade/version summary");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");

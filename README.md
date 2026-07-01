@@ -116,6 +116,21 @@ dukememory embed-index
 
 No cloud service is required. Embeddings are optional.
 
+## Local-First Sync
+
+Remote or VDS sync is optional and remains local-first: agents keep reading the
+local SQLite database, while push/pull moves reviewable sync bundles.
+
+```bash
+dukememory remote-sync-control --target /mnt/vds/dukememory --json
+dukememory sync push /mnt/vds/dukememory --dry-run --json
+dukememory sync status /mnt/vds/dukememory --json
+dukememory sync pull /mnt/vds/dukememory --policy manual --dry-run --json
+```
+
+`web-control-center-v4` exposes the same model for UI buttons: preview first,
+apply only guarded reversible actions, and keep rollback hints visible.
+
 ## Embeddings
 
 ```bash
@@ -199,6 +214,11 @@ dukememory inbox-ai-reviewer --json
 dukememory web-control-center-v3 --json
 dukememory remote-sync-apply --target /mnt/vds/dukememory --json
 dukememory mcp-quality-tools --json
+dukememory remote-sync-control --target /mnt/vds/dukememory --json
+dukememory web-control-center-v4 --json
+dukememory mcp-discipline-v2 --json
+dukememory feedback-loop-v2 --json
+dukememory upgrade-all-projects-v2 --dry-run --json
 dukememory auto-ranking-tune --apply --json
 dukememory ranking-profile --profile balanced --apply --json
 dukememory project-template --kind rust-cli --apply --json
