@@ -121,6 +121,25 @@ fn parse_sync_profile(value: Option<&str>) -> SyncProfileMode {
     }
 }
 
+fn parse_ranking_profile(value: Option<&str>) -> RankingProfileMode {
+    match value.unwrap_or("balanced") {
+        "strict" => RankingProfileMode::Strict,
+        "recall-heavy" | "recall_heavy" => RankingProfileMode::RecallHeavy,
+        "precision-heavy" | "precision_heavy" => RankingProfileMode::PrecisionHeavy,
+        _ => RankingProfileMode::Balanced,
+    }
+}
+
+fn parse_project_template(value: Option<&str>) -> ProjectTemplateKind {
+    match value.unwrap_or("rust-cli") {
+        "frontend-app" | "frontend_app" => ProjectTemplateKind::FrontendApp,
+        "game-mod" | "game_mod" => ProjectTemplateKind::GameMod,
+        "electronics-cad" | "electronics_cad" => ProjectTemplateKind::ElectronicsCad,
+        "docs-research" | "docs_research" => ProjectTemplateKind::DocsResearch,
+        _ => ProjectTemplateKind::RustCli,
+    }
+}
+
 fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse> {
     let buffer = read_http_request(stream)?;
     let raw = String::from_utf8_lossy(&buffer);
@@ -324,6 +343,22 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 true,
             )?}))
         }
+        ("GET", "/autonomous-watch-install") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let interval_secs = params
+                .get("interval_secs")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(3600);
+            HttpResponse::ok(json!({"install": autonomous_watch_install_report(
+                &ctx.db,
+                &ctx.root,
+                interval_secs,
+                "com.dukememory.autonomous-loop",
+                true,
+            )?}))
+        }
         ("GET", "/action-journal") => {
             let params = parse_query(query);
             let since_days = params
@@ -335,6 +370,32 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(30);
             HttpResponse::ok(json!({"journal": action_journal_report(&conn, since_days, limit)?}))
+        }
+        ("GET", "/ranking-profile") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let profile = parse_ranking_profile(params.get("profile").map(String::as_str));
+            HttpResponse::ok(json!({"ranking": ranking_profile_report(&ctx.root, profile, false)?}))
+        }
+        ("POST", "/ranking-profile/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let profile = parse_ranking_profile(value.get("profile").and_then(Value::as_str));
+            HttpResponse::ok(json!({"ranking": ranking_profile_report(&ctx.root, profile, true)?}))
+        }
+        ("GET", "/project-template") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let kind = parse_project_template(params.get("kind").map(String::as_str));
+            HttpResponse::ok(json!({"template": project_template_report(&ctx.root, kind, false)?}))
+        }
+        ("POST", "/project-template/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let kind = parse_project_template(value.get("kind").and_then(Value::as_str));
+            HttpResponse::ok(json!({"template": project_template_report(&ctx.root, kind, true)?}))
         }
         ("GET", "/usefulness-engine") => {
             let params = parse_query(query);
@@ -396,6 +457,7 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 profile,
                 target.as_deref(),
                 false,
+                false,
             )?}))
         }
         ("POST", "/sync-profile/apply") => {
@@ -407,6 +469,10 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 .get("target")
                 .and_then(Value::as_str)
                 .map(PathBuf::from);
+            let run_dry_run = value
+                .get("run_dry_run")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
             HttpResponse::ok(json!({"profile": sync_profile_report(
                 &conn,
                 &ctx.db,
@@ -414,6 +480,7 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 profile,
                 target.as_deref(),
                 true,
+                run_dry_run,
             )?}))
         }
         ("GET", "/agent-enforce") => {
@@ -630,6 +697,19 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 &ctx.root,
                 changed_only,
             )?}))
+        }
+        ("GET", "/memory-diff-review") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            HttpResponse::ok(json!({"review": memory_diff_review_report(&conn, &ctx.root, false)?}))
+        }
+        ("POST", "/memory-diff-review/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            HttpResponse::ok(json!({"review": memory_diff_review_report(&conn, &ctx.root, true)?}))
         }
         ("GET", "/intelligence-dashboard") => {
             let params = parse_query(query);

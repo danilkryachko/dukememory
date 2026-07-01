@@ -940,6 +940,13 @@ pub(crate) fn run() -> Result<()> {
             max_runs,
             json,
         )?,
+        Command::AutonomousWatchInstall {
+            root,
+            interval_secs,
+            label,
+            dry_run,
+            json,
+        } => print_autonomous_watch_install(&cli.db, &root, interval_secs, &label, dry_run, json)?,
         Command::ActionJournal {
             since_days,
             limit,
@@ -951,6 +958,18 @@ pub(crate) fn run() -> Result<()> {
             apply,
             json,
         } => print_usefulness_engine(&conn, &root, since_days, apply, json)?,
+        Command::RankingProfile {
+            root,
+            profile,
+            apply,
+            json,
+        } => print_ranking_profile(&root, profile, apply, json)?,
+        Command::ProjectTemplate {
+            root,
+            kind,
+            apply,
+            json,
+        } => print_project_template(&root, kind, apply, json)?,
         Command::SyncLatency {
             root,
             target,
@@ -962,6 +981,7 @@ pub(crate) fn run() -> Result<()> {
             profile,
             target,
             apply,
+            run_dry_run,
             json,
         } => print_sync_profile(
             &conn,
@@ -970,8 +990,12 @@ pub(crate) fn run() -> Result<()> {
             profile,
             target.as_deref(),
             apply,
+            run_dry_run,
             json,
         )?,
+        Command::MemoryDiffReview { root, apply, json } => {
+            print_memory_diff_review(&conn, &root, apply, json)?
+        }
         Command::AgentEnforce {
             root,
             since_days,
@@ -3242,15 +3266,23 @@ Use `dukememory autonomous-loop --json` to plan one autonomous memory control lo
 
 Use `dukememory autonomous-loop --watch --apply --interval-secs 3600 --json` to run the same reversible loop periodically without token-heavy context.
 
+Use `dukememory autonomous-watch-install --dry-run --json` to preview a local launchd watch plist for autonomous-loop watch mode.
+
 Use `dukememory action-journal --json` to inspect autonomous actions, skipped actions, failures, and rollback availability.
 
 Use `dukememory usefulness-engine --json` to rank useful/noisy memory and preview safe inferred feedback; use `dukememory usefulness-engine --apply --json` to materialize safe feedback.
 
+Use `dukememory ranking-profile --profile balanced|strict|recall-heavy|precision-heavy --json` to inspect retrieval ranking weights; use `--apply` to make the profile durable for a project.
+
+Use `dukememory project-template --kind rust-cli|frontend-app|game-mod|electronics-cad|docs-research --json` to seed project-type memory defaults.
+
 Use `dukememory sync-latency --json` to measure local/VDS sync latency while keeping reads local-first.
 
-Use `dukememory sync-profile --profile local-first-backup --json` to choose a safe local-first sync mode before push/pull.
+Use `dukememory sync-profile --profile local-first-backup --run-dry-run --json` to choose a safe local-first sync mode before push/pull.
 
 Use `dukememory agent-enforce --json` to verify future chats will use memory; use `dukememory agent-enforce --fix --json` to repair AGENTS/skill/project wiring.
+
+Use `dukememory memory-diff-review --json` to review changed files against memory and decide whether durable task_state/design_note cards are needed.
 
 Use `dukememory sync export bundle.json --dry-run --json` before writing a local-first sync bundle; use `dukememory sync import bundle.json --dry-run --json` before applying it.
 
@@ -3290,11 +3322,15 @@ dukememory release-gate --json
 dukememory project-watch --json
 dukememory memory-replay --json
 dukememory autonomous-loop --json
+dukememory autonomous-watch-install --dry-run --json
 dukememory action-journal --json
 dukememory usefulness-engine --json
+dukememory ranking-profile --json
+dukememory project-template --kind rust-cli --json
 dukememory sync-latency --json
-dukememory sync-profile --json
+dukememory sync-profile --run-dry-run --json
 dukememory agent-enforce --json
+dukememory memory-diff-review --json
 dukememory autonomous run-once --level normal --json
 dukememory autonomous status --json
 dukememory drift --root . --json
@@ -3730,10 +3766,14 @@ fn print_completions(shell: CompletionShell) {
         "memory-replay",
         "project-watch",
         "autonomous-loop",
+        "autonomous-watch-install",
         "action-journal",
         "usefulness-engine",
+        "ranking-profile",
+        "project-template",
         "sync-latency",
         "sync-profile",
+        "memory-diff-review",
         "agent-enforce",
         "inbox-v2",
         "policy-tune",
@@ -3846,10 +3886,14 @@ fn print_manpage() {
     println!("  memory-replay --json          replay recent memory influence");
     println!("  project-watch --fix --json    inspect or repair installed project memories");
     println!("  autonomous-loop --apply       run reversible memory control loop");
+    println!("  autonomous-watch-install      preview/install launchd watch plist");
     println!("  action-journal --json         inspect autonomous action timeline");
     println!("  usefulness-engine --apply     rank memory and apply safe feedback");
+    println!("  ranking-profile --apply       configure retrieval ranking strictness");
+    println!("  project-template --apply      write project-type starter memory defaults");
     println!("  sync-latency --json           measure local/VDS sync latency");
     println!("  sync-profile --json           choose a local-first sync profile");
+    println!("  memory-diff-review --json     review changed files for memory updates");
     println!("  agent-enforce --fix --json    enforce memory use for future chats");
     println!("  onboard --root DIR            initialize memory/profile/embeddings");
     println!("  inbox-v2 report|auto-apply    group and process pending suggestions");

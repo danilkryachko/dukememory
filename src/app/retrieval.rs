@@ -1299,31 +1299,72 @@ pub(crate) fn retrieval_quality_adjustment(
     let reads = signals.reads.get(memory_id).copied().unwrap_or_default();
     let useful = signals.useful.get(memory_id).copied().unwrap_or_default();
     let useless = signals.useless.get(memory_id).copied().unwrap_or_default();
+    let profile = active_ranking_profile();
+    let (read_weight, useful_weight, useless_weight, trusted_boost, suppress_penalty) =
+        ranking_profile_weights(&profile);
     let mut score = 0.0;
     if reads > 0 {
-        let boost = (reads.min(12) as f64) * 0.9;
+        let boost = (reads.min(12) as f64) * read_weight;
         reasons.push(format!("ranking_v2_recent_reads:+{reads}"));
         score += boost;
     }
     if useful > 0 {
-        let boost = (useful.min(8) as f64) * 4.0;
+        let boost = (useful.min(8) as f64) * useful_weight;
         reasons.push(format!("ranking_v2_useful_feedback:+{useful}"));
         score += boost;
     }
     if useless > 0 {
-        let penalty = (useless.min(8) as f64) * 7.0;
+        let penalty = (useless.min(8) as f64) * useless_weight;
         reasons.push(format!("ranking_v2_useless_feedback:-{useless}"));
         score -= penalty;
     }
     if useful > 0 && useless == 0 && reads >= 2 {
-        reasons.push("ranking_v2_trusted_card".to_string());
-        score += 3.0;
+        reasons.push(format!("ranking_v2_trusted_card:{profile}"));
+        score += trusted_boost;
     }
     if useless > useful && useless >= 2 {
-        reasons.push("ranking_v2_soft_suppress".to_string());
-        score -= 6.0;
+        reasons.push(format!("ranking_v2_soft_suppress:{profile}"));
+        score -= suppress_penalty;
     }
     score
+}
+
+fn active_ranking_profile() -> String {
+    if let Ok(value) = std::env::var("DUKEMEMORY_RANKING_PROFILE") {
+        return normalize_ranking_profile(&value);
+    }
+    let path = PathBuf::from(".agent/ranking-profile.json");
+    let Ok(content) = fs::read_to_string(path) else {
+        return "balanced".to_string();
+    };
+    serde_json::from_str::<Value>(&content)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("profile")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .map(|value| normalize_ranking_profile(&value))
+        .unwrap_or_else(|| "balanced".to_string())
+}
+
+fn normalize_ranking_profile(value: &str) -> String {
+    match value.replace('-', "_").as_str() {
+        "strict" => "strict".to_string(),
+        "recall_heavy" => "recall_heavy".to_string(),
+        "precision_heavy" => "precision_heavy".to_string(),
+        _ => "balanced".to_string(),
+    }
+}
+
+fn ranking_profile_weights(profile: &str) -> (f64, f64, f64, f64, f64) {
+    match profile {
+        "strict" => (0.6, 3.0, 10.0, 2.0, 9.0),
+        "recall_heavy" => (1.1, 3.5, 4.0, 2.0, 3.0),
+        "precision_heavy" => (0.7, 5.0, 12.0, 4.0, 10.0),
+        _ => (0.9, 4.0, 7.0, 3.0, 6.0),
+    }
 }
 
 fn retrieval_intent_type_adjustment(

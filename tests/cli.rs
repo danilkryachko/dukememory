@@ -8614,10 +8614,14 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-replay",
         "project-watch",
         "autonomous-loop",
+        "autonomous-watch-install",
         "action-journal",
         "usefulness-engine",
+        "ranking-profile",
+        "project-template",
         "sync-latency",
         "sync-profile",
+        "memory-diff-review",
         "agent-enforce",
         "sync export",
         "sync import",
@@ -8648,10 +8652,14 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-replay",
         "project-watch",
         "autonomous-loop",
+        "autonomous-watch-install",
         "action-journal",
         "usefulness-engine",
+        "ranking-profile",
+        "project-template",
         "sync-latency",
         "sync-profile",
+        "memory-diff-review",
         "agent-enforce",
         "sync export",
         "sync import",
@@ -9548,10 +9556,14 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/memory-replay"));
     assert!(html.contains("/project-watch"));
     assert!(html.contains("/autonomous-loop"));
+    assert!(html.contains("/autonomous-watch-install"));
     assert!(html.contains("/action-journal"));
     assert!(html.contains("/usefulness-engine"));
+    assert!(html.contains("/ranking-profile"));
+    assert!(html.contains("/project-template"));
     assert!(html.contains("/sync-latency"));
     assert!(html.contains("/sync-profile"));
+    assert!(html.contains("/memory-diff-review"));
     assert!(html.contains("/agent-enforce"));
     assert!(html.contains("memory ROI"));
     assert!(html.contains("agent audit"));
@@ -9567,8 +9579,13 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("autonomous loop"));
     assert!(html.contains("action journal"));
     assert!(html.contains("usefulness engine"));
+    assert!(html.contains("watch install"));
+    assert!(html.contains("ranking profile"));
+    assert!(html.contains("project template"));
+    assert!(html.contains("memory diff review"));
     assert!(html.contains("sync latency"));
     assert!(html.contains("sync profile"));
+    assert!(html.contains("sync flow"));
     assert!(html.contains("agent enforce"));
     assert!(html.contains("memory replay"));
     assert!(html.contains("project watch"));
@@ -9576,6 +9593,9 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("Loop apply"));
     assert!(html.contains("Engine apply"));
     assert!(html.contains("Sync profile"));
+    assert!(html.contains("Ranking profile"));
+    assert!(html.contains("Template"));
+    assert!(html.contains("Diff review"));
     assert!(html.contains("Enforce fix"));
     assert!(html.contains("Auto feedback"));
     assert!(html.contains("/upgrade-project"));
@@ -9912,6 +9932,14 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(autonomous_loop.contains("\"applied\":false"));
     assert!(autonomous_loop.contains("\"watch\""));
 
+    let autonomous_watch_install = http_once(
+        &db,
+        "GET /autonomous-watch-install?interval_secs=60 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(autonomous_watch_install.contains("\"install\""));
+    assert!(autonomous_watch_install.contains("\"dry_run\":true"));
+    assert!(autonomous_watch_install.contains("autonomous-loop"));
+
     let action_journal = http_once(
         &db,
         "GET /action-journal?since_days=7&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
@@ -9928,6 +9956,22 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(usefulness_engine.contains("\"ranking_policy\""));
     assert!(usefulness_engine.contains("\"suppress_candidates\""));
 
+    let ranking_profile = http_once(
+        &db,
+        "GET /ranking-profile?profile=precision-heavy HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(ranking_profile.contains("\"ranking\""));
+    assert!(ranking_profile.contains("\"profile\":\"precision_heavy\""));
+    assert!(ranking_profile.contains("\"weights\""));
+
+    let project_template = http_once(
+        &db,
+        "GET /project-template?kind=rust-cli HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(project_template.contains("\"template\""));
+    assert!(project_template.contains("\"kind\":\"rust_cli\""));
+    assert!(project_template.contains("\"recommended_commands\""));
+
     let sync_latency = http_once(
         &db,
         "GET /sync-latency?samples=1 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
@@ -9943,6 +9987,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(sync_profile.contains("\"profile\""));
     assert!(sync_profile.contains("\"local_first\":true"));
     assert!(sync_profile.contains("\"commands\""));
+    assert!(sync_profile.contains("\"flow_steps\""));
 
     let agent_enforce = http_once(
         &db,
@@ -9951,6 +9996,14 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(agent_enforce.contains("\"enforce\""));
     assert!(agent_enforce.contains("\"required_commands\""));
     assert!(agent_enforce.contains("\"missing_commands\""));
+
+    let memory_diff_review = http_once(
+        &db,
+        "GET /memory-diff-review HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(memory_diff_review.contains("\"review\""));
+    assert!(memory_diff_review.contains("\"suggested_memory\""));
+    assert!(memory_diff_review.contains("\"stale_memory_ids\""));
 
     let contract = http_once(
         &db,
@@ -11118,6 +11171,28 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(autonomous_watch_json["scheduled"], true);
     assert_eq!(autonomous_watch_json["run_index"], 1);
 
+    let autonomous_watch_install = stdout(
+        cmd(&db)
+            .arg("autonomous-watch-install")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--interval-secs")
+            .arg("60")
+            .arg("--dry-run")
+            .arg("--json"),
+    );
+    let autonomous_watch_install_json: Value =
+        serde_json::from_str(&autonomous_watch_install).unwrap();
+    assert_eq!(autonomous_watch_install_json["version"], 1);
+    assert_eq!(autonomous_watch_install_json["dry_run"], true);
+    assert!(
+        autonomous_watch_install_json["command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("autonomous-loop"))
+    );
+
     let action_journal = stdout(
         cmd(&db)
             .arg("action-journal")
@@ -11152,6 +11227,45 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             >= 3
     );
 
+    let ranking_profile = stdout(
+        cmd(&db)
+            .arg("ranking-profile")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--profile")
+            .arg("precision-heavy")
+            .arg("--apply")
+            .arg("--json"),
+    );
+    let ranking_profile_json: Value = serde_json::from_str(&ranking_profile).unwrap();
+    assert_eq!(ranking_profile_json["version"], 1);
+    assert_eq!(ranking_profile_json["applied"], true);
+    assert_eq!(ranking_profile_json["profile"], "precision_heavy");
+    assert!(dir.path().join(".agent/ranking-profile.json").exists());
+
+    let project_template = stdout(
+        cmd(&db)
+            .arg("project-template")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--kind")
+            .arg("rust-cli")
+            .arg("--apply")
+            .arg("--json"),
+    );
+    let project_template_json: Value = serde_json::from_str(&project_template).unwrap();
+    assert_eq!(project_template_json["version"], 1);
+    assert_eq!(project_template_json["applied"], true);
+    assert_eq!(project_template_json["kind"], "rust_cli");
+    assert!(
+        project_template_json["recommended_commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("cargo check"))
+    );
+    assert!(dir.path().join(".agent/project-template.json").exists());
+
     let sync_latency = stdout(
         cmd(&db)
             .arg("sync-latency")
@@ -11177,13 +11291,39 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .arg("--target")
             .arg(&sync_target)
             .arg("--apply")
+            .arg("--run-dry-run")
             .arg("--json"),
     );
     let sync_profile_json: Value = serde_json::from_str(&sync_profile).unwrap();
     assert_eq!(sync_profile_json["version"], 1);
     assert_eq!(sync_profile_json["applied"], true);
     assert_eq!(sync_profile_json["local_first"], true);
+    assert!(
+        sync_profile_json["flow_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step["name"] == "push_dry_run")
+    );
     assert!(dir.path().join(".agent/sync-profile.json").exists());
+
+    let memory_diff_review = stdout(
+        cmd(&db)
+            .arg("memory-diff-review")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--apply")
+            .arg("--json"),
+    );
+    let memory_diff_review_json: Value = serde_json::from_str(&memory_diff_review).unwrap();
+    assert_eq!(memory_diff_review_json["version"], 1);
+    assert_eq!(memory_diff_review_json["applied"], true);
+    assert!(
+        memory_diff_review_json["suggested_memory"]
+            .as_array()
+            .is_some()
+    );
+    assert!(dir.path().join(".agent/memory-diff-review.json").exists());
 
     let agent_enforce = stdout(
         cmd(&db)
@@ -11202,6 +11342,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .unwrap()
             .iter()
             .any(|item| item.as_str() == Some("autonomous-loop"))
+    );
+    assert!(
+        agent_enforce_json["required_commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("memory-diff-review"))
     );
 
     let gap_run = stdout(

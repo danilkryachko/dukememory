@@ -877,6 +877,19 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Install a launchd plist for autonomous-loop watch mode.
+    AutonomousWatchInstall {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 3600)]
+        interval_secs: u64,
+        #[arg(long, default_value = "com.dukememory.autonomous-loop")]
+        label: String,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Show recent autonomous actions and repair decisions.
     ActionJournal {
         #[arg(long, default_value_t = 7)]
@@ -892,6 +905,28 @@ pub(crate) enum Command {
         root: PathBuf,
         #[arg(long, default_value_t = 7)]
         since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Configure memory ranking behavior for retrieval.
+    RankingProfile {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, value_enum, default_value_t = RankingProfileMode::Balanced)]
+        profile: RankingProfileMode,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write starter memory configuration for a project type.
+    ProjectTemplate {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, value_enum)]
+        kind: ProjectTemplateKind,
         #[arg(long)]
         apply: bool,
         #[arg(long)]
@@ -916,6 +951,17 @@ pub(crate) enum Command {
         profile: SyncProfileMode,
         #[arg(long)]
         target: Option<PathBuf>,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        run_dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Review changed project files against memory and suggest durable updates.
+    MemoryDiffReview {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
         #[arg(long)]
         apply: bool,
         #[arg(long)]
@@ -1323,6 +1369,50 @@ pub(crate) enum SyncProfileMode {
     LocalFirstBackup,
     LocalFirstSync,
     RemoteShared,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+#[value(rename_all = "kebab_case")]
+pub(crate) enum RankingProfileMode {
+    Balanced,
+    Strict,
+    RecallHeavy,
+    PrecisionHeavy,
+}
+
+impl std::fmt::Display for RankingProfileMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Balanced => "balanced",
+            Self::Strict => "strict",
+            Self::RecallHeavy => "recall_heavy",
+            Self::PrecisionHeavy => "precision_heavy",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+#[value(rename_all = "kebab_case")]
+pub(crate) enum ProjectTemplateKind {
+    FrontendApp,
+    RustCli,
+    GameMod,
+    ElectronicsCad,
+    DocsResearch,
+}
+
+impl std::fmt::Display for ProjectTemplateKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::FrontendApp => "frontend_app",
+            Self::RustCli => "rust_cli",
+            Self::GameMod => "game_mod",
+            Self::ElectronicsCad => "electronics_cad",
+            Self::DocsResearch => "docs_research",
+        };
+        f.write_str(value)
+    }
 }
 
 impl std::fmt::Display for SyncProfileMode {

@@ -449,6 +449,21 @@ pub(crate) struct ActionJournalReport {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct AutonomousWatchInstallReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) dry_run: bool,
+    pub(crate) label: String,
+    pub(crate) plist: String,
+    pub(crate) command: Vec<String>,
+    pub(crate) interval_secs: u64,
+    pub(crate) log_path: String,
+    pub(crate) status_file: String,
+    pub(crate) actions: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct ActionJournalItem {
     pub(crate) id: i64,
     pub(crate) event_type: String,
@@ -474,6 +489,32 @@ pub(crate) struct UsefulnessEngineReport {
     pub(crate) promote_candidates: Vec<String>,
     pub(crate) issues: Vec<String>,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RankingProfileReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) profile: String,
+    pub(crate) applied: bool,
+    pub(crate) path: String,
+    pub(crate) weights: BTreeMap<String, f64>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ProjectTemplateReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) kind: String,
+    pub(crate) applied: bool,
+    pub(crate) path: String,
+    pub(crate) budget_profile: String,
+    pub(crate) recommended_commands: Vec<String>,
+    pub(crate) starter_memory: Vec<String>,
+    pub(crate) actions: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -507,8 +548,30 @@ pub(crate) struct SyncProfileReport {
     pub(crate) target: Option<String>,
     pub(crate) latency: SyncLatencyReport,
     pub(crate) commands: Vec<String>,
+    pub(crate) flow_steps: Vec<SyncProfileFlowStep>,
     pub(crate) actions: Vec<String>,
     pub(crate) blockers: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SyncProfileFlowStep {
+    pub(crate) name: String,
+    pub(crate) ok: bool,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryDiffReviewReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) changed_files: Vec<String>,
+    pub(crate) suggested_memory: Vec<String>,
+    pub(crate) stale_memory_ids: Vec<String>,
+    pub(crate) conflict_count: usize,
+    pub(crate) actions: Vec<String>,
     pub(crate) recommendations: Vec<String>,
 }
 
@@ -2353,6 +2416,124 @@ fn infer_action_status(event_type: &str, detail: &str) -> String {
     }
 }
 
+pub(crate) fn print_autonomous_watch_install(
+    db: &Path,
+    root: &Path,
+    interval_secs: u64,
+    label: &str,
+    dry_run: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = autonomous_watch_install_report(db, root, interval_secs, label, dry_run)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Autonomous Watch Install");
+    println!("status: {}", if report.ok { "ready" } else { "blocked" });
+    println!("plist: {}", report.plist);
+    println!("command: {}", report.command.join(" "));
+    for action in &report.actions {
+        println!("action: {action}");
+    }
+    Ok(())
+}
+
+pub(crate) fn autonomous_watch_install_report(
+    db: &Path,
+    root: &Path,
+    interval_secs: u64,
+    label: &str,
+    dry_run: bool,
+) -> Result<AutonomousWatchInstallReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let safe_label = label
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ch == '.' || ch == '-' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let plist = expand_tilde(&format!("~/Library/LaunchAgents/{safe_label}.plist"));
+    let log_path = root.join(".agent/autonomous-loop-watch.log");
+    let status_file = root.join(".agent/autonomous-status.json");
+    let exe = std::env::current_exe()
+        .unwrap_or_else(|_| PathBuf::from("dukememory"))
+        .display()
+        .to_string();
+    let command = vec![
+        exe.clone(),
+        "--db".to_string(),
+        db.display().to_string(),
+        "autonomous-loop".to_string(),
+        "--root".to_string(),
+        root.display().to_string(),
+        "--watch".to_string(),
+        "--apply".to_string(),
+        "--interval-secs".to_string(),
+        interval_secs.max(60).to_string(),
+        "--json".to_string(),
+    ];
+    let content = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{safe_label}</string>
+  <key>ProgramArguments</key>
+  <array>
+{}
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><false/>
+  <key>StandardOutPath</key><string>{}</string>
+  <key>StandardErrorPath</key><string>{}</string>
+</dict>
+</plist>
+"#,
+        command
+            .iter()
+            .map(|arg| format!("    <string>{}</string>", xml_escape(arg)))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        xml_escape(&log_path.display().to_string()),
+        xml_escape(&log_path.display().to_string())
+    );
+    let mut actions = Vec::new();
+    if dry_run {
+        actions.push("dry_run: plist not written".to_string());
+    } else {
+        write_file(&plist, content.as_bytes())?;
+        actions.push(format!("plist_written:{}", plist.display()));
+        actions.push(
+            "load manually with launchctl load ~/Library/LaunchAgents/<label>.plist".to_string(),
+        );
+    }
+    Ok(AutonomousWatchInstallReport {
+        version: 1,
+        ok: true,
+        root: root.display().to_string(),
+        dry_run,
+        label: safe_label,
+        plist: plist.display().to_string(),
+        command,
+        interval_secs: interval_secs.max(60),
+        log_path: log_path.display().to_string(),
+        status_file: status_file.display().to_string(),
+        actions,
+    })
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 pub(crate) fn print_usefulness_engine(
     conn: &Connection,
     root: &Path,
@@ -2444,6 +2625,286 @@ pub(crate) fn usefulness_engine_report(
         promote_candidates,
         issues,
         recommendations,
+    })
+}
+
+pub(crate) fn print_ranking_profile(
+    root: &Path,
+    profile: RankingProfileMode,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = ranking_profile_report(root, profile, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Ranking Profile");
+    println!("profile: {}", report.profile);
+    println!("applied: {}", report.applied);
+    println!("path: {}", report.path);
+    Ok(())
+}
+
+pub(crate) fn ranking_profile_report(
+    root: &Path,
+    profile: RankingProfileMode,
+    apply: bool,
+) -> Result<RankingProfileReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut weights = BTreeMap::new();
+    match profile {
+        RankingProfileMode::Balanced => {
+            weights.insert("recent_read".to_string(), 0.9);
+            weights.insert("useful_feedback".to_string(), 4.0);
+            weights.insert("useless_feedback".to_string(), -7.0);
+        }
+        RankingProfileMode::Strict => {
+            weights.insert("recent_read".to_string(), 0.6);
+            weights.insert("useful_feedback".to_string(), 3.0);
+            weights.insert("useless_feedback".to_string(), -10.0);
+        }
+        RankingProfileMode::RecallHeavy => {
+            weights.insert("recent_read".to_string(), 1.1);
+            weights.insert("useful_feedback".to_string(), 3.5);
+            weights.insert("useless_feedback".to_string(), -4.0);
+        }
+        RankingProfileMode::PrecisionHeavy => {
+            weights.insert("recent_read".to_string(), 0.7);
+            weights.insert("useful_feedback".to_string(), 5.0);
+            weights.insert("useless_feedback".to_string(), -12.0);
+        }
+    }
+    let path = root.join(".agent/ranking-profile.json");
+    if apply {
+        write_file(
+            &path,
+            serde_json::to_string_pretty(&json!({
+                "version": 1,
+                "profile": profile.to_string(),
+                "weights": &weights,
+                "updated_at": now_ms(),
+            }))?
+            .as_bytes(),
+        )?;
+    }
+    Ok(RankingProfileReport {
+        version: 1,
+        ok: true,
+        root: root.display().to_string(),
+        profile: profile.to_string(),
+        applied: apply,
+        path: path.display().to_string(),
+        weights,
+        recommendations: vec![
+            "profile is read from DUKEMEMORY_RANKING_PROFILE or .agent/ranking-profile.json"
+                .to_string(),
+        ],
+    })
+}
+
+pub(crate) fn print_project_template(
+    root: &Path,
+    kind: ProjectTemplateKind,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = project_template_report(root, kind, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Project Template");
+    println!("kind: {}", report.kind);
+    println!("applied: {}", report.applied);
+    for command in &report.recommended_commands {
+        println!("command: {command}");
+    }
+    Ok(())
+}
+
+pub(crate) fn project_template_report(
+    root: &Path,
+    kind: ProjectTemplateKind,
+    apply: bool,
+) -> Result<ProjectTemplateReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let (budget_profile, recommended_commands, starter_memory) = match kind {
+        ProjectTemplateKind::FrontendApp => (
+            "tiny",
+            vec![
+                "npm run build",
+                "npm test",
+                "dukememory impact src/App.tsx --budget-profile tiny",
+            ],
+            vec![
+                "UI conventions",
+                "Build command",
+                "Known browser constraints",
+            ],
+        ),
+        ProjectTemplateKind::RustCli => (
+            "tiny",
+            vec![
+                "cargo check",
+                "cargo test --test cli",
+                "cargo build --release",
+            ],
+            vec![
+                "CLI command surface",
+                "Release gate",
+                "Install/update command",
+            ],
+        ),
+        ProjectTemplateKind::GameMod => (
+            "normal",
+            vec![
+                "cargo test",
+                "npm run build",
+                "dukememory impact assets --budget-profile tiny",
+            ],
+            vec!["Game rules", "Asset pipeline", "Performance constraints"],
+        ),
+        ProjectTemplateKind::ElectronicsCad => (
+            "normal",
+            vec![
+                "npm run build",
+                "cargo test",
+                "dukememory impact harness --budget-profile tiny",
+            ],
+            vec![
+                "Harness source of truth",
+                "Connector catalog constraints",
+                "Export formats",
+            ],
+        ),
+        ProjectTemplateKind::DocsResearch => (
+            "tiny",
+            vec![
+                "dukememory brief \"research task\" --budget-profile tiny",
+                "dukememory recall \"topic\" --max-chars 1200",
+            ],
+            vec![
+                "Source policy",
+                "Citation preferences",
+                "Research decisions",
+            ],
+        ),
+    };
+    let recommended_commands = recommended_commands
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let starter_memory = starter_memory
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let path = root.join(".agent/project-template.json");
+    let mut actions = Vec::new();
+    if apply {
+        write_file(
+            &path,
+            serde_json::to_string_pretty(&json!({
+                "version": 1,
+                "kind": kind.to_string(),
+                "budget_profile": budget_profile,
+                "recommended_commands": &recommended_commands,
+                "starter_memory": &starter_memory,
+                "updated_at": now_ms(),
+            }))?
+            .as_bytes(),
+        )?;
+        actions.push(format!("template_written:{}", path.display()));
+    } else {
+        actions.push("dry_run: template not written".to_string());
+    }
+    Ok(ProjectTemplateReport {
+        version: 1,
+        ok: true,
+        root: root.display().to_string(),
+        kind: kind.to_string(),
+        applied: apply,
+        path: path.display().to_string(),
+        budget_profile: budget_profile.to_string(),
+        recommended_commands,
+        starter_memory,
+        actions,
+    })
+}
+
+pub(crate) fn print_memory_diff_review(
+    conn: &Connection,
+    root: &Path,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_diff_review_report(conn, root, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Diff Review");
+    println!("changed_files: {}", report.changed_files.len());
+    for item in &report.suggested_memory {
+        println!("suggest: {item}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_diff_review_report(
+    conn: &Connection,
+    root: &Path,
+    apply: bool,
+) -> Result<MemoryDiffReviewReport> {
+    let diff = project_diff_report(conn, root, true)?;
+    let mut suggested_memory = Vec::new();
+    for file in diff.changed_files.iter().take(10) {
+        suggested_memory.push(format!(
+            "review durable task_state/design_note for changed file {file}"
+        ));
+    }
+    if diff.changed_files.is_empty() {
+        suggested_memory.push("no changed files detected; no memory write suggested".to_string());
+    }
+    let stale_memory_ids = diff
+        .drift
+        .stale_active
+        .iter()
+        .map(|item| item.id.clone())
+        .collect::<Vec<_>>();
+    let path = PathBuf::from(&diff.root).join(".agent/memory-diff-review.json");
+    let mut actions = Vec::new();
+    if apply {
+        write_file(
+            &path,
+            serde_json::to_string_pretty(&json!({
+                "version": 1,
+                "changed_files": &diff.changed_files,
+                "suggested_memory": &suggested_memory,
+                "stale_memory_ids": &stale_memory_ids,
+                "conflict_count": diff.conflicts,
+                "updated_at": now_ms(),
+            }))?
+            .as_bytes(),
+        )?;
+        actions.push(format!("review_written:{}", path.display()));
+    } else {
+        actions.push("dry_run: review not written".to_string());
+    }
+    Ok(MemoryDiffReviewReport {
+        version: 1,
+        ok: diff.ok,
+        root: diff.root,
+        applied: apply,
+        changed_files: diff.changed_files,
+        suggested_memory,
+        stale_memory_ids,
+        conflict_count: diff.conflicts,
+        actions,
+        recommendations: diff.recommendations,
     })
 }
 
@@ -2563,9 +3024,10 @@ pub(crate) fn print_sync_profile(
     profile: SyncProfileMode,
     target: Option<&Path>,
     apply: bool,
+    run_dry_run: bool,
     json_out: bool,
 ) -> Result<()> {
-    let report = sync_profile_report(conn, db, root, profile, target, apply)?;
+    let report = sync_profile_report(conn, db, root, profile, target, apply, run_dry_run)?;
     if json_out {
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
@@ -2593,6 +3055,7 @@ pub(crate) fn sync_profile_report(
     profile: SyncProfileMode,
     target: Option<&Path>,
     apply: bool,
+    run_dry_run: bool,
 ) -> Result<SyncProfileReport> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let latency = sync_latency_report(conn, db, &root, target, 1)?;
@@ -2638,6 +3101,44 @@ pub(crate) fn sync_profile_report(
             "measure latency and resolve conflicts before enabling shared writes".to_string(),
         ],
     };
+    let mut flow_steps = vec![SyncProfileFlowStep {
+        name: "latency_check".to_string(),
+        ok: latency.ok,
+        detail: format!("roundtrip={}ms", latency.estimated_roundtrip_ms),
+    }];
+    if run_dry_run && target.is_some() {
+        flow_steps.push(SyncProfileFlowStep {
+            name: "push_dry_run".to_string(),
+            ok: true,
+            detail: "sync push dry-run command prepared; no data moved by profile planner"
+                .to_string(),
+        });
+        if matches!(
+            profile,
+            SyncProfileMode::LocalFirstSync | SyncProfileMode::RemoteShared
+        ) {
+            flow_steps.push(SyncProfileFlowStep {
+                name: "pull_dry_run".to_string(),
+                ok: true,
+                detail: "sync pull --policy manual dry-run command prepared".to_string(),
+            });
+        }
+        flow_steps.push(SyncProfileFlowStep {
+            name: "conflict_policy".to_string(),
+            ok: !matches!(profile, SyncProfileMode::RemoteShared),
+            detail: if matches!(profile, SyncProfileMode::RemoteShared) {
+                "remote-shared requires explicit manual conflict review".to_string()
+            } else {
+                "local-first profile keeps manual/newer-wins conflict policy explicit".to_string()
+            },
+        });
+    } else if run_dry_run {
+        flow_steps.push(SyncProfileFlowStep {
+            name: "dry_run_flow".to_string(),
+            ok: false,
+            detail: "target is required to prepare sync dry-run flow".to_string(),
+        });
+    }
     recommendations.push("run dry-run commands before any sync mutation".to_string());
     recommendations.sort();
     recommendations.dedup();
@@ -2652,6 +3153,7 @@ pub(crate) fn sync_profile_report(
             "target": &target_string,
             "updated_at": now_ms(),
             "commands": &commands,
+            "flow_steps": &flow_steps,
         });
         write_file(&path, serde_json::to_string_pretty(&value)?.as_bytes())?;
         actions.push(format!("sync_profile_written:{}", path.display()));
@@ -2682,6 +3184,7 @@ pub(crate) fn sync_profile_report(
         target: target_string,
         latency,
         commands,
+        flow_steps,
         actions,
         blockers,
         recommendations,
@@ -2780,10 +3283,14 @@ fn agent_required_commands() -> &'static [&'static str] {
         "memory-replay",
         "project-watch",
         "autonomous-loop",
+        "autonomous-watch-install",
         "action-journal",
         "usefulness-engine",
+        "ranking-profile",
+        "project-template",
         "sync-latency",
         "sync-profile",
+        "memory-diff-review",
         "agent-enforce",
         "upgrade-project",
     ]
@@ -3438,6 +3945,7 @@ pub(crate) fn release_gate_report(
         &root,
         SyncProfileMode::LocalFirstBackup,
         None,
+        false,
         false,
     )?;
     let agent_enforce = agent_enforce_report(conn, db, &root, since_days, false)?;

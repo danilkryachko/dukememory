@@ -7,7 +7,7 @@
 [![Brand](https://img.shields.io/badge/brand-protected-6b7280.svg)](TRADEMARKS.md)
 ![Views](https://komarev.com/ghpvc/?username=danilkryachko-dukememory&label=views&color=0f766e&style=flat-square)
 
-**Local-first project memory for AI coding agents.**
+**Local-first memory for AI coding agents.**
 
 `dukememory` is a Rust CLI, MCP server, and Codex skill that gives Codex,
 Claude, Cursor, and other AI coding agents durable project memory. It stores
@@ -16,7 +16,7 @@ and design notes in local SQLite, with optional semantic search through
 embeddings.
 
 It is built for one job: give agents the smallest useful context before coding,
-without dumping chat history into every prompt.
+without dumping chat history into every prompt or slowing development down.
 
 ![dukememory. web UI](docs/screenshot.png)
 
@@ -32,7 +32,8 @@ Transcript-based memory quickly turns into noise.
 - **Structured memory cards** for decisions, constraints, commands, issues, and task state.
 - **Small context briefs** before coding, including file and symbol impact checks.
 - **Optional semantic recall** with Ollama or OpenAI-compatible embeddings.
-- **Autonomous maintenance** for freshness, backups, repair hints, and memory-gap review.
+- **Autonomous maintenance** for freshness, backups, repair hints, gap review, and safe cleanup.
+- **Lightweight control surfaces** for ranking profiles, project templates, sync dry-runs, release gates, and changed-file memory review.
 
 ## What It Remembers
 
@@ -53,6 +54,7 @@ Transcript-based memory quickly turns into noise.
 3. Retrieve `impact` memory for files, symbols, or subsystems before editing.
 4. Use SQLite FTS by default, or add embeddings for semantic recall.
 5. Keep memory healthy with observable, reversible autonomous maintenance.
+6. Review changed files against memory before saving new durable context.
 
 The result is less repeated explanation, fewer forgotten constraints, and lower
 context cost.
@@ -84,6 +86,7 @@ dukememory brief "fix checkout validation" --budget-profile tiny
 dukememory impact src/checkout.ts --budget-profile tiny
 dukememory recall "checkout validation" --max-chars 1200
 dukememory drift --root . --json
+dukememory memory-diff-review --json
 ```
 
 Save durable knowledge:
@@ -128,8 +131,8 @@ dukememory serve-http --host 127.0.0.1 --port 8765
 
 Open `http://127.0.0.1:8765/`.
 
-Use it to search memory, inspect evidence, review inbox items, watch usage, and
-check autonomous health.
+Use it to search memory, inspect evidence, review inbox items, watch usage,
+check autonomous health, tune ranking, and review memory gaps.
 
 For one compact health view:
 
@@ -138,21 +141,8 @@ dukememory ops-status --json
 ```
 
 It combines usage, usefulness, quality, embeddings, autonomous maintenance, and
-local-first multi-device readiness. When no manual feedback exists, live
-usefulness is inferred from successful agent memory reads. Empty agent reads are
-surfaced as memory gaps, and autonomous maintenance can turn unresolved gaps into
-pending inbox suggestions instead of silently creating noisy memory. Weak,
-unused, oversized, or unlinked cards can also be surfaced as low-confidence
-quality-review inbox items for safe cleanup. Duplicate detection avoids
-versioned release/history false positives. Successful and empty agent reads can
-be materialized as lightweight inferred feedback during autonomous maintenance,
-and unresolved missing feedback signals also feed gap inbox suggestions. Release
-history, long operational cards, and the project contract are bounded separately
-to keep memory lean. Resolved quality-review inbox items are closed
-autonomously when the underlying card is no longer weak. New compact cards keep
-inherited evidence links from their source memories, and no-link cards with
-explicit existing file paths are linked automatically. Fresh cards get a short
-grace period before unused-card review.
+local-first multi-device readiness. Memory gaps become reviewable suggestions
+instead of noisy automatic writes.
 
 ## MCP And Codex
 
@@ -169,9 +159,23 @@ only durable outcomes, then re-index embeddings after important writes.
 
 ```bash
 dukememory autonomous install --force --level normal
+dukememory autonomous-watch-install --dry-run --json
 dukememory autonomous status --json
 dukememory autonomous rollback --json
 ```
+
+## Control Surfaces
+
+```bash
+dukememory ranking-profile --profile balanced --apply --json
+dukememory project-template --kind rust-cli --apply --json
+dukememory sync-profile --profile local-first-backup --run-dry-run --json
+dukememory release-gate --run --json
+```
+
+These commands keep memory useful without making it heavy: ranking profiles tune
+retrieval strictness, templates seed project defaults, sync profiles stay
+local-first, and release gates catch broken memory wiring before publishing.
 
 ## Development
 

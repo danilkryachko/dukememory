@@ -673,11 +673,15 @@ For every new chat or coding task in this repository:
 - To inspect or repair all installed project memories, run `dukememory project-watch --json` or `dukememory project-watch --fix --json`.
 - To run one autonomous memory control loop, inspect with `dukememory autonomous-loop --json`; apply reversible fixes with `dukememory autonomous-loop --apply --json`.
 - To run the same loop periodically, use `dukememory autonomous-loop --watch --apply --interval-secs 3600 --json`.
+- To install a local launchd watch plist without guessing shell setup, preview with `dukememory autonomous-watch-install --dry-run --json`.
 - To inspect autonomous actions, skipped work, failures, and rollback availability, run `dukememory action-journal --json`.
 - To rank useful/noisy memory and materialize safe inferred feedback, run `dukememory usefulness-engine --json` or `dukememory usefulness-engine --apply --json`.
+- To choose retrieval strictness, run `dukememory ranking-profile --profile balanced|strict|recall-heavy|precision-heavy --json`; use `--apply` only for durable project policy.
+- To seed project-type defaults, run `dukememory project-template --kind rust-cli|frontend-app|game-mod|electronics-cad|docs-research --json`; use `--apply` only after review.
 - To measure local/VDS sync latency while keeping reads local-first, run `dukememory sync-latency --json`.
-- To choose a safe sync mode, run `dukememory sync-profile --profile local-first-backup --json` before push/pull.
+- To choose a safe sync mode, run `dukememory sync-profile --profile local-first-backup --run-dry-run --json` before push/pull.
 - To enforce memory wiring for future chats, run `dukememory agent-enforce --json` or `dukememory agent-enforce --fix --json`.
+- To review changed files for durable memory updates, run `dukememory memory-diff-review --json`.
 - To sync memory safely, preview first with `dukememory sync export bundle.json --dry-run --json` and `dukememory sync import bundle.json --policy manual --dry-run --json`.
 - To use a local-first remote/VDS connector, run `dukememory sync push TARGET --dry-run --json`, `dukememory sync pull TARGET --dry-run --json`, and `dukememory sync status TARGET --json`.
 - To safely group and process inbox suggestions, run `dukememory inbox-v2 report --json`.
