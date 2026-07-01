@@ -1719,6 +1719,20 @@ pub(crate) struct WebControlCenterV10Report {
     pub(crate) recommendations: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub(crate) struct WebControlCenterV11Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) target: Option<String>,
+    pub(crate) v10: WebControlCenterV10Report,
+    pub(crate) fleet_watch: AutonomousWatchInstallReport,
+    pub(crate) panels: Vec<WebControlPanel>,
+    pub(crate) controls: Vec<WebControlAction>,
+    pub(crate) recommendations: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct WebControlPanel {
     pub(crate) name: String,
@@ -2560,7 +2574,9 @@ pub(crate) fn usage_report(
     for row in write_rows {
         let (event_type, count) = row?;
         let count = count.max(0) as usize;
-        write_count += count;
+        if is_durable_memory_write_event(&event_type) {
+            write_count += count;
+        }
         writes_by_type.insert(event_type, count);
     }
     Ok(UsageReport {
@@ -2600,6 +2616,13 @@ pub(crate) fn usage_report(
         writes_by_type,
         recent_reads,
     })
+}
+
+fn is_durable_memory_write_event(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "memory_added" | "memory_updated" | "memory_deleted" | "memory_status" | "memory_merged"
+    )
 }
 
 fn usage_top_memories(
@@ -3030,9 +3053,11 @@ pub(crate) fn agent_audit_report(conn: &Connection, since_days: i64) -> Result<A
     let evidence_reads =
         *commands.get("evidence").unwrap_or(&0) + *commands.get("memory_evidence").unwrap_or(&0);
     let feedback_events = *usage.writes_by_type.get("memory_feedback").unwrap_or(&0);
-    let durable_writes = ["memory_added", "memory_updated", "memory_merged"]
+    let durable_writes = usage
+        .writes_by_type
         .iter()
-        .map(|key| usage.writes_by_type.get(*key).copied().unwrap_or(0))
+        .filter(|(event_type, _)| is_durable_memory_write_event(event_type))
+        .map(|(_, count)| *count)
         .sum::<usize>();
     let mut issues = Vec::new();
     let mut recommendations = Vec::new();
@@ -10147,11 +10172,16 @@ pub(crate) fn fleet_supervisor_report(
         }
         issues.sort();
         issues.dedup();
+        let ok = issues.is_empty();
         projects.push(FleetSupervisorProject {
             root: root.display().to_string(),
             db: db.display().to_string(),
-            ok: report.ok,
-            status: report.status,
+            ok,
+            status: if ok {
+                "ready".to_string()
+            } else {
+                report.status
+            },
             planned_actions: report.planned_actions.len(),
             executed_actions: report.executed_actions.len(),
             doctor_status: report.doctor_after.status,
@@ -10180,14 +10210,7 @@ pub(crate) fn fleet_supervisor_report(
     Ok(FleetSupervisorReport {
         version: 1,
         ok,
-        status: if ok {
-            "ready"
-        } else if apply {
-            "attention"
-        } else {
-            "planned"
-        }
-        .to_string(),
+        status: if ok { "ready" } else { "attention" }.to_string(),
         applied: apply,
         since_days,
         total_projects,
@@ -10292,6 +10315,221 @@ pub(crate) fn web_control_center_v10_report(
         target: target.map(|path| path.display().to_string()),
         v9,
         fleet,
+        panels,
+        controls,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_fleet_supervisor_watch_install(
+    db: &Path,
+    root: &Path,
+    interval_secs: u64,
+    label: &str,
+    dry_run: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = fleet_supervisor_watch_install_report(db, root, interval_secs, label, dry_run)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Fleet Supervisor Watch Install");
+    println!("status: {}", if report.ok { "ready" } else { "blocked" });
+    println!("plist: {}", report.plist);
+    println!("command: {}", report.command.join(" "));
+    for action in &report.actions {
+        println!("action: {action}");
+    }
+    Ok(())
+}
+
+pub(crate) fn fleet_supervisor_watch_install_report(
+    db: &Path,
+    root: &Path,
+    interval_secs: u64,
+    label: &str,
+    dry_run: bool,
+) -> Result<AutonomousWatchInstallReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let safe_label = label
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ch == '.' || ch == '-' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let plist = expand_tilde(&format!("~/Library/LaunchAgents/{safe_label}.plist"));
+    let log_path = root.join(".agent/fleet-supervisor-watch.log");
+    let status_file = root.join(".agent/fleet-supervisor-status.json");
+    let exe = std::env::current_exe()
+        .unwrap_or_else(|_| PathBuf::from("dukememory"))
+        .display()
+        .to_string();
+    let command = vec![
+        exe,
+        "--db".to_string(),
+        db.display().to_string(),
+        "fleet-supervisor".to_string(),
+        "--apply".to_string(),
+        "--json".to_string(),
+    ];
+    let interval_secs = interval_secs.max(60);
+    let content = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{safe_label}</string>
+  <key>ProgramArguments</key>
+  <array>
+{}
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>{interval_secs}</integer>
+  <key>KeepAlive</key><false/>
+  <key>StandardOutPath</key><string>{}</string>
+  <key>StandardErrorPath</key><string>{}</string>
+</dict>
+</plist>
+"#,
+        command
+            .iter()
+            .map(|arg| format!("    <string>{}</string>", xml_escape(arg)))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        xml_escape(&log_path.display().to_string()),
+        xml_escape(&log_path.display().to_string())
+    );
+    let mut actions = Vec::new();
+    if dry_run {
+        actions.push("dry_run: fleet supervisor plist not written".to_string());
+    } else {
+        write_file(&plist, content.as_bytes())?;
+        actions.push(format!("plist_written:{}", plist.display()));
+        actions.push(
+            "load manually with launchctl load ~/Library/LaunchAgents/<label>.plist".to_string(),
+        );
+    }
+    Ok(AutonomousWatchInstallReport {
+        version: 1,
+        ok: true,
+        root: root.display().to_string(),
+        dry_run,
+        label: safe_label,
+        plist: plist.display().to_string(),
+        command,
+        interval_secs,
+        log_path: log_path.display().to_string(),
+        status_file: status_file.display().to_string(),
+        actions,
+    })
+}
+
+pub(crate) fn print_web_control_center_v11(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    task: &str,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = web_control_center_v11_report(conn, db, root, target, task, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Web Control Center v11");
+    println!("status: {}", report.status);
+    for panel in &report.panels {
+        println!("{}: {}", panel.name, panel.headline);
+    }
+    Ok(())
+}
+
+pub(crate) fn web_control_center_v11_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    task: &str,
+    since_days: i64,
+) -> Result<WebControlCenterV11Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let v10 = web_control_center_v10_report(conn, db, &root, target, task, since_days)?;
+    let fleet_watch = fleet_supervisor_watch_install_report(
+        db,
+        &root,
+        3600,
+        "com.dukememory.fleet-supervisor",
+        true,
+    )?;
+    let mut panels = v10.panels.clone();
+    panels.push(WebControlPanel {
+        name: "fleet_supervisor_watch".to_string(),
+        status: if PathBuf::from(&fleet_watch.plist).exists() {
+            "installed"
+        } else {
+            "ready"
+        }
+        .to_string(),
+        headline: format!("every {} seconds", fleet_watch.interval_secs),
+        metrics: vec![
+            MemoryEvalProofPoint {
+                name: "plist".to_string(),
+                value: fleet_watch.plist.clone(),
+                status: if PathBuf::from(&fleet_watch.plist).exists() {
+                    "installed"
+                } else {
+                    "dry_run"
+                }
+                .to_string(),
+            },
+            MemoryEvalProofPoint {
+                name: "command_args".to_string(),
+                value: fleet_watch.command.len().to_string(),
+                status: "ready".to_string(),
+            },
+        ],
+        actions: vec![
+            "dukememory fleet-supervisor-watch-install --dry-run --json".to_string(),
+            "dukememory fleet-supervisor-watch-install --json".to_string(),
+        ],
+    });
+    let mut controls = v10.controls.clone();
+    controls.push(WebControlAction {
+        name: "fleet_supervisor_watch_install".to_string(),
+        label: "Fleet watch install".to_string(),
+        method: "POST".to_string(),
+        endpoint: "/fleet-supervisor-watch-install/apply".to_string(),
+        cli: "dukememory fleet-supervisor-watch-install --json".to_string(),
+        safe_auto: true,
+        requires_apply: true,
+        status: "ready".to_string(),
+    });
+    let mut recommendations = v10.recommendations.clone();
+    recommendations.push(
+        "install fleet supervisor watch when you want periodic local maintenance across all project memories".to_string(),
+    );
+    recommendations.sort();
+    recommendations.dedup();
+    Ok(WebControlCenterV11Report {
+        version: 1,
+        ok: v10.ok && fleet_watch.ok,
+        status: if v10.ok && fleet_watch.ok {
+            "ready"
+        } else {
+            "attention"
+        }
+        .to_string(),
+        root: root.display().to_string(),
+        target: target.map(|path| path.display().to_string()),
+        v10,
+        fleet_watch,
         panels,
         controls,
         recommendations,
@@ -11399,6 +11637,8 @@ fn agent_required_commands() -> &'static [&'static str] {
         "web-control-center-v9",
         "fleet-supervisor",
         "web-control-center-v10",
+        "fleet-supervisor-watch-install",
+        "web-control-center-v11",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",

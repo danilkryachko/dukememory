@@ -8740,6 +8740,8 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "web-control-center-v9",
         "fleet-supervisor",
         "web-control-center-v10",
+        "fleet-supervisor-watch-install",
+        "web-control-center-v11",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -8842,6 +8844,8 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "web-control-center-v9",
         "fleet-supervisor",
         "web-control-center-v10",
+        "fleet-supervisor-watch-install",
+        "web-control-center-v11",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -9810,6 +9814,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/web-control-center-v9"));
     assert!(html.contains("/fleet-supervisor"));
     assert!(html.contains("/web-control-center-v10"));
+    assert!(html.contains("/fleet-supervisor-watch-install"));
+    assert!(html.contains("/web-control-center-v11"));
     assert!(html.contains("/project-diff"));
     assert!(html.contains("/intelligence-dashboard"));
     assert!(html.contains("/remote-sync-dry-run"));
@@ -10743,6 +10749,20 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(web_control_v10.contains("\"control_v10\""));
     assert!(web_control_v10.contains("\"fleet\""));
+
+    let fleet_watch_install = http_once(
+        &db,
+        "GET /fleet-supervisor-watch-install?interval_secs=60 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(fleet_watch_install.contains("\"install\""));
+    assert!(fleet_watch_install.contains("\"fleet-supervisor\""));
+
+    let web_control_v11 = http_once(
+        &db,
+        "GET /web-control-center-v11?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(web_control_v11.contains("\"control_v11\""));
+    assert!(web_control_v11.contains("\"fleet_watch\""));
 
     let project_template = http_once(
         &db,
@@ -12934,6 +12954,44 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(web_control_v10_json["version"], 1);
     assert!(web_control_v10_json["fleet"].is_object());
 
+    let fleet_watch_install = stdout(
+        cmd(&db)
+            .arg("fleet-supervisor-watch-install")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--interval-secs")
+            .arg("60")
+            .arg("--dry-run")
+            .arg("--json"),
+    );
+    let fleet_watch_install_json: Value = serde_json::from_str(&fleet_watch_install).unwrap();
+    assert_eq!(fleet_watch_install_json["version"], 1);
+    assert_eq!(fleet_watch_install_json["dry_run"], true);
+    assert!(
+        fleet_watch_install_json["command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("fleet-supervisor"))
+    );
+
+    let web_control_v11 = stdout(
+        cmd(&db)
+            .arg("web-control-center-v11")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(dir.path().join("remote-sync-target"))
+            .arg("--task")
+            .arg("project memory")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let web_control_v11_json: Value = serde_json::from_str(&web_control_v11).unwrap();
+    assert_eq!(web_control_v11_json["version"], 1);
+    assert!(web_control_v11_json["fleet_watch"].is_object());
+
     let project_template = stdout(
         cmd(&db)
             .arg("project-template")
@@ -13183,6 +13241,8 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         "web-control-center-v9",
         "fleet-supervisor",
         "web-control-center-v10",
+        "fleet-supervisor-watch-install",
+        "web-control-center-v11",
     ] {
         assert!(
             agent_enforce_json["required_commands"]

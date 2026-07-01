@@ -98,6 +98,7 @@ dukememory memory-eval-story --json
 dukememory autonomous-usefulness --json
 dukememory autonomous-supervisor --json
 dukememory fleet-supervisor --json
+dukememory fleet-supervisor-watch-install --dry-run --json
 dukememory benchmark-polish --json
 dukememory recall-benchmark-suite --json
 dukememory import-review docs/project-notes.md --json
@@ -259,6 +260,8 @@ dukememory autonomous-supervisor --json
 dukememory web-control-center-v9 --json
 dukememory fleet-supervisor --json
 dukememory web-control-center-v10 --json
+dukememory fleet-supervisor-watch-install --dry-run --json
+dukememory web-control-center-v11 --json
 dukememory auto-ranking-tune --apply --json
 dukememory ranking-profile --profile balanced --apply --json
 dukememory project-template --kind rust-cli --apply --json

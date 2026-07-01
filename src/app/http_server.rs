@@ -1687,6 +1687,60 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 since_days,
             )?}))
         }
+        ("GET", "/fleet-supervisor-watch-install") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let interval_secs = params
+                .get("interval_secs")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(3600);
+            HttpResponse::ok(json!({"install": fleet_supervisor_watch_install_report(
+                &ctx.db,
+                &ctx.root,
+                interval_secs,
+                "com.dukememory.fleet-supervisor",
+                true,
+            )?}))
+        }
+        ("POST", "/fleet-supervisor-watch-install/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let interval_secs = value
+                .get("interval_secs")
+                .and_then(Value::as_u64)
+                .unwrap_or(3600);
+            HttpResponse::ok(json!({"install": fleet_supervisor_watch_install_report(
+                &ctx.db,
+                &ctx.root,
+                interval_secs,
+                "com.dukememory.fleet-supervisor",
+                false,
+            )?}))
+        }
+        ("GET", "/web-control-center-v11") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let target = params.get("target").map(PathBuf::from);
+            let task = params
+                .get("task")
+                .map(String::as_str)
+                .unwrap_or("project memory");
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"control_v11": web_control_center_v11_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                task,
+                since_days,
+            )?}))
+        }
         ("GET", "/mcp-discipline-v2") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);

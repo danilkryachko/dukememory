@@ -1408,6 +1408,35 @@ pub(crate) fn run() -> Result<()> {
             since_days,
             json,
         )?,
+        Command::FleetSupervisorWatchInstall {
+            root,
+            interval_secs,
+            label,
+            dry_run,
+            json,
+        } => print_fleet_supervisor_watch_install(
+            &cli.db,
+            &root,
+            interval_secs,
+            &label,
+            dry_run,
+            json,
+        )?,
+        Command::WebControlCenterV11 {
+            root,
+            target,
+            task,
+            since_days,
+            json,
+        } => print_web_control_center_v11(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            &task,
+            since_days,
+            json,
+        )?,
         Command::ProjectTemplate {
             root,
             kind,
@@ -3834,6 +3863,10 @@ Use `dukememory fleet-supervisor --json` to plan safe autonomous supervisor repa
 
 Use `dukememory web-control-center-v10 --json` to inspect the 0.29 web control model with fleet supervisor panels.
 
+Use `dukememory fleet-supervisor-watch-install --dry-run --json` to preview periodic launchd maintenance across discovered project memories; omit `--dry-run` to write the plist.
+
+Use `dukememory web-control-center-v11 --json` to inspect the 0.30 web control model with fleet watch installation.
+
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
 Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens.
@@ -3982,6 +4015,8 @@ dukememory autonomous-supervisor --json
 dukememory web-control-center-v9 --json
 dukememory fleet-supervisor --json
 dukememory web-control-center-v10 --json
+dukememory fleet-supervisor-watch-install --dry-run --json
+dukememory web-control-center-v11 --json
 dukememory doctor-project --json
 dukememory release-gate --json
 dukememory project-watch --json
@@ -4476,6 +4511,8 @@ fn print_completions(shell: CompletionShell) {
         "web-control-center-v9",
         "fleet-supervisor",
         "web-control-center-v10",
+        "fleet-supervisor-watch-install",
+        "web-control-center-v11",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -4663,6 +4700,8 @@ fn print_manpage() {
     println!("  web-control-center-v9         0.28 supervisor control model");
     println!("  fleet-supervisor --json       safe autonomous repair across projects");
     println!("  web-control-center-v10        0.29 fleet supervisor control model");
+    println!("  fleet-supervisor-watch-install preview/install periodic fleet repair");
+    println!("  web-control-center-v11        0.30 fleet watch control model");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");

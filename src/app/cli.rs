@@ -1567,6 +1567,32 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Install a launchd plist for periodic fleet-supervisor runs.
+    FleetSupervisorWatchInstall {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 3600)]
+        interval_secs: u64,
+        #[arg(long, default_value = "com.dukememory.fleet-supervisor")]
+        label: String,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render the V11 web control model with fleet watch installation.
+    WebControlCenterV11 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value = "project memory")]
+        task: String,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Write starter memory configuration for a project type.
     ProjectTemplate {
         #[arg(long, default_value = ".")]
