@@ -408,6 +408,65 @@ fn live_eval_ignores_code_identifier_empty_reads() {
 }
 
 #[test]
+fn live_eval_drops_resolved_missing_feedback_queries() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Checkout policy resolved")
+        .arg("This active card resolves the missing checkout policy memory gap.")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("feedback")
+        .arg("--rating")
+        .arg("missing")
+        .arg("--command")
+        .arg("brief")
+        .arg("--query")
+        .arg("missing checkout policy")
+        .assert()
+        .success();
+
+    let eval_live = stdout(cmd(&db).arg("eval").arg("live").arg("--json"));
+    let eval_live_json: Value = serde_json::from_str(&eval_live).unwrap();
+    assert_eq!(eval_live_json["missing"].as_u64().unwrap(), 1);
+    assert!(
+        eval_live_json["missing_queries"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn live_eval_drops_resolved_symbolized_empty_read_queries() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("usage report semantic read rate path")
+        .arg("Usage report and memory QA commands track semantic read rate retrieval health.")
+        .assert()
+        .success();
+    insert_empty_read_event(&db, "brief", "semantic_read_rate usage-report retrieval commands");
+
+    let eval_live = stdout(cmd(&db).arg("eval").arg("live").arg("--json"));
+    let eval_live_json: Value = serde_json::from_str(&eval_live).unwrap();
+    assert_eq!(eval_live_json["inferred_missing"], 0);
+    assert!(
+        eval_live_json["inferred_missing_queries"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn memory_qa_reports_only_actionable_missing_feedback() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
@@ -458,6 +517,71 @@ fn memory_qa_reports_only_actionable_missing_feedback() {
             .unwrap()
             .iter()
             .any(|issue| issue.as_str().unwrap() == "1 unresolved missing feedback query(s)")
+    );
+}
+
+#[test]
+fn dashboard_prefers_current_resolved_live_eval_over_stale_status() {
+    let dir = tempdir().unwrap();
+    let project = dir.path().join("resolved_project");
+    fs::create_dir_all(project.join(".agent")).unwrap();
+    let db = project.join(".agent").join("memory.db");
+    let status_file = project.join(".agent").join("autonomous-status.json");
+    let rollback_dir = project.join(".agent").join("autonomous-rollbacks");
+    let backup_dir = project.join(".agent").join("backups");
+
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Initialize schema")
+        .arg("Create the memory database before recording read events.")
+        .assert()
+        .success();
+    insert_empty_read_event(&db, "brief", "missing dashboard policy");
+    let first = stdout(
+        cmd(&db)
+            .arg("autonomous")
+            .arg("run-once")
+            .arg("--level")
+            .arg("normal")
+            .arg("--status-file")
+            .arg(&status_file)
+            .arg("--rollback-dir")
+            .arg(&rollback_dir)
+            .arg("--backup-dir")
+            .arg(&backup_dir)
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let first_json: Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(first_json["live_eval"]["inferred_missing"], 1);
+
+    cmd(&db)
+        .arg("add")
+        .arg("design_note")
+        .arg("Missing dashboard policy resolved")
+        .arg("This durable memory resolves the missing dashboard policy gap.")
+        .assert()
+        .success();
+    let dashboard = stdout(cmd(&db).arg("dashboard").arg("--json"));
+    let dashboard_json: Value = serde_json::from_str(&dashboard).unwrap();
+    let projects = dashboard_json["projects"].as_array().unwrap();
+    let project_json = projects
+        .iter()
+        .find(|item| item["name"] == "resolved_project")
+        .unwrap_or_else(|| &projects[0]);
+    assert_eq!(project_json["autonomous_inferred_missing"], 0);
+    assert!(
+        !project_json["attention_reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "memory_gaps_detected")
     );
 }
 
@@ -9854,7 +9978,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item == "resolved missing memory policy")
+            .all(|item| item != "resolved missing memory policy")
     );
 
     let inbox_v2 = stdout(cmd(&db).arg("inbox-v2").arg("report").arg("--json"));
@@ -10110,6 +10234,48 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
                 .unwrap()
                 .contains("Verbose memory card without evidence")
     }));
+    let rejected_quality_id = gap_items
+        .iter()
+        .find(|item| {
+            item["source"] == "autonomous_quality"
+                && item["title"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Verbose memory card without evidence")
+        })
+        .and_then(|item| item["id"].as_str())
+        .unwrap()
+        .to_string();
+    stdout(cmd(&db).arg("inbox-reject").arg(&rejected_quality_id));
+    stdout(
+        cmd(&db)
+            .arg("autonomous")
+            .arg("run-once")
+            .arg("--level")
+            .arg("normal")
+            .arg("--status-file")
+            .arg(&status_file)
+            .arg("--rollback-dir")
+            .arg(&rollback_dir)
+            .arg("--backup-dir")
+            .arg(&backup_dir)
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let repeated_rejected_quality_count: i64 = Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM memory_inbox WHERE source = 'autonomous_quality' AND title LIKE '%Verbose memory card without evidence%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(repeated_rejected_quality_count, 1);
     stdout(
         cmd(&db)
             .arg("add")
@@ -10177,6 +10343,74 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         )
         .unwrap();
     assert_eq!(resolved_gap_status, "rejected");
+
+    insert_empty_read_event(&db, "brief", "manual rejected memory gap");
+    let rejected_gap_first = stdout(
+        cmd(&db)
+            .arg("autonomous")
+            .arg("run-once")
+            .arg("--level")
+            .arg("normal")
+            .arg("--status-file")
+            .arg(&status_file)
+            .arg("--rollback-dir")
+            .arg(&rollback_dir)
+            .arg("--backup-dir")
+            .arg(&backup_dir)
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let rejected_gap_first_json: Value = serde_json::from_str(&rejected_gap_first).unwrap();
+    assert!(
+        rejected_gap_first_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "gap_inbox" && item["status"] == "ok")
+    );
+    let rejected_gap_id: String = Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT id FROM memory_inbox WHERE source = 'autonomous_gap' AND status = 'pending' AND title = 'Fill memory gap: manual rejected memory gap'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    stdout(cmd(&db).arg("inbox-reject").arg(&rejected_gap_id));
+    stdout(
+        cmd(&db)
+            .arg("autonomous")
+            .arg("run-once")
+            .arg("--level")
+            .arg("normal")
+            .arg("--status-file")
+            .arg(&status_file)
+            .arg("--rollback-dir")
+            .arg(&rollback_dir)
+            .arg("--backup-dir")
+            .arg(&backup_dir)
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let repeated_rejected_gap_count: i64 = Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM memory_inbox WHERE source = 'autonomous_gap' AND title = 'Fill memory gap: manual rejected memory gap'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(repeated_rejected_gap_count, 1);
 
     let contract = stdout(
         cmd(&db)
@@ -10880,6 +11114,50 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     let active_json: Value = serde_json::from_str(&active).unwrap();
     assert_eq!(active_json.as_array().unwrap().len(), 3);
+
+    let install_backup_dir = dir.path().join(".agent").join("install-backups");
+    fs::create_dir_all(&install_backup_dir).unwrap();
+    for idx in 0..6 {
+        fs::write(
+            install_backup_dir.join(format!("dukememory-old-{idx}.bak")),
+            format!("backup {idx}"),
+        )
+        .unwrap();
+    }
+    let install_retention = stdout(
+        cmd(&db)
+            .arg("autonomous")
+            .arg("run-once")
+            .arg("--level")
+            .arg("normal")
+            .arg("--status-file")
+            .arg(&status_file)
+            .arg("--rollback-dir")
+            .arg(&rollback_dir)
+            .arg("--backup-dir")
+            .arg(&backup_dir)
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let install_retention_json: Value = serde_json::from_str(&install_retention).unwrap();
+    assert!(
+        install_retention_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "install_backup_retention" && item["status"] == "ok")
+    );
+    let retained_install_backups = fs::read_dir(&install_backup_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".bak"))
+        .count();
+    assert_eq!(retained_install_backups, 3);
 
     let plist = stdout(
         cmd(&db)

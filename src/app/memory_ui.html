@@ -162,6 +162,8 @@
     .pill.active { color: var(--ok); border-color: rgba(22, 112, 60, .25); }
     .pill.rejected { color: var(--danger); border-color: rgba(180, 35, 24, .25); }
     .pill.uncertain { color: var(--warn); border-color: rgba(161, 92, 7, .25); }
+    .pill.ready, .pill.ok, .pill.current, .pill.clear { color: var(--ok); border-color: rgba(22, 112, 60, .25); }
+    .pill.attention, .pill.warn, .pill.historical { color: var(--warn); border-color: rgba(161, 92, 7, .25); }
     .side {
       display: grid;
       gap: 12px;
@@ -613,6 +615,22 @@
       return `<span class="pill ${escapeHtml(value)}">${escapeHtml(label)}</span>`;
     }
 
+    function healthPills(dash = {}) {
+      const gapInbox = dash.gap_inbox || {};
+      const activeGaps = (dash.attention_reasons || []).includes("memory_gaps_detected");
+      const historicalGaps = Number(dash.autonomous_inferred_missing || 0) > 0 && !activeGaps;
+      const badges = [
+        dash.status === "ready" ? pill("ready", "ready") : pill("attention", dash.status || "attention"),
+        Number(dash.embedding_missing || 0) === 0 ? pill("ok", "embeddings") : pill("warn", "embed missing"),
+        Number(gapInbox.pending || 0) === 0 ? pill("clear", "inbox clear") : pill("warn", `${Number(gapInbox.pending || 0)} inbox`),
+      ];
+      if (dash.semantic_eligible_result_rate != null) {
+        badges.push(Number(dash.semantic_eligible_result_rate) >= 0.95 ? pill("ok", "semantic ok") : pill("warn", "semantic warn"));
+      }
+      if (historicalGaps) badges.push(pill("historical", "historical gaps"));
+      return badges.join("");
+    }
+
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, (char) => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -1037,7 +1055,12 @@
       const repairHistory = state.dashboardRepairHistory || {};
       const repairActionCodes = Object.entries(repairHistory.actions_by_code || {}).map(([key, value]) => `${escapeHtml(key)}=${Number(value)}`).join("<br>") || "-";
       const manualRepairActionCodes = Object.entries(repairHistory.manual_actions_by_code || {}).map(([key, value]) => `${escapeHtml(key)}=${Number(value)}`).join("<br>") || "-";
-      $("projectsPanel").innerHTML = `<div class="stat-grid">
+      const summaryBadges = [
+        Number(dashSummary.attention_projects || 0) === 0 ? pill("ready", "all ready") : pill("attention", `${Number(dashSummary.attention_projects || 0)} attention`),
+        Number(dashSummary.gap_inbox_pending_count || 0) === 0 ? pill("clear", "inbox clear") : pill("warn", "pending inbox"),
+        Number(dashSummary.semantic_result_warn_projects || 0) === 0 ? pill("ok", "semantic ok") : pill("warn", "semantic warn"),
+      ].join("");
+      $("projectsPanel").innerHTML = `<div class="row">${summaryBadges}</div><div class="stat-grid">
         <div class="stat"><strong>${escapeHtml(dashSummary.status || "-")}</strong><span>status</span></div>
         <div class="stat"><strong>${Number(dashSummary.total_projects || 0)}</strong><span>projects</span></div>
         <div class="stat"><strong>${Number(dashSummary.ready_projects || 0)}</strong><span>ready</span></div>
@@ -1081,7 +1104,7 @@
         const gapInbox = dash.gap_inbox || {};
         const daemonEmbeddings = dash.daemon_embedding_skipped == null ? "-" : dash.daemon_embedding_skipped ? `skipped${dash.daemon_embedding_error ? `: ${escapeHtml(dash.daemon_embedding_error)}` : ""}` : dash.daemon_embedding_repaired_at ? `repaired ${escapeHtml(formatTimestamp(dash.daemon_embedding_repaired_at))}${dash.daemon_embedding_repair_source ? ` / ${escapeHtml(dash.daemon_embedding_repair_source)}` : ""}` : "ok";
         return `<article class="card">
-        <div class="row"><span class="title">${escapeHtml(project.name)}</span>${project.current ? pill("active", "current") : ""}${dash.status ? pill(dash.status, dash.status) : ""}</div>
+        <div class="row"><span class="title">${escapeHtml(project.name)}</span>${project.current ? pill("active", "current") : ""}${healthPills(dash)}</div>
         <div class="kv"><b>${escapeHtml(t("memories"))}</b><span>${project.memories}</span><b>${escapeHtml(t("pending"))}</b><span>${project.pending_inbox}</span><b>attention</b><span>${dash.attention == null ? "-" : String(dash.attention)}</span><b>attention reasons</b><span>${attentionReasons}</span><b>repair actions</b><span>${repairActions}</span><b>repair loop</b><span>${repairLoop.observed ? `${Number(repairLoop.runs || 0)} runs / ${Number(repairLoop.failed_actions || 0)} failed / ${Number(repairLoop.safe_skipped_actions || 0)} safe skipped` : "-"}</span><b>gap inbox</b><span>${Number(gapInbox.pending || 0)} pending / ${Number(gapInbox.stale_pending || 0)} stale / ${Number(gapInbox.total || 0)} total / oldest ${formatSeconds(gapInbox.oldest_pending_age_secs)}</span><b>quality</b><span>${dash.quality_average == null ? "-" : Number(dash.quality_average).toFixed(1)}</span><b>QA</b><span>${qaScore}</span><b>autonomous</b><span>${dash.autonomous_ok == null ? "-" : String(dash.autonomous_ok)}</span><b>daemon embeddings</b><span>${daemonEmbeddings}</span><b>auto age</b><span>${dash.autonomous_age_secs == null ? "-" : `${Number(dash.autonomous_age_secs)}s ${dash.autonomous_fresh ? "fresh" : "stale"}`}</span><b>live reads</b><span>${dash.autonomous_live_reads == null ? "-" : Number(dash.autonomous_live_reads)}</span><b>live useful</b><span>${dash.autonomous_useful_rate == null ? "-" : `${Number(dash.autonomous_useful_rate * 100).toFixed(0)}% ${escapeHtml(dash.autonomous_useful_rate_source || "")}`}</span><b>live gaps</b><span>${dash.autonomous_inferred_missing == null ? "-" : Number(dash.autonomous_inferred_missing)}</span><b>semantic gaps</b><span>${dash.autonomous_semantic_empty_missing == null ? "-" : Number(dash.autonomous_semantic_empty_missing)}</span><b>semantic gap queries</b><span>${semanticGapQueries}</span><b>semantic results</b><span>${dash.semantic_eligible_result_rate == null ? "-" : formatPercent(dash.semantic_eligible_result_rate)}</span><b>semantic empty</b><span>${dash.semantic_eligible_empty_read_count == null ? "-" : Number(dash.semantic_eligible_empty_read_count)}</span><b>semantic empty queries</b><span>${semanticEmptyQueries}</span><b>recommendations</b><span>${dash.recommendations?.length ? dash.recommendations.slice(0, 3).map(escapeHtml).join("<br>") : "-"}</span><b>${escapeHtml(t("root"))}</b><span>${escapeHtml(project.root)}</span></div>
         <button data-project-open="${escapeHtml(project.key)}" class="primary">${escapeHtml(t("evidenceButton"))}</button>
       </article>`;

@@ -571,7 +571,7 @@ pub(crate) fn insert_gap_inbox_suggestion(
     let source = "autonomous_gap";
     let existing: Option<String> = conn
         .query_row(
-            "SELECT id FROM memory_inbox WHERE status = 'pending' AND source = ?1 AND title = ?2 LIMIT 1",
+            "SELECT id FROM memory_inbox WHERE source = ?1 AND title = ?2 AND status IN ('pending','approved','rejected') LIMIT 1",
             params![source, title],
             |row| row.get(0),
         )
@@ -614,7 +614,7 @@ pub(crate) fn insert_quality_inbox_suggestion(
     let source = "autonomous_quality";
     let existing: Option<String> = conn
         .query_row(
-            "SELECT id FROM memory_inbox WHERE status = 'pending' AND source = ?1 AND title = ?2 LIMIT 1",
+            "SELECT id FROM memory_inbox WHERE source = ?1 AND title = ?2 AND status IN ('pending','approved','rejected') LIMIT 1",
             params![source, title],
             |row| row.get(0),
         )

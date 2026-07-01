@@ -2375,12 +2375,7 @@ fn freshest_dashboard_live_eval(
     current_live_eval: Option<LiveEvalReport>,
 ) -> Option<LiveEvalReport> {
     match (status_live_eval, current_live_eval) {
-        (Some(status), Some(current))
-            if current.reads > status.reads
-                || current.inferred_missing > status.inferred_missing =>
-        {
-            Some(current)
-        }
+        (Some(status), Some(current)) if current.reads >= status.reads => Some(current),
         (Some(status), _) => Some(status),
         (None, current) => current,
     }
@@ -2487,12 +2482,8 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                     autonomous_repair_command(&root, &db),
                 );
             }
-            if live_eval
-                .as_ref()
-                .map(|live| live.inferred_missing)
-                .unwrap_or_default()
-                > 0
-            {
+            let active_memory_gaps = active_dashboard_memory_gap_count(live_eval.as_ref(), &gap_inbox);
+            if active_memory_gaps > 0 {
                 attention_reasons.push("memory_gaps_detected".to_string());
                 recommendations.push(
                     "run dukememory autonomous run-once --level normal to materialize memory gaps"
@@ -2686,12 +2677,9 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
         .count();
     let memory_gap_projects = projects
         .iter()
-        .filter(|project| project.autonomous_inferred_missing.unwrap_or_default() > 0)
+        .filter(|project| active_project_memory_gap_count(project) > 0)
         .count();
-    let memory_gap_count = projects
-        .iter()
-        .map(|project| project.autonomous_inferred_missing.unwrap_or_default())
-        .sum();
+    let memory_gap_count = projects.iter().map(active_project_memory_gap_count).sum();
     let semantic_empty_gap_projects = projects
         .iter()
         .filter(|project| {
@@ -3574,6 +3562,35 @@ fn dashboard_gap_inbox_status(conn: &Connection) -> Result<DashboardGapInboxStat
     )?;
     status.stale_pending = stale_pending.max(0) as usize;
     Ok(status)
+}
+
+fn active_dashboard_memory_gap_count(
+    live_eval: Option<&LiveEvalReport>,
+    gap_inbox: &DashboardGapInboxStatus,
+) -> usize {
+    active_memory_gap_count(
+        live_eval
+            .map(|live| live.inferred_missing)
+            .unwrap_or_default(),
+        gap_inbox,
+    )
+}
+
+fn active_memory_gap_count(live_gaps: usize, gap_inbox: &DashboardGapInboxStatus) -> usize {
+    if live_gaps == 0 {
+        return 0;
+    }
+    if gap_inbox.pending > 0 || gap_inbox.stale_pending > 0 {
+        return live_gaps;
+    }
+    0
+}
+
+fn active_project_memory_gap_count(project: &ProjectDashboardItem) -> usize {
+    active_memory_gap_count(
+        project.autonomous_inferred_missing.unwrap_or_default(),
+        &project.gap_inbox,
+    )
 }
 
 fn format_optional_secs(value: Option<i64>) -> String {

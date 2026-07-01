@@ -1528,6 +1528,26 @@ pub(crate) fn autonomous_run_once(
         ),
         memory_id: None,
     });
+    let install_backup_dir = autonomous_project_root_for_db(request.db)
+        .join(".agent")
+        .join("install-backups");
+    let install_pruned =
+        prune_autonomous_install_backups(&install_backup_dir, DEFAULT_INSTALL_BACKUP_KEEP)?;
+    report.actions.push(AutonomousAction {
+        kind: "install_backup_retention".to_string(),
+        status: if install_pruned.is_empty() {
+            "skipped"
+        } else {
+            "ok"
+        }
+        .to_string(),
+        detail: format!(
+            "keep={} pruned={}",
+            DEFAULT_INSTALL_BACKUP_KEEP,
+            install_pruned.len()
+        ),
+        memory_id: None,
+    });
     write_autonomous_status(request.status_file, &report)?;
     Ok(report)
 }
@@ -1649,6 +1669,65 @@ fn list_autonomous_rollback_backups(rollback_dir: &Path) -> Result<Vec<Autonomou
             .then_with(|| left.path.cmp(&right.path))
     });
     Ok(backups)
+}
+
+struct AutonomousInstallBackup {
+    path: PathBuf,
+    modified: SystemTime,
+}
+
+fn prune_autonomous_install_backups(backup_dir: &Path, keep: usize) -> Result<Vec<String>> {
+    let backups = list_autonomous_install_backups(backup_dir)?;
+    let kept = backups
+        .iter()
+        .rev()
+        .take(keep)
+        .map(|item| item.path.clone())
+        .collect::<HashSet<_>>();
+    let mut pruned = Vec::new();
+    for item in backups {
+        if kept.contains(&item.path) {
+            continue;
+        }
+        if item.path.exists() {
+            fs::remove_file(&item.path)
+                .with_context(|| format!("failed to remove {}", item.path.display()))?;
+        }
+        pruned.push(item.path.display().to_string());
+    }
+    pruned.sort();
+    Ok(pruned)
+}
+
+fn list_autonomous_install_backups(backup_dir: &Path) -> Result<Vec<AutonomousInstallBackup>> {
+    if !backup_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut backups = Vec::new();
+    for entry in fs::read_dir(backup_dir)
+        .with_context(|| format!("failed to read {}", backup_dir.display()))?
+    {
+        let path = entry?.path();
+        if !path.is_file() || !is_autonomous_install_backup(&path) {
+            continue;
+        }
+        let modified = fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        backups.push(AutonomousInstallBackup { path, modified });
+    }
+    backups.sort_by(|left, right| {
+        left.modified
+            .cmp(&right.modified)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    Ok(backups)
+}
+
+fn is_autonomous_install_backup(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name.starts_with(binary_name()) && name.ends_with(".bak"))
 }
 
 fn is_autonomous_rollback_backup(path: &Path) -> bool {
@@ -1939,10 +2018,7 @@ fn autonomous_create_quality_inbox(
 fn is_weak_quality_candidate(item: &MemoryQuality) -> bool {
     item.score <= 45.0
         && !item.title.starts_with("Autonomous compacted ")
-        && (item.negative_feedback > 0
-            || item.body_chars > 1200
-            || item.links == 0
-            || item.request_count == 0)
+        && (item.negative_feedback > 0 || item.body_chars > 1200 || item.links == 0)
 }
 
 fn quality_inbox_target_id(item: &InboxItem) -> Option<String> {

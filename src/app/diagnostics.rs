@@ -1527,6 +1527,13 @@ pub(crate) fn live_eval_report(conn: &Connection, since_days: i64) -> Result<Liv
     }
     missing_queries.sort();
     missing_queries.dedup();
+    let mut unresolved_missing_queries = Vec::new();
+    for query in missing_queries {
+        if should_infer_missing_memory_gap(conn, &query)? {
+            unresolved_missing_queries.push(query);
+        }
+    }
+    let missing_queries = unresolved_missing_queries;
     let total_feedback = useful + useless + missing;
     let inferred = inferred_live_signals(conn, &reads)?;
     let feedback_useful_rate = if total_feedback == 0 {
@@ -1733,7 +1740,24 @@ pub(crate) fn unresolved_memory_gap(conn: &Connection, query: &str) -> Result<bo
     if !rows.is_empty() {
         return Ok(false);
     }
-    Ok(!memory_link_resolves_query(conn, query)?)
+    if memory_link_resolves_query(conn, query)? {
+        return Ok(false);
+    }
+    let normalized = query.replace('_', " ").replace('-', " ");
+    if normalized != query {
+        let rows = query_memories(
+            conn,
+            Some(&normalized),
+            &[],
+            &["active".to_string(), "uncertain".to_string()],
+            None,
+            1,
+        )?;
+        if !rows.is_empty() || memory_link_resolves_query(conn, &normalized)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn memory_link_resolves_query(conn: &Connection, query: &str) -> Result<bool> {
