@@ -552,7 +552,8 @@
       selected: null, evidence: null, memories: [], project: saved.project || null,
       projects: [], selectedIds: new Set(), tab: saved.tab || "detail",
       lang: savedLang === "en" ? "en" : "ru", activity: [], usefulness: null, embedding: null, autonomous: null,
-      quality: null, profile: null, budget: null, dashboard: null, dashboardRepair: null, dashboardRepairHistory: null, qa: null, contract: null, ops: null, roi: null, agentAudit: null, remote: null
+      quality: null, profile: null, budget: null, dashboard: null, dashboardRepair: null, dashboardRepairHistory: null, qa: null, contract: null, ops: null, roi: null, agentAudit: null, remote: null,
+      trace: null, autoFeedback: null, costGuard: null, projectDiff: null, intelligence: null, remoteSync: null
     };
     const $ = (id) => document.getElementById(id);
     const t = (key) => i18n[state.lang][key] || i18n.en[key] || key;
@@ -849,14 +850,26 @@
     async function loadIntelligence() {
       const params = new URLSearchParams({ since_days: "7" });
       if (state.project) params.set("project", state.project);
-      const [roi, audit, remote] = await Promise.all([
+      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync] = await Promise.all([
         api(`/roi-report?${params.toString()}`),
         api(`/agent-audit?${params.toString()}`),
-        api(`/remote-status?${params.toString()}`)
+        api(`/remote-status?${params.toString()}`),
+        api(`/decision-trace?${params.toString()}&limit=12`),
+        api(`/auto-feedback?${params.toString()}&limit=100`),
+        api(`/cost-guard?${params.toString()}`),
+        api(`/project-diff?${params.toString()}&changed_only=true`),
+        api(`/intelligence-dashboard?${params.toString()}`),
+        api(`/remote-sync-dry-run?${params.toString()}`)
       ]);
       state.roi = roi.roi;
       state.agentAudit = audit.agent_audit;
       state.remote = remote.remote;
+      state.trace = trace.trace;
+      state.autoFeedback = autoFeedback.auto_feedback;
+      state.costGuard = costGuard.cost_guard;
+      state.projectDiff = projectDiff.project_diff;
+      state.intelligence = intelligence.intelligence;
+      state.remoteSync = remoteSync.remote_sync;
       renderSettings();
     }
 
@@ -1136,6 +1149,12 @@
       const roi = state.roi || {};
       const agentAudit = state.agentAudit || {};
       const remote = state.remote || {};
+      const trace = state.trace || {};
+      const autoFeedback = state.autoFeedback || {};
+      const costGuard = state.costGuard || {};
+      const projectDiff = state.projectDiff || {};
+      const intelligence = state.intelligence || {};
+      const remoteSync = state.remoteSync || {};
       const contract = state.contract || {};
       const ops = state.ops || {};
       const effectiveness = ops.effectiveness || {};
@@ -1174,6 +1193,20 @@
       <div class="card"><div class="title">memory ROI</div><div class="body">score ${Number(roi.score || 0).toFixed(1)}<br>reuse ${formatPercent(roi.reused_card_rate)}<br>useful ${formatPercent(roi.useful_rate)}<br>write pressure ${roi.write_pressure == null ? "-" : Number(roi.write_pressure).toFixed(2)}<br>tokens saved ${Number(roi.token_saving_estimate || 0)}<br>${roi.top_memories?.length ? roi.top_memories.slice(0, 5).map((item) => `${escapeHtml(item.title || item.id)} (${Number(item.request_count || 0)})`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">agent audit</div><div class="body">score ${Number(agentAudit.score || 0).toFixed(1)}<br>brief ${Number(agentAudit.brief_reads || 0)} / impact ${Number(agentAudit.impact_reads || 0)} / evidence ${Number(agentAudit.evidence_reads || 0)}<br>feedback ${Number(agentAudit.feedback_events || 0)} / durable writes ${Number(agentAudit.durable_writes || 0)}<br>${agentAudit.issues?.length ? agentAudit.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
       <div class="card"><div class="title">remote readiness</div><div class="body">status ${escapeHtml(remote.status || "-")}<br>local first ${remote.local_first ? "yes" : "no"}<br>backup ${remote.backup_ready ? "ok" : "missing"}<br>local ${Number(remote.estimated_local_latency_ms || 0)}ms / VDS ${Number(remote.estimated_vds_latency_ms || 0)}ms<br>${remote.blockers?.length ? remote.blockers.map(escapeHtml).join("<br>") : "blockers -"}</div></div>
+      <h2>Intelligence v2</h2>
+      <div class="stat-grid">
+        <div class="stat"><strong>${escapeHtml(intelligence.status || "-")}</strong><span>dashboard</span></div>
+        <div class="stat"><strong>${Number(costGuard.score || 0).toFixed(1)}</strong><span>cost guard</span></div>
+        <div class="stat"><strong>${Number(trace.influenced_reads || 0)}</strong><span>influenced reads</span></div>
+        <div class="stat"><strong>${Number(autoFeedback.written || 0)}</strong><span>auto feedback ready</span></div>
+        <div class="stat"><strong>${projectDiff.ok == null ? "-" : projectDiff.ok ? "ok" : "warn"}</strong><span>project diff</span></div>
+        <div class="stat"><strong>${escapeHtml(remoteSync.status || "-")}</strong><span>sync dry-run</span></div>
+      </div>
+      <div class="card"><div class="title">decision trace</div><div class="body">traced ${Number(trace.traced_reads || 0)}<br>empty ${Number(trace.empty_reads || 0)}<br>positive ${Number(trace.positive_feedback || 0)} / negative ${Number(trace.negative_feedback || 0)} / missing ${Number(trace.missing_feedback || 0)}<br>${trace.items?.length ? trace.items.slice(0, 4).map((item) => `${escapeHtml(item.command)}: ${escapeHtml(item.influence)} (${Number(item.result_count || 0)})`).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">auto feedback v2</div><div class="body">applied ${autoFeedback.applied ? "yes" : "no"}<br>scanned ${Number(autoFeedback.scanned || 0)}<br>written ${Number(autoFeedback.written || 0)} / skipped ${Number(autoFeedback.skipped || 0)}<br>missing ${Number(autoFeedback.inferred_missing_after || autoFeedback.inferred_missing_before || 0)}</div></div>
+      <div class="card"><div class="title">cost guard</div><div class="body">profile ${escapeHtml(costGuard.recommended_profile || "-")} / ${Number(costGuard.recommended_max_chars || 0)} chars<br>avg budget ${Number(costGuard.average_read_budget || 0).toFixed(0)}<br>max budget ${Number(costGuard.max_read_budget || 0)}<br>large cards ${Number(costGuard.large_memory_count || 0)}<br>${costGuard.actions?.length ? costGuard.actions.slice(0, 4).map(escapeHtml).join("<br>") : "actions -"}</div></div>
+      <div class="card"><div class="title">project intelligence diff</div><div class="body">changed files ${projectDiff.changed_files?.length || 0}<br>missing links ${Number(projectDiff.missing_links || 0)}<br>conflicts ${Number(projectDiff.conflicts || 0)}<br>stale ${Number(projectDiff.stale_active || 0)}<br>${projectDiff.recommendations?.length ? projectDiff.recommendations.slice(0, 4).map(escapeHtml).join("<br>") : "recommendations -"}</div></div>
+      <div class="card"><div class="title">remote sync dry-run</div><div class="body">status ${escapeHtml(remoteSync.status || "-")}<br>export ${escapeHtml(formatBytes(remoteSync.estimated_export_bytes))}<br>roundtrip ${Number(remoteSync.estimated_roundtrip_ms || 0)}ms<br>${remoteSync.blockers?.length ? remoteSync.blockers.map(escapeHtml).join("<br>") : "blockers -"}</div></div>
       <div class="card"><div class="title">semantic empty queries</div><div class="body">${effectiveness.semantic_empty_queries?.length ? effectiveness.semantic_empty_queries.slice(0, 5).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">memory gaps</div><div class="body">${effectiveness.inferred_missing_queries?.length ? effectiveness.inferred_missing_queries.slice(0, 6).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">recommendations</div><div class="body">${ops.recommendations?.length ? ops.recommendations.slice(0, 6).map(escapeHtml).join("<br>") : "-"}</div></div>

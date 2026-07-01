@@ -354,6 +354,62 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 .unwrap_or(7);
             HttpResponse::ok(json!({"agent_audit": agent_audit_report(&conn, since_days)?}))
         }
+        ("GET", "/decision-trace") => {
+            let conn = open_selected_db(db, query, None)?;
+            let params = parse_query(query);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(20);
+            HttpResponse::ok(json!({"trace": decision_trace_report(&conn, since_days, limit)?}))
+        }
+        ("GET", "/auto-feedback") => {
+            let conn = open_selected_db(db, query, None)?;
+            let params = parse_query(query);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(100);
+            HttpResponse::ok(json!({"auto_feedback": auto_feedback_v2_report(
+                &conn,
+                since_days,
+                limit,
+                false,
+            )?}))
+        }
+        ("POST", "/auto-feedback") => {
+            let value = parse_json_body(body)?;
+            let conn = open_selected_db(db, query, Some(&value))?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
+            let apply = !value
+                .get("dry_run")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            HttpResponse::ok(json!({"auto_feedback": auto_feedback_v2_report(
+                &conn,
+                since_days,
+                limit,
+                apply,
+            )?}))
+        }
+        ("GET", "/cost-guard") => {
+            let conn = open_selected_db(db, query, None)?;
+            let params = parse_query(query);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"cost_guard": cost_guard_report(&conn, since_days)?}))
+        }
         ("GET", "/remote-status") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
@@ -364,6 +420,52 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 .and_then(|value| value.parse::<i64>().ok())
                 .unwrap_or(7);
             HttpResponse::ok(json!({"remote": remote_status_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+            )?}))
+        }
+        ("GET", "/project-diff") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let changed_only = params
+                .get("changed_only")
+                .is_some_and(|value| value == "1" || value == "true");
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            HttpResponse::ok(json!({"project_diff": project_diff_report(
+                &conn,
+                &ctx.root,
+                changed_only,
+            )?}))
+        }
+        ("GET", "/intelligence-dashboard") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"intelligence": intelligence_dashboard_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+            )?}))
+        }
+        ("GET", "/remote-sync-dry-run") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"remote_sync": remote_sync_dry_run_report(
                 &conn,
                 &ctx.db,
                 &ctx.root,

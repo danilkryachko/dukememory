@@ -175,6 +175,120 @@ pub(crate) struct RemoteStatusReport {
     pub(crate) recommendations: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DecisionTraceReport {
+    pub(crate) version: u32,
+    pub(crate) since_days: i64,
+    pub(crate) traced_reads: usize,
+    pub(crate) influenced_reads: usize,
+    pub(crate) empty_reads: usize,
+    pub(crate) positive_feedback: usize,
+    pub(crate) negative_feedback: usize,
+    pub(crate) missing_feedback: usize,
+    pub(crate) items: Vec<DecisionTraceItem>,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DecisionTraceItem {
+    pub(crate) read_id: i64,
+    pub(crate) command: String,
+    pub(crate) query: String,
+    pub(crate) semantic_used: bool,
+    pub(crate) result_count: usize,
+    pub(crate) memory_ids: Vec<String>,
+    pub(crate) memory_titles: Vec<String>,
+    pub(crate) influence: String,
+    pub(crate) feedback_positive: usize,
+    pub(crate) feedback_negative: usize,
+    pub(crate) feedback_missing: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AutoFeedbackV2Report {
+    pub(crate) version: u32,
+    pub(crate) since_days: i64,
+    pub(crate) applied: bool,
+    pub(crate) scanned: usize,
+    pub(crate) written: usize,
+    pub(crate) useful: usize,
+    pub(crate) missing: usize,
+    pub(crate) skipped: usize,
+    pub(crate) useful_rate_before: f64,
+    pub(crate) useful_rate_after: f64,
+    pub(crate) inferred_missing_before: usize,
+    pub(crate) inferred_missing_after: usize,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct CostGuardReport {
+    pub(crate) version: u32,
+    pub(crate) since_days: i64,
+    pub(crate) score: f64,
+    pub(crate) recommended_profile: String,
+    pub(crate) recommended_max_chars: usize,
+    pub(crate) average_read_budget: f64,
+    pub(crate) max_read_budget: usize,
+    pub(crate) write_pressure: f64,
+    pub(crate) token_saving_estimate: usize,
+    pub(crate) large_memory_count: usize,
+    pub(crate) noisy_memory_count: usize,
+    pub(crate) guard_active: bool,
+    pub(crate) issues: Vec<String>,
+    pub(crate) actions: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ProjectDiffReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) changed_only: bool,
+    pub(crate) changed_files: Vec<String>,
+    pub(crate) missing_links: usize,
+    pub(crate) conflicts: usize,
+    pub(crate) stale_active: usize,
+    pub(crate) new_or_changed_memory_ids: Vec<String>,
+    pub(crate) drift: DriftReport,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RemoteSyncDryRunReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) local_first: bool,
+    pub(crate) db_bytes: u64,
+    pub(crate) estimated_export_bytes: u64,
+    pub(crate) estimated_upload_ms: u32,
+    pub(crate) estimated_download_ms: u32,
+    pub(crate) estimated_roundtrip_ms: u32,
+    pub(crate) export_command: String,
+    pub(crate) import_command: String,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct IntelligenceDashboardReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) roi: MemoryRoiReport,
+    pub(crate) agent_audit: AgentAuditReport,
+    pub(crate) cost_guard: CostGuardReport,
+    pub(crate) decision_trace: DecisionTraceReport,
+    pub(crate) auto_feedback: AutoFeedbackV2Report,
+    pub(crate) project_diff: ProjectDiffReport,
+    pub(crate) remote_sync: RemoteSyncDryRunReport,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct FeedbackSummary {
     pub(crate) since_days: i64,
@@ -1380,6 +1494,516 @@ pub(crate) fn agent_audit_report(conn: &Connection, since_days: i64) -> Result<A
         issues,
         recommendations,
     })
+}
+
+pub(crate) fn print_decision_trace(
+    conn: &Connection,
+    since_days: i64,
+    limit: usize,
+    json_out: bool,
+) -> Result<()> {
+    let report = decision_trace_report(conn, since_days, limit)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Decision Trace");
+    println!("traced_reads: {}", report.traced_reads);
+    println!("influenced_reads: {}", report.influenced_reads);
+    println!("empty_reads: {}", report.empty_reads);
+    for item in &report.items {
+        println!(
+            "- read={} {} influence={} results={} ids=[{}] {}",
+            item.read_id,
+            item.command,
+            item.influence,
+            item.result_count,
+            item.memory_ids
+                .iter()
+                .take(6)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(","),
+            truncate_chars(&item.query, 90)
+        );
+    }
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn decision_trace_report(
+    conn: &Connection,
+    since_days: i64,
+    limit: usize,
+) -> Result<DecisionTraceReport> {
+    let since_ms = now_ms().saturating_sub(since_days.max(0).saturating_mul(86_400_000));
+    let reads = read_events(conn, since_ms, limit)?;
+    let feedback = memory_feedback_counts(conn, since_ms)?;
+    let memory_titles = memory_title_map(conn)?;
+    let mut items = Vec::new();
+    let mut influenced_reads = 0;
+    let mut empty_reads = 0;
+    let mut positive_feedback = 0;
+    let mut negative_feedback = 0;
+    let mut missing_feedback = 0;
+    for read in reads {
+        if read.memory_ids.is_empty() || read.result_count == 0 {
+            empty_reads += 1;
+        } else {
+            influenced_reads += 1;
+        }
+        let mut item_positive = 0;
+        let mut item_negative = 0;
+        let mut item_missing = 0;
+        for id in &read.memory_ids {
+            let (pos, neg, miss) = feedback.get(id).copied().unwrap_or_default();
+            item_positive += pos;
+            item_negative += neg;
+            item_missing += miss;
+        }
+        positive_feedback += item_positive;
+        negative_feedback += item_negative;
+        missing_feedback += item_missing;
+        let influence = if read.memory_ids.is_empty() || read.result_count == 0 {
+            "none"
+        } else if item_negative > item_positive {
+            "questioned"
+        } else if item_positive > 0 {
+            "confirmed"
+        } else if read.semantic_used {
+            "semantic_candidate"
+        } else {
+            "candidate"
+        }
+        .to_string();
+        let titles = read
+            .memory_ids
+            .iter()
+            .filter_map(|id| memory_titles.get(id).cloned())
+            .collect::<Vec<_>>();
+        items.push(DecisionTraceItem {
+            read_id: read.id,
+            command: read.command,
+            query: read.query,
+            semantic_used: read.semantic_used,
+            result_count: read.result_count,
+            memory_ids: read.memory_ids,
+            memory_titles: titles,
+            influence,
+            feedback_positive: item_positive,
+            feedback_negative: item_negative,
+            feedback_missing: item_missing,
+        });
+    }
+    let mut issues = Vec::new();
+    let mut recommendations = Vec::new();
+    if influenced_reads == 0 && !items.is_empty() {
+        issues.push("recent reads did not return memory cards".to_string());
+        recommendations.push("refresh embeddings or add durable missing-context cards".to_string());
+    }
+    if negative_feedback > positive_feedback && negative_feedback > 0 {
+        issues.push("recent traced memories have more negative than positive feedback".to_string());
+        recommendations.push("review noisy memory cards before broad recall".to_string());
+    }
+    Ok(DecisionTraceReport {
+        version: 1,
+        since_days,
+        traced_reads: items.len(),
+        influenced_reads,
+        empty_reads,
+        positive_feedback,
+        negative_feedback,
+        missing_feedback,
+        items,
+        issues,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_auto_feedback_v2(
+    conn: &Connection,
+    since_days: i64,
+    limit: usize,
+    dry_run: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = auto_feedback_v2_report(conn, since_days, limit, !dry_run)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Auto Feedback v2");
+    println!("applied: {}", report.applied);
+    println!("scanned: {}", report.scanned);
+    println!("written: {}", report.written);
+    println!("useful: {}", report.useful);
+    println!("missing: {}", report.missing);
+    println!("skipped: {}", report.skipped);
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn auto_feedback_v2_report(
+    conn: &Connection,
+    since_days: i64,
+    limit: usize,
+    apply: bool,
+) -> Result<AutoFeedbackV2Report> {
+    let before = live_eval_report(conn, since_days)?;
+    let mut recommendations = Vec::new();
+    let materialized = if apply {
+        materialize_inferred_feedback(conn, since_days, limit)?
+    } else {
+        let usage = usage_report(conn, since_days, limit)?;
+        let scanned = usage
+            .recent_reads
+            .iter()
+            .filter(|event| auto_feedback_memory_read_command(&event.command))
+            .count();
+        InferredFeedbackReport {
+            version: 1,
+            since_days,
+            scanned,
+            written: 0,
+            useful: 0,
+            missing: before.inferred_missing,
+            skipped: scanned,
+        }
+    };
+    let after = if apply {
+        live_eval_report(conn, since_days)?
+    } else {
+        before.clone()
+    };
+    if materialized.written == 0 {
+        recommendations.push("no new feedback was needed for recent memory reads".to_string());
+    }
+    if after.inferred_missing > 0 {
+        recommendations
+            .push("promote repeated missing context into durable memory cards".to_string());
+    }
+    Ok(AutoFeedbackV2Report {
+        version: 1,
+        since_days,
+        applied: apply,
+        scanned: materialized.scanned,
+        written: materialized.written,
+        useful: materialized.useful,
+        missing: materialized.missing,
+        skipped: materialized.skipped,
+        useful_rate_before: before.useful_rate,
+        useful_rate_after: after.useful_rate,
+        inferred_missing_before: before.inferred_missing,
+        inferred_missing_after: after.inferred_missing,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_cost_guard(conn: &Connection, since_days: i64, json_out: bool) -> Result<()> {
+    let report = cost_guard_report(conn, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Cost Guard");
+    println!("score: {:.1}", report.score);
+    println!("recommended_profile: {}", report.recommended_profile);
+    println!("recommended_max_chars: {}", report.recommended_max_chars);
+    println!("average_read_budget: {:.0}", report.average_read_budget);
+    println!("write_pressure: {:.2}", report.write_pressure);
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    for action in &report.actions {
+        println!("action: {action}");
+    }
+    Ok(())
+}
+
+pub(crate) fn cost_guard_report(conn: &Connection, since_days: i64) -> Result<CostGuardReport> {
+    let usage = usage_report(conn, since_days, 50)?;
+    let quality = quality_report(conn, since_days, 50)?;
+    let roi = roi_report(conn, since_days)?;
+    let total_budget = usage
+        .recent_reads
+        .iter()
+        .map(|event| event.budget)
+        .sum::<usize>();
+    let average_read_budget = if usage.recent_reads.is_empty() {
+        0.0
+    } else {
+        total_budget as f64 / usage.recent_reads.len() as f64
+    };
+    let max_read_budget = usage
+        .recent_reads
+        .iter()
+        .map(|event| event.budget)
+        .max()
+        .unwrap_or(0);
+    let large_memory_count = quality
+        .items
+        .iter()
+        .filter(|item| item.body_chars > 1200)
+        .count();
+    let noisy_memory_count = roi.noisy_memory_ids.len();
+    let mut issues = Vec::new();
+    let mut actions = Vec::new();
+    if average_read_budget > 4_000.0 {
+        issues.push(format!(
+            "average read budget is high: {:.0}",
+            average_read_budget
+        ));
+        actions.push("prefer brief/impact tiny budgets before recall/context-pack".to_string());
+    }
+    if max_read_budget > 8_000 {
+        issues.push(format!("max read budget is high: {max_read_budget}"));
+        actions.push("cap broad context calls unless a risky migration needs them".to_string());
+    }
+    if usage.write_pressure > 2.0 && usage.read_count >= 20 {
+        issues.push(format!(
+            "write pressure is high: {:.2}",
+            usage.write_pressure
+        ));
+        actions.push(
+            "allow autonomous cleanup/compaction before adding more task_state cards".to_string(),
+        );
+    }
+    if large_memory_count > 0 {
+        actions.push("slim long memory cards or move detail to linked files".to_string());
+    }
+    if noisy_memory_count > 0 {
+        actions.push("suppress or fix memories with negative feedback".to_string());
+    }
+    let recommended_profile = if issues.is_empty() && usage.semantic_eligible_result_rate >= 0.95 {
+        "tiny"
+    } else if average_read_budget <= 4_000.0 {
+        "normal"
+    } else {
+        "tight"
+    }
+    .to_string();
+    let recommended_max_chars = match recommended_profile.as_str() {
+        "tiny" => 1200,
+        "tight" => 3000,
+        _ => 4000,
+    };
+    let mut score = 100.0;
+    score -= ((average_read_budget / 1000.0) - 2.0).max(0.0).min(8.0) * 4.0;
+    score -= (usage.write_pressure - 1.5).max(0.0).min(3.0) * 8.0;
+    score -= large_memory_count.min(5) as f64 * 4.0;
+    score -= noisy_memory_count.min(5) as f64 * 5.0;
+    score = score.clamp(0.0, 100.0);
+    actions.sort();
+    actions.dedup();
+    Ok(CostGuardReport {
+        version: 1,
+        since_days,
+        score,
+        recommended_profile,
+        recommended_max_chars,
+        average_read_budget,
+        max_read_budget,
+        write_pressure: usage.write_pressure,
+        token_saving_estimate: roi.token_saving_estimate,
+        large_memory_count,
+        noisy_memory_count,
+        guard_active: true,
+        issues,
+        actions,
+    })
+}
+
+pub(crate) fn print_project_diff(
+    conn: &Connection,
+    root: &Path,
+    changed_only: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = project_diff_report(conn, root, changed_only)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Project Intelligence Diff");
+    println!("ok: {}", report.ok);
+    println!("changed_files: {}", report.changed_files.len());
+    println!("missing_links: {}", report.missing_links);
+    println!("conflicts: {}", report.conflicts);
+    println!("stale_active: {}", report.stale_active);
+    for file in &report.changed_files {
+        println!("changed: {file}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn project_diff_report(
+    conn: &Connection,
+    root: &Path,
+    changed_only: bool,
+) -> Result<ProjectDiffReport> {
+    let drift = drift_report(conn, root, changed_only)?;
+    let since_ms = now_ms().saturating_sub(86_400_000);
+    let mut stmt = conn.prepare(
+        "SELECT id FROM memories WHERE updated_at >= ?1 ORDER BY updated_at DESC LIMIT 20",
+    )?;
+    let new_or_changed_memory_ids = stmt
+        .query_map(params![since_ms], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut recommendations = Vec::new();
+    if !drift.missing_links.is_empty() {
+        recommendations.push("repair or remove memory links pointing at missing files".to_string());
+    }
+    if !drift.conflicts.is_empty() {
+        recommendations.push("merge or supersede duplicate decision candidates".to_string());
+    }
+    if !drift.stale_active.is_empty() {
+        recommendations.push("mark stale active cards uncertain or superseded".to_string());
+    }
+    if drift.changed_files.is_empty() && changed_only {
+        recommendations.push("no changed files detected; memory diff is stable".to_string());
+    }
+    Ok(ProjectDiffReport {
+        version: 1,
+        ok: drift.ok,
+        root: drift.root.clone(),
+        changed_only,
+        changed_files: drift.changed_files.clone(),
+        missing_links: drift.missing_links.len(),
+        conflicts: drift.conflicts.len(),
+        stale_active: drift.stale_active.len(),
+        new_or_changed_memory_ids,
+        drift,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_intelligence_dashboard(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = intelligence_dashboard_report(conn, db, root, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Intelligence Dashboard");
+    println!("status: {}", report.status);
+    println!("roi: {:.1}", report.roi.score);
+    println!("agent_audit: {:.1}", report.agent_audit.score);
+    println!("cost_guard: {:.1}", report.cost_guard.score);
+    println!("trace_reads: {}", report.decision_trace.traced_reads);
+    println!("remote_sync: {}", report.remote_sync.status);
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn intelligence_dashboard_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+) -> Result<IntelligenceDashboardReport> {
+    let roi = roi_report(conn, since_days)?;
+    let agent_audit = agent_audit_report(conn, since_days)?;
+    let cost_guard = cost_guard_report(conn, since_days)?;
+    let decision_trace = decision_trace_report(conn, since_days, 12)?;
+    let auto_feedback = auto_feedback_v2_report(conn, since_days, 100, false)?;
+    let project_diff = project_diff_report(conn, root, true)?;
+    let remote_sync = remote_sync_dry_run_report(conn, db, root, since_days)?;
+    let mut issues = Vec::new();
+    issues.extend(roi.issues.iter().cloned());
+    issues.extend(agent_audit.issues.iter().cloned());
+    issues.extend(cost_guard.issues.iter().cloned());
+    issues.extend(decision_trace.issues.iter().cloned());
+    if !project_diff.ok {
+        issues.push("project diff needs attention".to_string());
+    }
+    if !remote_sync.ok {
+        issues.push("remote sync dry-run is blocked".to_string());
+    }
+    issues.sort();
+    issues.dedup();
+    let mut recommendations = Vec::new();
+    recommendations.extend(roi.recommendations.iter().cloned());
+    recommendations.extend(agent_audit.recommendations.iter().cloned());
+    recommendations.extend(cost_guard.actions.iter().cloned());
+    recommendations.extend(project_diff.recommendations.iter().cloned());
+    recommendations.extend(remote_sync.recommendations.iter().cloned());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = issues.is_empty();
+    Ok(IntelligenceDashboardReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        roi,
+        agent_audit,
+        cost_guard,
+        decision_trace,
+        auto_feedback,
+        project_diff,
+        remote_sync,
+        issues,
+        recommendations,
+    })
+}
+
+fn memory_title_map(conn: &Connection) -> Result<HashMap<String, String>> {
+    let rows = query_memories(
+        conn,
+        None,
+        &[],
+        &[
+            "active".to_string(),
+            "uncertain".to_string(),
+            "superseded".to_string(),
+            "rejected".to_string(),
+        ],
+        None,
+        usize::MAX,
+    )?;
+    Ok(rows
+        .into_iter()
+        .map(|memory| (memory.id, memory.title))
+        .collect())
+}
+
+fn auto_feedback_memory_read_command(command: &str) -> bool {
+    matches!(
+        command,
+        "brief"
+            | "impact"
+            | "retrieve"
+            | "recall"
+            | "search"
+            | "context"
+            | "context-pack"
+            | "memory_brief"
+            | "memory_impact"
+            | "memory_search"
+            | "memory_context_pack"
+            | "memory_agent_context"
+            | "memory_snapshot"
+    )
 }
 
 pub(crate) fn quality_report(
@@ -3593,6 +4217,81 @@ pub(crate) fn remote_status_report(
         backup_ready,
         estimated_local_latency_ms: 2,
         estimated_vds_latency_ms: 50,
+        blockers,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_remote_sync_dry_run(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = remote_sync_dry_run_report(conn, db, root, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Remote Sync Dry-Run");
+    println!("status: {}", report.status);
+    println!("local_first: {}", report.local_first);
+    println!("db_bytes: {}", report.db_bytes);
+    println!("estimated_roundtrip_ms: {}", report.estimated_roundtrip_ms);
+    println!("export: {}", report.export_command);
+    println!("import: {}", report.import_command);
+    for blocker in &report.blockers {
+        println!("blocker: {blocker}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn remote_sync_dry_run_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+) -> Result<RemoteSyncDryRunReport> {
+    let remote = remote_status_report(conn, db, root, since_days)?;
+    let ops = ops_status_report(conn, db, root, since_days)?;
+    let db_bytes = ops.storage.db_bytes;
+    let estimated_export_bytes = db_bytes.saturating_add(db_bytes / 8);
+    let transfer_units = (estimated_export_bytes / 256_000).min(u32::MAX as u64) as u32;
+    let estimated_upload_ms = 50u32.saturating_add(transfer_units.saturating_mul(12));
+    let estimated_download_ms = 50u32.saturating_add(transfer_units.saturating_mul(12));
+    let estimated_roundtrip_ms = estimated_upload_ms
+        .saturating_add(estimated_download_ms)
+        .saturating_add(remote.estimated_vds_latency_ms);
+    let mut blockers = remote.blockers.clone();
+    if !remote.embedding_current {
+        blockers.push("embedding index is not current before sync".to_string());
+    }
+    blockers.sort();
+    blockers.dedup();
+    let mut recommendations = remote.recommendations.clone();
+    recommendations
+        .push("run sync export/import in dry-run until conflict policy is explicit".to_string());
+    recommendations
+        .push("keep agent reads local unless measured VDS roundtrip is acceptable".to_string());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = blockers.is_empty();
+    Ok(RemoteSyncDryRunReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "blocked" }.to_string(),
+        local_first: true,
+        db_bytes,
+        estimated_export_bytes,
+        estimated_upload_ms,
+        estimated_download_ms,
+        estimated_roundtrip_ms,
+        export_command: remote.export_command,
+        import_command: remote.import_command,
         blockers,
         recommendations,
     })

@@ -650,6 +650,33 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Explain which recent memory reads influenced agent behavior.
+    DecisionTrace {
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Materialize autonomous inferred feedback for recent memory reads.
+    AutoFeedback {
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Guard memory reads and writes against unnecessary token cost.
+    CostGuard {
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Record lightweight agent feedback for memory ids returned by a task.
     Feedback {
         #[arg(long = "id")]
@@ -755,6 +782,33 @@ pub(crate) enum Command {
     },
     /// Inspect local-first remote/VDS sync readiness without moving memory remotely.
     RemoteStatus {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Diff project changes against memory links, conflicts, and stale facts.
+    ProjectDiff {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        changed_only: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Aggregate ROI, trace, cost, diff, auto-feedback, and remote readiness.
+    IntelligenceDashboard {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Simulate local-first remote/VDS memory sync without moving data.
+    RemoteSyncDryRun {
         #[arg(long, default_value = ".")]
         root: PathBuf,
         #[arg(long, default_value_t = 7)]

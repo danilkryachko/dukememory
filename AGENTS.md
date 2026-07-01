@@ -37,10 +37,18 @@ For every new chat or coding task in this repository:
 - To inspect memory quality and cleanup candidates, run `dukememory usefulness-report`.
 - To inspect autonomous maintenance, run `dukememory autonomous status --json`.
 - To inspect evidence-backed memory quality, run `dukememory quality-report --json`.
+- To inspect memory ROI and write pressure, run `dukememory roi-report --json`.
+- To inspect whether agents follow memory discipline, run `dukememory agent-audit --json`.
+- To explain which memory cards influenced recent agent behavior, run `dukememory decision-trace --json`.
+- To materialize autonomous inferred feedback, run `dukememory auto-feedback --json` or preview with `--dry-run`.
+- To keep memory token-light, run `dukememory cost-guard --json`.
 - To choose the smallest useful context budget, run `dukememory budget-plan "<task>" --json`.
 - To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`.
 - To inspect live memory usefulness from reads and feedback, run `dukememory eval live --json`.
 - To inspect all local projects, run `dukememory dashboard --json`.
+- To inspect the full memory intelligence surface, run `dukememory intelligence-dashboard --json`.
+- To diff changed files against memory links and stale facts, run `dukememory project-diff --changed-only --json`.
+- To preview local-first VDS/remote sync readiness, run `dukememory remote-sync-dry-run --json`.
 - To safely group and process inbox suggestions, run `dukememory inbox-v2 report --json`.
 - To check whether memory is useful or noisy, run `dukememory memory-qa --json`.
 - To refresh project-wide memory instructions and the compact contract, run `dukememory upgrade-project --json`.

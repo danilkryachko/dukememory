@@ -8451,6 +8451,17 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         .stdout(contains("onboard:"));
     assert!(agent_config.exists());
     assert!(root.join("AGENTS.md").exists());
+    let agents_md = fs::read_to_string(root.join("AGENTS.md")).unwrap();
+    for command in [
+        "decision-trace",
+        "auto-feedback",
+        "cost-guard",
+        "intelligence-dashboard",
+        "project-diff",
+        "remote-sync-dry-run",
+    ] {
+        assert!(agents_md.contains(command), "AGENTS.md missing {command}");
+    }
 
     cmd(&db)
         .arg("install-skill")
@@ -8459,6 +8470,17 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         .assert()
         .success();
     assert!(skills.join("dukememory-use/SKILL.md").exists());
+    let skill_md = fs::read_to_string(skills.join("dukememory-use/SKILL.md")).unwrap();
+    for command in [
+        "decision-trace",
+        "auto-feedback",
+        "cost-guard",
+        "intelligence-dashboard",
+        "project-diff",
+        "remote-sync-dry-run",
+    ] {
+        assert!(skill_md.contains(command), "SKILL.md missing {command}");
+    }
 
     cmd(&db)
         .arg("add")
@@ -9335,9 +9357,21 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/roi-report"));
     assert!(html.contains("/agent-audit"));
     assert!(html.contains("/remote-status"));
+    assert!(html.contains("/decision-trace"));
+    assert!(html.contains("/auto-feedback"));
+    assert!(html.contains("/cost-guard"));
+    assert!(html.contains("/project-diff"));
+    assert!(html.contains("/intelligence-dashboard"));
+    assert!(html.contains("/remote-sync-dry-run"));
     assert!(html.contains("memory ROI"));
     assert!(html.contains("agent audit"));
     assert!(html.contains("remote readiness"));
+    assert!(html.contains("Intelligence v2"));
+    assert!(html.contains("decision trace"));
+    assert!(html.contains("auto feedback v2"));
+    assert!(html.contains("cost guard"));
+    assert!(html.contains("project intelligence diff"));
+    assert!(html.contains("remote sync dry-run"));
     assert!(html.contains("/upgrade-project"));
 
     let memory = http_once(
@@ -9575,6 +9609,55 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(remote.contains("\"remote\""));
     assert!(remote.contains("\"local_first\""));
     assert!(remote.contains("\"estimated_vds_latency_ms\""));
+
+    let trace = http_once(
+        &db,
+        "GET /decision-trace?since_days=7&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(trace.contains("\"trace\""));
+    assert!(trace.contains("\"influenced_reads\""));
+    assert!(trace.contains("\"memory_titles\""));
+
+    let auto_feedback = http_once(
+        &db,
+        "GET /auto-feedback?since_days=7&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(auto_feedback.contains("\"auto_feedback\""));
+    assert!(auto_feedback.contains("\"applied\":false"));
+    assert!(auto_feedback.contains("\"scanned\""));
+
+    let cost_guard = http_once(
+        &db,
+        "GET /cost-guard?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(cost_guard.contains("\"cost_guard\""));
+    assert!(cost_guard.contains("\"recommended_profile\""));
+    assert!(cost_guard.contains("\"guard_active\""));
+
+    let project_diff = http_once(
+        &db,
+        "GET /project-diff?changed_only=true HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(project_diff.contains("\"project_diff\""));
+    assert!(project_diff.contains("\"changed_files\""));
+    assert!(project_diff.contains("\"drift\""));
+
+    let intelligence = http_once(
+        &db,
+        "GET /intelligence-dashboard?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(intelligence.contains("\"intelligence\""));
+    assert!(intelligence.contains("\"cost_guard\""));
+    assert!(intelligence.contains("\"decision_trace\""));
+    assert!(intelligence.contains("\"remote_sync\""));
+
+    let remote_sync = http_once(
+        &db,
+        "GET /remote-sync-dry-run?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(remote_sync.contains("\"remote_sync\""));
+    assert!(remote_sync.contains("\"estimated_roundtrip_ms\""));
+    assert!(remote_sync.contains("\"local_first\":true"));
 
     let contract = http_once(
         &db,
@@ -10487,6 +10570,102 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(remote_json["estimated_vds_latency_ms"].as_u64().unwrap() >= 20);
     assert!(remote_json["recommendations"].as_array().is_some());
 
+    let trace = stdout(
+        cmd(&db)
+            .arg("decision-trace")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--limit")
+            .arg("10")
+            .arg("--json"),
+    );
+    let trace_json: Value = serde_json::from_str(&trace).unwrap();
+    assert_eq!(trace_json["version"], 1);
+    assert!(trace_json["traced_reads"].as_u64().unwrap() >= 1);
+    assert!(trace_json["items"].as_array().is_some());
+    assert!(trace_json["items"][0]["influence"].as_str().is_some());
+
+    let auto_feedback = stdout(
+        cmd(&db)
+            .arg("auto-feedback")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--limit")
+            .arg("20")
+            .arg("--dry-run")
+            .arg("--json"),
+    );
+    let auto_feedback_json: Value = serde_json::from_str(&auto_feedback).unwrap();
+    assert_eq!(auto_feedback_json["version"], 1);
+    assert_eq!(auto_feedback_json["applied"], false);
+    assert!(auto_feedback_json["scanned"].as_u64().is_some());
+    assert!(auto_feedback_json["recommendations"].as_array().is_some());
+
+    let cost_guard = stdout(
+        cmd(&db)
+            .arg("cost-guard")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let cost_guard_json: Value = serde_json::from_str(&cost_guard).unwrap();
+    assert_eq!(cost_guard_json["version"], 1);
+    assert!(cost_guard_json["score"].as_f64().unwrap() >= 0.0);
+    assert!(cost_guard_json["recommended_profile"].as_str().is_some());
+    assert_eq!(cost_guard_json["guard_active"], true);
+
+    let project_diff = stdout(
+        cmd(&db)
+            .arg("project-diff")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--changed-only")
+            .arg("--json"),
+    );
+    let project_diff_json: Value = serde_json::from_str(&project_diff).unwrap();
+    assert_eq!(project_diff_json["version"], 1);
+    assert!(project_diff_json["changed_files"].as_array().is_some());
+    assert!(project_diff_json["drift"]["warnings"].as_array().is_some());
+
+    let remote_sync = stdout(
+        cmd(&db)
+            .arg("remote-sync-dry-run")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let remote_sync_json: Value = serde_json::from_str(&remote_sync).unwrap();
+    assert_eq!(remote_sync_json["version"], 1);
+    assert_eq!(remote_sync_json["local_first"], true);
+    assert!(remote_sync_json["estimated_roundtrip_ms"].as_u64().unwrap() >= 50);
+
+    let intelligence = stdout(
+        cmd(&db)
+            .arg("intelligence-dashboard")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let intelligence_json: Value = serde_json::from_str(&intelligence).unwrap();
+    assert_eq!(intelligence_json["version"], 1);
+    assert!(intelligence_json["roi"]["score"].as_f64().is_some());
+    assert!(intelligence_json["agent_audit"]["score"].as_f64().is_some());
+    assert!(intelligence_json["cost_guard"]["score"].as_f64().is_some());
+    assert!(
+        intelligence_json["decision_trace"]["items"]
+            .as_array()
+            .is_some()
+    );
+    assert!(
+        intelligence_json["remote_sync"]["estimated_roundtrip_ms"]
+            .as_u64()
+            .is_some()
+    );
+
     let gap_run = stdout(
         cmd(&db)
             .arg("autonomous")
@@ -10764,6 +10943,12 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(contract_json["max_chars"], 1100);
     assert!(contract_json["content"].as_str().unwrap().chars().count() <= 1100);
     assert!(
+        contract_json["content"]
+            .as_str()
+            .unwrap()
+            .contains("Project Contract")
+    );
+    assert!(
         dir.path()
             .join(".agent")
             .join("MEMORY_CONTRACT.md")
@@ -10791,6 +10976,23 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let upgrade_json: Value = serde_json::from_str(&upgrade).unwrap();
     assert_eq!(upgrade_json["dry_run"], true);
     assert!(upgrade_json["actions"].as_array().unwrap().len() >= 3);
+    let upgrade_actions = upgrade_json["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+    for action in [
+        "would refresh .agent/config.toml",
+        "would refresh workspace rules and AGENTS.md",
+        "would refresh Codex skill",
+        "would write memory contract",
+    ] {
+        assert!(upgrade_actions.contains(action), "upgrade missing {action}");
+    }
+    assert_eq!(upgrade_json["contract"]["version"], 1);
+    assert!(upgrade_json["qa"]["ok"].as_bool().is_some());
 
     Connection::open(&db)
         .unwrap()

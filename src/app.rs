@@ -751,6 +751,18 @@ pub(crate) fn run() -> Result<()> {
         } => print_quality_report(&conn, since_days, limit, json)?,
         Command::RoiReport { since_days, json } => print_roi_report(&conn, since_days, json)?,
         Command::AgentAudit { since_days, json } => print_agent_audit(&conn, since_days, json)?,
+        Command::DecisionTrace {
+            since_days,
+            limit,
+            json,
+        } => print_decision_trace(&conn, since_days, limit, json)?,
+        Command::AutoFeedback {
+            since_days,
+            limit,
+            dry_run,
+            json,
+        } => print_auto_feedback_v2(&conn, since_days, limit, dry_run, json)?,
+        Command::CostGuard { since_days, json } => print_cost_guard(&conn, since_days, json)?,
         Command::Feedback {
             ids,
             rating,
@@ -869,6 +881,21 @@ pub(crate) fn run() -> Result<()> {
             since_days,
             json,
         } => print_remote_status(&conn, &cli.db, &root, since_days, json)?,
+        Command::ProjectDiff {
+            root,
+            changed_only,
+            json,
+        } => print_project_diff(&conn, &root, changed_only, json)?,
+        Command::IntelligenceDashboard {
+            root,
+            since_days,
+            json,
+        } => print_intelligence_dashboard(&conn, &cli.db, &root, since_days, json)?,
+        Command::RemoteSyncDryRun {
+            root,
+            since_days,
+            json,
+        } => print_remote_sync_dry_run(&conn, &cli.db, &root, since_days, json)?,
         Command::InboxV2 { command } => handle_inbox_v2(&conn, command)?,
         Command::PolicyTune {
             output,
@@ -2635,6 +2662,16 @@ Use `dukememory autonomous status --json` to inspect the latest autonomous maint
 
 Use `dukememory quality-report --json` to inspect per-card quality, feedback, token-saving value, evidence links, and risk.
 
+Use `dukememory roi-report --json` to inspect memory ROI, top reused cards, useful rate, and write pressure.
+
+Use `dukememory agent-audit --json` to inspect whether agents start with brief/impact, use semantic recall, and write durable memory responsibly.
+
+Use `dukememory decision-trace --json` to explain which recent memory reads influenced agent behavior and which cards were confirmed or questioned by feedback.
+
+Use `dukememory auto-feedback --dry-run --json` to preview autonomous inferred feedback; use `dukememory auto-feedback --json` when safe to materialize useful/missing feedback events.
+
+Use `dukememory cost-guard --json` to keep memory token-light and detect high budgets, high write pressure, noisy cards, or oversized cards.
+
 Use `dukememory budget-plan "<task>" --json` when unsure how much memory context is enough. Prefer the returned smallest useful profile.
 
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
@@ -2644,6 +2681,12 @@ Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enoug
 Use `dukememory eval live --json` to inspect whether memory reads are later judged useful, useless, or missing.
 
 Use `dukememory dashboard --json` to inspect all discovered project memories and autonomous health.
+
+Use `dukememory intelligence-dashboard --json` to inspect ROI, agent behavior, decision trace, auto-feedback status, cost guard, project diff, and remote sync dry-run in one compact report.
+
+Use `dukememory project-diff --changed-only --json` to compare current project changes with memory links, stale facts, and duplicate decisions.
+
+Use `dukememory remote-sync-dry-run --json` before using VDS/remote memory sync. Keep reads local-first unless measured latency is acceptable.
 
 Use `dukememory inbox-v2 report --json` before processing pending inbox items; use `dukememory inbox-v2 auto-apply --dry-run --json` before allowing changes.
 
@@ -2670,6 +2713,8 @@ dukememory build-info
 dukememory quality-report --json
 dukememory embed-status --json
 dukememory memory-qa --json
+dukememory intelligence-dashboard --json
+dukememory cost-guard --json
 dukememory autonomous run-once --level normal --json
 dukememory autonomous status --json
 dukememory drift --root . --json
@@ -3076,6 +3121,11 @@ fn print_completions(shell: CompletionShell) {
         "usage-report",
         "usefulness-report",
         "quality-report",
+        "roi-report",
+        "agent-audit",
+        "decision-trace",
+        "auto-feedback",
+        "cost-guard",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -3085,6 +3135,10 @@ fn print_completions(shell: CompletionShell) {
         "dashboard-repair",
         "dashboard-repair-history",
         "ops-status",
+        "remote-status",
+        "project-diff",
+        "intelligence-dashboard",
+        "remote-sync-dry-run",
         "inbox-v2",
         "policy-tune",
         "memory-qa",
@@ -3174,6 +3228,11 @@ fn print_manpage() {
     println!("  usage-report --since-days 7   show memory reads, writes, and reuse");
     println!("  usefulness-report             show hot/unused/stale memory suggestions");
     println!("  quality-report --json         score memory usefulness and token value");
+    println!("  roi-report --json             estimate memory ROI and write pressure");
+    println!("  agent-audit --json            audit agent memory behavior");
+    println!("  decision-trace --json         explain recent memory influence");
+    println!("  auto-feedback --dry-run       infer feedback from recent reads");
+    println!("  cost-guard --json             protect memory token budget");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");
@@ -3182,6 +3241,10 @@ fn print_manpage() {
     println!("  dashboard-repair --apply      run safe dashboard repair actions");
     println!("  dashboard-repair-history      summarize safe repair audit history");
     println!("  ops-status --json             one UI/autonomy/effectiveness/sync status");
+    println!("  remote-status --json          local-first remote/VDS readiness");
+    println!("  project-diff --changed-only   diff project changes against memory");
+    println!("  intelligence-dashboard --json aggregate memory intelligence");
+    println!("  remote-sync-dry-run --json    simulate VDS sync without moving data");
     println!("  onboard --root DIR            initialize memory/profile/embeddings");
     println!("  inbox-v2 report|auto-apply    group and process pending suggestions");
     println!("  policy-tune --json            tune autonomous policy from feedback");
