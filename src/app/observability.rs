@@ -36,9 +36,23 @@ pub(crate) struct UsageReport {
     pub(crate) semantic_empty_queries: Vec<String>,
     pub(crate) nonsemantic_read_count: usize,
     pub(crate) unique_memory_ids: usize,
+    pub(crate) top_memories: Vec<UsageMemoryItem>,
     pub(crate) reads_by_command: BTreeMap<String, usize>,
     pub(crate) writes_by_type: BTreeMap<String, usize>,
     pub(crate) recent_reads: Vec<MemoryReadEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct UsageMemoryItem {
+    pub(crate) id: String,
+    #[serde(rename = "type")]
+    pub(crate) memory_type: String,
+    pub(crate) scope: String,
+    pub(crate) title: String,
+    pub(crate) status: String,
+    pub(crate) request_count: usize,
+    pub(crate) last_read_at: i64,
+    pub(crate) body_chars: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -650,6 +664,19 @@ pub(crate) fn print_usage_report(
     }
     println!("nonsemantic_reads: {}", report.nonsemantic_read_count);
     println!("unique_memory_ids: {}", report.unique_memory_ids);
+    if !report.top_memories.is_empty() {
+        println!("top_memories:");
+        for memory in &report.top_memories {
+            println!(
+                "- {} [{}] requests={} last_read_at={} {}",
+                memory.id,
+                memory.memory_type,
+                memory.request_count,
+                memory.last_read_at,
+                memory.title
+            );
+        }
+    }
     if !report.reads_by_command.is_empty() {
         println!("reads_by_command:");
         for (command, count) in &report.reads_by_command {
@@ -703,6 +730,8 @@ pub(crate) fn usage_report(
     let all_reads = read_events(conn, since_ms, usize::MAX)?;
     let mut reads_by_command = BTreeMap::new();
     let mut unique_ids = HashSet::new();
+    let mut memory_counts: HashMap<String, usize> = HashMap::new();
+    let mut memory_last_read_at: HashMap<String, i64> = HashMap::new();
     let mut semantic_read_count = 0;
     let mut semantic_reads_with_results = 0;
     let mut semantic_result_total = 0usize;
@@ -736,8 +765,14 @@ pub(crate) fn usage_report(
         }
         for id in &event.memory_ids {
             unique_ids.insert(id.clone());
+            *memory_counts.entry(id.clone()).or_insert(0) += 1;
+            memory_last_read_at
+                .entry(id.clone())
+                .and_modify(|last| *last = (*last).max(event.created_at))
+                .or_insert(event.created_at);
         }
     }
+    let top_memories = usage_top_memories(conn, &memory_counts, &memory_last_read_at, limit)?;
     let mut writes_by_type = BTreeMap::new();
     let mut stmt = conn.prepare(
         "SELECT event_type, COUNT(*) FROM memory_events WHERE created_at >= ?1 GROUP BY event_type",
@@ -783,10 +818,62 @@ pub(crate) fn usage_report(
         semantic_empty_queries,
         nonsemantic_read_count: all_reads.len().saturating_sub(semantic_eligible_total),
         unique_memory_ids: unique_ids.len(),
+        top_memories,
         reads_by_command,
         writes_by_type,
         recent_reads,
     })
+}
+
+fn usage_top_memories(
+    conn: &Connection,
+    counts: &HashMap<String, usize>,
+    last_read_at: &HashMap<String, i64>,
+    limit: usize,
+) -> Result<Vec<UsageMemoryItem>> {
+    if counts.is_empty() || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let rows = query_memories(
+        conn,
+        None,
+        &[],
+        &[
+            "active".to_string(),
+            "uncertain".to_string(),
+            "superseded".to_string(),
+        ],
+        None,
+        usize::MAX,
+    )?;
+    let mut items = rows
+        .into_iter()
+        .filter_map(|memory| {
+            let request_count = counts.get(&memory.id).copied().unwrap_or(0);
+            if request_count == 0 {
+                return None;
+            }
+            Some(UsageMemoryItem {
+                id: memory.id.clone(),
+                memory_type: memory.memory_type,
+                scope: memory.scope,
+                title: memory.title,
+                status: memory.status,
+                request_count,
+                last_read_at: last_read_at.get(&memory.id).copied().unwrap_or_default(),
+                body_chars: memory.body.chars().count(),
+            })
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|left, right| {
+        right
+            .request_count
+            .cmp(&left.request_count)
+            .then_with(|| right.last_read_at.cmp(&left.last_read_at))
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    items.truncate(limit);
+    Ok(items)
 }
 
 fn semantic_eligible_read_event(event: &MemoryReadEvent) -> bool {
@@ -925,12 +1012,14 @@ pub(crate) fn usefulness_report(
         let fresh = memory.updated_at >= fresh_cutoff;
         if request_count == 0 && !fresh {
             unused.push(item.clone());
-            suggestions.push(UsefulnessSuggestion {
-                action: "review_unused".to_string(),
-                id: Some(memory.id.clone()),
-                detail: "not used by recent memory reads; verify, link, supersede, or reject"
-                    .to_string(),
-            });
+            if !quality_broad_history_task_state(memory) {
+                suggestions.push(UsefulnessSuggestion {
+                    action: "review_unused".to_string(),
+                    id: Some(memory.id.clone()),
+                    detail: "not used by recent memory reads; verify, link, supersede, or reject"
+                        .to_string(),
+                });
+            }
         }
         if memory.updated_at < stale_cutoff {
             stale.push(item.clone());
@@ -1111,11 +1200,14 @@ pub(crate) fn quality_report(
             reasons.push("fresh; waiting for use".to_string());
         } else {
             reasons.push("unused recently".to_string());
-            suggestions.push(UsefulnessSuggestion {
-                action: "review_unused".to_string(),
-                id: Some(memory.id.clone()),
-                detail: "low quality score because no recent retrieval used this card".to_string(),
-            });
+            if !broad_history {
+                suggestions.push(UsefulnessSuggestion {
+                    action: "review_unused".to_string(),
+                    id: Some(memory.id.clone()),
+                    detail: "low quality score because no recent retrieval used this card"
+                        .to_string(),
+                });
+            }
         }
         if links == 0 {
             reasons.push("no evidence links".to_string());

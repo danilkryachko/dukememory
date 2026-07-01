@@ -453,7 +453,11 @@ fn live_eval_drops_resolved_symbolized_empty_read_queries() {
         .arg("Usage report and memory QA commands track semantic read rate retrieval health.")
         .assert()
         .success();
-    insert_empty_read_event(&db, "brief", "semantic_read_rate usage-report retrieval commands");
+    insert_empty_read_event(
+        &db,
+        "brief",
+        "semantic_read_rate usage-report retrieval commands",
+    );
 
     let eval_live = stdout(cmd(&db).arg("eval").arg("live").arg("--json"));
     let eval_live_json: Value = serde_json::from_str(&eval_live).unwrap();
@@ -5412,6 +5416,71 @@ fn quality_report_caps_broad_history_read_boost() {
 }
 
 #[test]
+fn quality_and_usefulness_do_not_suggest_review_unused_for_broad_history() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    let history_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("task_state")
+            .arg("query focused recall release")
+            .arg("Released a local patch. This broad release history card is intentionally kept for explicit history lookup.")
+            .arg("--link")
+            .arg("file:src/app/observability.rs"),
+    )
+    .trim()
+    .to_string();
+    Connection::open(&db)
+        .unwrap()
+        .execute(
+            "UPDATE memories SET updated_at = ?1 WHERE id = ?2",
+            params![now_ms() - 172_800_000, history_id],
+        )
+        .unwrap();
+
+    let quality = stdout(cmd(&db).arg("quality-report").arg("--json"));
+    let quality_json: Value = serde_json::from_str(&quality).unwrap();
+    let history = quality_json["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == history_id)
+        .unwrap();
+    assert!(
+        history["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| { reason.as_str().unwrap().contains("broad history card") })
+    );
+    assert!(
+        !quality_json["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["action"] == "review_unused" && item["id"] == history_id)
+    );
+
+    let usefulness = stdout(cmd(&db).arg("usefulness-report").arg("--json"));
+    let usefulness_json: Value = serde_json::from_str(&usefulness).unwrap();
+    assert!(
+        usefulness_json["unused"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == history_id)
+    );
+    assert!(
+        !usefulness_json["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["action"] == "review_unused" && item["id"] == history_id)
+    );
+}
+
+#[test]
 fn v14_context_and_impact_filter_query_useless_feedback() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
@@ -7469,15 +7538,28 @@ fn usage_report_counts_semantic_eligible_reads_only() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
 
-    cmd(&db)
-        .arg("add")
-        .arg("decision")
-        .arg("Initialize schema")
-        .arg("Create db.")
-        .assert()
-        .success();
+    let init_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("decision")
+            .arg("Initialize schema")
+            .arg("Create db."),
+    )
+    .trim()
+    .to_string();
+    let checkout_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Checkout policy memory")
+            .arg("Checkout policy memory is reused by usage reporting tests."),
+    )
+    .trim()
+    .to_string();
 
-    insert_read_event_with_ids(&db, "brief", "checkout policy memory", &["abc111"]);
+    insert_read_event_with_ids(&db, "brief", "checkout policy memory", &[&checkout_id]);
+    insert_read_event_with_ids(&db, "brief", "checkout policy memory", &[&checkout_id]);
+    insert_read_event_with_ids(&db, "brief", "initialize schema", &[&init_id]);
     insert_read_event(&db, "search", "checkout policy memory", true);
     insert_read_event(&db, "impact", "payment retry policy", false);
     insert_read_event(&db, "evidence", "abc123", false);
@@ -7485,32 +7567,40 @@ fn usage_report_counts_semantic_eligible_reads_only() {
 
     let usage = stdout(cmd(&db).arg("usage-report").arg("--json"));
     let usage_json: Value = serde_json::from_str(&usage).unwrap();
-    assert_eq!(usage_json["read_count"], 5);
-    assert_eq!(usage_json["semantic_read_count"], 2);
+    assert_eq!(usage_json["read_count"], 7);
+    assert_eq!(usage_json["semantic_read_count"], 4);
     assert_eq!(usage_json["fallback_read_count"], 3);
-    assert_eq!(usage_json["semantic_eligible_total"], 3);
-    assert_eq!(usage_json["semantic_eligible_read_count"], 2);
+    assert_eq!(usage_json["semantic_eligible_total"], 5);
+    assert_eq!(usage_json["semantic_eligible_read_count"], 4);
     assert_eq!(usage_json["nonsemantic_read_count"], 2);
-    assert_eq!(usage_json["semantic_reads_with_results"], 1);
+    assert_eq!(usage_json["semantic_reads_with_results"], 3);
     assert_eq!(usage_json["semantic_empty_read_count"], 1);
     assert_eq!(
         usage_json["semantic_empty_queries"][0],
         "checkout policy memory"
     );
-    assert_eq!(usage_json["semantic_result_rate"].as_f64().unwrap(), 0.5);
-    assert_eq!(usage_json["semantic_avg_results"].as_f64().unwrap(), 0.5);
-    assert_eq!(usage_json["semantic_eligible_reads_with_results"], 1);
+    assert_eq!(usage_json["semantic_result_rate"].as_f64().unwrap(), 0.75);
+    assert_eq!(usage_json["semantic_avg_results"].as_f64().unwrap(), 0.75);
+    assert_eq!(usage_json["semantic_eligible_reads_with_results"], 3);
     assert_eq!(usage_json["semantic_eligible_empty_read_count"], 1);
     assert_eq!(
         usage_json["semantic_eligible_result_rate"]
             .as_f64()
             .unwrap(),
-        0.5
+        0.75
     );
     assert_eq!(
         usage_json["semantic_eligible_read_rate"].as_f64().unwrap(),
-        2.0 / 3.0
+        4.0 / 5.0
     );
+    let top_memories = usage_json["top_memories"].as_array().unwrap();
+    assert_eq!(top_memories[0]["id"], checkout_id);
+    assert_eq!(top_memories[0]["request_count"], 2);
+    assert_eq!(top_memories[0]["title"], "Checkout policy memory");
+    assert_eq!(top_memories[0]["type"], "design_note");
+    assert!(top_memories[0]["last_read_at"].as_i64().unwrap() > 0);
+    assert_eq!(top_memories[1]["id"], init_id);
+    assert_eq!(top_memories[1]["request_count"], 1);
 }
 
 #[test]
