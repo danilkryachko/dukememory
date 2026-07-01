@@ -557,7 +557,8 @@
       doctor: null, releaseGate: null, replay: null, watch: null,
       memoryHealth: null, explainRecall: null, intentMap: null, memoryHarness: null, agentAuditV2: null, controlCenterV2: null,
       autoSupersedeV2: null, memoryDiffApply: null, recallBenchmark: null, releaseGateV2: null, remoteSyncWizard: null, governancePolicy: null,
-      autonomousLoopV2: null, governanceEnforce: null, qualityCi: null, fleetV2: null, remoteApplyFlow: null, mcpSurfaceV2: null
+      autonomousLoopV2: null, governanceEnforce: null, qualityCi: null, fleetV2: null, remoteApplyFlow: null, mcpSurfaceV2: null,
+      autopilotV3: null, selfLearning: null, roleProfile: null, inboxReviewer: null, webControlV3: null, remoteApply: null, mcpQuality: null
     };
     const $ = (id) => document.getElementById(id);
     const t = (key) => i18n[state.lang][key] || i18n.en[key] || key;
@@ -855,7 +856,7 @@
       const params = new URLSearchParams({ since_days: "7" });
       if (state.project) params.set("project", state.project);
       const taskQuery = $("q")?.value || "memory task";
-      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch, loop, journal, engine, latency, syncProfile, enforce, watchInstall, rankingProfile, projectTemplate, diffReview, contextGovernor, memoryRouter, autoRanking, watchControl, autonomyCenter, remoteSyncV2, memoryHealth, explainRecall, intentMap, memoryHarness, agentAuditV2, controlCenterV2, autoSupersedeV2, memoryDiffApply, recallBenchmark, releaseGateV2, remoteSyncWizard, governancePolicy, autonomousLoopV2, governanceEnforce, qualityCi, fleetV2, remoteApplyFlow, mcpSurfaceV2] = await Promise.all([
+      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch, loop, journal, engine, latency, syncProfile, enforce, watchInstall, rankingProfile, projectTemplate, diffReview, contextGovernor, memoryRouter, autoRanking, watchControl, autonomyCenter, remoteSyncV2, memoryHealth, explainRecall, intentMap, memoryHarness, agentAuditV2, controlCenterV2, autoSupersedeV2, memoryDiffApply, recallBenchmark, releaseGateV2, remoteSyncWizard, governancePolicy, autonomousLoopV2, governanceEnforce, qualityCi, fleetV2, remoteApplyFlow, mcpSurfaceV2, autopilotV3, selfLearning, roleProfile, inboxReviewer, webControlV3, remoteApply, mcpQuality] = await Promise.all([
         api(`/roi-report?${params.toString()}`),
         api(`/agent-audit?${params.toString()}`),
         api(`/remote-status?${params.toString()}`),
@@ -902,7 +903,14 @@
         api(`/memory-quality-ci?${params.toString()}&minimal=true`),
         api(`/fleet-dashboard-v2?${params.toString()}`),
         api(`/remote-sync-apply-flow?${params.toString()}`),
-        api(`/mcp-tool-surface-v2?${params.toString()}`)
+        api(`/mcp-tool-surface-v2?${params.toString()}`),
+        api(`/autopilot-v3?${params.toString()}`),
+        api(`/self-learning-retrieval?${params.toString()}`),
+        api(`/project-role-profile?${params.toString()}`),
+        api(`/inbox-ai-reviewer?${params.toString()}`),
+        api(`/web-control-center-v3?${params.toString()}`),
+        api(`/remote-sync-apply?${params.toString()}`),
+        api(`/mcp-quality-tools?${params.toString()}`)
       ]);
       state.roi = roi.roi;
       state.agentAudit = audit.agent_audit;
@@ -951,6 +959,13 @@
       state.fleetV2 = fleetV2.fleet;
       state.remoteApplyFlow = remoteApplyFlow.flow;
       state.mcpSurfaceV2 = mcpSurfaceV2.mcp;
+      state.autopilotV3 = autopilotV3.autopilot_v3;
+      state.selfLearning = selfLearning.learning;
+      state.roleProfile = roleProfile.role;
+      state.inboxReviewer = inboxReviewer.reviewer;
+      state.webControlV3 = webControlV3.control_v3;
+      state.remoteApply = remoteApply.remote_apply;
+      state.mcpQuality = mcpQuality.mcp_quality;
       renderSettings();
     }
 
@@ -989,6 +1004,14 @@
         await api("/autonomous-loop-v2/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
       } else if (action === "governance-enforce") {
         await api("/governance-enforce/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
+      } else if (action === "autopilot-v3") {
+        await api("/autopilot-v3/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
+      } else if (action === "self-learning") {
+        await api("/self-learning-retrieval/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
+      } else if (action === "role-profile") {
+        await api("/project-role-profile/apply", { method: "POST", body: JSON.stringify(withProject({})) });
+      } else if (action === "inbox-reviewer") {
+        await api("/inbox-ai-reviewer/apply", { method: "POST", body: JSON.stringify(withProject({ limit: 100 })) });
       } else if (action === "release-v2-run") {
         await api("/release-gate-v2/run", { method: "POST", body: JSON.stringify(withProject({ since_days: 7, strict: false })) });
       } else if (action === "auto-ranking") {
@@ -1322,6 +1345,13 @@
       const fleetV2 = state.fleetV2 || {};
       const remoteApplyFlow = state.remoteApplyFlow || {};
       const mcpSurfaceV2 = state.mcpSurfaceV2 || {};
+      const autopilotV3 = state.autopilotV3 || {};
+      const selfLearning = state.selfLearning || {};
+      const roleProfile = state.roleProfile || {};
+      const inboxReviewer = state.inboxReviewer || {};
+      const webControlV3 = state.webControlV3 || {};
+      const remoteApply = state.remoteApply || {};
+      const mcpQuality = state.mcpQuality || {};
       const contract = state.contract || {};
       const ops = state.ops || {};
       const effectiveness = ops.effectiveness || {};
@@ -1404,10 +1434,17 @@
         <div class="stat"><strong>${Number(fleetV2.attention_projects || 0)}</strong><span>fleet attention</span></div>
         <div class="stat"><strong>${remoteApplyFlow.apply_allowed ? "ready" : escapeHtml(remoteApplyFlow.status || "-")}</strong><span>remote apply</span></div>
         <div class="stat"><strong>${Number(mcpSurfaceV2.missing_tools?.length || 0)}</strong><span>mcp missing</span></div>
+        <div class="stat"><strong>${escapeHtml(autopilotV3.status || "-")}</strong><span>autopilot v3</span></div>
+        <div class="stat"><strong>${escapeHtml(selfLearning.selected_profile || "-")}</strong><span>learning</span></div>
+        <div class="stat"><strong>${escapeHtml(roleProfile.inferred_kind || "-")}</strong><span>role profile</span></div>
+        <div class="stat"><strong>${Number(inboxReviewer.approve_ready || 0)}</strong><span>inbox reviewer</span></div>
+        <div class="stat"><strong>${escapeHtml(webControlV3.status || "-")}</strong><span>control v3</span></div>
+        <div class="stat"><strong>${escapeHtml(remoteApply.status || "-")}</strong><span>remote sync apply</span></div>
+        <div class="stat"><strong>${Number(mcpQuality.missing_quality_tools?.length || 0)}</strong><span>mcp quality</span></div>
       </div>
       <div class="card"><div class="title">doctor project</div><div class="body">status ${escapeHtml(doctor.status || "-")}<br>qa ${Number(doctor.memory_qa?.score || 0).toFixed(1)}<br>embedding ${doctor.embedding ? `${Number(doctor.embedding.missing || 0)} missing / ${Number(doctor.embedding.stale || 0)} stale` : "-"}<br>${doctor.checks?.length ? doctor.checks.slice(0, 6).map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">release gate</div><div class="body">status ${escapeHtml(releaseGate.status || "-")}<br>strict ${releaseGate.strict ? "yes" : "no"}<br>${releaseGate.checks?.length ? releaseGate.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}<br>${releaseGate.issues?.length ? releaseGate.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
-      <div class="card"><div class="title">intelligence actions</div><div class="actions"><button data-intelligence="doctor-fix">Doctor fix</button><button data-intelligence="loop-apply">Loop apply</button><button data-intelligence="loop-v2-apply">Loop v2</button><button data-intelligence="governance-enforce">Governance enforce</button><button data-intelligence="engine-apply">Engine apply</button><button data-intelligence="sync-profile">Sync profile</button><button data-intelligence="ranking-apply">Ranking profile</button><button data-intelligence="auto-ranking">Auto ranking</button><button data-intelligence="template-apply">Template</button><button data-intelligence="diff-review">Diff review</button><button data-intelligence="diff-apply">Diff apply</button><button data-intelligence="supersede-v2">Supersede v2</button><button data-intelligence="benchmark-baseline">Benchmark baseline</button><button data-intelligence="governance-policy">Governance</button><button data-intelligence="watch-control">Watch control</button><button data-intelligence="upgrade-all">Upgrade all</button><button data-intelligence="enforce-fix">Enforce fix</button><button data-intelligence="auto-feedback">Auto feedback</button><button data-intelligence="watch-fix">Watch fix</button><button data-intelligence="release-run">Release run</button><button data-intelligence="release-v2-run">Release v2</button></div></div>
+      <div class="card"><div class="title">intelligence actions</div><div class="actions"><button data-intelligence="doctor-fix">Doctor fix</button><button data-intelligence="loop-apply">Loop apply</button><button data-intelligence="loop-v2-apply">Loop v2</button><button data-intelligence="autopilot-v3">Autopilot v3</button><button data-intelligence="self-learning">Self learning</button><button data-intelligence="role-profile">Role profile</button><button data-intelligence="inbox-reviewer">Inbox reviewer</button><button data-intelligence="governance-enforce">Governance enforce</button><button data-intelligence="engine-apply">Engine apply</button><button data-intelligence="sync-profile">Sync profile</button><button data-intelligence="ranking-apply">Ranking profile</button><button data-intelligence="auto-ranking">Auto ranking</button><button data-intelligence="template-apply">Template</button><button data-intelligence="diff-review">Diff review</button><button data-intelligence="diff-apply">Diff apply</button><button data-intelligence="supersede-v2">Supersede v2</button><button data-intelligence="benchmark-baseline">Benchmark baseline</button><button data-intelligence="governance-policy">Governance</button><button data-intelligence="watch-control">Watch control</button><button data-intelligence="upgrade-all">Upgrade all</button><button data-intelligence="enforce-fix">Enforce fix</button><button data-intelligence="auto-feedback">Auto feedback</button><button data-intelligence="watch-fix">Watch fix</button><button data-intelligence="release-run">Release run</button><button data-intelligence="release-v2-run">Release v2</button></div></div>
       <div class="card"><div class="title">context governor</div><div class="body">budget ${escapeHtml(contextGovernor.budget?.profile || "-")} / ${Number(contextGovernor.max_context_chars || 0)} chars<br>${contextGovernor.selected_flow?.length ? contextGovernor.selected_flow.map(escapeHtml).join("<br>") : "-"}<br>${contextGovernor.commands?.length ? contextGovernor.commands.slice(0, 4).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">memory router</div><div class="body">selected ${escapeHtml(memoryRouter.selected_route || "-")}<br>${memoryRouter.routes?.length ? memoryRouter.routes.slice(0, 5).map((route) => `${escapeHtml(route.mode)} ${Number(route.matches || 0)} ${escapeHtml(route.root)}`).join("<br>") : "-"}<br>${memoryRouter.warnings?.length ? memoryRouter.warnings.map(escapeHtml).join("<br>") : ""}</div></div>
       <div class="card"><div class="title">auto ranking tune</div><div class="body">profile ${escapeHtml(autoRanking.selected_profile || "-")}<br>qa ${Number(autoRanking.qa_score || 0).toFixed(1)} / useful ${formatPercent(autoRanking.useful_rate)}<br>missing ${Number(autoRanking.inferred_missing || 0)} / semantic empty ${Number(autoRanking.semantic_empty || 0)} / noisy ${Number(autoRanking.noisy_cards || 0)}<br>${autoRanking.reasons?.length ? autoRanking.reasons.map(escapeHtml).join("<br>") : "-"}</div></div>
@@ -1432,6 +1469,13 @@
       <div class="card"><div class="title">fleet dashboard v2</div><div class="body">projects ${Number(fleetV2.total_projects || 0)} / ready ${Number(fleetV2.ready_projects || 0)} / attention ${Number(fleetV2.attention_projects || 0)}<br>${fleetV2.projects?.length ? fleetV2.projects.slice(0, 5).map((project) => `${escapeHtml(project.status)} ${Number(project.health_score || 0).toFixed(1)} ${escapeHtml(project.root)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">remote apply flow</div><div class="body">status ${escapeHtml(remoteApplyFlow.status || "-")}<br>apply allowed ${remoteApplyFlow.apply_allowed ? "yes" : "no"} / passphrase ${remoteApplyFlow.passphrase_ready ? "ready" : "missing"}<br>${remoteApplyFlow.blockers?.length ? remoteApplyFlow.blockers.map(escapeHtml).join("<br>") : remoteApplyFlow.commands?.slice(0, 4).map(escapeHtml).join("<br>") || "blockers -"}</div></div>
       <div class="card"><div class="title">mcp tool surface v2</div><div class="body">expected ${Number(mcpSurfaceV2.expected_tools?.length || 0)} / exposed ${Number(mcpSurfaceV2.exposed_tools?.length || 0)} / missing ${Number(mcpSurfaceV2.missing_tools?.length || 0)}<br>${mcpSurfaceV2.missing_tools?.length ? mcpSurfaceV2.missing_tools.map(escapeHtml).join("<br>") : mcpSurfaceV2.expected_tools?.slice(0, 8).map(escapeHtml).join("<br>") || "-"}</div></div>
+      <div class="card"><div class="title">autopilot v3</div><div class="body">status ${escapeHtml(autopilotV3.status || "-")}<br>applied ${autopilotV3.applied ? "yes" : "no"}<br>blockers ${Number(autopilotV3.blockers?.length || 0)}<br>${autopilotV3.recommendations?.slice(0, 5).map(escapeHtml).join("<br>") || "-"}</div></div>
+      <div class="card"><div class="title">self-learning retrieval</div><div class="body">status ${escapeHtml(selfLearning.status || "-")}<br>profile ${escapeHtml(selfLearning.selected_profile || "-")}<br>${selfLearning.signals?.slice(0, 6).map(escapeHtml).join("<br>") || "-"}</div></div>
+      <div class="card"><div class="title">project role profile</div><div class="body">kind ${escapeHtml(roleProfile.inferred_kind || "-")}<br>applied ${roleProfile.applied ? "yes" : "no"}<br>${roleProfile.reasons?.map(escapeHtml).join("<br>") || "-"}</div></div>
+      <div class="card"><div class="title">inbox ai reviewer</div><div class="body">pending ${Number(inboxReviewer.pending || 0)}<br>approve ${Number(inboxReviewer.approve_ready || 0)} / merge ${Number(inboxReviewer.merge_ready || 0)} / reject ${Number(inboxReviewer.reject_ready || 0)}<br>${inboxReviewer.explanations?.slice(0, 5).map(escapeHtml).join("<br>") || "-"}</div></div>
+      <div class="card"><div class="title">web control center v3</div><div class="body">status ${escapeHtml(webControlV3.status || "-")}<br>${webControlV3.tabs?.map((tab) => `${escapeHtml(tab.name)} ${escapeHtml(tab.status)} ${Number(tab.score || 0).toFixed(1)}`).join("<br>") || "-"}</div></div>
+      <div class="card"><div class="title">remote sync apply</div><div class="body">status ${escapeHtml(remoteApply.status || "-")}<br>applied ${remoteApply.applied ? "yes" : "no"}<br>${remoteApply.blockers?.length ? remoteApply.blockers.map(escapeHtml).join("<br>") : remoteApply.commands?.slice(0, 4).map(escapeHtml).join("<br>") || "-"}</div></div>
+      <div class="card"><div class="title">mcp quality tools</div><div class="body">quality ${Number(mcpQuality.quality_tools?.length || 0)} / missing ${Number(mcpQuality.missing_quality_tools?.length || 0)}<br>${mcpQuality.recommended_flow?.map(escapeHtml).join("<br>") || "-"}</div></div>
       <div class="card"><div class="title">autonomous loop</div><div class="body">status ${escapeHtml(loop.status || "-")}<br>applied ${loop.applied ? "yes" : "no"}<br>watch attention ${Number(loop.watch?.attention_projects || 0)}<br>${loop.actions?.length ? loop.actions.slice(0, 5).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">action journal</div><div class="body">events ${Number(journal.total || 0)}<br>applied ${Number(journal.applied || 0)} / skipped ${Number(journal.skipped || 0)} / failed ${Number(journal.failed || 0)}<br>rollback ${Number(journal.rollback_events || 0)}<br>${journal.items?.length ? journal.items.slice(0, 5).map((item) => `${escapeHtml(item.status)} ${escapeHtml(item.action)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">usefulness engine</div><div class="body">status ${escapeHtml(engine.status || "-")}<br>applied ${engine.applied ? "yes" : "no"}<br>promote ${Number(engine.promote_candidates?.length || 0)} / suppress ${Number(engine.suppress_candidates?.length || 0)}<br>${engine.ranking_policy?.length ? engine.ranking_policy.slice(0, 4).map(escapeHtml).join("<br>") : "-"}</div></div>

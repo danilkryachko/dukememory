@@ -1196,6 +1196,30 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
             serde_json::json!({"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"memory_quality_ci","arguments":{"since_days":7,"minimal":true,"max_chars":4000}}})
         )
         .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"memory_status","arguments":{"since_days":7,"max_chars":4000}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"memory_should_write","arguments":{"text":"Remember this durable project release decision","memory_type":"decision","max_chars":1000}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":28,"method":"tools/call","params":{"name":"memory_after_task","arguments":{"since_days":7,"max_chars":4000}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":29,"method":"tools/call","params":{"name":"memory_project_health","arguments":{"since_days":7,"max_chars":4000}}})
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
 
@@ -1212,6 +1236,10 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
     assert!(stdout.contains("memory_quality_ci"));
     assert!(stdout.contains("memory_fleet_dashboard_v2"));
     assert!(stdout.contains("memory_governance_policy"));
+    assert!(stdout.contains("memory_status"));
+    assert!(stdout.contains("memory_should_write"));
+    assert!(stdout.contains("memory_after_task"));
+    assert!(stdout.contains("memory_project_health"));
     assert!(stdout.find("memory_brief") < stdout.find("memory_context_pack"));
     assert!(stdout.contains("MCP decision"));
     assert!(stdout.contains("needle mcp exact detail"));
@@ -1249,6 +1277,26 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         .find(|line| line.contains("\"id\":25"))
         .unwrap();
     assert!(mcp_quality_ci.contains("failed_checks"));
+    let mcp_status = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":26"))
+        .unwrap();
+    assert!(mcp_status.contains("tabs"));
+    let mcp_should_write = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":27"))
+        .unwrap();
+    assert!(mcp_should_write.contains("should_write"));
+    let mcp_after_task = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":28"))
+        .unwrap();
+    assert!(mcp_after_task.contains("recommendations"));
+    let mcp_project_health = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":29"))
+        .unwrap();
+    assert!(mcp_project_health.contains("role_profile"));
     let review = stdout
         .lines()
         .find(|line| line.contains("\"id\":7"))
@@ -8653,6 +8701,13 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "fleet-dashboard-v2",
         "remote-sync-apply-flow",
         "mcp-tool-surface-v2",
+        "autopilot-v3",
+        "self-learning-retrieval",
+        "project-role-profile",
+        "inbox-ai-reviewer",
+        "web-control-center-v3",
+        "remote-sync-apply",
+        "mcp-quality-tools",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -8716,6 +8771,13 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "fleet-dashboard-v2",
         "remote-sync-apply-flow",
         "mcp-tool-surface-v2",
+        "autopilot-v3",
+        "self-learning-retrieval",
+        "project-role-profile",
+        "inbox-ai-reviewer",
+        "web-control-center-v3",
+        "remote-sync-apply",
+        "mcp-quality-tools",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -9645,6 +9707,13 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/fleet-dashboard-v2"));
     assert!(html.contains("/remote-sync-apply-flow"));
     assert!(html.contains("/mcp-tool-surface-v2"));
+    assert!(html.contains("/autopilot-v3"));
+    assert!(html.contains("/self-learning-retrieval"));
+    assert!(html.contains("/project-role-profile"));
+    assert!(html.contains("/inbox-ai-reviewer"));
+    assert!(html.contains("/web-control-center-v3"));
+    assert!(html.contains("/remote-sync-apply"));
+    assert!(html.contains("/mcp-quality-tools"));
     assert!(html.contains("/project-diff"));
     assert!(html.contains("/intelligence-dashboard"));
     assert!(html.contains("/remote-sync-dry-run"));
@@ -9702,6 +9771,13 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("fleet dashboard v2"));
     assert!(html.contains("remote apply flow"));
     assert!(html.contains("mcp tool surface v2"));
+    assert!(html.contains("autopilot v3"));
+    assert!(html.contains("self-learning retrieval"));
+    assert!(html.contains("project role profile"));
+    assert!(html.contains("inbox ai reviewer"));
+    assert!(html.contains("web control center v3"));
+    assert!(html.contains("remote sync apply"));
+    assert!(html.contains("mcp quality tools"));
     assert!(html.contains("auto ranking tune"));
     assert!(html.contains("watch control"));
     assert!(html.contains("autonomy control center"));
@@ -9717,6 +9793,10 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("Doctor fix"));
     assert!(html.contains("Loop apply"));
     assert!(html.contains("Loop v2"));
+    assert!(html.contains("Autopilot v3"));
+    assert!(html.contains("Self learning"));
+    assert!(html.contains("Role profile"));
+    assert!(html.contains("Inbox reviewer"));
     assert!(html.contains("Governance enforce"));
     assert!(html.contains("Engine apply"));
     assert!(html.contains("Sync profile"));
@@ -10261,6 +10341,62 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(mcp_surface_v2.contains("\"mcp\""));
     assert!(mcp_surface_v2.contains("\"expected_tools\""));
     assert!(mcp_surface_v2.contains("\"missing_tools\""));
+
+    let autopilot_v3 = http_once(
+        &db,
+        "GET /autopilot-v3?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(autopilot_v3.contains("\"autopilot_v3\""));
+    assert!(autopilot_v3.contains("\"learning\""));
+    assert!(autopilot_v3.contains("\"mcp_quality\""));
+
+    let self_learning = http_once(
+        &db,
+        "GET /self-learning-retrieval?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(self_learning.contains("\"learning\""));
+    assert!(self_learning.contains("\"selected_profile\""));
+    assert!(self_learning.contains("\"signals\""));
+
+    let role_profile = http_once(
+        &db,
+        "GET /project-role-profile HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(role_profile.contains("\"role\""));
+    assert!(role_profile.contains("\"inferred_kind\""));
+    assert!(role_profile.contains("\"template\""));
+
+    let inbox_reviewer = http_once(
+        &db,
+        "GET /inbox-ai-reviewer?limit=20 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(inbox_reviewer.contains("\"reviewer\""));
+    assert!(inbox_reviewer.contains("\"approve_ready\""));
+    assert!(inbox_reviewer.contains("\"explanations\""));
+
+    let web_control_v3 = http_once(
+        &db,
+        "GET /web-control-center-v3?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(web_control_v3.contains("\"control_v3\""));
+    assert!(web_control_v3.contains("\"tabs\""));
+    assert!(web_control_v3.contains("\"primary_actions\""));
+
+    let remote_sync_apply = http_once(
+        &db,
+        "GET /remote-sync-apply?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(remote_sync_apply.contains("\"remote_apply\""));
+    assert!(remote_sync_apply.contains("\"sync_profile\""));
+    assert!(remote_sync_apply.contains("\"commands\""));
+
+    let mcp_quality_tools = http_once(
+        &db,
+        "GET /mcp-quality-tools HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(mcp_quality_tools.contains("\"mcp_quality\""));
+    assert!(mcp_quality_tools.contains("\"quality_tools\""));
+    assert!(mcp_quality_tools.contains("\"recommended_flow\""));
 
     let project_template = http_once(
         &db,
@@ -11891,6 +12027,98 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .is_empty()
     );
 
+    let autopilot_v3 = stdout(
+        cmd(&db)
+            .arg("autopilot-v3")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let autopilot_v3_json: Value = serde_json::from_str(&autopilot_v3).unwrap();
+    assert_eq!(autopilot_v3_json["version"], 1);
+    assert!(autopilot_v3_json["learning"].is_object());
+    assert!(autopilot_v3_json["web_control"].is_object());
+
+    let self_learning = stdout(
+        cmd(&db)
+            .arg("self-learning-retrieval")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let self_learning_json: Value = serde_json::from_str(&self_learning).unwrap();
+    assert_eq!(self_learning_json["version"], 1);
+    assert!(self_learning_json["selected_profile"].as_str().is_some());
+    assert!(self_learning_json["signals"].as_array().is_some());
+
+    let role_profile = stdout(
+        cmd(&db)
+            .arg("project-role-profile")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--apply")
+            .arg("--json"),
+    );
+    let role_profile_json: Value = serde_json::from_str(&role_profile).unwrap();
+    assert_eq!(role_profile_json["version"], 1);
+    assert_eq!(role_profile_json["applied"], true);
+    assert!(role_profile_json["inferred_kind"].as_str().is_some());
+    assert!(dir.path().join(".agent/project-role-profile.json").exists());
+
+    let inbox_ai_reviewer = stdout(
+        cmd(&db)
+            .arg("inbox-ai-reviewer")
+            .arg("--limit")
+            .arg("20")
+            .arg("--json"),
+    );
+    let inbox_ai_reviewer_json: Value = serde_json::from_str(&inbox_ai_reviewer).unwrap();
+    assert_eq!(inbox_ai_reviewer_json["version"], 1);
+    assert!(inbox_ai_reviewer_json["explanations"].as_array().is_some());
+
+    let web_control_v3 = stdout(
+        cmd(&db)
+            .arg("web-control-center-v3")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let web_control_v3_json: Value = serde_json::from_str(&web_control_v3).unwrap();
+    assert_eq!(web_control_v3_json["version"], 1);
+    assert!(web_control_v3_json["tabs"].as_array().unwrap().len() >= 4);
+
+    let remote_sync_apply = stdout(
+        cmd(&db)
+            .arg("remote-sync-apply")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(dir.path().join("remote-sync-target"))
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let remote_sync_apply_json: Value = serde_json::from_str(&remote_sync_apply).unwrap();
+    assert_eq!(remote_sync_apply_json["version"], 1);
+    assert!(remote_sync_apply_json["commands"].as_array().is_some());
+    assert!(remote_sync_apply_json["sync_profile"].is_object());
+
+    let mcp_quality_tools = stdout(cmd(&db).arg("mcp-quality-tools").arg("--json"));
+    let mcp_quality_tools_json: Value = serde_json::from_str(&mcp_quality_tools).unwrap();
+    assert_eq!(mcp_quality_tools_json["version"], 1);
+    assert!(
+        mcp_quality_tools_json["missing_quality_tools"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
     let project_template = stdout(
         cmd(&db)
             .arg("project-template")
@@ -12100,6 +12328,24 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .iter()
             .any(|item| item.as_str() == Some("mcp-tool-surface-v2"))
     );
+    for command in [
+        "autopilot-v3",
+        "self-learning-retrieval",
+        "project-role-profile",
+        "inbox-ai-reviewer",
+        "web-control-center-v3",
+        "remote-sync-apply",
+        "mcp-quality-tools",
+    ] {
+        assert!(
+            agent_enforce_json["required_commands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item.as_str() == Some(command)),
+            "required_commands missing {command}"
+        );
+    }
 
     let gap_run = stdout(
         cmd(&db)

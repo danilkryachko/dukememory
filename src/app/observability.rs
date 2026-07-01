@@ -921,6 +921,116 @@ pub(crate) struct McpToolSurfaceV2Report {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct AutopilotV3Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) since_days: i64,
+    pub(crate) learning: SelfLearningRetrievalReport,
+    pub(crate) role_profile: ProjectRoleProfileReport,
+    pub(crate) inbox_reviewer: InboxAiReviewerReport,
+    pub(crate) loop_v2: AutonomousLoopV2Report,
+    pub(crate) web_control: WebControlCenterV3Report,
+    pub(crate) remote_sync: RemoteSyncApplyReport,
+    pub(crate) mcp_quality: McpQualityToolsReport,
+    pub(crate) actions: Vec<String>,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SelfLearningRetrievalReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) selected_profile: String,
+    pub(crate) ranking: AutoRankingTuneReport,
+    pub(crate) usefulness: UsefulnessEngineReport,
+    pub(crate) signals: Vec<String>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ProjectRoleProfileReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) inferred_kind: String,
+    pub(crate) profile_path: String,
+    pub(crate) template: ProjectTemplateReport,
+    pub(crate) reasons: Vec<String>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct InboxAiReviewerReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) applied: bool,
+    pub(crate) pending: usize,
+    pub(crate) approve_ready: usize,
+    pub(crate) merge_ready: usize,
+    pub(crate) reject_ready: usize,
+    pub(crate) keep_pending: usize,
+    pub(crate) inbox: InboxV2Report,
+    pub(crate) explanations: Vec<String>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WebControlCenterV3Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) tabs: Vec<WebControlTab>,
+    pub(crate) primary_actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WebControlTab {
+    pub(crate) name: String,
+    pub(crate) status: String,
+    pub(crate) score: f64,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RemoteSyncApplyReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) flow: RemoteSyncApplyFlowReport,
+    pub(crate) sync_v2: RemoteSyncV2Report,
+    pub(crate) sync_profile: SyncProfileReport,
+    pub(crate) commands: Vec<String>,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct McpQualityToolsReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) surface: McpToolSurfaceV2Report,
+    pub(crate) quality_tools: Vec<String>,
+    pub(crate) missing_quality_tools: Vec<String>,
+    pub(crate) recommended_flow: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct ProjectTemplateReport {
     pub(crate) version: u32,
     pub(crate) ok: bool,
@@ -5184,6 +5294,588 @@ fn mcp_v2_tool_names() -> Vec<String> {
         "memory_quality_ci",
         "memory_fleet_dashboard_v2",
         "memory_governance_policy",
+        "memory_status",
+        "memory_should_write",
+        "memory_after_task",
+        "memory_project_health",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+pub(crate) fn print_autopilot_v3(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = autopilot_v3_report(conn, db, root, target, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Autopilot v3");
+    println!("status: {}", report.status);
+    println!("applied: {}", report.applied);
+    for blocker in &report.blockers {
+        println!("blocker: {blocker}");
+    }
+    for action in &report.actions {
+        println!("action: {action}");
+    }
+    Ok(())
+}
+
+pub(crate) fn autopilot_v3_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    apply: bool,
+) -> Result<AutopilotV3Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let learning = self_learning_retrieval_report(conn, &root, since_days, apply)?;
+    let role_profile = project_role_profile_report(&root, None, apply)?;
+    let inbox_reviewer = inbox_ai_reviewer_report(conn, 100, apply)?;
+    let loop_v2 = autonomous_loop_v2_report(conn, db, &root, since_days, apply)?;
+    let web_control = web_control_center_v3_report(conn, db, &root, target, since_days)?;
+    let remote_sync = remote_sync_apply_report(conn, db, &root, target, since_days, apply)?;
+    let mcp_quality = mcp_quality_tools_report();
+    let mut actions = Vec::new();
+    actions.extend(learning.actions.clone());
+    actions.extend(role_profile.actions.clone());
+    actions.extend(inbox_reviewer.actions.clone());
+    actions.extend(loop_v2.actions.clone());
+    actions.extend(
+        remote_sync
+            .commands
+            .iter()
+            .map(|command| format!("sync_command:{command}")),
+    );
+    let mut blockers = Vec::new();
+    if !learning.ok {
+        blockers.push("self-learning retrieval needs attention".to_string());
+    }
+    if !role_profile.ok {
+        blockers.push("project role profile is not ready".to_string());
+    }
+    if !loop_v2.ok {
+        blockers.extend(loop_v2.blockers.clone());
+    }
+    if !web_control.ok {
+        blockers.push("web control center has attention tabs".to_string());
+    }
+    if !remote_sync.ok {
+        blockers.extend(remote_sync.blockers.clone());
+    }
+    if !mcp_quality.ok {
+        blockers.extend(mcp_quality.missing_quality_tools.clone());
+    }
+    blockers.sort();
+    blockers.dedup();
+    let mut recommendations = Vec::new();
+    recommendations.extend(learning.recommendations.clone());
+    recommendations.extend(role_profile.recommendations.clone());
+    recommendations.extend(inbox_reviewer.recommendations.clone());
+    recommendations.extend(loop_v2.recommendations.clone());
+    recommendations.extend(web_control.recommendations.clone());
+    recommendations.extend(remote_sync.recommendations.clone());
+    recommendations.extend(mcp_quality.recommendations.clone());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = blockers.is_empty();
+    Ok(AutopilotV3Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        applied: apply,
+        since_days,
+        learning,
+        role_profile,
+        inbox_reviewer,
+        loop_v2,
+        web_control,
+        remote_sync,
+        mcp_quality,
+        actions,
+        blockers,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_self_learning_retrieval(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = self_learning_retrieval_report(conn, root, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Self-Learning Retrieval");
+    println!("status: {}", report.status);
+    println!("profile: {}", report.selected_profile);
+    for signal in &report.signals {
+        println!("signal: {signal}");
+    }
+    Ok(())
+}
+
+pub(crate) fn self_learning_retrieval_report(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+) -> Result<SelfLearningRetrievalReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let ranking = auto_ranking_tune_report(conn, &root, since_days, apply)?;
+    let usefulness = usefulness_engine_report(conn, &root, since_days, apply)?;
+    let mut signals = ranking.reasons.clone();
+    signals.extend(usefulness.ranking_policy.clone());
+    signals.sort();
+    signals.dedup();
+    let mut actions = Vec::new();
+    actions.push(format!("selected_profile:{}", ranking.selected_profile));
+    if ranking.applied {
+        actions.push("ranking_profile_applied".to_string());
+    }
+    if usefulness.applied {
+        actions.push("usefulness_feedback_applied".to_string());
+    }
+    let mut recommendations = usefulness.recommendations.clone();
+    recommendations.extend(ranking.reasons.clone());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = ranking.ok && usefulness.ok;
+    Ok(SelfLearningRetrievalReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        applied: apply,
+        selected_profile: ranking.selected_profile.clone(),
+        ranking,
+        usefulness,
+        signals,
+        actions,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_project_role_profile(
+    root: &Path,
+    kind: Option<ProjectTemplateKind>,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = project_role_profile_report(root, kind, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Project Role Profile");
+    println!("kind: {}", report.inferred_kind);
+    println!("applied: {}", report.applied);
+    for reason in &report.reasons {
+        println!("reason: {reason}");
+    }
+    Ok(())
+}
+
+pub(crate) fn project_role_profile_report(
+    root: &Path,
+    kind: Option<ProjectTemplateKind>,
+    apply: bool,
+) -> Result<ProjectRoleProfileReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let (kind, reasons) = match kind {
+        Some(kind) => (kind, vec![format!("explicit role {}", kind)]),
+        None => infer_project_template_kind(&root),
+    };
+    let template = project_template_report(&root, kind, apply)?;
+    let profile_path = root.join(".agent/project-role-profile.json");
+    let mut actions = template.actions.clone();
+    if apply {
+        write_file(
+            &profile_path,
+            serde_json::to_string_pretty(&json!({
+                "version": 1,
+                "kind": kind.to_string(),
+                "reasons": &reasons,
+                "template_path": template.path,
+                "updated_at": now_ms(),
+            }))?
+            .as_bytes(),
+        )?;
+        actions.push(format!("role_profile_written:{}", profile_path.display()));
+    } else {
+        actions.push("dry_run: role profile not written".to_string());
+    }
+    Ok(ProjectRoleProfileReport {
+        version: 1,
+        ok: true,
+        root: root.display().to_string(),
+        applied: apply,
+        inferred_kind: kind.to_string(),
+        profile_path: profile_path.display().to_string(),
+        template,
+        reasons,
+        actions,
+        recommendations: vec![
+            "use project-role-profile before fleet checks so memory gates match project type"
+                .to_string(),
+        ],
+    })
+}
+
+fn infer_project_template_kind(root: &Path) -> (ProjectTemplateKind, Vec<String>) {
+    let root_text = root.display().to_string().to_lowercase();
+    if root_text.contains("elect") || root_text.contains("cad") {
+        return (
+            ProjectTemplateKind::ElectronicsCad,
+            vec!["project path suggests electronics/CAD workflow".to_string()],
+        );
+    }
+    if root.join("package.json").exists() {
+        return (
+            ProjectTemplateKind::FrontendApp,
+            vec!["package.json detected".to_string()],
+        );
+    }
+    if root.join("Cargo.toml").exists() {
+        return (
+            ProjectTemplateKind::RustCli,
+            vec!["Cargo.toml detected".to_string()],
+        );
+    }
+    if root.join("docs").exists() || root.join("README.md").exists() {
+        return (
+            ProjectTemplateKind::DocsResearch,
+            vec!["documentation-oriented project files detected".to_string()],
+        );
+    }
+    (
+        ProjectTemplateKind::DocsResearch,
+        vec!["fallback role uses token-light docs/research defaults".to_string()],
+    )
+}
+
+pub(crate) fn print_inbox_ai_reviewer(
+    conn: &Connection,
+    limit: usize,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = inbox_ai_reviewer_report(conn, limit, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Inbox AI Reviewer");
+    println!("pending: {}", report.pending);
+    println!("approve_ready: {}", report.approve_ready);
+    for explanation in &report.explanations {
+        println!("review: {explanation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn inbox_ai_reviewer_report(
+    conn: &Connection,
+    limit: usize,
+    apply: bool,
+) -> Result<InboxAiReviewerReport> {
+    let inbox = inbox_v2_report(conn, limit, apply)?;
+    let approve_ready = inbox
+        .groups
+        .iter()
+        .filter(|group| group.recommendation == "approve_high_confidence")
+        .count();
+    let merge_ready = inbox
+        .groups
+        .iter()
+        .filter(|group| group.recommendation == "merge_duplicates")
+        .count();
+    let reject_ready = inbox
+        .groups
+        .iter()
+        .filter(|group| group.recommendation == "reject_low_confidence")
+        .count();
+    let keep_pending = inbox
+        .groups
+        .iter()
+        .filter(|group| group.recommendation == "keep_pending")
+        .count();
+    let explanations = inbox
+        .groups
+        .iter()
+        .take(10)
+        .map(|group| {
+            format!(
+                "{}: {} confidence={:.2} count={}",
+                group.recommendation, group.title, group.max_confidence, group.count
+            )
+        })
+        .collect::<Vec<_>>();
+    let actions = inbox
+        .actions
+        .iter()
+        .map(|action| format!("{}:{}:{}", action.status, action.kind, action.detail))
+        .collect::<Vec<_>>();
+    Ok(InboxAiReviewerReport {
+        version: 1,
+        ok: true,
+        applied: apply,
+        pending: inbox.pending,
+        approve_ready,
+        merge_ready,
+        reject_ready,
+        keep_pending,
+        inbox,
+        explanations,
+        actions,
+        recommendations: vec![
+            "approve only high-confidence non-policy inbox cards automatically".to_string(),
+            "keep decisions and constraints pending unless explicitly reviewed".to_string(),
+        ],
+    })
+}
+
+pub(crate) fn print_web_control_center_v3(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = web_control_center_v3_report(conn, db, root, target, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Web Control Center v3");
+    println!("status: {}", report.status);
+    for tab in &report.tabs {
+        println!("{} {:.1} {}", tab.name, tab.score, tab.status);
+    }
+    Ok(())
+}
+
+pub(crate) fn web_control_center_v3_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+) -> Result<WebControlCenterV3Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let health = memory_health_score_report(conn, db, &root, since_days)?;
+    let autonomy = autonomy_control_center_report(conn, db, &root, since_days)?;
+    let fleet = fleet_dashboard_v2_report(db, since_days)?;
+    let sync = remote_sync_apply_flow_report(conn, db, &root, target, since_days, false)?;
+    let tabs = vec![
+        WebControlTab {
+            name: "Health".to_string(),
+            status: health.status.clone(),
+            score: health.score,
+            detail: format!("grade={} issues={}", health.grade, health.issues.len()),
+        },
+        WebControlTab {
+            name: "Autonomy".to_string(),
+            status: autonomy.status.clone(),
+            score: if autonomy.ok { 100.0 } else { 70.0 },
+            detail: format!("issues={}", autonomy.issues.len()),
+        },
+        WebControlTab {
+            name: "Projects".to_string(),
+            status: if fleet.ok { "ready" } else { "attention" }.to_string(),
+            score: if fleet.total_projects == 0 {
+                0.0
+            } else {
+                (fleet.ready_projects as f64 / fleet.total_projects as f64) * 100.0
+            },
+            detail: format!(
+                "ready={}/{} attention={}",
+                fleet.ready_projects, fleet.total_projects, fleet.attention_projects
+            ),
+        },
+        WebControlTab {
+            name: "Sync".to_string(),
+            status: sync.status.clone(),
+            score: if sync.apply_allowed || sync.ok {
+                100.0
+            } else {
+                60.0
+            },
+            detail: format!("apply_allowed={}", sync.apply_allowed),
+        },
+    ];
+    let ok = tabs.iter().all(|tab| tab.status == "ready");
+    let primary_actions = vec![
+        "autopilot-v3 --json".to_string(),
+        "memory-quality-ci --json".to_string(),
+        "fleet-dashboard-v2 --json".to_string(),
+        "remote-sync-apply --json".to_string(),
+    ];
+    Ok(WebControlCenterV3Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        tabs,
+        primary_actions,
+        recommendations: vec![
+            "show Health, Autonomy, Projects, and Sync as first-level web tabs".to_string(),
+        ],
+    })
+}
+
+pub(crate) fn print_remote_sync_apply(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = remote_sync_apply_report(conn, db, root, target, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Remote Sync Apply");
+    println!("status: {}", report.status);
+    println!("applied: {}", report.applied);
+    for command in &report.commands {
+        println!("command: {command}");
+    }
+    for blocker in &report.blockers {
+        println!("blocker: {blocker}");
+    }
+    Ok(())
+}
+
+pub(crate) fn remote_sync_apply_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    apply: bool,
+) -> Result<RemoteSyncApplyReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let flow = remote_sync_apply_flow_report(conn, db, &root, target, since_days, apply)?;
+    let sync_v2 = remote_sync_v2_report(
+        conn,
+        db,
+        &root,
+        target,
+        since_days,
+        apply && flow.apply_allowed,
+    )?;
+    let sync_profile = sync_profile_report(
+        conn,
+        db,
+        &root,
+        SyncProfileMode::LocalFirstBackup,
+        target,
+        apply && flow.apply_allowed,
+        true,
+    )?;
+    let mut commands = flow.commands.clone();
+    commands.extend(sync_profile.commands.clone());
+    commands.sort();
+    commands.dedup();
+    let mut blockers = flow.blockers.clone();
+    if !flow.apply_allowed {
+        blockers.push("apply requires target and DUKEMEMORY_SYNC_PASSPHRASE".to_string());
+    }
+    blockers.extend(sync_v2.blockers.clone());
+    blockers.extend(sync_profile.blockers.clone());
+    blockers.sort();
+    blockers.dedup();
+    let mut recommendations = flow.recommendations.clone();
+    recommendations.extend(sync_v2.recommendations.clone());
+    recommendations.extend(sync_profile.recommendations.clone());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = blockers.is_empty() || (!apply && flow.ok);
+    Ok(RemoteSyncApplyReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "blocked" }.to_string(),
+        root: root.display().to_string(),
+        applied: apply && flow.apply_allowed && sync_v2.applied && sync_profile.applied,
+        flow,
+        sync_v2,
+        sync_profile,
+        commands,
+        blockers,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_mcp_quality_tools(json_out: bool) -> Result<()> {
+    let report = mcp_quality_tools_report();
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("MCP Quality Tools");
+    println!("ok: {}", report.ok);
+    for tool in &report.quality_tools {
+        println!("tool: {tool}");
+    }
+    for missing in &report.missing_quality_tools {
+        println!("missing: {missing}");
+    }
+    Ok(())
+}
+
+pub(crate) fn mcp_quality_tools_report() -> McpQualityToolsReport {
+    let surface = mcp_tool_surface_v2_report();
+    let quality_tools = mcp_quality_tool_names();
+    let missing_quality_tools = quality_tools
+        .iter()
+        .filter(|tool| !surface.exposed_tools.contains(tool))
+        .cloned()
+        .collect::<Vec<_>>();
+    let ok = surface.ok && missing_quality_tools.is_empty();
+    McpQualityToolsReport {
+        version: 1,
+        ok,
+        surface,
+        quality_tools,
+        missing_quality_tools,
+        recommended_flow: vec![
+            "memory_status".to_string(),
+            "memory_should_write".to_string(),
+            "memory_after_task".to_string(),
+            "memory_project_health".to_string(),
+        ],
+        recommendations: vec![
+            "agents should use quality tools before writing durable memory".to_string(),
+        ],
+    }
+}
+
+fn mcp_quality_tool_names() -> Vec<String> {
+    [
+        "memory_status",
+        "memory_should_write",
+        "memory_after_task",
+        "memory_project_health",
     ]
     .into_iter()
     .map(str::to_string)
@@ -6252,6 +6944,13 @@ fn agent_required_commands() -> &'static [&'static str] {
         "fleet-dashboard-v2",
         "remote-sync-apply-flow",
         "mcp-tool-surface-v2",
+        "autopilot-v3",
+        "self-learning-retrieval",
+        "project-role-profile",
+        "inbox-ai-reviewer",
+        "web-control-center-v3",
+        "remote-sync-apply",
+        "mcp-quality-tools",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",

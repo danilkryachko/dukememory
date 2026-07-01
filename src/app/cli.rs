@@ -1133,6 +1133,79 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Run the V3 autonomous memory autopilot across learning, role, inbox, sync, UI, and MCP checks.
+    AutopilotV3 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Tune retrieval from live usefulness, feedback, quality, and ranking signals.
+    SelfLearningRetrieval {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Detect or apply a project role profile for memory budgets and checks.
+    ProjectRoleProfile {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, value_enum)]
+        kind: Option<ProjectTemplateKind>,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Review inbox suggestions with autonomous confidence explanations.
+    InboxAiReviewer {
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render the simplified V3 web control model: Health, Autonomy, Projects, Sync.
+    WebControlCenterV3 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Apply guarded local-first remote sync planning when target/passphrase are ready.
+    RemoteSyncApply {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect MCP quality helper tools for agent memory discipline.
+    McpQualityTools {
+        #[arg(long)]
+        json: bool,
+    },
     /// Write starter memory configuration for a project type.
     ProjectTemplate {
         #[arg(long, default_value = ".")]

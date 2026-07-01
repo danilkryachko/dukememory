@@ -814,6 +814,179 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
         ("GET", "/mcp-tool-surface-v2") => {
             HttpResponse::ok(json!({"mcp": mcp_tool_surface_v2_report()}))
         }
+        ("GET", "/autopilot-v3") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let target = params.get("target").map(PathBuf::from);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"autopilot_v3": autopilot_v3_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/autopilot-v3/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let target = value
+                .get("target")
+                .and_then(Value::as_str)
+                .map(PathBuf::from);
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"autopilot_v3": autopilot_v3_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                since_days,
+                true,
+            )?}))
+        }
+        ("GET", "/self-learning-retrieval") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"learning": self_learning_retrieval_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/self-learning-retrieval/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"learning": self_learning_retrieval_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                true,
+            )?}))
+        }
+        ("GET", "/project-role-profile") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let kind = params
+                .get("kind")
+                .map(String::as_str)
+                .map(|kind| parse_project_template(Some(kind)));
+            HttpResponse::ok(json!({"role": project_role_profile_report(
+                &ctx.root,
+                kind,
+                false,
+            )?}))
+        }
+        ("POST", "/project-role-profile/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let kind = value
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(|kind| parse_project_template(Some(kind)));
+            HttpResponse::ok(json!({"role": project_role_profile_report(
+                &ctx.root,
+                kind,
+                true,
+            )?}))
+        }
+        ("GET", "/inbox-ai-reviewer") => {
+            let params = parse_query(query);
+            let conn = open_selected_db(db, query, None)?;
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(100);
+            HttpResponse::ok(json!({"reviewer": inbox_ai_reviewer_report(
+                &conn,
+                limit,
+                false,
+            )?}))
+        }
+        ("POST", "/inbox-ai-reviewer/apply") => {
+            let value = parse_json_body(body)?;
+            let conn = open_selected_db(db, query, Some(&value))?;
+            let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
+            HttpResponse::ok(json!({"reviewer": inbox_ai_reviewer_report(
+                &conn,
+                limit,
+                true,
+            )?}))
+        }
+        ("GET", "/web-control-center-v3") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let target = params.get("target").map(PathBuf::from);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"control_v3": web_control_center_v3_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                since_days,
+            )?}))
+        }
+        ("GET", "/remote-sync-apply") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let target = params.get("target").map(PathBuf::from);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"remote_apply": remote_sync_apply_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/remote-sync-apply/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let target = value
+                .get("target")
+                .and_then(Value::as_str)
+                .map(PathBuf::from);
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"remote_apply": remote_sync_apply_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                since_days,
+                true,
+            )?}))
+        }
+        ("GET", "/mcp-quality-tools") => {
+            HttpResponse::ok(json!({"mcp_quality": mcp_quality_tools_report()}))
+        }
         ("POST", "/ranking-profile/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;

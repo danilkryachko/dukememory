@@ -192,6 +192,13 @@ dukememory memory-quality-ci --json
 dukememory fleet-dashboard-v2 --json
 dukememory remote-sync-apply-flow --target /mnt/vds/dukememory --json
 dukememory mcp-tool-surface-v2 --json
+dukememory autopilot-v3 --json
+dukememory self-learning-retrieval --json
+dukememory project-role-profile --json
+dukememory inbox-ai-reviewer --json
+dukememory web-control-center-v3 --json
+dukememory remote-sync-apply --target /mnt/vds/dukememory --json
+dukememory mcp-quality-tools --json
 dukememory auto-ranking-tune --apply --json
 dukememory ranking-profile --profile balanced --apply --json
 dukememory project-template --kind rust-cli --apply --json

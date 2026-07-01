@@ -1088,6 +1088,60 @@ pub(crate) fn run() -> Result<()> {
             json,
         )?,
         Command::McpToolSurfaceV2 { json } => print_mcp_tool_surface_v2(json)?,
+        Command::AutopilotV3 {
+            root,
+            target,
+            since_days,
+            apply,
+            json,
+        } => print_autopilot_v3(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            since_days,
+            apply,
+            json,
+        )?,
+        Command::SelfLearningRetrieval {
+            root,
+            since_days,
+            apply,
+            json,
+        } => print_self_learning_retrieval(&conn, &root, since_days, apply, json)?,
+        Command::ProjectRoleProfile {
+            root,
+            kind,
+            apply,
+            json,
+        } => print_project_role_profile(&root, kind, apply, json)?,
+        Command::InboxAiReviewer { limit, apply, json } => {
+            print_inbox_ai_reviewer(&conn, limit, apply, json)?
+        }
+        Command::WebControlCenterV3 {
+            root,
+            target,
+            since_days,
+            json,
+        } => {
+            print_web_control_center_v3(&conn, &cli.db, &root, target.as_deref(), since_days, json)?
+        }
+        Command::RemoteSyncApply {
+            root,
+            target,
+            since_days,
+            apply,
+            json,
+        } => print_remote_sync_apply(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            since_days,
+            apply,
+            json,
+        )?,
+        Command::McpQualityTools { json } => print_mcp_quality_tools(json)?,
         Command::ProjectTemplate {
             root,
             kind,
@@ -3436,6 +3490,20 @@ Use `dukememory remote-sync-apply-flow --json` to plan guarded remote sync apply
 
 Use `dukememory mcp-tool-surface-v2 --json` to inspect MCP V2 memory tool exposure.
 
+Use `dukememory autopilot-v3 --json` to run the V3 autonomous memory autopilot across learning, role profile, inbox review, sync, web control, and MCP quality.
+
+Use `dukememory self-learning-retrieval --json` to tune retrieval from live usefulness, feedback, quality, and ranking signals.
+
+Use `dukememory project-role-profile --json` to detect project-specific memory defaults; use `--apply` after reviewing inferred kind.
+
+Use `dukememory inbox-ai-reviewer --json` to explain inbox groups and safely process high-confidence suggestions.
+
+Use `dukememory web-control-center-v3 --json` to inspect the simplified Health, Autonomy, Projects, and Sync control model.
+
+Use `dukememory remote-sync-apply --json` to apply guarded local-first remote sync planning; use `--target` and `DUKEMEMORY_SYNC_PASSPHRASE` before `--apply`.
+
+Use `dukememory mcp-quality-tools --json` to inspect MCP helper tools for memory discipline.
+
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
 Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens.
@@ -3545,6 +3613,13 @@ dukememory memory-quality-ci --json
 dukememory fleet-dashboard-v2 --json
 dukememory remote-sync-apply-flow --json
 dukememory mcp-tool-surface-v2 --json
+dukememory autopilot-v3 --json
+dukememory self-learning-retrieval --json
+dukememory project-role-profile --json
+dukememory inbox-ai-reviewer --json
+dukememory web-control-center-v3 --json
+dukememory remote-sync-apply --json
+dukememory mcp-quality-tools --json
 dukememory doctor-project --json
 dukememory release-gate --json
 dukememory project-watch --json
@@ -4000,6 +4075,13 @@ fn print_completions(shell: CompletionShell) {
         "fleet-dashboard-v2",
         "remote-sync-apply-flow",
         "mcp-tool-surface-v2",
+        "autopilot-v3",
+        "self-learning-retrieval",
+        "project-role-profile",
+        "inbox-ai-reviewer",
+        "web-control-center-v3",
+        "remote-sync-apply",
+        "mcp-quality-tools",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -4146,6 +4228,13 @@ fn print_manpage() {
     println!("  fleet-dashboard-v2 --json     V2 quality status for all project memories");
     println!("  remote-sync-apply-flow        guarded local-first remote sync apply plan");
     println!("  mcp-tool-surface-v2 --json    inspect exposed MCP V2 memory tools");
+    println!("  autopilot-v3 --json           autonomous learning, role, inbox, sync, MCP loop");
+    println!("  self-learning-retrieval       tune retrieval from live usefulness signals");
+    println!("  project-role-profile --apply  detect/apply project-specific memory profile");
+    println!("  inbox-ai-reviewer --json      explain and safely process inbox suggestions");
+    println!("  web-control-center-v3         Health/Autonomy/Projects/Sync control model");
+    println!("  remote-sync-apply --json      guarded local-first remote sync apply surface");
+    println!("  mcp-quality-tools --json      inspect MCP helper tools for memory discipline");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");

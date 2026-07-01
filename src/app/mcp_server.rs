@@ -133,7 +133,11 @@ fn mcp_tools() -> Value {
         {"name":"memory_release_gate_v2","description":"Run V2 release readiness checks without build commands","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"strict":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_quality_ci","description":"CI-friendly memory quality gate","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"minimal":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_fleet_dashboard_v2","description":"Inspect all discovered project memories with V2 quality metrics","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"db":{"type":"string"}}}},
-        {"name":"memory_governance_policy","description":"Inspect autonomous memory governance policy","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}
+        {"name":"memory_governance_policy","description":"Inspect autonomous memory governance policy","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_status","description":"Return compact V3 memory status for agent startup","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_should_write","description":"Decide whether a durable memory write is warranted","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"memory_type":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["text"]}},
+        {"name":"memory_after_task","description":"Return compact after-task memory maintenance guidance","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_project_health","description":"Return compact project memory health and role profile","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}
     ])
 }
 
@@ -777,6 +781,97 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 .map_err(|err| err.to_string())?;
             budgeted_mcp_json_response(&report, max_chars, &["recommendations"])
                 .map_err(|err| err.to_string())?
+        }
+        "memory_status" => {
+            let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1400);
+            let report =
+                web_control_center_v3_report(&conn, &selected_db, &selected_root, None, since_days)
+                    .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&report, max_chars, &["tabs", "primary_actions"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_should_write" => {
+            let text = json_string(&args, "text").ok_or_else(|| "missing text".to_string())?;
+            let memory_type =
+                json_string(&args, "memory_type").unwrap_or_else(|| "task_state".to_string());
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1000);
+            let durable_type = matches!(
+                memory_type.as_str(),
+                "decision"
+                    | "constraint"
+                    | "user_preference"
+                    | "command"
+                    | "known_issue"
+                    | "task_state"
+                    | "design_note"
+            );
+            let should_write = durable_type && text.split_whitespace().count() >= 4;
+            let value = json!({
+                "version": 1,
+                "should_write": should_write,
+                "memory_type": memory_type,
+                "reason": if should_write {
+                    "text looks durable enough for a compact memory card"
+                } else {
+                    "skip transient, too-short, or unsupported memory content"
+                },
+                "recommended_command": if should_write {
+                    "memory_add or dukememory add"
+                } else {
+                    "no durable write"
+                },
+            });
+            render_budgeted_json_value(value, max_chars, &[]).map_err(|err| err.to_string())?
+        }
+        "memory_after_task" => {
+            let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1400);
+            let diff = memory_diff_review_report(&conn, &selected_root, false)
+                .map_err(|err| err.to_string())?;
+            let inbox =
+                inbox_ai_reviewer_report(&conn, 20, false).map_err(|err| err.to_string())?;
+            let qa = memory_qa_report(&conn, &selected_root, since_days)
+                .map_err(|err| err.to_string())?;
+            let value = json!({
+                "version": 1,
+                "status": if diff.write_ready.is_empty() && inbox.approve_ready == 0 {
+                    "ready"
+                } else {
+                    "attention"
+                },
+                "diff_write_ready": diff.write_ready.len(),
+                "inbox_approve_ready": inbox.approve_ready,
+                "inbox_merge_ready": inbox.merge_ready,
+                "qa_score": qa.score,
+                "recommendations": [
+                    "save a compact durable card only for reusable outcomes",
+                    "run memory_diff_review or inbox_ai_reviewer before broad writes",
+                    "run embed-index once after important memory writes"
+                ]
+            });
+            render_budgeted_json_value(value, max_chars, &["recommendations"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_project_health" => {
+            let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1400);
+            let health =
+                memory_health_score_report(&conn, &selected_db, &selected_root, since_days)
+                    .map_err(|err| err.to_string())?;
+            let role = project_role_profile_report(&selected_root, None, false)
+                .map_err(|err| err.to_string())?;
+            let value = json!({
+                "version": 1,
+                "health": health,
+                "role_profile": role,
+            });
+            render_budgeted_json_value(
+                value,
+                max_chars,
+                &["components", "recommendations", "reasons"],
+            )
+            .map_err(|err| err.to_string())?
         }
         other => return Err(format!("unsupported tool: {other}")),
     };
