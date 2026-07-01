@@ -703,6 +703,122 @@ pub(crate) struct MemoryControlCenterV2Report {
     pub(crate) next_actions: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AutoSupersedeV2Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) applied: bool,
+    pub(crate) candidates: Vec<AutoSupersedeCandidate>,
+    pub(crate) superseded: Vec<String>,
+    pub(crate) skipped: Vec<String>,
+    pub(crate) rollback_hint: String,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AutoSupersedeCandidate {
+    pub(crate) primary_id: String,
+    pub(crate) duplicate_id: String,
+    pub(crate) title: String,
+    pub(crate) reason: String,
+    pub(crate) confidence: f64,
+    pub(crate) safe_to_apply: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryDiffApplyReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) reviewed: MemoryDiffReviewReport,
+    pub(crate) written_ids: Vec<String>,
+    pub(crate) skipped: Vec<String>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct RecallBenchmarkBaseline {
+    pub(crate) version: u32,
+    pub(crate) score: f64,
+    pub(crate) probe_count: usize,
+    pub(crate) written_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RecallBenchmarkSuiteReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) score: f64,
+    pub(crate) baseline_score: Option<f64>,
+    pub(crate) regression: bool,
+    pub(crate) baseline_written: bool,
+    pub(crate) baseline_path: String,
+    pub(crate) harness: MemoryTestHarnessReport,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ReleaseGateV2Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) strict: bool,
+    pub(crate) run: bool,
+    pub(crate) base_gate: ReleaseGateReport,
+    pub(crate) health: MemoryHealthScoreReport,
+    pub(crate) benchmark: RecallBenchmarkSuiteReport,
+    pub(crate) audit_v2: AgentAuditV2Report,
+    pub(crate) control_center: MemoryControlCenterV2Report,
+    pub(crate) checks: Vec<ReleaseGateCheck>,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RemoteSyncWizardReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) target: Option<String>,
+    pub(crate) applied: bool,
+    pub(crate) steps: Vec<RemoteSyncWizardStep>,
+    pub(crate) sync: RemoteSyncV2Report,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RemoteSyncWizardStep {
+    pub(crate) name: String,
+    pub(crate) ok: bool,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct MemoryGovernancePolicyReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) path: String,
+    pub(crate) auto_write_types: Vec<String>,
+    pub(crate) auto_supersede_min_confidence: f64,
+    pub(crate) diff_apply_min_confidence: f64,
+    pub(crate) max_write_pressure: f64,
+    pub(crate) require_embeddings_for_semantic: bool,
+    pub(crate) remote_sync_mode: String,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct ProjectTemplateReport {
     pub(crate) version: u32,
@@ -3946,6 +4062,583 @@ pub(crate) fn memory_control_center_v2_report(
     })
 }
 
+pub(crate) fn print_auto_supersede_v2(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = auto_supersede_v2_report(conn, root, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Auto Supersede v2");
+    println!("applied: {}", report.applied);
+    println!("candidates: {}", report.candidates.len());
+    println!("superseded: {}", report.superseded.len());
+    for item in &report.candidates {
+        println!(
+            "- {} <- {} {:.2} {}",
+            item.primary_id, item.duplicate_id, item.confidence, item.reason
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn auto_supersede_v2_report(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+) -> Result<AutoSupersedeV2Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let usefulness = usefulness_report(conn, since_days, 30, 3)?;
+    let candidates = usefulness
+        .duplicate_candidates
+        .iter()
+        .take(20)
+        .map(|candidate| {
+            let confidence = auto_supersede_confidence(candidate);
+            AutoSupersedeCandidate {
+                primary_id: candidate.primary_id.clone(),
+                duplicate_id: candidate.duplicate_id.clone(),
+                title: candidate.title.clone(),
+                reason: candidate.reason.clone(),
+                confidence,
+                safe_to_apply: confidence >= 0.90,
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut superseded = Vec::new();
+    let mut skipped = Vec::new();
+    if apply {
+        for candidate in &candidates {
+            if !candidate.safe_to_apply {
+                skipped.push(format!(
+                    "{}: confidence {:.2} below 0.90",
+                    candidate.duplicate_id, candidate.confidence
+                ));
+                continue;
+            }
+            let changed = conn.execute(
+                "UPDATE memories SET status = 'superseded', superseded_by = ?1, updated_at = ?2 WHERE id = ?3 AND status IN ('active', 'uncertain')",
+                params![candidate.primary_id, now_ms(), candidate.duplicate_id],
+            )?;
+            if changed > 0 {
+                superseded.push(candidate.duplicate_id.clone());
+                log_event(
+                    conn,
+                    "auto_supersede_v2",
+                    Some(&candidate.duplicate_id),
+                    &serde_json::to_string(&json!({
+                        "primary_id": candidate.primary_id,
+                        "confidence": candidate.confidence,
+                        "reason": candidate.reason,
+                    }))?,
+                )?;
+            } else {
+                skipped.push(format!("{}: not active/uncertain", candidate.duplicate_id));
+            }
+        }
+    } else {
+        skipped.push("dry_run: no memory status changed".to_string());
+    }
+    let mut recommendations = Vec::new();
+    if candidates.is_empty() {
+        recommendations.push("no duplicate candidates currently need supersede review".to_string());
+    }
+    if !apply && candidates.iter().any(|candidate| candidate.safe_to_apply) {
+        recommendations
+            .push("rerun with --apply to supersede safe duplicate candidates".to_string());
+    }
+    Ok(AutoSupersedeV2Report {
+        version: 1,
+        ok: true,
+        root: root.display().to_string(),
+        since_days,
+        applied: apply,
+        candidates,
+        superseded,
+        skipped,
+        rollback_hint: "Use audit/action journal plus memory update to reactivate a superseded card; autonomous rollback remains available for autonomous cycles.".to_string(),
+        recommendations,
+    })
+}
+
+pub(crate) fn print_memory_diff_apply(
+    conn: &Connection,
+    root: &Path,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_diff_apply_report(conn, root, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Diff Apply");
+    println!("applied: {}", report.applied);
+    println!("written: {}", report.written_ids.len());
+    for id in &report.written_ids {
+        println!("written: {id}");
+    }
+    for skipped in &report.skipped {
+        println!("skipped: {skipped}");
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_diff_apply_report(
+    conn: &Connection,
+    root: &Path,
+    apply: bool,
+) -> Result<MemoryDiffApplyReport> {
+    let reviewed = memory_diff_review_report(conn, root, false)?;
+    let mut written_ids = Vec::new();
+    let mut skipped = Vec::new();
+    let mut actions = Vec::new();
+    for candidate in &reviewed.write_ready {
+        if candidate.confidence < 0.85 {
+            skipped.push(format!("{}: confidence below 0.85", candidate.title));
+            continue;
+        }
+        if memory_title_exists(conn, &candidate.memory_type, &candidate.title)? {
+            skipped.push(format!(
+                "{}: matching active card already exists",
+                candidate.title
+            ));
+            continue;
+        }
+        if apply {
+            let id = add_memory(
+                conn,
+                AddMemory {
+                    id: None,
+                    memory_type: candidate.memory_type.clone(),
+                    title: candidate.title.clone(),
+                    body: candidate.body.clone(),
+                    scope: "project".to_string(),
+                    status: "active".to_string(),
+                    source: Some("memory_diff_apply".to_string()),
+                    supersedes: None,
+                    confidence: candidate.confidence,
+                    links: vec![candidate.link.clone()],
+                },
+            )?;
+            written_ids.push(id.clone());
+            actions.push(format!("memory_written:{id}"));
+        } else {
+            actions.push(format!("dry_run: would write {}", candidate.title));
+        }
+    }
+    if reviewed.write_ready.is_empty() {
+        skipped.push("no high-confidence diff candidates".to_string());
+    }
+    let mut recommendations = reviewed.recommendations.clone();
+    if !apply && !reviewed.write_ready.is_empty() {
+        recommendations
+            .push("rerun memory-diff-apply --apply to write high-confidence cards".to_string());
+    }
+    recommendations.sort();
+    recommendations.dedup();
+    Ok(MemoryDiffApplyReport {
+        version: 1,
+        ok: reviewed.ok,
+        root: reviewed.root.clone(),
+        applied: apply,
+        reviewed,
+        written_ids,
+        skipped,
+        actions,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_recall_benchmark_suite(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    limit: usize,
+    write_baseline: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = recall_benchmark_suite_report(conn, root, since_days, limit, write_baseline)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Recall Benchmark Suite: {:.1}", report.score);
+    println!("baseline: {:?}", report.baseline_score);
+    println!("regression: {}", report.regression);
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn recall_benchmark_suite_report(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    limit: usize,
+    write_baseline: bool,
+) -> Result<RecallBenchmarkSuiteReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let harness = memory_test_harness_report(conn, &root, since_days, limit)?;
+    let baseline_path = root.join(".agent/recall-benchmark.json");
+    let baseline = fs::read_to_string(&baseline_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<RecallBenchmarkBaseline>(&content).ok());
+    let baseline_score = baseline.as_ref().map(|item| item.score);
+    let regression = baseline_score.is_some_and(|score| harness.score + 5.0 < score);
+    let mut baseline_written = false;
+    if write_baseline {
+        if let Some(parent) = baseline_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let value = RecallBenchmarkBaseline {
+            version: 1,
+            score: harness.score,
+            probe_count: harness.probes.len(),
+            written_at: now_ms(),
+        };
+        write_file(
+            &baseline_path,
+            serde_json::to_string_pretty(&value)?.as_bytes(),
+        )?;
+        baseline_written = true;
+    }
+    let mut recommendations = harness.recommendations.clone();
+    if baseline_score.is_none() && !write_baseline {
+        recommendations
+            .push("write a baseline with --write-baseline after reviewing probes".to_string());
+    }
+    if regression {
+        recommendations.push("recall benchmark regressed by more than 5 points; inspect failed probes before release".to_string());
+    }
+    recommendations.sort();
+    recommendations.dedup();
+    Ok(RecallBenchmarkSuiteReport {
+        version: 1,
+        ok: harness.ok && !regression,
+        root: root.display().to_string(),
+        since_days,
+        score: harness.score,
+        baseline_score,
+        regression,
+        baseline_written,
+        baseline_path: baseline_path.display().to_string(),
+        harness,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_release_gate_v2(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    strict: bool,
+    run: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = release_gate_v2_report(conn, db, root, since_days, strict, run)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Release Gate v2");
+    println!("status: {}", report.status);
+    for check in &report.checks {
+        println!("{} {}", if check.ok { "ok" } else { "warn" }, check.name);
+    }
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    Ok(())
+}
+
+pub(crate) fn release_gate_v2_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    strict: bool,
+    run: bool,
+) -> Result<ReleaseGateV2Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let base_gate = release_gate_report(conn, db, &root, since_days, strict, run)?;
+    let health = memory_health_score_report(conn, db, &root, since_days)?;
+    let benchmark = recall_benchmark_suite_report(conn, &root, since_days, 8, false)?;
+    let audit_v2 = agent_audit_v2_report(conn, &root, since_days)?;
+    let control_center = memory_control_center_v2_report(conn, db, &root, since_days)?;
+    let mut checks = base_gate.checks.clone();
+    checks.push(ReleaseGateCheck {
+        name: "memory_health_score".to_string(),
+        ok: health.score >= 85.0 && health.ok,
+        required: true,
+        detail: format!("score={:.1} grade={}", health.score, health.grade),
+    });
+    checks.push(ReleaseGateCheck {
+        name: "recall_benchmark".to_string(),
+        ok: benchmark.ok && benchmark.score >= 80.0,
+        required: true,
+        detail: format!(
+            "score={:.1} baseline={}",
+            benchmark.score,
+            benchmark
+                .baseline_score
+                .map(|score| format!("{score:.1}"))
+                .unwrap_or_else(|| "-".to_string())
+        ),
+    });
+    checks.push(ReleaseGateCheck {
+        name: "agent_audit_v2".to_string(),
+        ok: audit_v2.ok && audit_v2.score >= 80.0,
+        required: true,
+        detail: format!("score={:.1} status={}", audit_v2.score, audit_v2.status),
+    });
+    checks.push(ReleaseGateCheck {
+        name: "control_center_v2".to_string(),
+        ok: control_center.ok,
+        required: true,
+        detail: control_center.status.clone(),
+    });
+    checks.push(ReleaseGateCheck {
+        name: "intent_map".to_string(),
+        ok: control_center.intent_map.gaps.is_empty(),
+        required: true,
+        detail: format!("gaps={}", control_center.intent_map.gaps.len()),
+    });
+    let mut issues = base_gate.issues.clone();
+    for check in &checks {
+        if check.required && !check.ok {
+            issues.push(format!("release gate v2 failed: {}", check.name));
+        }
+    }
+    issues.sort();
+    issues.dedup();
+    let mut recommendations = base_gate.recommendations.clone();
+    recommendations.extend(health.recommendations.clone());
+    recommendations.extend(benchmark.recommendations.clone());
+    recommendations.extend(audit_v2.recommendations.clone());
+    recommendations.extend(control_center.next_actions.clone());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = issues.is_empty();
+    Ok(ReleaseGateV2Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "blocked" }.to_string(),
+        root: root.display().to_string(),
+        strict,
+        run,
+        base_gate,
+        health,
+        benchmark,
+        audit_v2,
+        control_center,
+        checks,
+        issues,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_remote_sync_wizard(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = remote_sync_wizard_report(conn, db, root, target, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Remote Sync Wizard");
+    println!("status: {}", report.status);
+    for step in &report.steps {
+        println!("{} {}", if step.ok { "ok" } else { "warn" }, step.name);
+    }
+    for blocker in &report.blockers {
+        println!("blocker: {blocker}");
+    }
+    Ok(())
+}
+
+pub(crate) fn remote_sync_wizard_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    apply: bool,
+) -> Result<RemoteSyncWizardReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let sync = remote_sync_v2_report(conn, db, &root, target, since_days, apply)?;
+    let passphrase_ready = std::env::var("DUKEMEMORY_SYNC_PASSPHRASE")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let mut steps = vec![
+        RemoteSyncWizardStep {
+            name: "target".to_string(),
+            ok: target.is_some(),
+            detail: target
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "set --target PATH before apply".to_string()),
+        },
+        RemoteSyncWizardStep {
+            name: "encryption".to_string(),
+            ok: passphrase_ready || !apply,
+            detail: if passphrase_ready {
+                "DUKEMEMORY_SYNC_PASSPHRASE is set".to_string()
+            } else {
+                "set DUKEMEMORY_SYNC_PASSPHRASE before --apply".to_string()
+            },
+        },
+        RemoteSyncWizardStep {
+            name: "latency".to_string(),
+            ok: sync.latency.ok,
+            detail: format!("roundtrip={}ms", sync.latency.estimated_roundtrip_ms),
+        },
+        RemoteSyncWizardStep {
+            name: "conflict_policy".to_string(),
+            ok: sync.conflict_policy == "manual",
+            detail: sync.conflict_policy.clone(),
+        },
+        RemoteSyncWizardStep {
+            name: "local_first".to_string(),
+            ok: sync.local_first,
+            detail: "reads stay local; remote is backup/sync target".to_string(),
+        },
+    ];
+    let mut blockers = sync.blockers.clone();
+    if target.is_none() {
+        blockers.push("target is required".to_string());
+    }
+    if apply && !passphrase_ready {
+        blockers.push("DUKEMEMORY_SYNC_PASSPHRASE is required for encrypted apply".to_string());
+    }
+    blockers.sort();
+    blockers.dedup();
+    let mut recommendations = sync.recommendations.clone();
+    recommendations
+        .push("keep reads local-first unless measured latency remains acceptable".to_string());
+    recommendations.push("review conflicts manually before import/apply".to_string());
+    if !apply {
+        recommendations
+            .push("rerun with --apply only after target and passphrase are ready".to_string());
+    }
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = blockers.is_empty()
+        && steps
+            .iter()
+            .all(|step| step.ok || (!apply && step.name == "encryption"));
+    let status = if ok { "ready" } else { "blocked" }.to_string();
+    Ok(RemoteSyncWizardReport {
+        version: 1,
+        ok,
+        status,
+        root: root.display().to_string(),
+        target: target.map(|path| path.display().to_string()),
+        applied: apply && sync.applied && blockers.is_empty(),
+        steps: {
+            steps.sort_by(|a, b| a.name.cmp(&b.name));
+            steps
+        },
+        sync,
+        blockers,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_memory_governance_policy(
+    root: &Path,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_governance_policy_report(root, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Governance Policy");
+    println!("applied: {}", report.applied);
+    println!("path: {}", report.path);
+    for action in &report.actions {
+        println!("action: {action}");
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_governance_policy_report(
+    root: &Path,
+    apply: bool,
+) -> Result<MemoryGovernancePolicyReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let path = root.join(".agent/memory-governance.json");
+    let report = MemoryGovernancePolicyReport {
+        version: 1,
+        ok: true,
+        root: root.display().to_string(),
+        applied: apply,
+        path: path.display().to_string(),
+        auto_write_types: vec![
+            "task_state".to_string(),
+            "design_note".to_string(),
+            "command".to_string(),
+            "known_issue".to_string(),
+        ],
+        auto_supersede_min_confidence: 0.90,
+        diff_apply_min_confidence: 0.85,
+        max_write_pressure: 1.0,
+        require_embeddings_for_semantic: true,
+        remote_sync_mode: "local-first-backup".to_string(),
+        actions: if apply {
+            vec![format!("policy_written:{}", path.display())]
+        } else {
+            vec!["dry_run: policy not written".to_string()]
+        },
+        recommendations: vec![
+            "allow autonomous writes only for durable high-confidence outcomes".to_string(),
+            "keep remote sync local-first with manual conflict policy".to_string(),
+            "use release-gate-v2 before publishing memory changes".to_string(),
+        ],
+    };
+    if apply {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        write_file(&path, serde_json::to_string_pretty(&report)?.as_bytes())?;
+    }
+    Ok(report)
+}
+
+fn auto_supersede_confidence(candidate: &MergeCandidate) -> f64 {
+    let reason = candidate.reason.to_lowercase();
+    let title_bonus: f64 = if reason.contains("same title") || reason.contains("duplicate") {
+        0.08
+    } else {
+        0.0
+    };
+    (0.86_f64 + title_bonus).min(0.96)
+}
+
+fn memory_title_exists(conn: &Connection, memory_type: &str, title: &str) -> Result<bool> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memories WHERE type = ?1 AND title = ?2 AND status IN ('active', 'uncertain')",
+        params![memory_type, title],
+        |row| row.get(0),
+    )?;
+    Ok(exists > 0)
+}
+
 fn score_status(score: f64) -> String {
     if score >= 85.0 {
         "ready"
@@ -4977,6 +5670,12 @@ fn agent_required_commands() -> &'static [&'static str] {
         "memory-test-harness",
         "agent-audit-v2",
         "memory-control-center-v2",
+        "auto-supersede-v2",
+        "memory-diff-apply",
+        "recall-benchmark-suite",
+        "release-gate-v2",
+        "remote-sync-wizard",
+        "memory-governance-policy",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",

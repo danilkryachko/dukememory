@@ -1010,6 +1010,47 @@ pub(crate) fn run() -> Result<()> {
             since_days,
             json,
         } => print_memory_control_center_v2(&conn, &cli.db, &root, since_days, json)?,
+        Command::AutoSupersedeV2 {
+            root,
+            since_days,
+            apply,
+            json,
+        } => print_auto_supersede_v2(&conn, &root, since_days, apply, json)?,
+        Command::MemoryDiffApply { root, apply, json } => {
+            print_memory_diff_apply(&conn, &root, apply, json)?
+        }
+        Command::RecallBenchmarkSuite {
+            root,
+            since_days,
+            limit,
+            write_baseline,
+            json,
+        } => print_recall_benchmark_suite(&conn, &root, since_days, limit, write_baseline, json)?,
+        Command::ReleaseGateV2 {
+            root,
+            since_days,
+            strict,
+            run,
+            json,
+        } => print_release_gate_v2(&conn, &cli.db, &root, since_days, strict, run, json)?,
+        Command::RemoteSyncWizard {
+            root,
+            target,
+            since_days,
+            apply,
+            json,
+        } => print_remote_sync_wizard(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            since_days,
+            apply,
+            json,
+        )?,
+        Command::MemoryGovernancePolicy { root, apply, json } => {
+            print_memory_governance_policy(&root, apply, json)?
+        }
         Command::ProjectTemplate {
             root,
             kind,
@@ -3334,6 +3375,18 @@ Use `dukememory agent-audit-v2 --json` to audit read discipline, semantic effect
 
 Use `dukememory memory-control-center-v2 --json` to aggregate health, intent, probes, audit, recall explanations, and autonomy.
 
+Use `dukememory auto-supersede-v2 --json` to safely supersede duplicate/obsolete cards; use `--apply` only for high-confidence reversible status changes.
+
+Use `dukememory memory-diff-apply --json` to write high-confidence changed-file memory candidates after review.
+
+Use `dukememory recall-benchmark-suite --json` to detect retrieval regressions; use `--write-baseline` after reviewing stable probes.
+
+Use `dukememory release-gate-v2 --json` to gate releases with health, recall benchmark, audit v2, and control-center checks.
+
+Use `dukememory remote-sync-wizard --json` to configure local-first VDS/remote sync safely.
+
+Use `dukememory memory-governance-policy --json` to inspect or write autonomous memory governance policy.
+
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
 Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens.
@@ -3431,6 +3484,12 @@ dukememory project-intent-map --json
 dukememory memory-test-harness --json
 dukememory agent-audit-v2 --json
 dukememory memory-control-center-v2 --json
+dukememory auto-supersede-v2 --json
+dukememory memory-diff-apply --json
+dukememory recall-benchmark-suite --json
+dukememory release-gate-v2 --json
+dukememory remote-sync-wizard --json
+dukememory memory-governance-policy --json
 dukememory doctor-project --json
 dukememory release-gate --json
 dukememory project-watch --json
@@ -3874,6 +3933,12 @@ fn print_completions(shell: CompletionShell) {
         "memory-test-harness",
         "agent-audit-v2",
         "memory-control-center-v2",
+        "auto-supersede-v2",
+        "memory-diff-apply",
+        "recall-benchmark-suite",
+        "release-gate-v2",
+        "remote-sync-wizard",
+        "memory-governance-policy",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -4008,6 +4073,12 @@ fn print_manpage() {
     println!("  memory-test-harness --json    run retrieval quality probes");
     println!("  agent-audit-v2 --json         stricter agent memory behavior audit");
     println!("  memory-control-center-v2      aggregate health, recall, tests, autonomy");
+    println!("  auto-supersede-v2 --json      safely supersede duplicate memory");
+    println!("  memory-diff-apply --json      write high-confidence diff memory cards");
+    println!("  recall-benchmark-suite        compare retrieval probes against baseline");
+    println!("  release-gate-v2 --json        release gate with memory health checks");
+    println!("  remote-sync-wizard --json     guided local-first remote sync setup");
+    println!("  memory-governance-policy      inspect/write autonomous memory policy");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");

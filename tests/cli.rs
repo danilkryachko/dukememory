@@ -8614,6 +8614,12 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-test-harness",
         "agent-audit-v2",
         "memory-control-center-v2",
+        "auto-supersede-v2",
+        "memory-diff-apply",
+        "recall-benchmark-suite",
+        "release-gate-v2",
+        "remote-sync-wizard",
+        "memory-governance-policy",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -8665,6 +8671,12 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-test-harness",
         "agent-audit-v2",
         "memory-control-center-v2",
+        "auto-supersede-v2",
+        "memory-diff-apply",
+        "recall-benchmark-suite",
+        "release-gate-v2",
+        "remote-sync-wizard",
+        "memory-governance-policy",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -9582,6 +9594,12 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/memory-test-harness"));
     assert!(html.contains("/agent-audit-v2"));
     assert!(html.contains("/memory-control-center-v2"));
+    assert!(html.contains("/auto-supersede-v2"));
+    assert!(html.contains("/memory-diff-apply"));
+    assert!(html.contains("/recall-benchmark-suite"));
+    assert!(html.contains("/release-gate-v2"));
+    assert!(html.contains("/remote-sync-wizard"));
+    assert!(html.contains("/memory-governance-policy"));
     assert!(html.contains("/project-diff"));
     assert!(html.contains("/intelligence-dashboard"));
     assert!(html.contains("/remote-sync-dry-run"));
@@ -9627,6 +9645,12 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("memory test harness"));
     assert!(html.contains("agent audit v2"));
     assert!(html.contains("control center v2"));
+    assert!(html.contains("auto supersede v2"));
+    assert!(html.contains("memory diff apply"));
+    assert!(html.contains("recall benchmark suite"));
+    assert!(html.contains("release gate v2"));
+    assert!(html.contains("remote sync wizard"));
+    assert!(html.contains("memory governance"));
     assert!(html.contains("auto ranking tune"));
     assert!(html.contains("watch control"));
     assert!(html.contains("autonomy control center"));
@@ -10088,6 +10112,54 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(control_v2.contains("\"control_v2\""));
     assert!(control_v2.contains("\"health\""));
     assert!(control_v2.contains("\"next_actions\""));
+
+    let auto_supersede_v2 = http_once(
+        &db,
+        "GET /auto-supersede-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(auto_supersede_v2.contains("\"supersede\""));
+    assert!(auto_supersede_v2.contains("\"candidates\""));
+    assert!(auto_supersede_v2.contains("\"rollback_hint\""));
+
+    let memory_diff_apply = http_once(
+        &db,
+        "GET /memory-diff-apply HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(memory_diff_apply.contains("\"apply\""));
+    assert!(memory_diff_apply.contains("\"written_ids\""));
+    assert!(memory_diff_apply.contains("\"reviewed\""));
+
+    let recall_benchmark = http_once(
+        &db,
+        "GET /recall-benchmark-suite?since_days=7&limit=4 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(recall_benchmark.contains("\"benchmark\""));
+    assert!(recall_benchmark.contains("\"baseline_path\""));
+    assert!(recall_benchmark.contains("\"regression\""));
+
+    let release_gate_v2 = http_once(
+        &db,
+        "GET /release-gate-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(release_gate_v2.contains("\"release_gate_v2\""));
+    assert!(release_gate_v2.contains("\"memory_health_score\""));
+    assert!(release_gate_v2.contains("\"recall_benchmark\""));
+
+    let remote_sync_wizard = http_once(
+        &db,
+        "GET /remote-sync-wizard?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(remote_sync_wizard.contains("\"wizard\""));
+    assert!(remote_sync_wizard.contains("\"steps\""));
+    assert!(remote_sync_wizard.contains("\"local_first\""));
+
+    let governance_policy = http_once(
+        &db,
+        "GET /memory-governance-policy HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(governance_policy.contains("\"governance\""));
+    assert!(governance_policy.contains("\"auto_write_types\""));
+    assert!(governance_policy.contains("\"max_write_pressure\""));
 
     let project_template = http_once(
         &db,
@@ -11541,6 +11613,99 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(control_v2_json["health"]["score"].as_f64().is_some());
     assert!(control_v2_json["next_actions"].as_array().is_some());
 
+    let auto_supersede_v2 = stdout(
+        cmd(&db)
+            .arg("auto-supersede-v2")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let auto_supersede_v2_json: Value = serde_json::from_str(&auto_supersede_v2).unwrap();
+    assert_eq!(auto_supersede_v2_json["version"], 1);
+    assert!(auto_supersede_v2_json["candidates"].as_array().is_some());
+    assert!(auto_supersede_v2_json["rollback_hint"].as_str().is_some());
+
+    let memory_diff_apply = stdout(
+        cmd(&db)
+            .arg("memory-diff-apply")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    );
+    let memory_diff_apply_json: Value = serde_json::from_str(&memory_diff_apply).unwrap();
+    assert_eq!(memory_diff_apply_json["version"], 1);
+    assert!(
+        memory_diff_apply_json["reviewed"]["write_ready"]
+            .as_array()
+            .is_some()
+    );
+    assert!(memory_diff_apply_json["written_ids"].as_array().is_some());
+
+    let recall_benchmark = stdout(
+        cmd(&db)
+            .arg("recall-benchmark-suite")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--limit")
+            .arg("5")
+            .arg("--write-baseline")
+            .arg("--json"),
+    );
+    let recall_benchmark_json: Value = serde_json::from_str(&recall_benchmark).unwrap();
+    assert_eq!(recall_benchmark_json["version"], 1);
+    assert_eq!(recall_benchmark_json["baseline_written"], true);
+    assert!(dir.path().join(".agent/recall-benchmark.json").exists());
+
+    let release_gate_v2 = stdout(
+        cmd(&db)
+            .arg("release-gate-v2")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let release_gate_v2_json: Value = serde_json::from_str(&release_gate_v2).unwrap();
+    assert_eq!(release_gate_v2_json["version"], 1);
+    assert!(
+        release_gate_v2_json["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| check["name"] == "memory_health_score")
+    );
+
+    let remote_sync_wizard = stdout(
+        cmd(&db)
+            .arg("remote-sync-wizard")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let remote_sync_wizard_json: Value = serde_json::from_str(&remote_sync_wizard).unwrap();
+    assert_eq!(remote_sync_wizard_json["version"], 1);
+    assert!(remote_sync_wizard_json["steps"].as_array().is_some());
+    assert!(remote_sync_wizard_json["blockers"].as_array().is_some());
+
+    let governance_policy = stdout(
+        cmd(&db)
+            .arg("memory-governance-policy")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--apply")
+            .arg("--json"),
+    );
+    let governance_policy_json: Value = serde_json::from_str(&governance_policy).unwrap();
+    assert_eq!(governance_policy_json["version"], 1);
+    assert_eq!(governance_policy_json["applied"], true);
+    assert!(dir.path().join(".agent/memory-governance.json").exists());
+
     let project_template = stdout(
         cmd(&db)
             .arg("project-template")
@@ -11714,6 +11879,20 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .unwrap()
             .iter()
             .any(|item| item.as_str() == Some("memory-control-center-v2"))
+    );
+    assert!(
+        agent_enforce_json["required_commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("release-gate-v2"))
+    );
+    assert!(
+        agent_enforce_json["required_commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("memory-governance-policy"))
     );
 
     let gap_run = stdout(

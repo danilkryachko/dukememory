@@ -33,7 +33,7 @@ Transcript-based memory quickly turns into noise.
 - **Small context briefs** before coding, including file and symbol impact checks.
 - **Optional semantic recall** with Ollama or OpenAI-compatible embeddings.
 - **Autonomous maintenance** for freshness, backups, repair hints, gap review, and safe cleanup.
-- **Lightweight control surfaces** for health scoring, explainable recall, intent maps, retrieval probes, context governance, memory routing, ranking profiles, sync dry-runs, release gates, and changed-file review.
+- **Lightweight control surfaces** for health scoring, explainable recall, intent maps, retrieval probes, safe supersede, diff apply, governance policy, context routing, sync dry-runs, and release gates.
 
 ## What It Remembers
 
@@ -89,6 +89,7 @@ dukememory drift --root . --json
 dukememory context-governor "fix checkout validation" --target src/checkout.ts --json
 dukememory explain-recall "checkout validation" --json
 dukememory memory-health-score --json
+dukememory recall-benchmark-suite --json
 dukememory memory-diff-review --json
 ```
 
@@ -180,10 +181,16 @@ dukememory project-intent-map --json
 dukememory memory-test-harness --json
 dukememory agent-audit-v2 --json
 dukememory memory-control-center-v2 --json
+dukememory auto-supersede-v2 --json
+dukememory memory-diff-apply --json
+dukememory recall-benchmark-suite --json
+dukememory release-gate-v2 --json
+dukememory memory-governance-policy --json
 dukememory auto-ranking-tune --apply --json
 dukememory ranking-profile --profile balanced --apply --json
 dukememory project-template --kind rust-cli --apply --json
 dukememory sync-profile --profile local-first-backup --run-dry-run --json
+dukememory remote-sync-wizard --target /mnt/vds/dukememory --json
 dukememory remote-sync-v2 --target /mnt/vds/dukememory --json
 dukememory autonomy-control-center --json
 dukememory upgrade-all-projects --json
@@ -193,9 +200,9 @@ dukememory release-gate --run --json
 These commands keep memory useful without making it heavy: health scoring shows
 whether memory is worth trusting, explainable recall shows why cards were
 selected, intent maps define project direction, probes measure retrieval quality,
-context governance chooses the smallest read flow, routing keeps project facts
-separated, ranking tunes itself from live signals, sync stays local-first, and
-release gates catch broken memory wiring before publishing.
+safe supersede and diff apply keep durable cards clean, governance policy bounds
+autonomous writes, sync stays local-first, and release gate v2 catches memory
+regressions before publishing.
 
 ## Development
 

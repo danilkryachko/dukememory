@@ -532,6 +532,162 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 since_days,
             )?}))
         }
+        ("GET", "/auto-supersede-v2") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"supersede": auto_supersede_v2_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/auto-supersede-v2/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"supersede": auto_supersede_v2_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                true,
+            )?}))
+        }
+        ("GET", "/recall-benchmark-suite") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(8);
+            HttpResponse::ok(json!({"benchmark": recall_benchmark_suite_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                limit,
+                false,
+            )?}))
+        }
+        ("POST", "/recall-benchmark-suite/baseline") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(8) as usize;
+            HttpResponse::ok(json!({"benchmark": recall_benchmark_suite_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                limit,
+                true,
+            )?}))
+        }
+        ("GET", "/release-gate-v2") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let strict = params
+                .get("strict")
+                .is_some_and(|value| value == "1" || value == "true");
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"release_gate_v2": release_gate_v2_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                strict,
+                false,
+            )?}))
+        }
+        ("POST", "/release-gate-v2/run") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            let strict = value
+                .get("strict")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            HttpResponse::ok(json!({"release_gate_v2": release_gate_v2_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                strict,
+                true,
+            )?}))
+        }
+        ("GET", "/remote-sync-wizard") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let target = params.get("target").map(PathBuf::from);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"wizard": remote_sync_wizard_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/remote-sync-wizard/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let target = value
+                .get("target")
+                .and_then(Value::as_str)
+                .map(PathBuf::from);
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"wizard": remote_sync_wizard_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                since_days,
+                true,
+            )?}))
+        }
+        ("GET", "/memory-governance-policy") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            HttpResponse::ok(json!({"governance": memory_governance_policy_report(
+                &ctx.root,
+                false,
+            )?}))
+        }
+        ("POST", "/memory-governance-policy/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            HttpResponse::ok(json!({"governance": memory_governance_policy_report(
+                &ctx.root,
+                true,
+            )?}))
+        }
         ("POST", "/ranking-profile/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
@@ -911,6 +1067,19 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
             let ctx = selected_project_from_body(db, &value)?;
             let conn = open_db(&ctx.db)?;
             HttpResponse::ok(json!({"review": memory_diff_review_report(&conn, &ctx.root, true)?}))
+        }
+        ("GET", "/memory-diff-apply") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            HttpResponse::ok(json!({"apply": memory_diff_apply_report(&conn, &ctx.root, false)?}))
+        }
+        ("POST", "/memory-diff-apply/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            HttpResponse::ok(json!({"apply": memory_diff_apply_report(&conn, &ctx.root, true)?}))
         }
         ("GET", "/remote-sync-v2") => {
             let params = parse_query(query);

@@ -1007,6 +1007,74 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Safely supersede duplicate/obsolete memory cards with rollback-friendly metadata.
+    AutoSupersedeV2 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write high-confidence memory-diff suggestions as durable cards.
+    MemoryDiffApply {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run recall probes and optionally store a benchmark baseline.
+    RecallBenchmarkSuite {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        #[arg(long)]
+        write_baseline: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Release gate with memory-health, recall benchmark, and audit v2 checks.
+    ReleaseGateV2 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        strict: bool,
+        #[arg(long)]
+        run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Guided local-first remote/VDS sync setup with encryption and conflict guardrails.
+    RemoteSyncWizard {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect or write project memory governance policy.
+    MemoryGovernancePolicy {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Write starter memory configuration for a project type.
     ProjectTemplate {
         #[arg(long, default_value = ".")]
