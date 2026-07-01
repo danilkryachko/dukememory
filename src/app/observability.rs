@@ -346,6 +346,8 @@ pub(crate) struct ReleaseGateReport {
     pub(crate) autonomous_loop: AutonomousLoopReport,
     pub(crate) usefulness_engine: UsefulnessEngineReport,
     pub(crate) sync_latency: SyncLatencyReport,
+    pub(crate) action_journal: ActionJournalReport,
+    pub(crate) sync_profile: SyncProfileReport,
     pub(crate) agent_enforce: AgentEnforceReport,
     pub(crate) issues: Vec<String>,
     pub(crate) recommendations: Vec<String>,
@@ -421,12 +423,39 @@ pub(crate) struct AutonomousLoopReport {
     pub(crate) root: String,
     pub(crate) level: String,
     pub(crate) applied: bool,
+    pub(crate) scheduled: bool,
+    pub(crate) run_index: usize,
+    pub(crate) next_interval_secs: Option<u64>,
     pub(crate) watch: ProjectWatchReport,
     pub(crate) doctor: ProjectDoctorReport,
     pub(crate) intelligence: IntelligenceDashboardReport,
     pub(crate) actions: Vec<String>,
     pub(crate) issues: Vec<String>,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ActionJournalReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) since_days: i64,
+    pub(crate) total: usize,
+    pub(crate) applied: usize,
+    pub(crate) skipped: usize,
+    pub(crate) failed: usize,
+    pub(crate) rollback_events: usize,
+    pub(crate) items: Vec<ActionJournalItem>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ActionJournalItem {
+    pub(crate) id: i64,
+    pub(crate) event_type: String,
+    pub(crate) status: String,
+    pub(crate) action: String,
+    pub(crate) detail: String,
+    pub(crate) created_at: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -463,6 +492,23 @@ pub(crate) struct SyncLatencyReport {
     pub(crate) estimated_roundtrip_ms: u32,
     pub(crate) recommended_mode: String,
     pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SyncProfileReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) profile: String,
+    pub(crate) applied: bool,
+    pub(crate) local_first: bool,
+    pub(crate) target: Option<String>,
+    pub(crate) latency: SyncLatencyReport,
+    pub(crate) commands: Vec<String>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) blockers: Vec<String>,
     pub(crate) recommendations: Vec<String>,
 }
 
@@ -2020,24 +2066,47 @@ pub(crate) fn print_autonomous_loop(
     since_days: i64,
     level: AutonomousLevel,
     apply: bool,
+    watch: bool,
+    interval_secs: u64,
+    max_runs: Option<usize>,
     json_out: bool,
 ) -> Result<()> {
-    let report = autonomous_loop_report(conn, db, root, since_days, level, apply)?;
-    if json_out {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
-    }
-    println!("Autonomous Loop");
-    println!("status: {}", report.status);
-    println!("applied: {}", report.applied);
-    for action in &report.actions {
-        println!("action: {action}");
-    }
-    for issue in &report.issues {
-        println!("issue: {issue}");
-    }
-    for recommendation in &report.recommendations {
-        println!("recommendation: {recommendation}");
+    let max_runs = if watch { max_runs } else { Some(1) };
+    let mut run_index = 0usize;
+    loop {
+        run_index += 1;
+        let report = autonomous_loop_once_report(
+            conn,
+            db,
+            root,
+            since_days,
+            level,
+            apply,
+            watch,
+            run_index,
+            if watch { Some(interval_secs) } else { None },
+        )?;
+        if json_out {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            println!("Autonomous Loop");
+            println!("status: {}", report.status);
+            println!("applied: {}", report.applied);
+            println!("scheduled: {}", report.scheduled);
+            for action in &report.actions {
+                println!("action: {action}");
+            }
+            for issue in &report.issues {
+                println!("issue: {issue}");
+            }
+            for recommendation in &report.recommendations {
+                println!("recommendation: {recommendation}");
+            }
+        }
+        if !watch || max_runs.is_some_and(|max| run_index >= max) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(interval_secs.max(1)));
     }
     Ok(())
 }
@@ -2049,6 +2118,20 @@ pub(crate) fn autonomous_loop_report(
     since_days: i64,
     level: AutonomousLevel,
     apply: bool,
+) -> Result<AutonomousLoopReport> {
+    autonomous_loop_once_report(conn, db, root, since_days, level, apply, false, 1, None)
+}
+
+fn autonomous_loop_once_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    level: AutonomousLevel,
+    apply: bool,
+    scheduled: bool,
+    run_index: usize,
+    next_interval_secs: Option<u64>,
 ) -> Result<AutonomousLoopReport> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut actions = Vec::new();
@@ -2107,20 +2190,167 @@ pub(crate) fn autonomous_loop_report(
     recommendations.sort();
     recommendations.dedup();
     let ok = issues.is_empty();
-    Ok(AutonomousLoopReport {
+    let report = AutonomousLoopReport {
         version: 1,
         ok,
         status: if ok { "ready" } else { "attention" }.to_string(),
         root: root.display().to_string(),
         level: level.to_string(),
         applied: apply,
+        scheduled,
+        run_index,
+        next_interval_secs,
         watch,
         doctor,
         intelligence,
         actions,
         issues,
         recommendations,
+    };
+    let status = if report.ok { "ok" } else { "attention" };
+    let detail = serde_json::to_string(&json!({
+        "status": status,
+        "applied": apply,
+        "scheduled": scheduled,
+        "run_index": run_index,
+        "actions": &report.actions,
+        "issues": &report.issues,
+        "attention_projects": report.watch.attention_projects,
+    }))?;
+    let _ = log_event(conn, "autonomous_loop", None, &detail);
+    Ok(report)
+}
+
+pub(crate) fn print_action_journal(
+    conn: &Connection,
+    since_days: i64,
+    limit: usize,
+    json_out: bool,
+) -> Result<()> {
+    let report = action_journal_report(conn, since_days, limit)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Action Journal");
+    println!("total: {}", report.total);
+    println!(
+        "applied={} skipped={} failed={} rollback={}",
+        report.applied, report.skipped, report.failed, report.rollback_events
+    );
+    for item in &report.items {
+        println!(
+            "{} {} {} {}",
+            item.status, item.event_type, item.action, item.detail
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn action_journal_report(
+    conn: &Connection,
+    since_days: i64,
+    limit: usize,
+) -> Result<ActionJournalReport> {
+    let since_ms = now_ms().saturating_sub(since_days.max(0).saturating_mul(86_400_000));
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT id, event_type, detail, created_at
+        FROM memory_events
+        WHERE created_at >= ?1
+          AND (
+            event_type LIKE 'autonomous%'
+            OR event_type LIKE 'dashboard_repair%'
+            OR event_type LIKE 'autopilot%'
+            OR event_type LIKE 'memory_feedback%'
+            OR event_type LIKE 'sync_%'
+          )
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?2
+        "#,
+    )?;
+    let rows = stmt
+        .query_map(params![since_ms, limit.min(i64::MAX as usize)], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut items = Vec::new();
+    for (id, event_type, detail, created_at) in rows {
+        let parsed = serde_json::from_str::<Value>(&detail).ok();
+        let action = parsed
+            .as_ref()
+            .and_then(|value| value.get("action").or_else(|| value.get("kind")))
+            .and_then(Value::as_str)
+            .unwrap_or(event_type.as_str())
+            .to_string();
+        let status = parsed
+            .as_ref()
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| infer_action_status(&event_type, &detail));
+        items.push(ActionJournalItem {
+            id,
+            event_type,
+            status,
+            action,
+            detail: truncate_chars(&detail, 500),
+            created_at,
+        });
+    }
+    let applied = items
+        .iter()
+        .filter(|item| matches!(item.status.as_str(), "ok" | "applied" | "ready"))
+        .count();
+    let skipped = items
+        .iter()
+        .filter(|item| item.status.contains("skip") || item.status == "dry_run")
+        .count();
+    let failed = items
+        .iter()
+        .filter(|item| item.status.contains("fail") || item.status == "error")
+        .count();
+    let rollback_events = items
+        .iter()
+        .filter(|item| item.event_type.contains("rollback") || item.detail.contains("rollback"))
+        .count();
+    let mut recommendations = Vec::new();
+    if failed > 0 {
+        recommendations
+            .push("inspect failed autonomous actions before enabling watch mode".to_string());
+    }
+    if rollback_events > 0 {
+        recommendations
+            .push("rollback metadata is available for recent autonomous cycles".to_string());
+    }
+    Ok(ActionJournalReport {
+        version: 1,
+        ok: failed == 0,
+        since_days,
+        total: items.len(),
+        applied,
+        skipped,
+        failed,
+        rollback_events,
+        items,
+        recommendations,
     })
+}
+
+fn infer_action_status(event_type: &str, detail: &str) -> String {
+    let lower = format!("{event_type} {detail}").to_lowercase();
+    if lower.contains("failed") || lower.contains("error") {
+        "failed".to_string()
+    } else if lower.contains("skipped") || lower.contains("\"dry_run\":true") {
+        "skipped".to_string()
+    } else {
+        "ok".to_string()
+    }
 }
 
 pub(crate) fn print_usefulness_engine(
@@ -2326,6 +2556,138 @@ pub(crate) fn sync_latency_report(
     })
 }
 
+pub(crate) fn print_sync_profile(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    profile: SyncProfileMode,
+    target: Option<&Path>,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = sync_profile_report(conn, db, root, profile, target, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Sync Profile");
+    println!("status: {}", report.status);
+    println!("profile: {}", report.profile);
+    println!("applied: {}", report.applied);
+    for command in &report.commands {
+        println!("command: {command}");
+    }
+    for blocker in &report.blockers {
+        println!("blocker: {blocker}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn sync_profile_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    profile: SyncProfileMode,
+    target: Option<&Path>,
+    apply: bool,
+) -> Result<SyncProfileReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let latency = sync_latency_report(conn, db, &root, target, 1)?;
+    let mut blockers = Vec::new();
+    let mut recommendations = latency.recommendations.clone();
+    let local_first = !matches!(profile, SyncProfileMode::RemoteShared);
+    if matches!(
+        profile,
+        SyncProfileMode::LocalFirstBackup
+            | SyncProfileMode::LocalFirstSync
+            | SyncProfileMode::RemoteShared
+    ) && target.is_none()
+    {
+        blockers.push("sync profile needs --target PATH".to_string());
+    }
+    if matches!(profile, SyncProfileMode::RemoteShared) {
+        blockers.push("remote-shared is not enabled automatically; keep reads local-first unless latency and conflict policy are explicit".to_string());
+        recommendations.push("prefer local-first-sync for agent workflows".to_string());
+    }
+    if !latency.ok {
+        blockers.extend(latency.issues.iter().cloned());
+    }
+    let target_string = target.map(|path| path.display().to_string());
+    let target_arg = target_string.as_deref().unwrap_or("TARGET");
+    let commands = match profile {
+        SyncProfileMode::LocalOnly => vec![
+            "dukememory project-watch --json".to_string(),
+            "dukememory memory-qa --json".to_string(),
+        ],
+        SyncProfileMode::LocalFirstBackup => vec![
+            format!("dukememory sync push {target_arg} --dry-run --json"),
+            format!("dukememory sync push {target_arg} --json"),
+            format!("dukememory sync status {target_arg} --json"),
+        ],
+        SyncProfileMode::LocalFirstSync => vec![
+            format!("dukememory sync push {target_arg} --dry-run --json"),
+            format!("dukememory sync pull {target_arg} --policy manual --dry-run --json"),
+            format!("dukememory sync status {target_arg} --json"),
+        ],
+        SyncProfileMode::RemoteShared => vec![
+            format!("dukememory sync pull {target_arg} --policy manual --dry-run --json"),
+            format!("dukememory sync push {target_arg} --dry-run --json"),
+            "measure latency and resolve conflicts before enabling shared writes".to_string(),
+        ],
+    };
+    recommendations.push("run dry-run commands before any sync mutation".to_string());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = blockers.is_empty();
+    let mut actions = Vec::new();
+    if apply && ok {
+        let path = root.join(".agent/sync-profile.json");
+        let value = json!({
+            "version": 1,
+            "profile": profile.to_string(),
+            "local_first": local_first,
+            "target": &target_string,
+            "updated_at": now_ms(),
+            "commands": &commands,
+        });
+        write_file(&path, serde_json::to_string_pretty(&value)?.as_bytes())?;
+        actions.push(format!("sync_profile_written:{}", path.display()));
+        let _ = log_event(
+            conn,
+            "sync_profile",
+            None,
+            &serde_json::to_string(&json!({
+                "status": "ok",
+                "profile": profile.to_string(),
+                "target": &target_string,
+                "path": path.display().to_string(),
+            }))?,
+        );
+    } else if apply {
+        actions.push("sync_profile_not_written:blockers_present".to_string());
+    } else {
+        actions.push("dry_run:profile_not_written".to_string());
+    }
+    Ok(SyncProfileReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "blocked" }.to_string(),
+        root: root.display().to_string(),
+        profile: profile.to_string(),
+        applied: apply && ok,
+        local_first,
+        target: target_string,
+        latency,
+        commands,
+        actions,
+        blockers,
+        recommendations,
+    })
+}
+
 pub(crate) fn print_agent_enforce(
     conn: &Connection,
     db: &Path,
@@ -2418,8 +2780,10 @@ fn agent_required_commands() -> &'static [&'static str] {
         "memory-replay",
         "project-watch",
         "autonomous-loop",
+        "action-journal",
         "usefulness-engine",
         "sync-latency",
+        "sync-profile",
         "agent-enforce",
         "upgrade-project",
     ]
@@ -3067,6 +3431,15 @@ pub(crate) fn release_gate_report(
         autonomous_loop_report(conn, db, &root, since_days, AutonomousLevel::Normal, false)?;
     let usefulness_engine = usefulness_engine_report(conn, &root, since_days, false)?;
     let sync_latency = sync_latency_report(conn, db, &root, None, 1)?;
+    let action_journal = action_journal_report(conn, since_days, 30)?;
+    let sync_profile = sync_profile_report(
+        conn,
+        db,
+        &root,
+        SyncProfileMode::LocalFirstBackup,
+        None,
+        false,
+    )?;
     let agent_enforce = agent_enforce_report(conn, db, &root, since_days, false)?;
     let project_diff = project_diff_report(conn, &root, true)?;
     let cargo_toml = root.join("Cargo.toml");
@@ -3152,6 +3525,23 @@ pub(crate) fn release_gate_report(
             detail: sync_latency.recommended_mode.clone(),
         },
         ReleaseGateCheck {
+            name: "action_journal".to_string(),
+            ok: action_journal.ok,
+            required: true,
+            detail: format!(
+                "events={} failed={} rollback={}",
+                action_journal.total, action_journal.failed, action_journal.rollback_events
+            ),
+        },
+        ReleaseGateCheck {
+            name: "sync_profile".to_string(),
+            ok: sync_profile.ok
+                || (sync_profile.blockers.len() == 1
+                    && sync_profile.blockers[0] == "sync profile needs --target PATH"),
+            required: true,
+            detail: sync_profile.profile.clone(),
+        },
+        ReleaseGateCheck {
             name: "agent_enforce".to_string(),
             ok: agent_enforce.ok,
             required: true,
@@ -3200,6 +3590,8 @@ pub(crate) fn release_gate_report(
     recommendations.extend(autonomous_loop.recommendations.iter().cloned());
     recommendations.extend(usefulness_engine.recommendations.iter().cloned());
     recommendations.extend(sync_latency.recommendations.iter().cloned());
+    recommendations.extend(action_journal.recommendations.iter().cloned());
+    recommendations.extend(sync_profile.recommendations.iter().cloned());
     recommendations.extend(agent_enforce.recommendations.iter().cloned());
     recommendations.sort();
     recommendations.dedup();
@@ -3218,6 +3610,8 @@ pub(crate) fn release_gate_report(
         autonomous_loop,
         usefulness_engine,
         sync_latency,
+        action_journal,
+        sync_profile,
         agent_enforce,
         issues,
         recommendations,

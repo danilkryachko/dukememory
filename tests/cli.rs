@@ -4113,11 +4113,23 @@ fn v14_retrieve_v2_context_pack_v2_and_rhai_ranking() {
         quality_reasons
             .iter()
             .any(|reason| reason.as_str().unwrap().starts_with("recent_reads:"))
+            || quality_reasons.iter().any(|reason| {
+                reason
+                    .as_str()
+                    .unwrap()
+                    .starts_with("ranking_v2_recent_reads:")
+            })
     );
     assert!(
         quality_reasons
             .iter()
             .any(|reason| reason.as_str().unwrap().starts_with("useful_feedback:"))
+            || quality_reasons.iter().any(|reason| {
+                reason
+                    .as_str()
+                    .unwrap()
+                    .starts_with("ranking_v2_useful_feedback:")
+            })
     );
     let tiny = stdout(
         cmd(&db)
@@ -8602,8 +8614,10 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-replay",
         "project-watch",
         "autonomous-loop",
+        "action-journal",
         "usefulness-engine",
         "sync-latency",
+        "sync-profile",
         "agent-enforce",
         "sync export",
         "sync import",
@@ -8634,8 +8648,10 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-replay",
         "project-watch",
         "autonomous-loop",
+        "action-journal",
         "usefulness-engine",
         "sync-latency",
+        "sync-profile",
         "agent-enforce",
         "sync export",
         "sync import",
@@ -9532,8 +9548,10 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/memory-replay"));
     assert!(html.contains("/project-watch"));
     assert!(html.contains("/autonomous-loop"));
+    assert!(html.contains("/action-journal"));
     assert!(html.contains("/usefulness-engine"));
     assert!(html.contains("/sync-latency"));
+    assert!(html.contains("/sync-profile"));
     assert!(html.contains("/agent-enforce"));
     assert!(html.contains("memory ROI"));
     assert!(html.contains("agent audit"));
@@ -9547,14 +9565,17 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("doctor project"));
     assert!(html.contains("release gate"));
     assert!(html.contains("autonomous loop"));
+    assert!(html.contains("action journal"));
     assert!(html.contains("usefulness engine"));
     assert!(html.contains("sync latency"));
+    assert!(html.contains("sync profile"));
     assert!(html.contains("agent enforce"));
     assert!(html.contains("memory replay"));
     assert!(html.contains("project watch"));
     assert!(html.contains("Doctor fix"));
     assert!(html.contains("Loop apply"));
     assert!(html.contains("Engine apply"));
+    assert!(html.contains("Sync profile"));
     assert!(html.contains("Enforce fix"));
     assert!(html.contains("Auto feedback"));
     assert!(html.contains("/upgrade-project"));
@@ -9891,6 +9912,14 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(autonomous_loop.contains("\"applied\":false"));
     assert!(autonomous_loop.contains("\"watch\""));
 
+    let action_journal = http_once(
+        &db,
+        "GET /action-journal?since_days=7&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(action_journal.contains("\"journal\""));
+    assert!(action_journal.contains("\"rollback_events\""));
+    assert!(action_journal.contains("\"items\""));
+
     let usefulness_engine = http_once(
         &db,
         "GET /usefulness-engine?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
@@ -9906,6 +9935,14 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(sync_latency.contains("\"latency\""));
     assert!(sync_latency.contains("\"local_first\":true"));
     assert!(sync_latency.contains("\"recommended_mode\""));
+
+    let sync_profile = http_once(
+        &db,
+        "GET /sync-profile?profile=local_first_backup HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(sync_profile.contains("\"profile\""));
+    assert!(sync_profile.contains("\"local_first\":true"));
+    assert!(sync_profile.contains("\"commands\""));
 
     let agent_enforce = http_once(
         &db,
@@ -9931,6 +9968,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     let upgrade = http_once(&db, &upgrade_request);
     assert!(upgrade.contains("\"upgrade\""));
     assert!(upgrade.contains("\"dry_run\":true"));
+    assert!(upgrade.contains("\"install_ux\""));
+    assert!(upgrade.contains("\"future_chats_ready\""));
 
     let embed_status = http_once(
         &db,
@@ -10990,11 +11029,21 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .is_some()
     );
     assert!(
+        release_gate_json["action_journal"]["items"]
+            .as_array()
+            .is_some()
+    );
+    assert!(
         release_gate_json["usefulness_engine"]["ranking_policy"]
             .as_array()
             .is_some()
     );
     assert_eq!(release_gate_json["sync_latency"]["local_first"], true);
+    assert!(
+        release_gate_json["sync_profile"]["commands"]
+            .as_array()
+            .is_some()
+    );
     assert!(
         release_gate_json["agent_enforce"]["required_commands"]
             .as_array()
@@ -11039,6 +11088,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let autonomous_loop_json: Value = serde_json::from_str(&autonomous_loop).unwrap();
     assert_eq!(autonomous_loop_json["version"], 1);
     assert_eq!(autonomous_loop_json["applied"], false);
+    assert_eq!(autonomous_loop_json["scheduled"], false);
     assert!(
         autonomous_loop_json["watch"]["projects"]
             .as_array()
@@ -11049,6 +11099,38 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_bool()
             .is_some()
     );
+
+    let autonomous_watch = stdout(
+        cmd(&db)
+            .arg("autonomous-loop")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--watch")
+            .arg("--max-runs")
+            .arg("1")
+            .arg("--interval-secs")
+            .arg("1")
+            .arg("--json"),
+    );
+    let autonomous_watch_json: Value = serde_json::from_str(&autonomous_watch).unwrap();
+    assert_eq!(autonomous_watch_json["scheduled"], true);
+    assert_eq!(autonomous_watch_json["run_index"], 1);
+
+    let action_journal = stdout(
+        cmd(&db)
+            .arg("action-journal")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--limit")
+            .arg("20")
+            .arg("--json"),
+    );
+    let action_journal_json: Value = serde_json::from_str(&action_journal).unwrap();
+    assert_eq!(action_journal_json["version"], 1);
+    assert!(action_journal_json["items"].as_array().is_some());
+    assert!(action_journal_json["rollback_events"].as_u64().is_some());
 
     let usefulness_engine = stdout(
         cmd(&db)
@@ -11083,6 +11165,25 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(sync_latency_json["version"], 1);
     assert_eq!(sync_latency_json["local_first"], true);
     assert!(sync_latency_json["recommended_mode"].as_str().is_some());
+
+    let sync_target = dir.path().join("sync-target");
+    let sync_profile = stdout(
+        cmd(&db)
+            .arg("sync-profile")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--profile")
+            .arg("local-first-backup")
+            .arg("--target")
+            .arg(&sync_target)
+            .arg("--apply")
+            .arg("--json"),
+    );
+    let sync_profile_json: Value = serde_json::from_str(&sync_profile).unwrap();
+    assert_eq!(sync_profile_json["version"], 1);
+    assert_eq!(sync_profile_json["applied"], true);
+    assert_eq!(sync_profile_json["local_first"], true);
+    assert!(dir.path().join(".agent/sync-profile.json").exists());
 
     let agent_enforce = stdout(
         cmd(&db)
@@ -11441,6 +11542,17 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     }
     assert_eq!(upgrade_json["contract"]["version"], 1);
     assert!(upgrade_json["qa"]["ok"].as_bool().is_some());
+    assert!(
+        upgrade_json["install_ux"]["future_chats_ready"]
+            .as_bool()
+            .is_some()
+    );
+    assert!(
+        upgrade_json["install_ux"]["mcp_note"]
+            .as_str()
+            .unwrap()
+            .contains("MCP")
+    );
 
     Connection::open(&db)
         .unwrap()

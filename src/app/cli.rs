@@ -869,6 +869,21 @@ pub(crate) enum Command {
         #[arg(long)]
         apply: bool,
         #[arg(long)]
+        watch: bool,
+        #[arg(long, default_value_t = 3600)]
+        interval_secs: u64,
+        #[arg(long)]
+        max_runs: Option<usize>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show recent autonomous actions and repair decisions.
+    ActionJournal {
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long, default_value_t = 30)]
+        limit: usize,
+        #[arg(long)]
         json: bool,
     },
     /// Score memory usefulness as an action engine, optionally materializing safe feedback.
@@ -890,6 +905,19 @@ pub(crate) enum Command {
         target: Option<PathBuf>,
         #[arg(long, default_value_t = 3)]
         samples: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Choose a local-first sync profile and preview safe commands.
+    SyncProfile {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, value_enum, default_value_t = SyncProfileMode::LocalFirstBackup)]
+        profile: SyncProfileMode,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long)]
+        apply: bool,
         #[arg(long)]
         json: bool,
     },
@@ -1287,6 +1315,26 @@ pub(crate) enum SyncConflictPolicy {
     #[value(alias = "newer-wins")]
     NewerWins,
     Manual,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub(crate) enum SyncProfileMode {
+    LocalOnly,
+    LocalFirstBackup,
+    LocalFirstSync,
+    RemoteShared,
+}
+
+impl std::fmt::Display for SyncProfileMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::LocalOnly => "local_only",
+            Self::LocalFirstBackup => "local_first_backup",
+            Self::LocalFirstSync => "local_first_sync",
+            Self::RemoteShared => "remote_shared",
+        };
+        f.write_str(value)
+    }
 }
 
 impl fmt::Display for SyncConflictPolicy {

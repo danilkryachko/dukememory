@@ -924,8 +924,27 @@ pub(crate) fn run() -> Result<()> {
             since_days,
             level,
             apply,
+            watch,
+            interval_secs,
+            max_runs,
             json,
-        } => print_autonomous_loop(&conn, &cli.db, &root, since_days, level, apply, json)?,
+        } => print_autonomous_loop(
+            &conn,
+            &cli.db,
+            &root,
+            since_days,
+            level,
+            apply,
+            watch,
+            interval_secs,
+            max_runs,
+            json,
+        )?,
+        Command::ActionJournal {
+            since_days,
+            limit,
+            json,
+        } => print_action_journal(&conn, since_days, limit, json)?,
         Command::UsefulnessEngine {
             root,
             since_days,
@@ -938,6 +957,21 @@ pub(crate) fn run() -> Result<()> {
             samples,
             json,
         } => print_sync_latency(&conn, &cli.db, &root, target.as_deref(), samples, json)?,
+        Command::SyncProfile {
+            root,
+            profile,
+            target,
+            apply,
+            json,
+        } => print_sync_profile(
+            &conn,
+            &cli.db,
+            &root,
+            profile,
+            target.as_deref(),
+            apply,
+            json,
+        )?,
         Command::AgentEnforce {
             root,
             since_days,
@@ -3206,9 +3240,15 @@ Use `dukememory project-watch --json` to inspect all discovered project memories
 
 Use `dukememory autonomous-loop --json` to plan one autonomous memory control loop; use `dukememory autonomous-loop --apply --json` to run reversible maintenance and project repair.
 
+Use `dukememory autonomous-loop --watch --apply --interval-secs 3600 --json` to run the same reversible loop periodically without token-heavy context.
+
+Use `dukememory action-journal --json` to inspect autonomous actions, skipped actions, failures, and rollback availability.
+
 Use `dukememory usefulness-engine --json` to rank useful/noisy memory and preview safe inferred feedback; use `dukememory usefulness-engine --apply --json` to materialize safe feedback.
 
 Use `dukememory sync-latency --json` to measure local/VDS sync latency while keeping reads local-first.
+
+Use `dukememory sync-profile --profile local-first-backup --json` to choose a safe local-first sync mode before push/pull.
 
 Use `dukememory agent-enforce --json` to verify future chats will use memory; use `dukememory agent-enforce --fix --json` to repair AGENTS/skill/project wiring.
 
@@ -3250,8 +3290,10 @@ dukememory release-gate --json
 dukememory project-watch --json
 dukememory memory-replay --json
 dukememory autonomous-loop --json
+dukememory action-journal --json
 dukememory usefulness-engine --json
 dukememory sync-latency --json
+dukememory sync-profile --json
 dukememory agent-enforce --json
 dukememory autonomous run-once --level normal --json
 dukememory autonomous status --json
@@ -3688,8 +3730,10 @@ fn print_completions(shell: CompletionShell) {
         "memory-replay",
         "project-watch",
         "autonomous-loop",
+        "action-journal",
         "usefulness-engine",
         "sync-latency",
+        "sync-profile",
         "agent-enforce",
         "inbox-v2",
         "policy-tune",
@@ -3802,8 +3846,10 @@ fn print_manpage() {
     println!("  memory-replay --json          replay recent memory influence");
     println!("  project-watch --fix --json    inspect or repair installed project memories");
     println!("  autonomous-loop --apply       run reversible memory control loop");
+    println!("  action-journal --json         inspect autonomous action timeline");
     println!("  usefulness-engine --apply     rank memory and apply safe feedback");
     println!("  sync-latency --json           measure local/VDS sync latency");
+    println!("  sync-profile --json           choose a local-first sync profile");
     println!("  agent-enforce --fix --json    enforce memory use for future chats");
     println!("  onboard --root DIR            initialize memory/profile/embeddings");
     println!("  inbox-v2 report|auto-apply    group and process pending suggestions");

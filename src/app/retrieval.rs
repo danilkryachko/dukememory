@@ -1301,19 +1301,27 @@ pub(crate) fn retrieval_quality_adjustment(
     let useless = signals.useless.get(memory_id).copied().unwrap_or_default();
     let mut score = 0.0;
     if reads > 0 {
-        let boost = (reads.min(8) as f64) * 0.6;
-        reasons.push(format!("recent_reads:{reads}"));
+        let boost = (reads.min(12) as f64) * 0.9;
+        reasons.push(format!("ranking_v2_recent_reads:+{reads}"));
         score += boost;
     }
     if useful > 0 {
-        let boost = (useful.min(4) as f64) * 2.5;
-        reasons.push(format!("useful_feedback:+{useful}"));
+        let boost = (useful.min(8) as f64) * 4.0;
+        reasons.push(format!("ranking_v2_useful_feedback:+{useful}"));
         score += boost;
     }
     if useless > 0 {
-        let penalty = (useless.min(4) as f64) * 4.0;
-        reasons.push(format!("useless_feedback:-{useless}"));
+        let penalty = (useless.min(8) as f64) * 7.0;
+        reasons.push(format!("ranking_v2_useless_feedback:-{useless}"));
         score -= penalty;
+    }
+    if useful > 0 && useless == 0 && reads >= 2 {
+        reasons.push("ranking_v2_trusted_card".to_string());
+        score += 3.0;
+    }
+    if useless > useful && useless >= 2 {
+        reasons.push("ranking_v2_soft_suppress".to_string());
+        score -= 6.0;
     }
     score
 }

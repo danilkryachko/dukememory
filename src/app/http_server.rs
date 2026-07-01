@@ -112,6 +112,15 @@ fn parse_autonomous_level(value: Option<&str>) -> AutonomousLevel {
     }
 }
 
+fn parse_sync_profile(value: Option<&str>) -> SyncProfileMode {
+    match value.unwrap_or("local_first_backup") {
+        "local-only" | "local_only" => SyncProfileMode::LocalOnly,
+        "local-first-sync" | "local_first_sync" => SyncProfileMode::LocalFirstSync,
+        "remote-shared" | "remote_shared" => SyncProfileMode::RemoteShared,
+        _ => SyncProfileMode::LocalFirstBackup,
+    }
+}
+
 fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse> {
     let buffer = read_http_request(stream)?;
     let raw = String::from_utf8_lossy(&buffer);
@@ -315,6 +324,18 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 true,
             )?}))
         }
+        ("GET", "/action-journal") => {
+            let params = parse_query(query);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(30);
+            HttpResponse::ok(json!({"journal": action_journal_report(&conn, since_days, limit)?}))
+        }
         ("GET", "/usefulness-engine") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
@@ -359,6 +380,40 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 &ctx.root,
                 target.as_deref(),
                 samples,
+            )?}))
+        }
+        ("GET", "/sync-profile") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let profile = parse_sync_profile(params.get("profile").map(String::as_str));
+            let target = params.get("target").map(PathBuf::from);
+            HttpResponse::ok(json!({"profile": sync_profile_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                profile,
+                target.as_deref(),
+                false,
+            )?}))
+        }
+        ("POST", "/sync-profile/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let profile = parse_sync_profile(value.get("profile").and_then(Value::as_str));
+            let target = value
+                .get("target")
+                .and_then(Value::as_str)
+                .map(PathBuf::from);
+            HttpResponse::ok(json!({"profile": sync_profile_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                profile,
+                target.as_deref(),
+                true,
             )?}))
         }
         ("GET", "/agent-enforce") => {

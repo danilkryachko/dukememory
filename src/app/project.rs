@@ -32,9 +32,22 @@ pub(crate) struct UpgradeProjectReport {
     dry_run: bool,
     actions: Vec<String>,
     install: Option<InstallUpdateReport>,
+    install_ux: InstallUxSummary,
     qa: Option<MemoryQaReport>,
     contract: Option<MemoryContractReport>,
     errors: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct InstallUxSummary {
+    binary_target: String,
+    codex_skill: String,
+    agents_block: bool,
+    project_config: bool,
+    embedding_ready: bool,
+    future_chats_ready: bool,
+    mcp_note: String,
+    next_steps: Vec<String>,
 }
 
 pub(crate) fn print_onboard(
@@ -467,6 +480,39 @@ pub(crate) fn upgrade_project_report(
             None
         }
     };
+    let agents_content = fs::read_to_string(root.join("AGENTS.md")).unwrap_or_default();
+    let skill_path = expand_tilde("~/.codex/skills/dukememory-use/SKILL.md");
+    let skill_content = fs::read_to_string(&skill_path).unwrap_or_default();
+    let project_config = root.join(".agent/config.toml").exists();
+    let agents_block = agents_content.contains("DUKEMEMORY_START")
+        && agents_content.contains("agent-enforce")
+        && agents_content.contains("autonomous-loop");
+    let skill_ready = skill_content.contains("dukememory-use")
+        && skill_content.contains("agent-enforce")
+        && skill_content.contains("sync-latency");
+    let embedding_ready = qa
+        .as_ref()
+        .is_some_and(|report| report.embedding_missing == 0 && report.embedding_stale == 0);
+    let future_chats_ready = project_config && agents_block && skill_ready && embedding_ready;
+    let mut next_steps = Vec::new();
+    if !future_chats_ready {
+        next_steps.push("run dukememory agent-enforce --fix --json".to_string());
+    }
+    if !embedding_ready {
+        next_steps.push("run dukememory embed-index".to_string());
+    }
+    next_steps
+        .push("restart Codex if MCP tools were already loaded before this upgrade".to_string());
+    let install_ux = InstallUxSummary {
+        binary_target: target.display().to_string(),
+        codex_skill: skill_path.display().to_string(),
+        agents_block,
+        project_config,
+        embedding_ready,
+        future_chats_ready,
+        mcp_note: "AGENTS and skill are refreshed immediately; MCP tool lists may require a Codex restart to reload.".to_string(),
+        next_steps,
+    };
     let ok = errors.is_empty() && qa.as_ref().is_none_or(|report| report.ok || dry_run);
     Ok(UpgradeProjectReport {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -475,6 +521,7 @@ pub(crate) fn upgrade_project_report(
         dry_run,
         actions,
         install,
+        install_ux,
         qa,
         contract,
         errors,
@@ -625,8 +672,11 @@ For every new chat or coding task in this repository:
 - To replay recent memory influence, run `dukememory memory-replay --json`.
 - To inspect or repair all installed project memories, run `dukememory project-watch --json` or `dukememory project-watch --fix --json`.
 - To run one autonomous memory control loop, inspect with `dukememory autonomous-loop --json`; apply reversible fixes with `dukememory autonomous-loop --apply --json`.
+- To run the same loop periodically, use `dukememory autonomous-loop --watch --apply --interval-secs 3600 --json`.
+- To inspect autonomous actions, skipped work, failures, and rollback availability, run `dukememory action-journal --json`.
 - To rank useful/noisy memory and materialize safe inferred feedback, run `dukememory usefulness-engine --json` or `dukememory usefulness-engine --apply --json`.
 - To measure local/VDS sync latency while keeping reads local-first, run `dukememory sync-latency --json`.
+- To choose a safe sync mode, run `dukememory sync-profile --profile local-first-backup --json` before push/pull.
 - To enforce memory wiring for future chats, run `dukememory agent-enforce --json` or `dukememory agent-enforce --fix --json`.
 - To sync memory safely, preview first with `dukememory sync export bundle.json --dry-run --json` and `dukememory sync import bundle.json --policy manual --dry-run --json`.
 - To use a local-first remote/VDS connector, run `dukememory sync push TARGET --dry-run --json`, `dukememory sync pull TARGET --dry-run --json`, and `dukememory sync status TARGET --json`.
