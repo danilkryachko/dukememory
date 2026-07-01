@@ -723,6 +723,12 @@ pub(crate) enum Command {
         #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
         model: String,
         #[arg(long)]
+        recent: bool,
+        #[arg(long)]
+        as_of_days_ago: Option<i64>,
+        #[arg(long)]
+        changed_since_days: Option<i64>,
+        #[arg(long)]
         json: bool,
     },
     /// Initialize project memory, profile, embeddings, and optional autonomous daemon.
@@ -1470,6 +1476,23 @@ pub(crate) enum Command {
         scope: String,
         #[arg(long)]
         apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Upload a local text/markdown/json/csv file into reviewed memory inbox candidates.
+    MemoryUpload {
+        input: PathBuf,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value = "project")]
+        scope: String,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Report how dukememory covers Memanto-style memory product capabilities.
+    MemantoGapReport {
         #[arg(long)]
         json: bool,
     },

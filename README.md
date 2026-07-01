@@ -89,6 +89,8 @@ dukememory memory-contract --write
 dukememory brief "fix checkout validation" --budget-profile tiny
 dukememory impact src/checkout.ts --budget-profile tiny
 dukememory recall "checkout validation" --max-chars 1200
+dukememory recall "checkout validation" --recent --json
+dukememory recall "checkout validation" --changed-since-days 7 --json
 dukememory drift --root . --json
 dukememory context-governor "fix checkout validation" --target src/checkout.ts --json
 dukememory answer "what should we remember about checkout validation?" --json
@@ -102,6 +104,8 @@ dukememory fleet-supervisor-watch-install --dry-run --json
 dukememory benchmark-polish --json
 dukememory recall-benchmark-suite --json
 dukememory import-review docs/project-notes.md --json
+dukememory memory-upload docs/project-notes.md --json
+dukememory memanto-gap-report --json
 dukememory memory-diff-review --json
 ```
 
@@ -252,6 +256,8 @@ dukememory connect-codex --json
 dukememory memory-type-guide --json
 dukememory memory-eval-story --json
 dukememory import-review README.md --json
+dukememory memory-upload README.md --json
+dukememory memanto-gap-report --json
 dukememory web-control-center-v7 --json
 dukememory autonomous-usefulness --json
 dukememory benchmark-polish --json

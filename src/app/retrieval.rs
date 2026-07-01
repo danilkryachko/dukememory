@@ -677,12 +677,22 @@ pub(crate) fn retrieve_rows(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RecallReport {
     query: String,
+    #[serde(skip_serializing_if = "is_hybrid_recall_mode")]
+    mode: String,
     max_chars: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    as_of_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed_since_ms: Option<i64>,
     token_saving_estimate: usize,
     receipt: String,
     items: Vec<RecallItem>,
     #[serde(skip)]
     semantic_status: MemorySemanticStatus,
+}
+
+fn is_hybrid_recall_mode(mode: &str) -> bool {
+    mode == "hybrid"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -692,6 +702,8 @@ struct RecallItem {
     memory_type: String,
     title: String,
     summary: String,
+    created_at: i64,
+    updated_at: i64,
     score: f64,
     reasons: Vec<String>,
 }
@@ -704,6 +716,9 @@ pub(crate) struct RecallRequest<'a> {
     pub(crate) provider: &'a str,
     pub(crate) endpoint: &'a str,
     pub(crate) model: &'a str,
+    pub(crate) recent: bool,
+    pub(crate) as_of_days_ago: Option<i64>,
+    pub(crate) changed_since_days: Option<i64>,
     pub(crate) json_out: bool,
 }
 
@@ -721,6 +736,15 @@ pub(crate) fn recall_report(
     conn: &Connection,
     request: &RecallRequest<'_>,
 ) -> Result<RecallReport> {
+    let mode_count = usize::from(request.recent)
+        + usize::from(request.as_of_days_ago.is_some())
+        + usize::from(request.changed_since_days.is_some());
+    if mode_count > 1 {
+        bail!("recall temporal flags are mutually exclusive");
+    }
+    if mode_count > 0 {
+        return temporal_recall_report(conn, request);
+    }
     let retrieval = retrieve_report(
         conn,
         &RetrieveRequest {
@@ -748,6 +772,8 @@ pub(crate) fn recall_report(
             memory_type: memory.memory_type.clone(),
             title: memory.title.clone(),
             summary: query_focused_summary(&memory.body, &query_terms, 120),
+            created_at: memory.created_at,
+            updated_at: memory.updated_at,
             score: hit.score,
             reasons: hit.reasons.iter().take(3).cloned().collect(),
         });
@@ -757,12 +783,148 @@ pub(crate) fn recall_report(
     let ids = items.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
     Ok(RecallReport {
         query: request.query.to_string(),
+        mode: "hybrid".to_string(),
         max_chars: request.max_chars,
+        as_of_ms: None,
+        changed_since_ms: None,
         token_saving_estimate,
         receipt: memory_receipt_with_semantic("recall", semantic_status, &ids, "none"),
         items,
         semantic_status,
     })
+}
+
+fn temporal_recall_report(conn: &Connection, request: &RecallRequest<'_>) -> Result<RecallReport> {
+    let started = Instant::now();
+    let now = now_ms();
+    let (mode, as_of_ms, changed_since_ms) = if request.recent {
+        ("recent".to_string(), None, None)
+    } else if let Some(days) = request.as_of_days_ago {
+        (
+            "as_of".to_string(),
+            Some(now.saturating_sub(days.max(0).saturating_mul(86_400_000))),
+            None,
+        )
+    } else if let Some(days) = request.changed_since_days {
+        (
+            "changed_since".to_string(),
+            None,
+            Some(now.saturating_sub(days.max(0).saturating_mul(86_400_000))),
+        )
+    } else {
+        unreachable!("temporal_recall_report called without temporal mode")
+    };
+    let query_terms = relevance_terms(request.query);
+    let effective_limit = recall_effective_limit(request.limit, request.max_chars);
+    let candidate_limit = request.limit.saturating_mul(8).clamp(effective_limit, 200);
+    let statuses = ["active", "uncertain", "superseded"]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+    let mut rows = query_memories(
+        conn,
+        Some(request.query),
+        &[],
+        &statuses,
+        request.scope,
+        candidate_limit,
+    )?
+    .into_iter()
+    .filter(|memory| temporal_recall_keeps(memory, as_of_ms, changed_since_ms))
+    .collect::<Vec<_>>();
+    if request.recent {
+        rows.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    } else if as_of_ms.is_some() {
+        rows.sort_by(|left, right| {
+            right
+                .confidence
+                .total_cmp(&left.confidence)
+                .then_with(|| right.updated_at.cmp(&left.updated_at))
+        });
+    } else {
+        rows.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    }
+    rows.truncate(effective_limit);
+    let raw_chars = rows
+        .iter()
+        .map(|memory| memory.body.chars().count())
+        .sum::<usize>();
+    let items = rows
+        .iter()
+        .enumerate()
+        .map(|(index, memory)| RecallItem {
+            id: memory.id.clone(),
+            memory_type: memory.memory_type.clone(),
+            title: memory.title.clone(),
+            summary: query_focused_summary(&memory.body, &query_terms, 120),
+            created_at: memory.created_at,
+            updated_at: memory.updated_at,
+            score: 100.0 - index as f64,
+            reasons: temporal_recall_reasons(memory, &mode, as_of_ms, changed_since_ms),
+        })
+        .collect::<Vec<_>>();
+    let ids = items.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+    log_read_event(
+        conn,
+        ReadEventInput {
+            command: "recall",
+            query: request.query,
+            ids: &ids,
+            semantic_used: false,
+            result_count: ids.len(),
+            budget: request.max_chars,
+            elapsed_ms: started.elapsed().as_millis(),
+        },
+    )?;
+    Ok(RecallReport {
+        query: request.query.to_string(),
+        mode,
+        max_chars: request.max_chars,
+        as_of_ms,
+        changed_since_ms,
+        token_saving_estimate: raw_chars.saturating_sub(request.max_chars) / 4,
+        receipt: memory_receipt_with_semantic("recall", MemorySemanticStatus::None, &ids, "none"),
+        items,
+        semantic_status: MemorySemanticStatus::None,
+    })
+}
+
+fn temporal_recall_keeps(
+    memory: &Memory,
+    as_of_ms: Option<i64>,
+    changed_since_ms: Option<i64>,
+) -> bool {
+    if let Some(as_of_ms) = as_of_ms {
+        return memory.created_at <= as_of_ms
+            && memory.status != "rejected"
+            && (memory.status != "superseded" || memory.updated_at > as_of_ms);
+    }
+    if let Some(changed_since_ms) = changed_since_ms {
+        return memory.updated_at >= changed_since_ms || memory.created_at >= changed_since_ms;
+    }
+    true
+}
+
+fn temporal_recall_reasons(
+    memory: &Memory,
+    mode: &str,
+    as_of_ms: Option<i64>,
+    changed_since_ms: Option<i64>,
+) -> Vec<String> {
+    let mut reasons = vec![format!("mode:{mode}"), format!("status:{}", memory.status)];
+    if let Some(as_of_ms) = as_of_ms {
+        reasons.push(format!(
+            "created_before_as_of:{}",
+            memory.created_at <= as_of_ms
+        ));
+    }
+    if let Some(changed_since_ms) = changed_since_ms {
+        reasons.push(format!(
+            "changed_since:{}",
+            memory.updated_at >= changed_since_ms || memory.created_at >= changed_since_ms
+        ));
+    }
+    reasons
 }
 
 fn recall_semantic_status(retrieval: &RetrievalReport) -> MemorySemanticStatus {
@@ -794,8 +956,8 @@ fn recall_effective_limit(limit: usize, max_chars: usize) -> usize {
 
 fn render_recall_report(report: &RecallReport) -> String {
     let mut out = format!(
-        "Compressed Recall: {}\n{}\nEstimated token saving: {}\n",
-        report.query, report.receipt, report.token_saving_estimate
+        "Compressed Recall: {} ({})\n{}\nEstimated token saving: {}\n",
+        report.query, report.mode, report.receipt, report.token_saving_estimate
     );
     for item in &report.items {
         let line = format!(

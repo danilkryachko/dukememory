@@ -218,7 +218,11 @@ pub(crate) fn query_memories(
     let Some(fallback_query) = sanitize_fts_any_query(query) else {
         return Ok(rows);
     };
-    let candidate_limit = limit.saturating_mul(6).clamp(limit.max(1), 50);
+    let min_limit = limit.max(1);
+    let candidate_limit = limit
+        .saturating_mul(6)
+        .max(min_limit)
+        .min(min_limit.max(50));
     let candidates = query_memories_with_fts(
         conn,
         Some(fallback_query),

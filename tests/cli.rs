@@ -8732,6 +8732,8 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-type-guide",
         "memory-eval-story",
         "import-review",
+        "memory-upload",
+        "memanto-gap-report",
         "web-control-center-v7",
         "autonomous-usefulness",
         "benchmark-polish",
@@ -8836,6 +8838,8 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-type-guide",
         "memory-eval-story",
         "import-review",
+        "memory-upload",
+        "memanto-gap-report",
         "web-control-center-v7",
         "autonomous-usefulness",
         "benchmark-polish",
@@ -9806,6 +9810,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/memory-type-guide"));
     assert!(html.contains("/memory-eval-story"));
     assert!(html.contains("/import-review"));
+    assert!(html.contains("/memory-upload"));
+    assert!(html.contains("/memanto-gap-report"));
     assert!(html.contains("/web-control-center-v7"));
     assert!(html.contains("/autonomous-usefulness"));
     assert!(html.contains("/benchmark-polish"));
@@ -10693,6 +10699,32 @@ fn v14_6_local_memory_ui_and_http_actions() {
     let import_review = http_once(&db, &import_request);
     assert!(import_review.contains("\"import_review\""));
     assert!(import_review.contains("\"candidate_count\""));
+
+    let upload_body = format!(
+        "{{\"input\":\"{}\",\"scope\":\"project\",\"apply\":false}}",
+        import_source.display()
+    );
+    let upload_request = format!(
+        "POST /memory-upload HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        upload_body.len(),
+        upload_body
+    );
+    let memory_upload = http_once(&db, &upload_request);
+    assert!(memory_upload.contains("\"memory_upload\""));
+    assert!(memory_upload.contains("\"memory_upload:reviewed_file_pipeline\""));
+
+    let gap_report = http_once(
+        &db,
+        "GET /memanto-gap-report HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(gap_report.contains("\"memanto_gap\""));
+    assert!(gap_report.contains("\"temporal\""));
+
+    let temporal_recall = http_once(
+        &db,
+        "GET /recall?q=HTTP%20import&changed_since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(temporal_recall.contains("\"mode\":\"changed_since\""));
 
     let web_control_v7 = http_once(
         &db,
@@ -12824,6 +12856,48 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(import_review_json["version"], 1);
     assert!(import_review_json["candidates"].as_array().is_some());
 
+    let memory_upload = stdout(
+        cmd(&db)
+            .arg("memory-upload")
+            .arg(&import_source)
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    );
+    let memory_upload_json: Value = serde_json::from_str(&memory_upload).unwrap();
+    assert_eq!(memory_upload_json["version"], 1);
+    assert!(
+        memory_upload_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap().contains("memory_upload"))
+    );
+
+    let gap_report = stdout(cmd(&db).arg("memanto-gap-report").arg("--json"));
+    let gap_report_json: Value = serde_json::from_str(&gap_report).unwrap();
+    assert_eq!(gap_report_json["version"], 1);
+    assert_eq!(gap_report_json["status"], "ready");
+    assert!(
+        gap_report_json["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|capability| capability["name"] == "temporal")
+    );
+
+    let temporal_recall = stdout(
+        cmd(&db)
+            .arg("recall")
+            .arg("memory answer")
+            .arg("--changed-since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let temporal_recall_json: Value = serde_json::from_str(&temporal_recall).unwrap();
+    assert_eq!(temporal_recall_json["mode"], "changed_since");
+    assert!(temporal_recall_json["changed_since_ms"].as_i64().is_some());
+
     let web_control_v7 = stdout(
         cmd(&db)
             .arg("web-control-center-v7")
@@ -13233,6 +13307,8 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         "memory-type-guide",
         "memory-eval-story",
         "import-review",
+        "memory-upload",
+        "memanto-gap-report",
         "web-control-center-v7",
         "autonomous-usefulness",
         "benchmark-polish",

@@ -1565,6 +1565,25 @@ pub(crate) struct ImportReviewCandidate {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct MemantoGapReport {
+    pub(crate) version: u32,
+    pub(crate) status: String,
+    pub(crate) memory_count: i64,
+    pub(crate) pending_inbox: i64,
+    pub(crate) capabilities: Vec<MemantoGapCapability>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemantoGapCapability {
+    pub(crate) name: String,
+    pub(crate) status: String,
+    pub(crate) dukememory_surface: String,
+    pub(crate) memanto_parallel: String,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct AutonomousUsefulnessReport {
     pub(crate) version: u32,
     pub(crate) ok: bool,
@@ -9170,6 +9189,187 @@ pub(crate) fn print_import_review(
     Ok(())
 }
 
+pub(crate) fn print_memory_upload(
+    conn: &Connection,
+    root: &Path,
+    input: &Path,
+    scope: &str,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_upload_report(conn, root, input, scope, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Upload");
+    println!("status: {}", report.status);
+    println!("input: {}", report.input);
+    println!("candidates: {}", report.candidate_count);
+    println!("inserted: {}", report.inserted);
+    Ok(())
+}
+
+pub(crate) fn memory_upload_report(
+    conn: &Connection,
+    root: &Path,
+    input: &Path,
+    scope: &str,
+    apply: bool,
+) -> Result<ImportReviewReport> {
+    let report = import_review_report(conn, root, input, scope, apply)?;
+    let mut actions = report.actions.clone();
+    actions.push("memory_upload:reviewed_file_pipeline".to_string());
+    let mut recommendations = report.recommendations.clone();
+    recommendations.insert(
+        0,
+        "memory-upload intentionally writes inbox candidates first; approve only durable facts"
+            .to_string(),
+    );
+    Ok(ImportReviewReport {
+        actions,
+        recommendations,
+        ..report
+    })
+}
+
+pub(crate) fn print_memanto_gap_report(conn: &Connection, json_out: bool) -> Result<()> {
+    let report = memanto_gap_report(conn)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memanto Gap Report");
+    println!("status: {}", report.status);
+    println!("memories: {}", report.memory_count);
+    println!("pending_inbox: {}", report.pending_inbox);
+    for capability in &report.capabilities {
+        println!(
+            "- {}: {} ({})",
+            capability.name, capability.status, capability.dukememory_surface
+        );
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn memanto_gap_report(conn: &Connection) -> Result<MemantoGapReport> {
+    let memory_count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
+    let pending_inbox: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memory_inbox WHERE status = 'pending'",
+        [],
+        |row| row.get(0),
+    )?;
+    let embedding_count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM memory_embeddings", [], |row| {
+            row.get(0)
+        })?;
+    let capabilities = vec![
+        memanto_gap_capability(
+            "remember",
+            "ready",
+            "add / remember / import-review / memory-upload",
+            "remember",
+            "typed cards, reviewed imports, inbox-first uploads",
+        ),
+        memanto_gap_capability(
+            "recall",
+            "ready",
+            "brief / impact / recall / explain-recall",
+            "recall",
+            "FTS first, optional embeddings, compact token budgets",
+        ),
+        memanto_gap_capability(
+            "answer",
+            "ready",
+            "answer",
+            "answer",
+            "grounded answer with citation ids and explicit gaps",
+        ),
+        memanto_gap_capability(
+            "temporal",
+            "ready",
+            "recall --recent|--as-of-days-ago|--changed-since-days",
+            "temporal recall",
+            "uses local created_at and updated_at without schema migration",
+        ),
+        memanto_gap_capability(
+            "conflicts",
+            "ready",
+            "conflicts / merge-candidates / doctrine / drift",
+            "conflict detection",
+            "duplicate and supersession review stays explicit and reversible",
+        ),
+        memanto_gap_capability(
+            "integrations",
+            "ready",
+            "MCP server / Codex skill / AGENTS.md / connect-codex",
+            "agent integrations",
+            "future chats are wired through project-local instructions",
+        ),
+        memanto_gap_capability(
+            "local_first",
+            "ready",
+            "SQLite + FTS + optional embeddings",
+            "local or cloud backend",
+            "works without mandatory remote backend; embeddings are optional",
+        ),
+        memanto_gap_capability(
+            "operations",
+            "ready",
+            "doctor-project / memory-qa / release-gate / fleet-supervisor",
+            "status and scheduled workflows",
+            "quality, release, and fleet health gates are first-class",
+        ),
+    ];
+    let mut recommendations = Vec::new();
+    if memory_count == 0 {
+        recommendations
+            .push("seed durable project memory before comparing recall quality".to_string());
+    }
+    if pending_inbox > 0 {
+        recommendations
+            .push("review pending inbox candidates before trusting imported context".to_string());
+    }
+    if embedding_count == 0 {
+        recommendations.push(
+            "run embed-index after important memory writes when semantic recall is configured"
+                .to_string(),
+        );
+    }
+    recommendations.push(
+        "keep dukememory differentiated as local-first project coding memory, not a generic hosted memory clone"
+            .to_string(),
+    );
+    Ok(MemantoGapReport {
+        version: 1,
+        status: "ready".to_string(),
+        memory_count,
+        pending_inbox,
+        capabilities,
+        recommendations,
+    })
+}
+
+fn memanto_gap_capability(
+    name: &str,
+    status: &str,
+    dukememory_surface: &str,
+    memanto_parallel: &str,
+    detail: &str,
+) -> MemantoGapCapability {
+    MemantoGapCapability {
+        name: name.to_string(),
+        status: status.to_string(),
+        dukememory_surface: dukememory_surface.to_string(),
+        memanto_parallel: memanto_parallel.to_string(),
+        detail: detail.to_string(),
+    }
+}
+
 pub(crate) fn import_review_report(
     conn: &Connection,
     root: &Path,
@@ -11629,6 +11829,8 @@ fn agent_required_commands() -> &'static [&'static str] {
         "memory-type-guide",
         "memory-eval-story",
         "import-review",
+        "memory-upload",
+        "memanto-gap-report",
         "web-control-center-v7",
         "autonomous-usefulness",
         "benchmark-polish",

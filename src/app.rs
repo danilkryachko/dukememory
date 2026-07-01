@@ -783,6 +783,9 @@ pub(crate) fn run() -> Result<()> {
             provider,
             endpoint,
             model,
+            recent,
+            as_of_days_ago,
+            changed_since_days,
             json,
         } => print_recall(
             &conn,
@@ -806,6 +809,9 @@ pub(crate) fn run() -> Result<()> {
                     DEFAULT_EMBED_MODEL,
                     &runtime.config.embeddings.model,
                 ),
+                recent,
+                as_of_days_ago,
+                changed_since_days,
                 json_out: json,
             },
         )?,
@@ -1325,6 +1331,14 @@ pub(crate) fn run() -> Result<()> {
             apply,
             json,
         } => print_import_review(&conn, &root, &input, &scope, apply, json)?,
+        Command::MemoryUpload {
+            input,
+            root,
+            scope,
+            apply,
+            json,
+        } => print_memory_upload(&conn, &root, &input, &scope, apply, json)?,
+        Command::MemantoGapReport { json } => print_memanto_gap_report(&conn, json)?,
         Command::WebControlCenterV7 {
             root,
             target,
@@ -3847,6 +3861,10 @@ Use `dukememory memory-eval-story --json` to inspect the reproducible local reca
 
 Use `dukememory import-review FILE --json` to turn text into reviewed inbox candidates; use `--apply` only when the file is safe and durable.
 
+Use `dukememory memory-upload FILE --json` to upload a local text/markdown/json/csv file into reviewed inbox candidates; use `--apply` only after reviewing the source.
+
+Use `dukememory memanto-gap-report --json` to inspect Memanto-style remember, recall, answer, temporal, conflict, integration, local-first, and operations coverage without changing memory.
+
 Use `dukememory web-control-center-v7 --json` to inspect the 0.26 web control model with answer, connect, type guide, eval story, and import review controls.
 
 Use `dukememory autonomous-usefulness --json` to plan autonomous memory usefulness improvements; use `--apply` only for reversible feedback materialization.
@@ -3869,7 +3887,7 @@ Use `dukememory web-control-center-v11 --json` to inspect the 0.30 web control m
 
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
-Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens.
+Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens; use `--recent`, `--as-of-days-ago N`, or `--changed-since-days N` for temporal recall.
 
 Use `dukememory eval live --json` to inspect whether memory reads are later judged useful, useless, or missing.
 
@@ -4007,6 +4025,8 @@ dukememory connect-codex --json
 dukememory memory-type-guide --json
 dukememory memory-eval-story --json
 dukememory import-review README.md --json
+dukememory memory-upload README.md --json
+dukememory memanto-gap-report --json
 dukememory web-control-center-v7 --json
 dukememory autonomous-usefulness --json
 dukememory benchmark-polish --json
@@ -4503,6 +4523,8 @@ fn print_completions(shell: CompletionShell) {
         "memory-type-guide",
         "memory-eval-story",
         "import-review",
+        "memory-upload",
+        "memanto-gap-report",
         "web-control-center-v7",
         "autonomous-usefulness",
         "benchmark-polish",
@@ -4692,6 +4714,8 @@ fn print_manpage() {
     println!("  memory-type-guide --json      explain memory types, filters, guardrails");
     println!("  memory-eval-story --json      reproducible recall/effectiveness story");
     println!("  import-review FILE --json     turn text into reviewed inbox candidates");
+    println!("  memory-upload FILE --json     upload file into reviewed inbox candidates");
+    println!("  memanto-gap-report --json     compare Memanto-style capability coverage");
     println!("  web-control-center-v7         0.26 answer/connect/eval/import control model");
     println!("  autonomous-usefulness --json  plan autonomous usefulness improvements");
     println!("  benchmark-polish --json       polished local benchmark evidence");
@@ -4705,7 +4729,7 @@ fn print_manpage() {
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");
-    println!("  recall QUERY --max-chars 1200 compressed token-light recall");
+    println!("  recall QUERY --recent         compressed or temporal token-light recall");
     println!("  dashboard --json              multi-project memory health dashboard");
     println!("  dashboard-repair --apply      run safe dashboard repair actions");
     println!("  dashboard-repair-history      summarize safe repair audit history");

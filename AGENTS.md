@@ -94,6 +94,8 @@ For every new chat or coding task in this repository:
 - To explain memory card types, filters, and guardrails, run `dukememory memory-type-guide --json`.
 - To inspect reproducible local recall/effectiveness evaluation, run `dukememory memory-eval-story --json`.
 - To turn a text file into reviewed inbox candidates, run `dukememory import-review FILE --json`; use `--apply` only for safe durable input.
+- To upload a local text/markdown/json/csv file into reviewed inbox candidates, run `dukememory memory-upload FILE --json`; use `--apply` only after reviewing the source.
+- To inspect Memanto-style capability coverage without changing memory, run `dukememory memanto-gap-report --json`.
 - To inspect the 0.26 web control model, run `dukememory web-control-center-v7 --json`.
 - To plan autonomous memory usefulness improvements, run `dukememory autonomous-usefulness --json`; use `--apply` only for reversible feedback materialization.
 - To inspect polished local benchmark evidence, run `dukememory benchmark-polish --json`.
@@ -104,7 +106,7 @@ For every new chat or coding task in this repository:
 - To inspect the 0.29 web control model, run `dukememory web-control-center-v10 --json`.
 - To preview periodic fleet maintenance, run `dukememory fleet-supervisor-watch-install --dry-run --json`; omit `--dry-run` to write the launchd plist.
 - To inspect the 0.30 web control model, run `dukememory web-control-center-v11 --json`.
-- To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`.
+- To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`; use `--recent`, `--as-of-days-ago N`, or `--changed-since-days N` for temporal recall.
 - To inspect live memory usefulness from reads and feedback, run `dukememory eval live --json`.
 - To inspect all local projects, run `dukememory dashboard --json`.
 - To inspect the full memory intelligence surface, run `dukememory intelligence-dashboard --json`.

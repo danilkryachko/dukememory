@@ -1501,6 +1501,32 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 apply,
             )?}))
         }
+        ("POST", "/memory-upload") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let input = value
+                .get("input")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .with_context(|| "memory-upload requires input")?;
+            let scope = value
+                .get("scope")
+                .and_then(Value::as_str)
+                .unwrap_or("project");
+            let apply = value.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            HttpResponse::ok(json!({"memory_upload": memory_upload_report(
+                &conn,
+                &ctx.root,
+                &input,
+                scope,
+                apply,
+            )?}))
+        }
+        ("GET", "/memanto-gap-report") => {
+            let conn = open_selected_db(db, query, None)?;
+            HttpResponse::ok(json!({"memanto_gap": memanto_gap_report(&conn)?}))
+        }
         ("GET", "/web-control-center-v7") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
@@ -2355,6 +2381,16 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 .get("limit")
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(8);
+            let recent = params
+                .get("recent")
+                .map(|value| value == "1" || value == "true")
+                .unwrap_or(false);
+            let as_of_days_ago = params
+                .get("as_of_days_ago")
+                .and_then(|value| value.parse::<i64>().ok());
+            let changed_since_days = params
+                .get("changed_since_days")
+                .and_then(|value| value.parse::<i64>().ok());
             HttpResponse::ok(json!({"recall": recall_report(&conn, &RecallRequest {
                 query: q,
                 max_chars,
@@ -2363,6 +2399,9 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 provider: DEFAULT_EMBED_PROVIDER,
                 endpoint: DEFAULT_EMBED_ENDPOINT,
                 model: DEFAULT_EMBED_MODEL,
+                recent,
+                as_of_days_ago,
+                changed_since_days,
                 json_out: true,
             })?}))
         }
