@@ -35,6 +35,8 @@ Transcript-based memory quickly turns into noise.
 - **Small context briefs** before coding, including file and symbol impact checks.
 - **Optional semantic recall** with Ollama or OpenAI-compatible embeddings.
 - **Autonomous maintenance** for freshness, backups, repair hints, gap review, and safe cleanup.
+- **Grounded answers** from memory with cited card ids and explicit gaps.
+- **One-command Codex wiring** so future chats know memory is installed.
 - **Lightweight control surfaces** for health scoring, explainable recall, intent maps, retrieval probes, safe supersede, diff apply, governance policy, context routing, sync dry-runs, and release gates.
 
 ## What It Remembers
@@ -89,9 +91,12 @@ dukememory impact src/checkout.ts --budget-profile tiny
 dukememory recall "checkout validation" --max-chars 1200
 dukememory drift --root . --json
 dukememory context-governor "fix checkout validation" --target src/checkout.ts --json
+dukememory answer "what should we remember about checkout validation?" --json
 dukememory explain-recall "checkout validation" --json
 dukememory memory-health-score --json
+dukememory memory-eval-story --json
 dukememory recall-benchmark-suite --json
+dukememory import-review docs/project-notes.md --json
 dukememory memory-diff-review --json
 ```
 
@@ -172,6 +177,7 @@ instead of noisy automatic writes.
 ```bash
 dukememory serve-mcp
 dukememory install-skill
+dukememory connect-codex --apply --json
 dukememory codex-doctor --json
 ```
 
@@ -236,6 +242,12 @@ dukememory agent-trace --json
 dukememory vds-sync-hardening --target /mnt/vds/dukememory --json
 dukememory install-quality --json
 dukememory web-control-center-v6 --json
+dukememory answer "project memory" --json
+dukememory connect-codex --json
+dukememory memory-type-guide --json
+dukememory memory-eval-story --json
+dukememory import-review README.md --json
+dukememory web-control-center-v7 --json
 dukememory auto-ranking-tune --apply --json
 dukememory ranking-profile --profile balanced --apply --json
 dukememory project-template --kind rust-cli --apply --json

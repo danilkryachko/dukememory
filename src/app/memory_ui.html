@@ -562,7 +562,8 @@
       remoteSyncControl: null, webControlV4: null, mcpDisciplineV2: null, feedbackLoopV2: null, upgradeAllV2: null,
       vdsSyncPack: null, webControlV5: null, qualityAutopilotV31: null, memoryRouterV2: null, benchmarkProfiles: null, installPolish: null,
       effectivenessLab: null, contextBudgeterV2: null, contractV2: null, crossProjectLearning: null, agentTrace: null,
-      vdsHardening: null, installQuality: null, webControlV6: null
+      vdsHardening: null, installQuality: null, webControlV6: null, answer: null, connectCodex: null, typeGuide: null,
+      evalStory: null, webControlV7: null
     };
     const $ = (id) => document.getElementById(id);
     const t = (key) => i18n[state.lang][key] || i18n.en[key] || key;
@@ -860,7 +861,7 @@
       const params = new URLSearchParams({ since_days: "7" });
       if (state.project) params.set("project", state.project);
       const taskQuery = $("q")?.value || "memory task";
-      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch, loop, journal, engine, latency, syncProfile, enforce, watchInstall, rankingProfile, projectTemplate, diffReview, contextGovernor, memoryRouter, autoRanking, watchControl, autonomyCenter, remoteSyncV2, memoryHealth, explainRecall, intentMap, memoryHarness, agentAuditV2, controlCenterV2, autoSupersedeV2, memoryDiffApply, recallBenchmark, releaseGateV2, remoteSyncWizard, governancePolicy, autonomousLoopV2, governanceEnforce, qualityCi, fleetV2, remoteApplyFlow, mcpSurfaceV2, autopilotV3, selfLearning, roleProfile, inboxReviewer, webControlV3, remoteApply, mcpQuality, remoteSyncControl, webControlV4, mcpDisciplineV2, feedbackLoopV2, upgradeAllV2, vdsSyncPack, webControlV5, qualityAutopilotV31, memoryRouterV2, benchmarkProfiles, installPolish, effectivenessLab, contextBudgeterV2, contractV2, crossProjectLearning, agentTrace, vdsHardening, installQuality, webControlV6] = await Promise.all([
+      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch, loop, journal, engine, latency, syncProfile, enforce, watchInstall, rankingProfile, projectTemplate, diffReview, contextGovernor, memoryRouter, autoRanking, watchControl, autonomyCenter, remoteSyncV2, memoryHealth, explainRecall, intentMap, memoryHarness, agentAuditV2, controlCenterV2, autoSupersedeV2, memoryDiffApply, recallBenchmark, releaseGateV2, remoteSyncWizard, governancePolicy, autonomousLoopV2, governanceEnforce, qualityCi, fleetV2, remoteApplyFlow, mcpSurfaceV2, autopilotV3, selfLearning, roleProfile, inboxReviewer, webControlV3, remoteApply, mcpQuality, remoteSyncControl, webControlV4, mcpDisciplineV2, feedbackLoopV2, upgradeAllV2, vdsSyncPack, webControlV5, qualityAutopilotV31, memoryRouterV2, benchmarkProfiles, installPolish, effectivenessLab, contextBudgeterV2, contractV2, crossProjectLearning, agentTrace, vdsHardening, installQuality, webControlV6, answer, connectCodex, typeGuide, evalStory, webControlV7] = await Promise.all([
         api(`/roi-report?${params.toString()}`),
         api(`/agent-audit?${params.toString()}`),
         api(`/remote-status?${params.toString()}`),
@@ -933,7 +934,12 @@
         api(`/agent-trace?${params.toString()}&limit=12`),
         api(`/vds-sync-hardening?${params.toString()}`),
         api(`/install-quality?${params.toString()}`),
-        api(`/web-control-center-v6?${params.toString()}&task=${encodeURIComponent(taskQuery)}`)
+        api(`/web-control-center-v6?${params.toString()}&task=${encodeURIComponent(taskQuery)}`),
+        api(`/answer?${params.toString()}&q=${encodeURIComponent(taskQuery)}&limit=8`),
+        api(`/connect-codex?${params.toString()}`),
+        api(`/memory-type-guide?${params.toString()}`),
+        api(`/memory-eval-story?${params.toString()}`),
+        api(`/web-control-center-v7?${params.toString()}&task=${encodeURIComponent(taskQuery)}`)
       ]);
       state.roi = roi.roi;
       state.agentAudit = audit.agent_audit;
@@ -1008,6 +1014,11 @@
       state.vdsHardening = vdsHardening.vds_hardening;
       state.installQuality = installQuality.install_quality;
       state.webControlV6 = webControlV6.control_v6;
+      state.answer = answer.answer;
+      state.connectCodex = connectCodex.connect_codex;
+      state.typeGuide = typeGuide.type_guide;
+      state.evalStory = evalStory.eval_story;
+      state.webControlV7 = webControlV7.control_v7;
       renderSettings();
     }
 
@@ -1088,6 +1099,10 @@
         await api("/vds-sync-hardening/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
       } else if (action === "install-quality") {
         await api("/install-quality/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
+      } else if (action === "connect-codex") {
+        await api("/connect-codex/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
+      } else if (action === "import-review") {
+        await api("/import-review/apply", { method: "POST", body: JSON.stringify(withProject({ input: "README.md", scope: "project", apply: false })) });
       }
       setToast(action);
       await Promise.all([loadIntelligence(), loadMemoryQa(), loadOpsStatus(), loadProjects(), loadDashboard()]);
@@ -1439,6 +1454,11 @@
       const vdsHardening = state.vdsHardening || {};
       const installQuality = state.installQuality || {};
       const webControlV6 = state.webControlV6 || {};
+      const answer = state.answer || {};
+      const connectCodex = state.connectCodex || {};
+      const typeGuide = state.typeGuide || {};
+      const evalStory = state.evalStory || {};
+      const webControlV7 = state.webControlV7 || {};
       const contract = state.contract || {};
       const ops = state.ops || {};
       const effectiveness = ops.effectiveness || {};
@@ -1547,10 +1567,15 @@
         <div class="stat"><strong>${escapeHtml(vdsHardening.status || "-")}</strong><span>vds hardening</span></div>
         <div class="stat"><strong>${escapeHtml(installQuality.status || "-")}</strong><span>install quality</span></div>
         <div class="stat"><strong>${escapeHtml(webControlV6.status || "-")}</strong><span>control v6</span></div>
+        <div class="stat"><strong>${Number(answer.citation_count || 0)}</strong><span>answer citations</span></div>
+        <div class="stat"><strong>${escapeHtml(connectCodex.status || "-")}</strong><span>connect codex</span></div>
+        <div class="stat"><strong>${Number(typeGuide.types?.length || 0)}</strong><span>memory types</span></div>
+        <div class="stat"><strong>${escapeHtml(evalStory.status || "-")}</strong><span>eval story</span></div>
+        <div class="stat"><strong>${escapeHtml(webControlV7.status || "-")}</strong><span>control v7</span></div>
       </div>
       <div class="card"><div class="title">doctor project</div><div class="body">status ${escapeHtml(doctor.status || "-")}<br>qa ${Number(doctor.memory_qa?.score || 0).toFixed(1)}<br>embedding ${doctor.embedding ? `${Number(doctor.embedding.missing || 0)} missing / ${Number(doctor.embedding.stale || 0)} stale` : "-"}<br>${doctor.checks?.length ? doctor.checks.slice(0, 6).map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">release gate</div><div class="body">status ${escapeHtml(releaseGate.status || "-")}<br>strict ${releaseGate.strict ? "yes" : "no"}<br>${releaseGate.checks?.length ? releaseGate.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}<br>${releaseGate.issues?.length ? releaseGate.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
-      <div class="card"><div class="title">intelligence actions</div><div class="actions"><button data-intelligence="doctor-fix">Doctor fix</button><button data-intelligence="loop-apply">Loop apply</button><button data-intelligence="loop-v2-apply">Loop v2</button><button data-intelligence="autopilot-v3">Autopilot v3</button><button data-intelligence="auto-context-budgeter-v2">Budgeter v2</button><button data-intelligence="memory-contract-v2">Contract v2</button><button data-intelligence="cross-project-learning">Cross-project</button><button data-intelligence="vds-sync-hardening">VDS hardening</button><button data-intelligence="install-quality">Install quality</button><button data-intelligence="vds-sync-pack">VDS sync pack</button><button data-intelligence="quality-autopilot-v31">Quality autopilot</button><button data-intelligence="benchmark-profiles">Benchmark profiles</button><button data-intelligence="install-polish">Install polish</button><button data-intelligence="remote-sync-control">Sync control</button><button data-intelligence="mcp-discipline-v2">MCP discipline</button><button data-intelligence="feedback-loop-v2">Feedback loop</button><button data-intelligence="upgrade-all-v2">Upgrade v2</button><button data-intelligence="self-learning">Self learning</button><button data-intelligence="role-profile">Role profile</button><button data-intelligence="inbox-reviewer">Inbox reviewer</button><button data-intelligence="governance-enforce">Governance enforce</button><button data-intelligence="engine-apply">Engine apply</button><button data-intelligence="sync-profile">Sync profile</button><button data-intelligence="ranking-apply">Ranking profile</button><button data-intelligence="auto-ranking">Auto ranking</button><button data-intelligence="template-apply">Template</button><button data-intelligence="diff-review">Diff review</button><button data-intelligence="diff-apply">Diff apply</button><button data-intelligence="supersede-v2">Supersede v2</button><button data-intelligence="benchmark-baseline">Benchmark baseline</button><button data-intelligence="governance-policy">Governance</button><button data-intelligence="watch-control">Watch control</button><button data-intelligence="upgrade-all">Upgrade all</button><button data-intelligence="enforce-fix">Enforce fix</button><button data-intelligence="auto-feedback">Auto feedback</button><button data-intelligence="watch-fix">Watch fix</button><button data-intelligence="release-run">Release run</button><button data-intelligence="release-v2-run">Release v2</button></div></div>
+      <div class="card"><div class="title">intelligence actions</div><div class="actions"><button data-intelligence="doctor-fix">Doctor fix</button><button data-intelligence="loop-apply">Loop apply</button><button data-intelligence="loop-v2-apply">Loop v2</button><button data-intelligence="autopilot-v3">Autopilot v3</button><button data-intelligence="connect-codex">Connect Codex</button><button data-intelligence="import-review">Import review</button><button data-intelligence="auto-context-budgeter-v2">Budgeter v2</button><button data-intelligence="memory-contract-v2">Contract v2</button><button data-intelligence="cross-project-learning">Cross-project</button><button data-intelligence="vds-sync-hardening">VDS hardening</button><button data-intelligence="install-quality">Install quality</button><button data-intelligence="vds-sync-pack">VDS sync pack</button><button data-intelligence="quality-autopilot-v31">Quality autopilot</button><button data-intelligence="benchmark-profiles">Benchmark profiles</button><button data-intelligence="install-polish">Install polish</button><button data-intelligence="remote-sync-control">Sync control</button><button data-intelligence="mcp-discipline-v2">MCP discipline</button><button data-intelligence="feedback-loop-v2">Feedback loop</button><button data-intelligence="upgrade-all-v2">Upgrade v2</button><button data-intelligence="self-learning">Self learning</button><button data-intelligence="role-profile">Role profile</button><button data-intelligence="inbox-reviewer">Inbox reviewer</button><button data-intelligence="governance-enforce">Governance enforce</button><button data-intelligence="engine-apply">Engine apply</button><button data-intelligence="sync-profile">Sync profile</button><button data-intelligence="ranking-apply">Ranking profile</button><button data-intelligence="auto-ranking">Auto ranking</button><button data-intelligence="template-apply">Template</button><button data-intelligence="diff-review">Diff review</button><button data-intelligence="diff-apply">Diff apply</button><button data-intelligence="supersede-v2">Supersede v2</button><button data-intelligence="benchmark-baseline">Benchmark baseline</button><button data-intelligence="governance-policy">Governance</button><button data-intelligence="watch-control">Watch control</button><button data-intelligence="upgrade-all">Upgrade all</button><button data-intelligence="enforce-fix">Enforce fix</button><button data-intelligence="auto-feedback">Auto feedback</button><button data-intelligence="watch-fix">Watch fix</button><button data-intelligence="release-run">Release run</button><button data-intelligence="release-v2-run">Release v2</button></div></div>
       <div class="card"><div class="title">memory effectiveness lab</div><div class="body">status ${escapeHtml(effectivenessLab.status || "-")} / score ${Number(effectivenessLab.score || 0).toFixed(1)}<br>reads ${Number(effectivenessLab.read_count || 0)} / influenced ${Number(effectivenessLab.influenced_reads || 0)} / confirmed ${Number(effectivenessLab.confirmed_reads || 0)} / questioned ${Number(effectivenessLab.questioned_reads || 0)} / empty ${Number(effectivenessLab.empty_reads || 0)}<br>semantic results ${formatPercent(effectivenessLab.semantic_result_rate)}<br>${effectivenessLab.issues?.length ? effectivenessLab.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
       <div class="card"><div class="title">auto context budgeter v2</div><div class="body">profile ${escapeHtml(contextBudgeterV2.selected_profile || "-")} / ${Number(contextBudgeterV2.max_chars || 0)} chars<br>${contextBudgeterV2.selected_commands?.length ? contextBudgeterV2.selected_commands.slice(0, 5).map(escapeHtml).join("<br>") : "-"}<br>avoids ${contextBudgeterV2.avoided_commands?.length ? contextBudgeterV2.avoided_commands.map(escapeHtml).join(", ") : "-"}</div></div>
       <div class="card"><div class="title">memory contract v2</div><div class="body">status ${escapeHtml(contractV2.status || "-")} / freshness ${Number(contractV2.freshness_score || 0).toFixed(1)}<br>path ${escapeHtml(contractV2.path || "-")}<br>${contractV2.sections?.length ? contractV2.sections.map((section) => `${escapeHtml(section.status)} ${escapeHtml(section.name)}: ${escapeHtml(section.detail)}`).join("<br>") : "-"}</div></div>
@@ -1559,6 +1584,11 @@
       <div class="card"><div class="title">vds sync hardening</div><div class="body">status ${escapeHtml(vdsHardening.status || "-")}<br>target ${escapeHtml(vdsHardening.target || "-")}<br>${vdsHardening.checks?.length ? vdsHardening.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}: ${escapeHtml(check.detail)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">install quality</div><div class="body">status ${escapeHtml(installQuality.status || "-")}<br>${installQuality.checks?.length ? installQuality.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}: ${escapeHtml(check.detail)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">web control center v6</div><div class="body">status ${escapeHtml(webControlV6.status || "-")}<br>${webControlV6.controls?.length ? webControlV6.controls.slice(0, 10).map((item) => `${escapeHtml(item.status)} ${escapeHtml(item.label)} ${escapeHtml(item.method)}`).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">memory answer</div><div class="body">status ${escapeHtml(answer.status || "-")} / citations ${Number(answer.citation_count || 0)}<br>${escapeHtml(answer.answer || "-")}<br>${answer.gaps?.length ? answer.gaps.map(escapeHtml).join("<br>") : "gaps -"}</div></div>
+      <div class="card"><div class="title">connect codex</div><div class="body">status ${escapeHtml(connectCodex.status || "-")}<br>${connectCodex.checks?.length ? connectCodex.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}: ${escapeHtml(check.detail)}`).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">memory type guide</div><div class="body">${typeGuide.types?.length ? typeGuide.types.slice(0, 8).map((item) => `${escapeHtml(item.memory_type)}: ${escapeHtml(item.use_when)}`).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">memory eval story</div><div class="body">status ${escapeHtml(evalStory.status || "-")}<br>${evalStory.public_claims?.length ? evalStory.public_claims.map(escapeHtml).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">web control center v7</div><div class="body">status ${escapeHtml(webControlV7.status || "-")}<br>${webControlV7.controls?.length ? webControlV7.controls.slice(0, 12).map((item) => `${escapeHtml(item.status)} ${escapeHtml(item.label)} ${escapeHtml(item.method)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">context governor</div><div class="body">budget ${escapeHtml(contextGovernor.budget?.profile || "-")} / ${Number(contextGovernor.max_context_chars || 0)} chars<br>${contextGovernor.selected_flow?.length ? contextGovernor.selected_flow.map(escapeHtml).join("<br>") : "-"}<br>${contextGovernor.commands?.length ? contextGovernor.commands.slice(0, 4).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">memory router</div><div class="body">selected ${escapeHtml(memoryRouter.selected_route || "-")}<br>${memoryRouter.routes?.length ? memoryRouter.routes.slice(0, 5).map((route) => `${escapeHtml(route.mode)} ${Number(route.matches || 0)} ${escapeHtml(route.root)}`).join("<br>") : "-"}<br>${memoryRouter.warnings?.length ? memoryRouter.warnings.map(escapeHtml).join("<br>") : ""}</div></div>
       <div class="card"><div class="title">auto ranking tune</div><div class="body">profile ${escapeHtml(autoRanking.selected_profile || "-")}<br>qa ${Number(autoRanking.qa_score || 0).toFixed(1)} / useful ${formatPercent(autoRanking.useful_rate)}<br>missing ${Number(autoRanking.inferred_missing || 0)} / semantic empty ${Number(autoRanking.semantic_empty || 0)} / noisy ${Number(autoRanking.noisy_cards || 0)}<br>${autoRanking.reasons?.length ? autoRanking.reasons.map(escapeHtml).join("<br>") : "-"}</div></div>

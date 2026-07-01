@@ -1298,6 +1298,48 @@ pub(crate) fn run() -> Result<()> {
             since_days,
             json,
         )?,
+        Command::Answer {
+            question,
+            root,
+            scope,
+            limit,
+            json,
+        } => print_memory_answer(&conn, &root, &question, scope.as_deref(), limit, json)?,
+        Command::ConnectCodex {
+            root,
+            since_days,
+            apply,
+            json,
+        } => print_connect_codex(&conn, &cli.db, &root, since_days, apply, json)?,
+        Command::MemoryTypeGuide { json } => print_memory_type_guide(json)?,
+        Command::MemoryEvalStory {
+            root,
+            since_days,
+            write_baseline,
+            json,
+        } => print_memory_eval_story(&conn, &root, since_days, write_baseline, json)?,
+        Command::ImportReview {
+            input,
+            root,
+            scope,
+            apply,
+            json,
+        } => print_import_review(&conn, &root, &input, &scope, apply, json)?,
+        Command::WebControlCenterV7 {
+            root,
+            target,
+            task,
+            since_days,
+            json,
+        } => print_web_control_center_v7(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            &task,
+            since_days,
+            json,
+        )?,
         Command::ProjectTemplate {
             root,
             kind,
@@ -3698,6 +3740,18 @@ Use `dukememory install-quality --json` to verify install, skill, AGENTS, doctor
 
 Use `dukememory web-control-center-v6 --json` to inspect the 0.25 web control model with effectiveness, budgeter, contract v2, cross-project learning, trace, VDS hardening, and install quality.
 
+Use `dukememory answer "<question>" --json` to answer from grounded project memory with citation ids and explicit gaps.
+
+Use `dukememory connect-codex --json` to verify that Codex future chats are wired to project memory; use `--apply` to write the checked connection policy after doctor/enforce pass.
+
+Use `dukememory memory-type-guide --json` to explain memory card types, filters, examples, and write guardrails.
+
+Use `dukememory memory-eval-story --json` to inspect the reproducible local recall/effectiveness benchmark story; use `--write-baseline` only after reviewing probes.
+
+Use `dukememory import-review FILE --json` to turn text into reviewed inbox candidates; use `--apply` only when the file is safe and durable.
+
+Use `dukememory web-control-center-v7 --json` to inspect the 0.26 web control model with answer, connect, type guide, eval story, and import review controls.
+
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
 Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens.
@@ -3833,6 +3887,12 @@ dukememory agent-trace --json
 dukememory vds-sync-hardening --json
 dukememory install-quality --json
 dukememory web-control-center-v6 --json
+dukememory answer "project memory" --json
+dukememory connect-codex --json
+dukememory memory-type-guide --json
+dukememory memory-eval-story --json
+dukememory import-review README.md --json
+dukememory web-control-center-v7 --json
 dukememory doctor-project --json
 dukememory release-gate --json
 dukememory project-watch --json
@@ -4314,6 +4374,12 @@ fn print_completions(shell: CompletionShell) {
         "vds-sync-hardening",
         "install-quality",
         "web-control-center-v6",
+        "answer",
+        "connect-codex",
+        "memory-type-guide",
+        "memory-eval-story",
+        "import-review",
+        "web-control-center-v7",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -4488,6 +4554,12 @@ fn print_manpage() {
     println!("  vds-sync-hardening --json     VDS target/latency/dry-run/rollback checks");
     println!("  install-quality --json        install, skill, AGENTS, doctor readiness");
     println!("  web-control-center-v6         0.25 effectiveness and trace control model");
+    println!("  answer QUESTION --json        grounded memory answer with citations");
+    println!("  connect-codex --apply         one-command Codex memory connection check");
+    println!("  memory-type-guide --json      explain memory types, filters, guardrails");
+    println!("  memory-eval-story --json      reproducible recall/effectiveness story");
+    println!("  import-review FILE --json     turn text into reviewed inbox candidates");
+    println!("  web-control-center-v7         0.26 answer/connect/eval/import control model");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");

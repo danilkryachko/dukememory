@@ -1422,6 +1422,70 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Answer a question from grounded project memory with citations.
+    Answer {
+        question: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Connect Codex to project memory with one checked command.
+    ConnectCodex {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Explain memory card types, filters, and recommended usage.
+    MemoryTypeGuide {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Summarize the reproducible retrieval/effectiveness evaluation story.
+    MemoryEvalStory {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        write_baseline: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Turn a text file into reviewed memory inbox candidates.
+    ImportReview {
+        input: PathBuf,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value = "project")]
+        scope: String,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render the V7 web control model with answer/connect/eval/import surfaces.
+    WebControlCenterV7 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value = "project memory")]
+        task: String,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Write starter memory configuration for a project type.
     ProjectTemplate {
         #[arg(long, default_value = ".")]

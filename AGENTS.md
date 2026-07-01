@@ -89,6 +89,12 @@ For every new chat or coding task in this repository:
 - To verify local-first VDS sync target, latency, dry-runs, and rollback readiness, run `dukememory vds-sync-hardening --json`.
 - To verify install, skill, AGENTS, doctor, and future-chat memory readiness, run `dukememory install-quality --json`.
 - To inspect the 0.25 web control model, run `dukememory web-control-center-v6 --json`.
+- To answer from grounded project memory with citations, run `dukememory answer "<question>" --json`.
+- To verify or repair Codex future-chat memory wiring, run `dukememory connect-codex --json`; use `--apply` after review.
+- To explain memory card types, filters, and guardrails, run `dukememory memory-type-guide --json`.
+- To inspect reproducible local recall/effectiveness evaluation, run `dukememory memory-eval-story --json`.
+- To turn a text file into reviewed inbox candidates, run `dukememory import-review FILE --json`; use `--apply` only for safe durable input.
+- To inspect the 0.26 web control model, run `dukememory web-control-center-v7 --json`.
 - To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`.
 - To inspect live memory usefulness from reads and feedback, run `dukememory eval live --json`.
 - To inspect all local projects, run `dukememory dashboard --json`.

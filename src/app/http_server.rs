@@ -1405,6 +1405,125 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 since_days,
             )?}))
         }
+        ("GET", "/answer") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let question = params
+                .get("q")
+                .map(String::as_str)
+                .unwrap_or("project memory");
+            let scope = params.get("scope").map(String::as_str);
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(8);
+            HttpResponse::ok(json!({"answer": memory_answer_report(
+                &conn,
+                &ctx.root,
+                question,
+                scope,
+                limit,
+            )?}))
+        }
+        ("GET", "/connect-codex") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"connect_codex": connect_codex_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/connect-codex/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"connect_codex": connect_codex_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                true,
+            )?}))
+        }
+        ("GET", "/memory-type-guide") => {
+            HttpResponse::ok(json!({"type_guide": memory_type_guide_report()}))
+        }
+        ("GET", "/memory-eval-story") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            let write_baseline = params
+                .get("write_baseline")
+                .is_some_and(|value| value == "true" || value == "1");
+            HttpResponse::ok(json!({"eval_story": memory_eval_story_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                write_baseline,
+            )?}))
+        }
+        ("POST", "/import-review/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let input = value
+                .get("input")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| ctx.root.join("README.md"));
+            let scope = value
+                .get("scope")
+                .and_then(Value::as_str)
+                .unwrap_or("project");
+            let apply = value.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            HttpResponse::ok(json!({"import_review": import_review_report(
+                &conn,
+                &ctx.root,
+                &input,
+                scope,
+                apply,
+            )?}))
+        }
+        ("GET", "/web-control-center-v7") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let target = params.get("target").map(PathBuf::from);
+            let task = params
+                .get("task")
+                .map(String::as_str)
+                .unwrap_or("project memory");
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"control_v7": web_control_center_v7_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                task,
+                since_days,
+            )?}))
+        }
         ("GET", "/mcp-discipline-v2") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);

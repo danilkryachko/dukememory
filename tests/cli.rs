@@ -8727,6 +8727,12 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "vds-sync-hardening",
         "install-quality",
         "web-control-center-v6",
+        "answer",
+        "connect-codex",
+        "memory-type-guide",
+        "memory-eval-story",
+        "import-review",
+        "web-control-center-v7",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -8816,6 +8822,12 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "vds-sync-hardening",
         "install-quality",
         "web-control-center-v6",
+        "answer",
+        "connect-codex",
+        "memory-type-guide",
+        "memory-eval-story",
+        "import-review",
+        "web-control-center-v7",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -9771,6 +9783,12 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/vds-sync-hardening"));
     assert!(html.contains("/install-quality"));
     assert!(html.contains("/web-control-center-v6"));
+    assert!(html.contains("/answer"));
+    assert!(html.contains("/connect-codex"));
+    assert!(html.contains("/memory-type-guide"));
+    assert!(html.contains("/memory-eval-story"));
+    assert!(html.contains("/import-review"));
+    assert!(html.contains("/web-control-center-v7"));
     assert!(html.contains("/project-diff"));
     assert!(html.contains("/intelligence-dashboard"));
     assert!(html.contains("/remote-sync-dry-run"));
@@ -10601,6 +10619,60 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(web_control_v6.contains("\"control_v6\""));
     assert!(web_control_v6.contains("\"agent_trace\""));
+
+    let answer = http_once(
+        &db,
+        "GET /answer?q=project%20memory&limit=8 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(answer.contains("\"answer\""));
+    assert!(answer.contains("\"citations\""));
+
+    let connect_codex = http_once(
+        &db,
+        "GET /connect-codex?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(connect_codex.contains("\"connect_codex\""));
+    assert!(connect_codex.contains("\"checks\""));
+
+    let type_guide = http_once(
+        &db,
+        "GET /memory-type-guide HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(type_guide.contains("\"type_guide\""));
+    assert!(type_guide.contains("\"recommended_order\""));
+
+    let eval_story = http_once(
+        &db,
+        "GET /memory-eval-story?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(eval_story.contains("\"eval_story\""));
+    assert!(eval_story.contains("\"public_claims\""));
+
+    let import_source = dir.path().join("http-import-notes.md");
+    fs::write(
+        &import_source,
+        "Decision: HTTP import review stays inbox-first.\n\nConstraint: import review dry-run must not write memory cards.",
+    )
+    .unwrap();
+    let import_body = format!(
+        "{{\"input\":\"{}\",\"scope\":\"project\",\"apply\":false}}",
+        import_source.display()
+    );
+    let import_request = format!(
+        "POST /import-review/apply HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        import_body.len(),
+        import_body
+    );
+    let import_review = http_once(&db, &import_request);
+    assert!(import_review.contains("\"import_review\""));
+    assert!(import_review.contains("\"candidate_count\""));
+
+    let web_control_v7 = http_once(
+        &db,
+        "GET /web-control-center-v7?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(web_control_v7.contains("\"control_v7\""));
+    assert!(web_control_v7.contains("\"connect_codex\""));
 
     let project_template = http_once(
         &db,
@@ -12601,6 +12673,84 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(web_control_v6_json["version"], 1);
     assert!(web_control_v6_json["controls"].as_array().is_some());
 
+    let answer = stdout(
+        cmd(&db)
+            .arg("answer")
+            .arg("project memory")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    );
+    let answer_json: Value = serde_json::from_str(&answer).unwrap();
+    assert_eq!(answer_json["version"], 1);
+    assert!(answer_json["citations"].as_array().is_some());
+
+    let connect_codex = stdout(
+        cmd(&db)
+            .arg("connect-codex")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let connect_codex_json: Value = serde_json::from_str(&connect_codex).unwrap();
+    assert_eq!(connect_codex_json["version"], 1);
+    assert!(connect_codex_json["checks"].as_array().is_some());
+
+    let type_guide = stdout(cmd(&db).arg("memory-type-guide").arg("--json"));
+    let type_guide_json: Value = serde_json::from_str(&type_guide).unwrap();
+    assert_eq!(type_guide_json["version"], 1);
+    assert!(type_guide_json["types"].as_array().unwrap().len() >= 8);
+
+    let eval_story = stdout(
+        cmd(&db)
+            .arg("memory-eval-story")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let eval_story_json: Value = serde_json::from_str(&eval_story).unwrap();
+    assert_eq!(eval_story_json["version"], 1);
+    assert!(eval_story_json["public_claims"].as_array().is_some());
+
+    let import_source = dir.path().join("import-notes.md");
+    fs::write(
+        &import_source,
+        "Decision: memory answer should cite cards.\n\nConstraint: imported notes must go through inbox review before becoming durable memory.",
+    )
+    .unwrap();
+    let import_review = stdout(
+        cmd(&db)
+            .arg("import-review")
+            .arg(&import_source)
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    );
+    let import_review_json: Value = serde_json::from_str(&import_review).unwrap();
+    assert_eq!(import_review_json["version"], 1);
+    assert!(import_review_json["candidates"].as_array().is_some());
+
+    let web_control_v7 = stdout(
+        cmd(&db)
+            .arg("web-control-center-v7")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(dir.path().join("remote-sync-target"))
+            .arg("--task")
+            .arg("project memory")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let web_control_v7_json: Value = serde_json::from_str(&web_control_v7).unwrap();
+    assert_eq!(web_control_v7_json["version"], 1);
+    assert!(web_control_v7_json["controls"].as_array().is_some());
+
     let project_template = stdout(
         cmd(&db)
             .arg("project-template")
@@ -12837,6 +12987,12 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         "vds-sync-hardening",
         "install-quality",
         "web-control-center-v6",
+        "answer",
+        "connect-codex",
+        "memory-type-guide",
+        "memory-eval-story",
+        "import-review",
+        "web-control-center-v7",
     ] {
         assert!(
             agent_enforce_json["required_commands"]

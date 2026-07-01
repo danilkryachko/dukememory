@@ -1435,6 +1435,127 @@ pub(crate) struct WebControlCenterV6Report {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct MemoryAnswerReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) question: String,
+    pub(crate) answer: String,
+    pub(crate) semantic_used: bool,
+    pub(crate) citation_count: usize,
+    pub(crate) citations: Vec<MemoryAnswerCitation>,
+    pub(crate) gaps: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryAnswerCitation {
+    pub(crate) id: String,
+    #[serde(rename = "type")]
+    pub(crate) memory_type: String,
+    pub(crate) title: String,
+    pub(crate) summary: String,
+    pub(crate) confidence: f64,
+    pub(crate) status: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ConnectCodexReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) policy_path: String,
+    pub(crate) doctor: ProjectDoctorReport,
+    pub(crate) agent_enforce: AgentEnforceReport,
+    pub(crate) commands: Vec<String>,
+    pub(crate) checks: Vec<InstallPolishCheck>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryTypeGuideReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) recommended_order: Vec<String>,
+    pub(crate) types: Vec<MemoryTypeGuideItem>,
+    pub(crate) filters: Vec<String>,
+    pub(crate) guardrails: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryTypeGuideItem {
+    #[serde(rename = "type")]
+    pub(crate) memory_type: String,
+    pub(crate) label: String,
+    pub(crate) use_when: String,
+    pub(crate) avoid_when: String,
+    pub(crate) example: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryEvalStoryReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) write_baseline: bool,
+    pub(crate) benchmark: RecallBenchmarkSuiteReport,
+    pub(crate) profiles: BenchmarkProfilesReport,
+    pub(crate) harness: MemoryTestHarnessReport,
+    pub(crate) effectiveness: MemoryEffectivenessLabReport,
+    pub(crate) commands: Vec<String>,
+    pub(crate) public_claims: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ImportReviewReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) input: String,
+    pub(crate) scope: String,
+    pub(crate) applied: bool,
+    pub(crate) candidate_count: usize,
+    pub(crate) inserted: usize,
+    pub(crate) candidates: Vec<ImportReviewCandidate>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ImportReviewCandidate {
+    pub(crate) title: String,
+    #[serde(rename = "type")]
+    pub(crate) memory_type: String,
+    pub(crate) body: String,
+    pub(crate) confidence: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WebControlCenterV7Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) target: Option<String>,
+    pub(crate) v6: WebControlCenterV6Report,
+    pub(crate) answer: MemoryAnswerReport,
+    pub(crate) connect_codex: ConnectCodexReport,
+    pub(crate) type_guide: MemoryTypeGuideReport,
+    pub(crate) eval_story: MemoryEvalStoryReport,
+    pub(crate) import_review: Option<ImportReviewReport>,
+    pub(crate) controls: Vec<WebControlAction>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct ProjectTemplateReport {
     pub(crate) version: u32,
     pub(crate) ok: bool,
@@ -8269,6 +8390,696 @@ pub(crate) fn web_control_center_v6_report(
     })
 }
 
+pub(crate) fn print_memory_answer(
+    conn: &Connection,
+    root: &Path,
+    question: &str,
+    scope: Option<&str>,
+    limit: usize,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_answer_report(conn, root, question, scope, limit)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Answer");
+    println!("status: {}", report.status);
+    println!("{}", report.answer);
+    if !report.citations.is_empty() {
+        println!("citations:");
+        for citation in &report.citations {
+            println!(
+                "- {} [{}] {}",
+                citation.id, citation.memory_type, citation.title
+            );
+        }
+    }
+    for gap in &report.gaps {
+        println!("gap: {gap}");
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_answer_report(
+    conn: &Connection,
+    root: &Path,
+    question: &str,
+    scope: Option<&str>,
+    limit: usize,
+) -> Result<MemoryAnswerReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let limit = limit.clamp(3, 16);
+    let statuses = vec!["active".to_string(), "uncertain".to_string()];
+    let (rows, semantic_used) = search_rows_with_semantic_fallback(
+        conn,
+        SearchRowsRequest {
+            query: question,
+            types: &[],
+            statuses: &statuses,
+            scope,
+            limit,
+            budget: 1_600,
+            provider: DEFAULT_EMBED_PROVIDER,
+            endpoint: DEFAULT_EMBED_ENDPOINT,
+            model: DEFAULT_EMBED_MODEL,
+        },
+    )?;
+    let citations = rows
+        .iter()
+        .take(limit)
+        .map(|memory| MemoryAnswerCitation {
+            id: memory.id.clone(),
+            memory_type: memory.memory_type.clone(),
+            title: memory.title.clone(),
+            summary: truncate_chars(&memory.body, 320),
+            confidence: memory.confidence,
+            status: memory.status.clone(),
+        })
+        .collect::<Vec<_>>();
+    let mut gaps = Vec::new();
+    if citations.is_empty() {
+        gaps.push("no active or uncertain memory cards matched the question".to_string());
+    }
+    if citations.len() < 3 {
+        gaps.push("answer confidence is limited because few memory cards matched".to_string());
+    }
+    if citations.iter().any(|item| item.status == "uncertain") {
+        gaps.push(
+            "some cited memory is uncertain and should be verified before acting".to_string(),
+        );
+    }
+    let answer = if citations.is_empty() {
+        format!(
+            "I do not have enough grounded project memory to answer \"{}\". Add or approve a concise memory card first, then rerun `dukememory answer`.",
+            truncate_chars(question, 140)
+        )
+    } else {
+        let mut text = format!(
+            "Grounded answer from {} memory card{}: ",
+            citations.len(),
+            if citations.len() == 1 { "" } else { "s" }
+        );
+        let points = citations
+            .iter()
+            .take(5)
+            .map(|item| {
+                format!(
+                    "{} [{}]: {}",
+                    item.title,
+                    item.id,
+                    truncate_chars(&item.summary, 180)
+                )
+            })
+            .collect::<Vec<_>>();
+        text.push_str(&points.join(" "));
+        text
+    };
+    let recommendations = vec![
+        "use answer for user-facing grounded summaries; use brief/impact for coding context"
+            .to_string(),
+        "if a gap is reported, add a reviewed memory card instead of raising the read budget"
+            .to_string(),
+        "treat cited ids as evidence handles; inspect with dukememory evidence ID when needed"
+            .to_string(),
+    ];
+    let ok = !citations.is_empty();
+    Ok(MemoryAnswerReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        question: question.to_string(),
+        answer,
+        semantic_used,
+        citation_count: citations.len(),
+        citations,
+        gaps,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_connect_codex(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = connect_codex_report(conn, db, root, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Connect Codex");
+    println!("status: {}", report.status);
+    println!("applied: {}", report.applied);
+    for check in &report.checks {
+        println!("{} {}", if check.ok { "ok" } else { "warn" }, check.name);
+    }
+    Ok(())
+}
+
+pub(crate) fn connect_codex_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+) -> Result<ConnectCodexReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let doctor = project_doctor_report(conn, db, &root, since_days, apply)?;
+    let agent_enforce = agent_enforce_report(conn, db, &root, since_days, apply)?;
+    let checks = vec![
+        InstallPolishCheck {
+            name: "memory_db".to_string(),
+            ok: root.join(".agent/memory.db").exists(),
+            detail: root.join(".agent/memory.db").display().to_string(),
+        },
+        InstallPolishCheck {
+            name: "agents_instructions".to_string(),
+            ok: root.join("AGENTS.md").exists() && agent_enforce.missing_commands.is_empty(),
+            detail: "future chats should see dukememory instructions without reminders".to_string(),
+        },
+        InstallPolishCheck {
+            name: "codex_skill".to_string(),
+            ok: expand_tilde("~/.codex/skills/dukememory-use/SKILL.md").exists(),
+            detail: "~/.codex/skills/dukememory-use/SKILL.md".to_string(),
+        },
+        InstallPolishCheck {
+            name: "doctor".to_string(),
+            ok: doctor.ok,
+            detail: doctor.status.clone(),
+        },
+    ];
+    let ok = checks.iter().all(|check| check.ok) && agent_enforce.ok;
+    let policy_path = root.join(".agent/connect-codex.json");
+    let mut actions = agent_enforce
+        .missing_commands
+        .iter()
+        .map(|command| format!("missing_command:{command}"))
+        .collect::<Vec<_>>();
+    if apply && ok {
+        write_file(
+            &policy_path,
+            serde_json::to_string_pretty(&json!({
+                "version": 1,
+                "connected": true,
+                "agent": "codex",
+                "updated_at": now_ms(),
+            }))?
+            .as_bytes(),
+        )?;
+        actions.push(format!("connect_codex_written:{}", policy_path.display()));
+    } else if apply {
+        actions.push("connect_codex_not_written:blockers_present".to_string());
+    } else {
+        actions.push("dry_run:connect_codex_not_written".to_string());
+    }
+    let commands = vec![
+        "dukememory connect-codex --apply --json".to_string(),
+        "dukememory doctor-project --fix --json".to_string(),
+        "dukememory agent-enforce --fix --json".to_string(),
+        "dukememory install-skill".to_string(),
+    ];
+    let mut recommendations = doctor.recommendations.clone();
+    recommendations.extend(agent_enforce.recommendations.clone());
+    recommendations.push(
+        "restart Codex after MCP/server config changes if the tool surface was not loaded"
+            .to_string(),
+    );
+    recommendations.sort();
+    recommendations.dedup();
+    Ok(ConnectCodexReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        applied: apply && ok,
+        policy_path: policy_path.display().to_string(),
+        doctor,
+        agent_enforce,
+        commands,
+        checks,
+        actions,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_memory_type_guide(json_out: bool) -> Result<()> {
+    let report = memory_type_guide_report();
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Type Guide");
+    for item in &report.types {
+        println!("{}: {}", item.memory_type, item.use_when);
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_type_guide_report() -> MemoryTypeGuideReport {
+    let types = vec![
+        MemoryTypeGuideItem {
+            memory_type: "product_goal".to_string(),
+            label: "Product goal".to_string(),
+            use_when: "the product direction should guide future work".to_string(),
+            avoid_when: "it is only a temporary task note".to_string(),
+            example: "dukememory must stay local-first, fast, and useful for coding agents"
+                .to_string(),
+        },
+        MemoryTypeGuideItem {
+            memory_type: "constraint".to_string(),
+            label: "Constraint".to_string(),
+            use_when: "future agents must obey a rule or boundary".to_string(),
+            avoid_when: "the rule is obvious from nearby code".to_string(),
+            example: "remote/VDS sync must never make remote reads authoritative by default"
+                .to_string(),
+        },
+        MemoryTypeGuideItem {
+            memory_type: "decision".to_string(),
+            label: "Decision".to_string(),
+            use_when: "a durable technical or product choice was accepted".to_string(),
+            avoid_when: "the choice is tentative or superseded".to_string(),
+            example: "use Rust + SQLite as the default local memory runtime".to_string(),
+        },
+        MemoryTypeGuideItem {
+            memory_type: "design_note".to_string(),
+            label: "Design note".to_string(),
+            use_when: "an implementation pattern or subsystem rationale should be reused"
+                .to_string(),
+            avoid_when: "it is just a changelog entry".to_string(),
+            example: "observability/reporting belongs in src/app/observability.rs".to_string(),
+        },
+        MemoryTypeGuideItem {
+            memory_type: "known_issue".to_string(),
+            label: "Known issue".to_string(),
+            use_when: "a real bug, risk, or caveat is not fixed yet".to_string(),
+            avoid_when: "the issue has been fixed and should be superseded".to_string(),
+            example: "semantic provider may be unreachable; fallback to FTS must keep working"
+                .to_string(),
+        },
+        MemoryTypeGuideItem {
+            memory_type: "command".to_string(),
+            label: "Command".to_string(),
+            use_when: "a validated build, test, release, or maintenance command matters"
+                .to_string(),
+            avoid_when: "the command is a one-off scratch command".to_string(),
+            example: "cargo test --test cli".to_string(),
+        },
+        MemoryTypeGuideItem {
+            memory_type: "task_state".to_string(),
+            label: "Task state".to_string(),
+            use_when: "work must continue across chats with exact state".to_string(),
+            avoid_when: "the task is complete and better represented as a decision/design note"
+                .to_string(),
+            example: "0.26.0 implementation is mid-release; tests still pending".to_string(),
+        },
+        MemoryTypeGuideItem {
+            memory_type: "user_preference".to_string(),
+            label: "User preference".to_string(),
+            use_when: "the user gave a durable workflow or product preference".to_string(),
+            avoid_when: "it is only relevant to the current prompt".to_string(),
+            example: "push to GitHub only on minor version changes".to_string(),
+        },
+        MemoryTypeGuideItem {
+            memory_type: "domain_fact".to_string(),
+            label: "Domain fact".to_string(),
+            use_when: "project domain knowledge should be recalled".to_string(),
+            avoid_when: "the fact may change often and has no source".to_string(),
+            example: "project uses an Ollama bge-m3 embedding endpoint when configured".to_string(),
+        },
+        MemoryTypeGuideItem {
+            memory_type: "note".to_string(),
+            label: "Note".to_string(),
+            use_when: "no more specific type fits".to_string(),
+            avoid_when: "a structured type would make retrieval clearer".to_string(),
+            example: "short context note with links".to_string(),
+        },
+    ];
+    MemoryTypeGuideReport {
+        version: 1,
+        ok: true,
+        recommended_order: vec![
+            "product_goal".to_string(),
+            "constraint".to_string(),
+            "decision".to_string(),
+            "design_note".to_string(),
+            "known_issue".to_string(),
+            "command".to_string(),
+            "task_state".to_string(),
+        ],
+        types,
+        filters: vec![
+            "active: trusted current memory".to_string(),
+            "uncertain: useful but must be verified".to_string(),
+            "superseded: historical context only".to_string(),
+            "rejected: not used for recall".to_string(),
+        ],
+        guardrails: vec![
+            "prefer one compact durable card over transcript-sized notes".to_string(),
+            "use inbox/import review for raw documents before approving memory".to_string(),
+            "link files or commands when that will improve impact recall".to_string(),
+        ],
+    }
+}
+
+pub(crate) fn print_memory_eval_story(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    write_baseline: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_eval_story_report(conn, root, since_days, write_baseline)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Eval Story");
+    println!("status: {}", report.status);
+    for claim in &report.public_claims {
+        println!("claim: {claim}");
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_eval_story_report(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    write_baseline: bool,
+) -> Result<MemoryEvalStoryReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let benchmark = recall_benchmark_suite_report(conn, &root, since_days, 8, write_baseline)?;
+    let profiles = benchmark_profiles_report(conn, &root, None, since_days, false, false)?;
+    let harness = memory_test_harness_report(conn, &root, since_days, 8)?;
+    let effectiveness = memory_effectiveness_lab_report(conn, &root, since_days)?;
+    let ok = !benchmark.regression && harness.score >= 60.0 && effectiveness.score >= 60.0;
+    let commands = vec![
+        "dukememory memory-eval-story --json".to_string(),
+        "dukememory recall-benchmark-suite --json".to_string(),
+        "dukememory recall-benchmark-suite --write-baseline --json".to_string(),
+        "dukememory memory-test-harness --json".to_string(),
+        "dukememory memory-effectiveness-lab --json".to_string(),
+        "dukememory benchmark-profiles --json".to_string(),
+    ];
+    let public_claims = vec![
+        format!("recall benchmark score {:.1}", benchmark.harness.score),
+        format!("test harness score {:.1}", harness.score),
+        format!("effectiveness score {:.1}", effectiveness.score),
+        "benchmarks are local, reproducible, and project-specific; they are not broad public dataset claims".to_string(),
+    ];
+    let mut recommendations = benchmark.recommendations.clone();
+    recommendations.extend(profiles.recommendations.clone());
+    recommendations.extend(effectiveness.recommendations.clone());
+    if !write_baseline {
+        recommendations.push("write a baseline only after reviewing stable probes".to_string());
+    }
+    recommendations.sort();
+    recommendations.dedup();
+    Ok(MemoryEvalStoryReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        since_days,
+        write_baseline,
+        benchmark,
+        profiles,
+        harness,
+        effectiveness,
+        commands,
+        public_claims,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_import_review(
+    conn: &Connection,
+    root: &Path,
+    input: &Path,
+    scope: &str,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    validate_scope(scope)?;
+    let report = import_review_report(conn, root, input, scope, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Import Review");
+    println!("status: {}", report.status);
+    println!("candidates: {}", report.candidate_count);
+    println!("inserted: {}", report.inserted);
+    Ok(())
+}
+
+pub(crate) fn import_review_report(
+    conn: &Connection,
+    root: &Path,
+    input: &Path,
+    scope: &str,
+    apply: bool,
+) -> Result<ImportReviewReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let input = if input.is_absolute() {
+        input.to_path_buf()
+    } else {
+        root.join(input)
+    };
+    let content = fs::read_to_string(&input)
+        .with_context(|| format!("failed to read import input {}", input.display()))?;
+    let candidates = import_review_candidates(&content);
+    let mut inserted = 0;
+    let mut actions = Vec::new();
+    if apply {
+        for candidate in &candidates {
+            reject_sensitive(&candidate.title, &candidate.body, false)?;
+            if import_review_inbox_exists(conn, &candidate.title, &input.display().to_string())? {
+                actions.push(format!("skipped_duplicate:{}", candidate.title));
+                continue;
+            }
+            let id = Uuid::new_v4().simple().to_string()[..12].to_string();
+            let now = now_ms();
+            conn.execute(
+                r#"
+                INSERT INTO memory_inbox (
+                    id, type, scope, title, body, source, confidence, status, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?9)
+                "#,
+                params![
+                    id,
+                    candidate.memory_type,
+                    scope,
+                    candidate.title,
+                    candidate.body,
+                    format!("import_review:{}", input.display()),
+                    candidate.confidence,
+                    now,
+                    now,
+                ],
+            )?;
+            actions.push(format!("inbox_candidate_added:{id}"));
+            inserted += 1;
+        }
+    } else {
+        actions.push("dry_run:inbox_candidates_not_written".to_string());
+    }
+    let recommendations = vec![
+        "approve candidates from inbox only after checking they are durable and project-specific"
+            .to_string(),
+        "reject raw transcript fragments, secrets, temporary logs, and duplicate facts".to_string(),
+        "run embed-index after approving imported memory cards".to_string(),
+    ];
+    let ok = !candidates.is_empty();
+    Ok(ImportReviewReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        input: input.display().to_string(),
+        scope: scope.to_string(),
+        applied: apply,
+        candidate_count: candidates.len(),
+        inserted,
+        candidates,
+        actions,
+        recommendations,
+    })
+}
+
+fn import_review_candidates(content: &str) -> Vec<ImportReviewCandidate> {
+    content
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|part| part.chars().filter(|ch| !ch.is_whitespace()).count() >= 40)
+        .take(12)
+        .map(|part| {
+            let first_line = part
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or(part);
+            let memory_type = import_review_type(part);
+            ImportReviewCandidate {
+                title: truncate_chars(
+                    first_line.trim_matches(|ch: char| matches!(ch, '#' | '-' | '*' | ' ')),
+                    90,
+                ),
+                memory_type,
+                body: truncate_chars(part, 900),
+                confidence: 0.64,
+            }
+        })
+        .collect()
+}
+
+fn import_review_type(part: &str) -> String {
+    let lower = part.to_lowercase();
+    if lower.contains("constraint") || lower.contains("must") || lower.contains("нужно") {
+        "constraint"
+    } else if lower.contains("decision") || lower.contains("decided") || lower.contains("решили")
+    {
+        "decision"
+    } else if lower.contains("bug") || lower.contains("risk") || lower.contains("issue") {
+        "known_issue"
+    } else if lower.contains("command") || lower.contains("cargo ") || lower.contains("npm ") {
+        "command"
+    } else if lower.contains("goal") || lower.contains("цель") {
+        "product_goal"
+    } else {
+        "design_note"
+    }
+    .to_string()
+}
+
+fn import_review_inbox_exists(conn: &Connection, title: &str, source_path: &str) -> Result<bool> {
+    let pattern = format!("import_review:{source_path}");
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM memory_inbox WHERE title = ?1 AND source = ?2 AND status IN ('pending', 'approved', 'rejected')",
+        params![title, pattern],
+        |row| row.get(0),
+    )?;
+    Ok(exists > 0)
+}
+
+pub(crate) fn print_web_control_center_v7(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    task: &str,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = web_control_center_v7_report(conn, db, root, target, task, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Web Control Center v7");
+    println!("status: {}", report.status);
+    for control in &report.controls {
+        println!("{} {} {}", control.name, control.method, control.endpoint);
+    }
+    Ok(())
+}
+
+pub(crate) fn web_control_center_v7_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    task: &str,
+    since_days: i64,
+) -> Result<WebControlCenterV7Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let v6 = web_control_center_v6_report(conn, db, &root, target, task, since_days)?;
+    let answer = memory_answer_report(conn, &root, task, None, 8)?;
+    let connect_codex = connect_codex_report(conn, db, &root, since_days, false)?;
+    let type_guide = memory_type_guide_report();
+    let eval_story = memory_eval_story_report(conn, &root, since_days, false)?;
+    let mut controls = v6.controls.clone();
+    controls.extend(vec![
+        WebControlAction {
+            name: "answer".to_string(),
+            label: "Answer".to_string(),
+            method: "GET".to_string(),
+            endpoint: "/answer".to_string(),
+            cli: format!("dukememory answer \"{}\" --json", shell_safe_inline(task)),
+            safe_auto: true,
+            requires_apply: false,
+            status: answer.status.clone(),
+        },
+        WebControlAction {
+            name: "connect_codex".to_string(),
+            label: "Connect Codex".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/connect-codex/apply".to_string(),
+            cli: "dukememory connect-codex --apply --json".to_string(),
+            safe_auto: true,
+            requires_apply: true,
+            status: connect_codex.status.clone(),
+        },
+        WebControlAction {
+            name: "memory_type_guide".to_string(),
+            label: "Type guide".to_string(),
+            method: "GET".to_string(),
+            endpoint: "/memory-type-guide".to_string(),
+            cli: "dukememory memory-type-guide --json".to_string(),
+            safe_auto: true,
+            requires_apply: false,
+            status: "ready".to_string(),
+        },
+        WebControlAction {
+            name: "memory_eval_story".to_string(),
+            label: "Eval story".to_string(),
+            method: "GET".to_string(),
+            endpoint: "/memory-eval-story".to_string(),
+            cli: "dukememory memory-eval-story --json".to_string(),
+            safe_auto: true,
+            requires_apply: false,
+            status: eval_story.status.clone(),
+        },
+        WebControlAction {
+            name: "import_review".to_string(),
+            label: "Import review".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/import-review/apply".to_string(),
+            cli: "dukememory import-review FILE --apply --json".to_string(),
+            safe_auto: false,
+            requires_apply: true,
+            status: "manual".to_string(),
+        },
+    ]);
+    let mut recommendations = v6.recommendations.clone();
+    recommendations.extend(answer.recommendations.clone());
+    recommendations.extend(connect_codex.recommendations.clone());
+    recommendations.extend(type_guide.guardrails.clone());
+    recommendations.extend(eval_story.recommendations.clone());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = v6.ok && connect_codex.ok && eval_story.ok;
+    Ok(WebControlCenterV7Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        target: target.map(|path| path.display().to_string()),
+        v6,
+        answer,
+        connect_codex,
+        type_guide,
+        eval_story,
+        import_review: None,
+        controls,
+        recommendations,
+    })
+}
+
 fn auto_supersede_confidence(candidate: &MergeCandidate) -> f64 {
     let reason = candidate.reason.to_lowercase();
     let title_bonus: f64 = if reason.contains("same title") || reason.contains("duplicate") {
@@ -9357,6 +10168,12 @@ fn agent_required_commands() -> &'static [&'static str] {
         "vds-sync-hardening",
         "install-quality",
         "web-control-center-v6",
+        "answer",
+        "connect-codex",
+        "memory-type-guide",
+        "memory-eval-story",
+        "import-review",
+        "web-control-center-v7",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
