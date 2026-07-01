@@ -554,7 +554,7 @@
       lang: savedLang === "en" ? "en" : "ru", activity: [], usefulness: null, embedding: null, autonomous: null,
       quality: null, profile: null, budget: null, dashboard: null, dashboardRepair: null, dashboardRepairHistory: null, qa: null, contract: null, ops: null, roi: null, agentAudit: null, remote: null,
       trace: null, autoFeedback: null, costGuard: null, projectDiff: null, intelligence: null, remoteSync: null,
-      doctor: null, releaseGate: null
+      doctor: null, releaseGate: null, replay: null, watch: null
     };
     const $ = (id) => document.getElementById(id);
     const t = (key) => i18n[state.lang][key] || i18n.en[key] || key;
@@ -851,7 +851,7 @@
     async function loadIntelligence() {
       const params = new URLSearchParams({ since_days: "7" });
       if (state.project) params.set("project", state.project);
-      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate] = await Promise.all([
+      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch] = await Promise.all([
         api(`/roi-report?${params.toString()}`),
         api(`/agent-audit?${params.toString()}`),
         api(`/remote-status?${params.toString()}`),
@@ -862,7 +862,9 @@
         api(`/intelligence-dashboard?${params.toString()}`),
         api(`/remote-sync-dry-run?${params.toString()}`),
         api(`/doctor-project?${params.toString()}`),
-        api(`/release-gate?${params.toString()}`)
+        api(`/release-gate?${params.toString()}`),
+        api(`/memory-replay?${params.toString()}&limit=12`),
+        api(`/project-watch?${params.toString()}`)
       ]);
       state.roi = roi.roi;
       state.agentAudit = audit.agent_audit;
@@ -875,7 +877,23 @@
       state.remoteSync = remoteSync.remote_sync;
       state.doctor = doctor.doctor;
       state.releaseGate = releaseGate.release_gate;
+      state.replay = replay.replay;
+      state.watch = watch.watch;
       renderSettings();
+    }
+
+    async function intelligenceAction(action) {
+      if (action === "doctor-fix") {
+        await api("/doctor-project/fix", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
+      } else if (action === "release-run") {
+        await api("/release-gate/run", { method: "POST", body: JSON.stringify(withProject({ since_days: 7, strict: false })) });
+      } else if (action === "auto-feedback") {
+        await api("/auto-feedback", { method: "POST", body: JSON.stringify(withProject({ since_days: 7, limit: 100, dry_run: false })) });
+      } else if (action === "watch-fix") {
+        await api("/project-watch/fix", { method: "POST", body: JSON.stringify({ since_days: 7 }) });
+      }
+      setToast(action);
+      await Promise.all([loadIntelligence(), loadMemoryQa(), loadOpsStatus(), loadProjects(), loadDashboard()]);
     }
 
     async function loadMemoryContract() {
@@ -1162,6 +1180,8 @@
       const remoteSync = state.remoteSync || {};
       const doctor = state.doctor || {};
       const releaseGate = state.releaseGate || {};
+      const replay = state.replay || {};
+      const watch = state.watch || {};
       const contract = state.contract || {};
       const ops = state.ops || {};
       const effectiveness = ops.effectiveness || {};
@@ -1213,6 +1233,9 @@
       </div>
       <div class="card"><div class="title">doctor project</div><div class="body">status ${escapeHtml(doctor.status || "-")}<br>qa ${Number(doctor.memory_qa?.score || 0).toFixed(1)}<br>embedding ${doctor.embedding ? `${Number(doctor.embedding.missing || 0)} missing / ${Number(doctor.embedding.stale || 0)} stale` : "-"}<br>${doctor.checks?.length ? doctor.checks.slice(0, 6).map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">release gate</div><div class="body">status ${escapeHtml(releaseGate.status || "-")}<br>strict ${releaseGate.strict ? "yes" : "no"}<br>${releaseGate.checks?.length ? releaseGate.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}<br>${releaseGate.issues?.length ? releaseGate.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
+      <div class="card"><div class="title">intelligence actions</div><div class="actions"><button data-intelligence="doctor-fix">Doctor fix</button><button data-intelligence="auto-feedback">Auto feedback</button><button data-intelligence="watch-fix">Watch fix</button><button data-intelligence="release-run">Release run</button></div></div>
+      <div class="card"><div class="title">memory replay</div><div class="body">reads ${Number(replay.reads || 0)}<br>influenced ${Number(replay.influenced_reads || 0)}<br>semantic ${Number(replay.semantic_reads || 0)}<br>${replay.items?.length ? replay.items.slice(0, 5).map((item) => `${escapeHtml(item.command)}: ${escapeHtml(item.effect)}`).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">project watch</div><div class="body">projects ${Number(watch.total_projects || 0)}<br>attention ${Number(watch.attention_projects || 0)}<br>${watch.projects?.length ? watch.projects.slice(0, 5).map((item) => `${item.ok ? "ok" : "warn"} ${escapeHtml(item.root)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">decision trace</div><div class="body">traced ${Number(trace.traced_reads || 0)}<br>empty ${Number(trace.empty_reads || 0)}<br>positive ${Number(trace.positive_feedback || 0)} / negative ${Number(trace.negative_feedback || 0)} / missing ${Number(trace.missing_feedback || 0)}<br>${trace.items?.length ? trace.items.slice(0, 4).map((item) => `${escapeHtml(item.command)}: ${escapeHtml(item.influence)} (${Number(item.result_count || 0)})`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">auto feedback v2</div><div class="body">applied ${autoFeedback.applied ? "yes" : "no"}<br>scanned ${Number(autoFeedback.scanned || 0)}<br>written ${Number(autoFeedback.written || 0)} / skipped ${Number(autoFeedback.skipped || 0)}<br>missing ${Number(autoFeedback.inferred_missing_after || autoFeedback.inferred_missing_before || 0)}</div></div>
       <div class="card"><div class="title">cost guard</div><div class="body">profile ${escapeHtml(costGuard.recommended_profile || "-")} / ${Number(costGuard.recommended_max_chars || 0)} chars<br>avg budget ${Number(costGuard.average_read_budget || 0).toFixed(0)}<br>max budget ${Number(costGuard.max_read_budget || 0)}<br>large cards ${Number(costGuard.large_memory_count || 0)}<br>${costGuard.actions?.length ? costGuard.actions.slice(0, 4).map(escapeHtml).join("<br>") : "actions -"}</div></div>
@@ -1407,6 +1430,10 @@
     $("autonomousRun").addEventListener("click", () => autonomousAction("run-once"));
     $("autonomousRollback").addEventListener("click", () => autonomousAction("rollback"));
     $("dashboardRepair").addEventListener("click", runDashboardRepair);
+    $("settingsPanel").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-intelligence]");
+      if (button) intelligenceAction(button.dataset.intelligence);
+    });
     document.querySelectorAll("[data-quick-type]").forEach((button) => button.addEventListener("click", () => {
       $("type").value = $("type").value === button.dataset.quickType ? "all" : button.dataset.quickType;
       persistUi();

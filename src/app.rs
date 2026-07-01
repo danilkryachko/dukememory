@@ -899,14 +899,26 @@ pub(crate) fn run() -> Result<()> {
         Command::DoctorProject {
             root,
             since_days,
+            fix,
             json,
-        } => print_project_doctor(&conn, &cli.db, &root, since_days, json)?,
+        } => print_project_doctor(&conn, &cli.db, &root, since_days, fix, json)?,
         Command::ReleaseGate {
             root,
             since_days,
             strict,
+            run,
             json,
-        } => print_release_gate(&conn, &cli.db, &root, since_days, strict, json)?,
+        } => print_release_gate(&conn, &cli.db, &root, since_days, strict, run, json)?,
+        Command::MemoryReplay {
+            since_days,
+            limit,
+            json,
+        } => print_memory_replay(&conn, since_days, limit, json)?,
+        Command::ProjectWatch {
+            since_days,
+            fix,
+            json,
+        } => print_project_watch(&cli.db, since_days, fix, json)?,
         Command::InboxV2 { command } => handle_inbox_v2(&conn, command)?,
         Command::PolicyTune {
             output,
@@ -1201,6 +1213,27 @@ struct SyncExportReport {
     recommendations: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct SyncConflictItem {
+    id: String,
+    title: String,
+    local_updated_at: i64,
+    incoming_updated_at: i64,
+    resolution: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SyncImportPlan {
+    policy: SyncConflictPolicy,
+    incoming_count: usize,
+    insert_count: usize,
+    update_count: usize,
+    skip_count: usize,
+    conflicts: Vec<SyncConflictItem>,
+    selected_ids: HashSet<String>,
+    blocked: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct SyncImportReport {
     version: u32,
@@ -1208,11 +1241,31 @@ struct SyncImportReport {
     dry_run: bool,
     input: String,
     replace: bool,
+    policy: SyncConflictPolicy,
     memory_count: usize,
     export_sha256: Option<String>,
     checksum_ok: Option<bool>,
     rollback: Option<String>,
     imported: usize,
+    insert_count: usize,
+    update_count: usize,
+    skip_count: usize,
+    conflict_count: usize,
+    conflicts: Vec<SyncConflictItem>,
+    recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SyncRemoteStatusReport {
+    version: u32,
+    ok: bool,
+    target: String,
+    bundle: String,
+    exists: bool,
+    memory_count: Option<usize>,
+    export_sha256: Option<String>,
+    updated_at: Option<i64>,
+    local_first: bool,
     recommendations: Vec<String>,
 }
 
@@ -1258,6 +1311,105 @@ fn parse_sync_input(input: &Path) -> Result<(MemoryExport, Option<SyncBundleMani
     }
     let export: MemoryExport = serde_json::from_value(value)?;
     Ok((export, None))
+}
+
+fn sync_import_plan(
+    conn: &Connection,
+    export: &MemoryExport,
+    policy: SyncConflictPolicy,
+    replace: bool,
+) -> Result<SyncImportPlan> {
+    let mut selected_ids = HashSet::new();
+    let mut conflicts = Vec::new();
+    let mut insert_count = 0;
+    let mut update_count = 0;
+    let mut skip_count = 0;
+    for item in &export.memories {
+        let local = conn
+            .query_row(
+                "SELECT title, body, status, updated_at FROM memories WHERE id = ?1",
+                params![item.memory.id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((local_title, local_body, local_status, local_updated_at)) = local else {
+            insert_count += 1;
+            selected_ids.insert(item.memory.id.clone());
+            continue;
+        };
+        let changed = replace
+            || local_title != item.memory.title
+            || local_body != item.memory.body
+            || local_status != item.memory.status
+            || local_updated_at != item.memory.updated_at;
+        if !changed {
+            skip_count += 1;
+            continue;
+        }
+        let resolution = match policy {
+            SyncConflictPolicy::LocalWins => "skip_local_wins",
+            SyncConflictPolicy::RemoteWins => "apply_remote_wins",
+            SyncConflictPolicy::NewerWins => {
+                if item.memory.updated_at > local_updated_at {
+                    "apply_incoming_newer"
+                } else {
+                    "skip_local_newer_or_equal"
+                }
+            }
+            SyncConflictPolicy::Manual => "manual_required",
+        }
+        .to_string();
+        if matches!(
+            policy,
+            SyncConflictPolicy::RemoteWins | SyncConflictPolicy::NewerWins
+        ) && resolution.starts_with("apply")
+        {
+            update_count += 1;
+            selected_ids.insert(item.memory.id.clone());
+        } else if matches!(
+            policy,
+            SyncConflictPolicy::LocalWins | SyncConflictPolicy::Manual
+        ) || resolution.starts_with("skip")
+        {
+            skip_count += 1;
+        }
+        conflicts.push(SyncConflictItem {
+            id: item.memory.id.clone(),
+            title: item.memory.title.clone(),
+            local_updated_at,
+            incoming_updated_at: item.memory.updated_at,
+            resolution,
+        });
+    }
+    Ok(SyncImportPlan {
+        policy,
+        incoming_count: export.memories.len(),
+        insert_count,
+        update_count,
+        skip_count,
+        blocked: policy == SyncConflictPolicy::Manual && !conflicts.is_empty(),
+        conflicts,
+        selected_ids,
+    })
+}
+
+fn filtered_export_for_plan(export: MemoryExport, plan: &SyncImportPlan) -> MemoryExport {
+    MemoryExport {
+        version: export.version,
+        exported_at: export.exported_at,
+        memories: export
+            .memories
+            .into_iter()
+            .filter(|item| plan.selected_ids.contains(&item.memory.id))
+            .collect(),
+    }
 }
 
 fn import_memories(conn: &Connection, input: &Path, replace: bool) -> Result<()> {
@@ -1894,15 +2046,18 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
         SyncCommand::Import {
             input,
             replace,
+            policy,
             dry_run,
             json,
         } => {
             let (export, manifest) = parse_sync_input(&input)?;
+            let plan = sync_import_plan(conn, &export, policy, replace)?;
             let memory_count = export.memories.len();
             let export_sha256 = manifest
                 .as_ref()
                 .map(|manifest| manifest.export_sha256.clone());
-            let rollback = if dry_run {
+            let blocked = plan.blocked;
+            let rollback = if dry_run || blocked {
                 None
             } else {
                 let rollback_dir = PathBuf::from(".agent/sync-rollbacks");
@@ -1915,25 +2070,37 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
                 )?;
                 Some(rollback_path.display().to_string())
             };
-            let imported = if dry_run {
+            let imported = if dry_run || blocked {
                 0
             } else {
-                import_memory_export(conn, export, replace)?
+                let filtered = filtered_export_for_plan(export, &plan);
+                import_memory_export(conn, filtered, replace)?
             };
             let report = SyncImportReport {
                 version: 1,
-                ok: true,
+                ok: !blocked,
                 dry_run,
                 input: input.display().to_string(),
                 replace,
+                policy,
                 memory_count,
                 export_sha256,
                 checksum_ok: manifest.as_ref().map(|_| true),
                 rollback,
                 imported,
+                insert_count: plan.insert_count,
+                update_count: plan.update_count,
+                skip_count: plan.skip_count,
+                conflict_count: plan.conflicts.len(),
+                conflicts: plan.conflicts,
                 recommendations: if dry_run {
                     vec![
                         "rerun without --dry-run only after reviewing memory_count and checksum"
+                            .to_string(),
+                    ]
+                } else if blocked {
+                    vec![
+                        "resolve conflicts or rerun with --policy local-wins|remote-wins|newer-wins"
                             .to_string(),
                     ]
                 } else {
@@ -1945,6 +2112,9 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
             } else if dry_run {
                 println!("sync import dry-run: {}", input.display());
                 println!("memories: {memory_count}");
+            } else if blocked {
+                println!("sync import blocked: manual conflict resolution required");
+                println!("conflicts: {}", report.conflict_count);
             } else {
                 println!("imported: {imported}");
                 if let Some(rollback) = report.rollback {
@@ -1953,7 +2123,121 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
             }
             Ok(())
         }
+        SyncCommand::Push {
+            target,
+            redact,
+            dry_run,
+            json,
+        } => {
+            let bundle_path = sync_target_bundle_path(&target);
+            let bundle = sync_bundle(conn, redact)?;
+            let payload = serde_json::to_vec_pretty(&bundle)?;
+            let report = SyncExportReport {
+                version: 1,
+                ok: true,
+                dry_run,
+                output: bundle_path.display().to_string(),
+                memory_count: bundle.manifest.memory_count,
+                redacted: redact,
+                export_sha256: bundle.manifest.export_sha256.clone(),
+                bytes: payload.len(),
+                wrote: !dry_run,
+                recommendations: vec![
+                    "run dukememory sync status TARGET after push".to_string(),
+                    "remote connector is local-first; agents should still read local memory"
+                        .to_string(),
+                ],
+            };
+            if !dry_run {
+                fs::create_dir_all(&target)?;
+                write_file(&bundle_path, &payload)?;
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("{}", bundle_path.display());
+            }
+            Ok(())
+        }
+        SyncCommand::Pull {
+            target,
+            policy,
+            dry_run,
+            json,
+        } => {
+            let bundle_path = sync_target_bundle_path(&target);
+            handle_sync(
+                conn,
+                SyncCommand::Import {
+                    input: bundle_path,
+                    replace: false,
+                    policy,
+                    dry_run,
+                    json,
+                },
+            )
+        }
+        SyncCommand::Status { target, json } => {
+            let report = sync_remote_status(&target)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("target: {}", report.target);
+                println!("bundle: {}", report.bundle);
+                println!("exists: {}", report.exists);
+                if let Some(count) = report.memory_count {
+                    println!("memories: {count}");
+                }
+            }
+            Ok(())
+        }
     }
+}
+
+fn sync_target_bundle_path(target: &Path) -> PathBuf {
+    if target.extension().and_then(|value| value.to_str()) == Some("json") {
+        target.to_path_buf()
+    } else {
+        target.join("dukememory-sync-bundle.json")
+    }
+}
+
+fn sync_remote_status(target: &Path) -> Result<SyncRemoteStatusReport> {
+    let bundle = sync_target_bundle_path(target);
+    if !bundle.exists() {
+        return Ok(SyncRemoteStatusReport {
+            version: 1,
+            ok: false,
+            target: target.display().to_string(),
+            bundle: bundle.display().to_string(),
+            exists: false,
+            memory_count: None,
+            export_sha256: None,
+            updated_at: None,
+            local_first: true,
+            recommendations: vec!["run dukememory sync push TARGET --json".to_string()],
+        });
+    }
+    let (_, manifest) = parse_sync_input(&bundle)?;
+    let modified = fs::metadata(&bundle)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as i64);
+    Ok(SyncRemoteStatusReport {
+        version: 1,
+        ok: true,
+        target: target.display().to_string(),
+        bundle: bundle.display().to_string(),
+        exists: true,
+        memory_count: manifest.as_ref().map(|manifest| manifest.memory_count),
+        export_sha256: manifest.map(|manifest| manifest.export_sha256),
+        updated_at: modified,
+        local_first: true,
+        recommendations: vec![
+            "run dukememory sync pull TARGET --dry-run --json before applying".to_string(),
+        ],
+    })
 }
 
 fn handle_lock(conn: &Connection, command: LockCommand) -> Result<()> {
@@ -2889,7 +3173,17 @@ Use `dukememory doctor-project --json` to verify project memory DB, AGENTS block
 
 Use `dukememory release-gate --json` before committing or publishing a release. In strict mode it also requires a clean worktree.
 
+Use `dukememory release-gate --run --json` when Codex should execute fmt/check/test/build and return the result bundle.
+
+Use `dukememory memory-replay --json` to inspect how recent memory reads influenced work.
+
+Use `dukememory project-watch --json` to inspect all discovered project memories; use `dukememory project-watch --fix --json` for autonomous repair.
+
 Use `dukememory sync export bundle.json --dry-run --json` before writing a local-first sync bundle; use `dukememory sync import bundle.json --dry-run --json` before applying it.
+
+Use `dukememory sync import bundle.json --policy manual|local-wins|remote-wins|newer-wins --dry-run --json` to inspect conflicts before applying.
+
+Use `dukememory sync push TARGET --dry-run --json`, `dukememory sync pull TARGET --dry-run --json`, and `dukememory sync status TARGET --json` for local-first remote/VDS connector workflows.
 
 Use `dukememory inbox-v2 report --json` before processing pending inbox items; use `dukememory inbox-v2 auto-apply --dry-run --json` before allowing changes.
 
@@ -2920,6 +3214,8 @@ dukememory intelligence-dashboard --json
 dukememory cost-guard --json
 dukememory doctor-project --json
 dukememory release-gate --json
+dukememory project-watch --json
+dukememory memory-replay --json
 dukememory autonomous run-once --level normal --json
 dukememory autonomous status --json
 dukememory drift --root . --json
@@ -3352,6 +3648,8 @@ fn print_completions(shell: CompletionShell) {
         "remote-sync-dry-run",
         "doctor-project",
         "release-gate",
+        "memory-replay",
+        "project-watch",
         "inbox-v2",
         "policy-tune",
         "memory-qa",
@@ -3460,6 +3758,8 @@ fn print_manpage() {
     println!("  remote-sync-dry-run --json    simulate VDS sync without moving data");
     println!("  doctor-project --json         verify project memory installation");
     println!("  release-gate --json           aggregate local release readiness");
+    println!("  memory-replay --json          replay recent memory influence");
+    println!("  project-watch --fix --json    inspect or repair installed project memories");
     println!("  onboard --root DIR            initialize memory/profile/embeddings");
     println!("  inbox-v2 report|auto-apply    group and process pending suggestions");
     println!("  policy-tune --json            tune autonomous policy from feedback");

@@ -50,8 +50,12 @@ For every new chat or coding task in this repository:
 - To diff changed files against memory links and stale facts, run `dukememory project-diff --changed-only --json`.
 - To preview local-first VDS/remote sync readiness, run `dukememory remote-sync-dry-run --json`.
 - To verify installed project memory wiring, run `dukememory doctor-project --json`.
-- To run a local release readiness gate, run `dukememory release-gate --json`.
-- To sync memory safely, preview first with `dukememory sync export bundle.json --dry-run --json` and `dukememory sync import bundle.json --dry-run --json`.
+- To repair installed project memory wiring, run `dukememory doctor-project --fix --json`.
+- To run a local release readiness gate, run `dukememory release-gate --json`; use `--run` when it should execute fmt/check/test/build.
+- To replay recent memory influence, run `dukememory memory-replay --json`.
+- To inspect or repair all installed project memories, run `dukememory project-watch --json` or `dukememory project-watch --fix --json`.
+- To sync memory safely, preview first with `dukememory sync export bundle.json --dry-run --json` and `dukememory sync import bundle.json --policy manual --dry-run --json`.
+- To use a local-first remote/VDS connector, run `dukememory sync push TARGET --dry-run --json`, `dukememory sync pull TARGET --dry-run --json`, and `dukememory sync status TARGET --json`.
 - To safely group and process inbox suggestions, run `dukememory inbox-v2 report --json`.
 - To check whether memory is useful or noisy, run `dukememory memory-qa --json`.
 - To refresh project-wide memory instructions and the compact contract, run `dukememory upgrade-project --json`.

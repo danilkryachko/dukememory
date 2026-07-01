@@ -802,6 +802,8 @@ fn export_import_backup_and_restore() {
     let sync_import_json: Value = serde_json::from_str(&sync_import).unwrap();
     assert_eq!(sync_import_json["ok"], true);
     assert_eq!(sync_import_json["imported"], 1);
+    assert_eq!(sync_import_json["policy"], "newer_wins");
+    assert!(sync_import_json["conflicts"].as_array().is_some());
     assert!(sync_import_json["rollback"].as_str().is_some());
     cmd(&synced_db)
         .arg("get")
@@ -809,6 +811,81 @@ fn export_import_backup_and_restore() {
         .assert()
         .success()
         .stdout(contains("Exported decision"));
+
+    cmd(&synced_db)
+        .arg("update")
+        .arg(&id)
+        .arg("--body")
+        .arg("Local edited body")
+        .assert()
+        .success();
+    let manual_conflict = stdout(
+        cmd(&synced_db)
+            .arg("sync")
+            .arg("import")
+            .arg(&sync_bundle)
+            .arg("--policy")
+            .arg("manual")
+            .arg("--json"),
+    );
+    let manual_conflict_json: Value = serde_json::from_str(&manual_conflict).unwrap();
+    assert_eq!(manual_conflict_json["ok"], false);
+    assert_eq!(manual_conflict_json["conflict_count"], 1);
+    assert_eq!(manual_conflict_json["imported"], 0);
+
+    let remote_wins = stdout(
+        cmd(&synced_db)
+            .arg("sync")
+            .arg("import")
+            .arg(&sync_bundle)
+            .arg("--policy")
+            .arg("remote-wins")
+            .arg("--json"),
+    );
+    let remote_wins_json: Value = serde_json::from_str(&remote_wins).unwrap();
+    assert_eq!(remote_wins_json["ok"], true);
+    assert_eq!(remote_wins_json["conflict_count"], 1);
+    assert_eq!(remote_wins_json["imported"], 1);
+    cmd(&synced_db)
+        .arg("get")
+        .arg(&id)
+        .assert()
+        .success()
+        .stdout(contains("This card should survive export and import."));
+
+    let sync_target = dir.path().join("sync-target");
+    let push = stdout(
+        cmd(&db)
+            .arg("sync")
+            .arg("push")
+            .arg(&sync_target)
+            .arg("--json"),
+    );
+    let push_json: Value = serde_json::from_str(&push).unwrap();
+    assert_eq!(push_json["wrote"], true);
+    assert!(sync_target.join("dukememory-sync-bundle.json").exists());
+    let status = stdout(
+        cmd(&db)
+            .arg("sync")
+            .arg("status")
+            .arg(&sync_target)
+            .arg("--json"),
+    );
+    let status_json: Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(status_json["ok"], true);
+    assert_eq!(status_json["exists"], true);
+    assert_eq!(status_json["local_first"], true);
+    let pull = stdout(
+        cmd(&synced_db)
+            .arg("sync")
+            .arg("pull")
+            .arg(&sync_target)
+            .arg("--dry-run")
+            .arg("--json"),
+    );
+    let pull_json: Value = serde_json::from_str(&pull).unwrap();
+    assert_eq!(pull_json["dry_run"], true);
+    assert_eq!(pull_json["checksum_ok"], true);
 
     cmd(&db).arg("backup").arg(&backup_db).assert().success();
     assert!(backup_db.exists());
@@ -8522,8 +8599,13 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "remote-sync-dry-run",
         "doctor-project",
         "release-gate",
+        "memory-replay",
+        "project-watch",
         "sync export",
         "sync import",
+        "sync push",
+        "sync pull",
+        "sync status",
     ] {
         assert!(agents_md.contains(command), "AGENTS.md missing {command}");
     }
@@ -8545,8 +8627,13 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "remote-sync-dry-run",
         "doctor-project",
         "release-gate",
+        "memory-replay",
+        "project-watch",
         "sync export",
         "sync import",
+        "sync push",
+        "sync pull",
+        "sync status",
     ] {
         assert!(skill_md.contains(command), "SKILL.md missing {command}");
     }
@@ -9434,6 +9521,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/remote-sync-dry-run"));
     assert!(html.contains("/doctor-project"));
     assert!(html.contains("/release-gate"));
+    assert!(html.contains("/memory-replay"));
+    assert!(html.contains("/project-watch"));
     assert!(html.contains("memory ROI"));
     assert!(html.contains("agent audit"));
     assert!(html.contains("remote readiness"));
@@ -9445,6 +9534,10 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("remote sync dry-run"));
     assert!(html.contains("doctor project"));
     assert!(html.contains("release gate"));
+    assert!(html.contains("memory replay"));
+    assert!(html.contains("project watch"));
+    assert!(html.contains("Doctor fix"));
+    assert!(html.contains("Auto feedback"));
     assert!(html.contains("/upgrade-project"));
 
     let memory = http_once(
@@ -9754,6 +9847,22 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(release_gate.contains("\"checks\""));
     assert!(release_gate.contains("\"doctor_project\""));
     assert!(release_gate.contains("\"required_commands\""));
+
+    let replay = http_once(
+        &db,
+        "GET /memory-replay?since_days=7&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(replay.contains("\"replay\""));
+    assert!(replay.contains("\"influenced_reads\""));
+    assert!(replay.contains("\"effect\""));
+
+    let watch = http_once(
+        &db,
+        "GET /project-watch?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(watch.contains("\"watch\""));
+    assert!(watch.contains("\"total_projects\""));
+    assert!(watch.contains("\"attention_projects\""));
 
     let contract = http_once(
         &db,
@@ -10787,6 +10896,22 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(doctor_json["checks"].as_array().unwrap().len() >= 5);
     assert!(doctor_json["memory_qa"]["score"].as_f64().is_some());
     assert!(doctor_json["issues"].as_array().is_some());
+    assert_eq!(doctor_json["fixed"], false);
+    assert!(doctor_json["fix_actions"].as_array().is_some());
+
+    let doctor_fix = stdout(
+        cmd(&db)
+            .arg("doctor-project")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--fix")
+            .arg("--json"),
+    );
+    let doctor_fix_json: Value = serde_json::from_str(&doctor_fix).unwrap();
+    assert_eq!(doctor_fix_json["fixed"], true);
+    assert!(doctor_fix_json["fix_actions"].as_array().unwrap().len() >= 1);
 
     let release_gate = stdout(
         cmd(&db)
@@ -10799,6 +10924,8 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     let release_gate_json: Value = serde_json::from_str(&release_gate).unwrap();
     assert_eq!(release_gate_json["version"], 1);
+    assert_eq!(release_gate_json["run"], false);
+    assert!(release_gate_json["commands"].as_array().unwrap().is_empty());
     assert!(release_gate_json["checks"].as_array().unwrap().len() >= 4);
     assert!(release_gate_json["doctor"]["checks"].as_array().is_some());
     assert!(
@@ -10806,6 +10933,32 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_f64()
             .is_some()
     );
+
+    let replay = stdout(
+        cmd(&db)
+            .arg("memory-replay")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--limit")
+            .arg("10")
+            .arg("--json"),
+    );
+    let replay_json: Value = serde_json::from_str(&replay).unwrap();
+    assert_eq!(replay_json["version"], 1);
+    assert!(replay_json["items"].as_array().is_some());
+    assert!(replay_json["influenced_reads"].as_u64().is_some());
+
+    let watch = stdout(
+        cmd(&db)
+            .arg("project-watch")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let watch_json: Value = serde_json::from_str(&watch).unwrap();
+    assert_eq!(watch_json["version"], 1);
+    assert!(watch_json["total_projects"].as_u64().is_some());
+    assert!(watch_json["projects"].as_array().is_some());
 
     let gap_run = stdout(
         cmd(&db)

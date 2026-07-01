@@ -268,6 +268,19 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
             )
         }
         ("GET", "/dashboard") => HttpResponse::ok(json!({"dashboard": dashboard_report(db)?})),
+        ("GET", "/project-watch") => {
+            let params = parse_query(query);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"watch": project_watch_report(db, since_days, false)?}))
+        }
+        ("POST", "/project-watch/fix") => {
+            let value = parse_json_body(body)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"watch": project_watch_report(db, since_days, true)?}))
+        }
         ("GET", "/dashboard-repair-history") => {
             let params = parse_query(query);
             let since_days = params
@@ -366,6 +379,19 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(20);
             HttpResponse::ok(json!({"trace": decision_trace_report(&conn, since_days, limit)?}))
+        }
+        ("GET", "/memory-replay") => {
+            let conn = open_selected_db(db, query, None)?;
+            let params = parse_query(query);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(30);
+            HttpResponse::ok(json!({"replay": memory_replay_report(&conn, since_days, limit)?}))
         }
         ("GET", "/auto-feedback") => {
             let conn = open_selected_db(db, query, None)?;
@@ -486,6 +512,20 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 &ctx.db,
                 &ctx.root,
                 since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/doctor-project/fix") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"doctor": project_doctor_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                true,
             )?}))
         }
         ("GET", "/release-gate") => {
@@ -506,6 +546,25 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 &ctx.root,
                 since_days,
                 strict,
+                false,
+            )?}))
+        }
+        ("POST", "/release-gate/run") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            let strict = value
+                .get("strict")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            HttpResponse::ok(json!({"release_gate": release_gate_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                strict,
+                true,
             )?}))
         }
         ("GET", "/eval-live") => {

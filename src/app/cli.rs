@@ -823,6 +823,8 @@ pub(crate) enum Command {
         #[arg(long, default_value_t = 7)]
         since_days: i64,
         #[arg(long)]
+        fix: bool,
+        #[arg(long)]
         json: bool,
     },
     /// Run a local release readiness gate before committing or publishing.
@@ -833,6 +835,26 @@ pub(crate) enum Command {
         since_days: i64,
         #[arg(long)]
         strict: bool,
+        #[arg(long)]
+        run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replay recent memory reads as a compact influence timeline.
+    MemoryReplay {
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long, default_value_t = 30)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect all installed project memories and optionally repair them.
+    ProjectWatch {
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        fix: bool,
         #[arg(long)]
         json: bool,
     },
@@ -1176,11 +1198,61 @@ pub(crate) enum SyncCommand {
         input: PathBuf,
         #[arg(long)]
         replace: bool,
+        #[arg(long, value_enum, default_value_t = SyncConflictPolicy::NewerWins)]
+        policy: SyncConflictPolicy,
         #[arg(long)]
         dry_run: bool,
         #[arg(long)]
         json: bool,
     },
+    Push {
+        target: PathBuf,
+        #[arg(long)]
+        redact: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    Pull {
+        target: PathBuf,
+        #[arg(long, value_enum, default_value_t = SyncConflictPolicy::NewerWins)]
+        policy: SyncConflictPolicy,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    Status {
+        target: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, Serialize, Deserialize, PartialEq, Eq)]
+#[value(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SyncConflictPolicy {
+    #[value(alias = "local-wins")]
+    LocalWins,
+    #[value(alias = "remote-wins")]
+    RemoteWins,
+    #[value(alias = "newer-wins")]
+    NewerWins,
+    Manual,
+}
+
+impl fmt::Display for SyncConflictPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::LocalWins => "local_wins",
+            Self::RemoteWins => "remote_wins",
+            Self::NewerWins => "newer_wins",
+            Self::Manual => "manual",
+        };
+        f.write_str(value)
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]

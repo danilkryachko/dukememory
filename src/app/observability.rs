@@ -303,6 +303,8 @@ pub(crate) struct ProjectDoctorReport {
     pub(crate) status: String,
     pub(crate) root: String,
     pub(crate) db: String,
+    pub(crate) fixed: bool,
+    pub(crate) fix_actions: Vec<String>,
     pub(crate) checks: Vec<ProjectDoctorCheck>,
     pub(crate) memory_qa: MemoryQaReport,
     pub(crate) embedding: Option<DoctorEmbeddingStatus>,
@@ -336,7 +338,9 @@ pub(crate) struct ReleaseGateReport {
     pub(crate) status: String,
     pub(crate) root: String,
     pub(crate) strict: bool,
+    pub(crate) run: bool,
     pub(crate) checks: Vec<ReleaseGateCheck>,
+    pub(crate) commands: Vec<ReleaseGateCommandResult>,
     pub(crate) doctor: ProjectDoctorReport,
     pub(crate) intelligence: IntelligenceDashboardReport,
     pub(crate) issues: Vec<String>,
@@ -349,6 +353,60 @@ pub(crate) struct ReleaseGateCheck {
     pub(crate) ok: bool,
     pub(crate) required: bool,
     pub(crate) detail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ReleaseGateCommandResult {
+    pub(crate) name: String,
+    pub(crate) command: String,
+    pub(crate) ok: bool,
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) elapsed_ms: u128,
+    pub(crate) output_tail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemoryReplayReport {
+    pub(crate) version: u32,
+    pub(crate) since_days: i64,
+    pub(crate) reads: usize,
+    pub(crate) influenced_reads: usize,
+    pub(crate) semantic_reads: usize,
+    pub(crate) items: Vec<MemoryReplayItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemoryReplayItem {
+    pub(crate) read_id: i64,
+    pub(crate) command: String,
+    pub(crate) query: String,
+    pub(crate) semantic_used: bool,
+    pub(crate) result_count: usize,
+    pub(crate) memory_ids: Vec<String>,
+    pub(crate) memory_titles: Vec<String>,
+    pub(crate) effect: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ProjectWatchReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) fix: bool,
+    pub(crate) total_projects: usize,
+    pub(crate) attention_projects: usize,
+    pub(crate) projects: Vec<ProjectWatchItem>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ProjectWatchItem {
+    pub(crate) root: String,
+    pub(crate) db: String,
+    pub(crate) ok: bool,
+    pub(crate) doctor_status: String,
+    pub(crate) intelligence_status: String,
+    pub(crate) fix_actions: Vec<String>,
+    pub(crate) issues: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1727,6 +1785,163 @@ pub(crate) fn decision_trace_report(
     })
 }
 
+pub(crate) fn print_memory_replay(
+    conn: &Connection,
+    since_days: i64,
+    limit: usize,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_replay_report(conn, since_days, limit)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Replay");
+    println!("reads: {}", report.reads);
+    println!("influenced_reads: {}", report.influenced_reads);
+    for item in &report.items {
+        println!(
+            "- {} {} results={} {}",
+            item.command,
+            item.effect,
+            item.result_count,
+            truncate_chars(&item.query, 90)
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_replay_report(
+    conn: &Connection,
+    since_days: i64,
+    limit: usize,
+) -> Result<MemoryReplayReport> {
+    let since_ms = now_ms().saturating_sub(since_days.max(0).saturating_mul(86_400_000));
+    let reads = read_events(conn, since_ms, limit)?;
+    let memory_titles = memory_title_map(conn)?;
+    let mut items = Vec::new();
+    let mut influenced_reads = 0;
+    let mut semantic_reads = 0;
+    for read in reads {
+        if read.semantic_used {
+            semantic_reads += 1;
+        }
+        if !read.memory_ids.is_empty() && read.result_count > 0 {
+            influenced_reads += 1;
+        }
+        let titles = read
+            .memory_ids
+            .iter()
+            .filter_map(|id| memory_titles.get(id).cloned())
+            .collect::<Vec<_>>();
+        let effect = if read.memory_ids.is_empty() || read.result_count == 0 {
+            "no_memory_used"
+        } else if read.semantic_used {
+            "semantic_recall_used"
+        } else {
+            "local_recall_used"
+        }
+        .to_string();
+        items.push(MemoryReplayItem {
+            read_id: read.id,
+            command: read.command,
+            query: read.query,
+            semantic_used: read.semantic_used,
+            result_count: read.result_count,
+            memory_ids: read.memory_ids,
+            memory_titles: titles,
+            effect,
+        });
+    }
+    Ok(MemoryReplayReport {
+        version: 1,
+        since_days,
+        reads: items.len(),
+        influenced_reads,
+        semantic_reads,
+        items,
+    })
+}
+
+pub(crate) fn print_project_watch(
+    default_db: &Path,
+    since_days: i64,
+    fix: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = project_watch_report(default_db, since_days, fix)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Project Watch");
+    println!("projects: {}", report.total_projects);
+    println!("attention: {}", report.attention_projects);
+    for project in &report.projects {
+        println!(
+            "{} {} doctor={} intelligence={}",
+            if project.ok { "ok" } else { "warn" },
+            project.root,
+            project.doctor_status,
+            project.intelligence_status
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn project_watch_report(
+    default_db: &Path,
+    since_days: i64,
+    fix: bool,
+) -> Result<ProjectWatchReport> {
+    let mut projects = Vec::new();
+    for db in discover_project_dbs(default_db)? {
+        let db = db.canonicalize().unwrap_or(db);
+        let root = db
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let conn = open_db(&db)?;
+        let fixed_doctor = project_doctor_report(&conn, &db, &root, since_days, fix)?;
+        let doctor = if fix {
+            project_doctor_report(&conn, &db, &root, since_days, false)?
+        } else {
+            fixed_doctor.clone()
+        };
+        let intelligence = intelligence_dashboard_report(&conn, &db, &root, since_days)?;
+        let ok = doctor.ok && intelligence.ok;
+        let mut issues = doctor.issues.clone();
+        issues.extend(intelligence.issues.iter().cloned());
+        issues.sort();
+        issues.dedup();
+        projects.push(ProjectWatchItem {
+            root: root.display().to_string(),
+            db: db.display().to_string(),
+            ok,
+            doctor_status: doctor.status,
+            intelligence_status: intelligence.status,
+            fix_actions: fixed_doctor.fix_actions,
+            issues,
+        });
+    }
+    projects.sort_by(|left, right| left.root.cmp(&right.root));
+    let attention_projects = projects.iter().filter(|project| !project.ok).count();
+    Ok(ProjectWatchReport {
+        version: 1,
+        ok: attention_projects == 0,
+        fix,
+        total_projects: projects.len(),
+        attention_projects,
+        projects,
+        recommendations: if attention_projects == 0 {
+            vec!["all discovered project memories are ready".to_string()]
+        } else {
+            vec!["run dukememory project-watch --fix --json".to_string()]
+        },
+    })
+}
+
 pub(crate) fn print_auto_feedback_v2(
     conn: &Connection,
     since_days: i64,
@@ -2079,9 +2294,10 @@ pub(crate) fn print_project_doctor(
     db: &Path,
     root: &Path,
     since_days: i64,
+    fix: bool,
     json_out: bool,
 ) -> Result<()> {
-    let report = project_doctor_report(conn, db, root, since_days)?;
+    let report = project_doctor_report(conn, db, root, since_days, fix)?;
     if json_out {
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
@@ -2110,11 +2326,55 @@ pub(crate) fn project_doctor_report(
     db: &Path,
     root: &Path,
     since_days: i64,
+    fix: bool,
 ) -> Result<ProjectDoctorReport> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut fix_actions = Vec::new();
+    if fix {
+        match write_project_config(
+            &root.join(".agent/config.toml"),
+            db,
+            &read_project_embedding_config(&root).0,
+            &read_project_embedding_config(&root).1,
+            &read_project_embedding_config(&root).2,
+        ) {
+            Ok(()) => fix_actions.push("project_config".to_string()),
+            Err(err) => fix_actions.push(format!("project_config_failed:{err}")),
+        }
+        match write_workspace_rules(&root, true) {
+            Ok(path) => fix_actions.push(format!("workspace_rules:{}", path.display())),
+            Err(err) => fix_actions.push(format!("workspace_rules_failed:{err}")),
+        }
+        match upsert_project_agents(&root) {
+            Ok(()) => fix_actions.push("agents_block".to_string()),
+            Err(err) => fix_actions.push(format!("agents_block_failed:{err}")),
+        }
+        match write_codex_skill(&expand_tilde("~/.codex/skills"), true) {
+            Ok(path) => fix_actions.push(format!("codex_skill:{}", path.display())),
+            Err(err) => fix_actions.push(format!("codex_skill_failed:{err}")),
+        }
+        match memory_contract_report(conn, &root, true) {
+            Ok(_) => fix_actions.push("memory_contract".to_string()),
+            Err(err) => fix_actions.push(format!("memory_contract_failed:{err}")),
+        }
+    }
     let qa = memory_qa_report(conn, &root, since_days)?;
     let integration = ops_agent_integration_status(db, &root);
     let (provider, endpoint, model) = read_project_embedding_config(&root);
+    let embedding = embeddings::embed_status(conn, &provider, &endpoint, &model).ok();
+    if fix
+        && embedding
+            .as_ref()
+            .is_some_and(|report| report.missing > 0 || report.stale > 0)
+    {
+        match embeddings::embed_index(conn, &provider, &endpoint, &model, &[], None, false) {
+            Ok(report) => fix_actions.push(format!(
+                "embed_index:indexed={} skipped={}",
+                report.indexed, report.skipped
+            )),
+            Err(err) => fix_actions.push(format!("embed_index_failed:{err}")),
+        }
+    }
     let embedding = embeddings::embed_status(conn, &provider, &endpoint, &model).ok();
     let embedding_status = embedding.as_ref().map(|report| DoctorEmbeddingStatus {
         provider: report.provider.clone(),
@@ -2154,6 +2414,35 @@ pub(crate) fn project_doctor_report(
     let embedding_reachable = embedding
         .as_ref()
         .is_some_and(|report| report.provider_reachable);
+    let autonomous_status =
+        read_autonomous_status(&root.join(".agent/autonomous-status.json")).ok();
+    if fix && autonomous_status.as_ref().is_some_and(|report| !report.ok) {
+        let output = ProcessCommand::new(std::env::current_exe()?)
+            .arg("--db")
+            .arg(db)
+            .arg("autonomous")
+            .arg("run-once")
+            .arg("--level")
+            .arg("normal")
+            .arg("--json")
+            .current_dir(&root)
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {
+                fix_actions.push("autonomous_run_once".to_string())
+            }
+            Ok(output) => {
+                let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let detail = if detail.is_empty() {
+                    format!("{}", output.status)
+                } else {
+                    format!("{}: {}", output.status, tail_chars(&detail, 500))
+                };
+                fix_actions.push(format!("autonomous_run_once_failed:{detail}"));
+            }
+            Err(err) => fix_actions.push(format!("autonomous_run_once_failed:{err}")),
+        }
+    }
     let autonomous_status =
         read_autonomous_status(&root.join(".agent/autonomous-status.json")).ok();
     let autonomous_ok = autonomous_status
@@ -2249,6 +2538,8 @@ pub(crate) fn project_doctor_report(
         status: if ok { "ready" } else { "attention" }.to_string(),
         root: root.display().to_string(),
         db: db.display().to_string(),
+        fixed: fix,
+        fix_actions,
         checks,
         memory_qa: qa,
         embedding: embedding_status,
@@ -2263,9 +2554,10 @@ pub(crate) fn print_release_gate(
     root: &Path,
     since_days: i64,
     strict: bool,
+    run: bool,
     json_out: bool,
 ) -> Result<()> {
-    let report = release_gate_report(conn, db, root, since_days, strict)?;
+    let report = release_gate_report(conn, db, root, since_days, strict, run)?;
     if json_out {
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
@@ -2295,9 +2587,10 @@ pub(crate) fn release_gate_report(
     root: &Path,
     since_days: i64,
     strict: bool,
+    run: bool,
 ) -> Result<ReleaseGateReport> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let doctor = project_doctor_report(conn, db, &root, since_days)?;
+    let doctor = project_doctor_report(conn, db, &root, since_days, false)?;
     let intelligence = intelligence_dashboard_report(conn, db, &root, since_days)?;
     let project_diff = project_diff_report(conn, &root, true)?;
     let cargo_toml = root.join("Cargo.toml");
@@ -2315,6 +2608,30 @@ pub(crate) fn release_gate_report(
         .filter(|output| output.status.success())
         .map(|output| output.stdout.is_empty())
         .unwrap_or(true);
+    let mut commands = Vec::new();
+    if run {
+        commands.push(run_release_gate_command(
+            &root,
+            "fmt",
+            &["cargo", "fmt", "--check"],
+        ));
+        commands.push(run_release_gate_command(
+            &root,
+            "check",
+            &["cargo", "check"],
+        ));
+        commands.push(run_release_gate_command(
+            &root,
+            "test_cli",
+            &["cargo", "test", "--test", "cli"],
+        ));
+        commands.push(run_release_gate_command(
+            &root,
+            "build_release",
+            &["cargo", "build", "--release"],
+        ));
+    }
+    let commands_ok = commands.iter().all(|command| command.ok);
     let checks = vec![
         ReleaseGateCheck {
             name: "doctor_project".to_string(),
@@ -2358,11 +2675,14 @@ pub(crate) fn release_gate_report(
         },
         ReleaseGateCheck {
             name: "required_commands".to_string(),
-            ok: true,
-            required: false,
-            detail:
+            ok: !run || commands_ok,
+            required: run,
+            detail: if run {
+                format!("executed={} ok={}", commands.len(), commands_ok)
+            } else {
                 "run: cargo fmt --check; cargo check; cargo test --test cli; cargo build --release"
-                    .to_string(),
+                    .to_string()
+            },
         },
     ];
     let mut issues = Vec::new();
@@ -2386,12 +2706,66 @@ pub(crate) fn release_gate_report(
         status: if ok { "ready" } else { "blocked" }.to_string(),
         root: root.display().to_string(),
         strict,
+        run,
         checks,
+        commands,
         doctor,
         intelligence,
         issues,
         recommendations,
     })
+}
+
+fn run_release_gate_command(root: &Path, name: &str, command: &[&str]) -> ReleaseGateCommandResult {
+    let started = Instant::now();
+    let output = if let Some((program, args)) = command.split_first() {
+        ProcessCommand::new(program)
+            .args(args)
+            .current_dir(root)
+            .output()
+    } else {
+        return ReleaseGateCommandResult {
+            name: name.to_string(),
+            command: String::new(),
+            ok: false,
+            exit_code: None,
+            elapsed_ms: 0,
+            output_tail: "empty command".to_string(),
+        };
+    };
+    match output {
+        Ok(output) => {
+            let mut combined = String::new();
+            combined.push_str(&String::from_utf8_lossy(&output.stdout));
+            combined.push_str(&String::from_utf8_lossy(&output.stderr));
+            ReleaseGateCommandResult {
+                name: name.to_string(),
+                command: command.join(" "),
+                ok: output.status.success(),
+                exit_code: output.status.code(),
+                elapsed_ms: started.elapsed().as_millis(),
+                output_tail: tail_chars(&combined, 1200),
+            }
+        }
+        Err(err) => ReleaseGateCommandResult {
+            name: name.to_string(),
+            command: command.join(" "),
+            ok: false,
+            exit_code: None,
+            elapsed_ms: started.elapsed().as_millis(),
+            output_tail: err.to_string(),
+        },
+    }
+}
+
+fn tail_chars(value: &str, max_chars: usize) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    if chars.len() <= max_chars {
+        return value.to_string();
+    }
+    chars[chars.len().saturating_sub(max_chars)..]
+        .iter()
+        .collect()
 }
 
 fn memory_title_map(conn: &Connection) -> Result<HashMap<String, String>> {
