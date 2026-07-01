@@ -692,6 +692,12 @@ For every new chat or coding task in this repository:
 - To enforce startup/write/after-task memory discipline, run `dukememory mcp-discipline-v2 --json`; use `--apply` to repair wiring.
 - To inspect autonomous usefulness feedback, safe supersede, diff apply, and recall benchmark quality, run `dukememory feedback-loop-v2 --json`.
 - To inspect all installed project memories with richer version/action summaries, run `dukememory upgrade-all-projects-v2 --json`.
+- To inspect a local-first VDS sync pack with dry-run/apply/verify commands, run `dukememory vds-sync-pack --json`; pass `--target PATH` before `--apply`.
+- To inspect the 0.24 web control model, run `dukememory web-control-center-v5 --json`.
+- To inspect safe feedback, quality, cost, health, diff apply, supersede, and benchmark gates, run `dukememory quality-autopilot-v31 --json`.
+- To route cross-project memory without writing outside the current project, run `dukememory memory-router-v2 "<query>" --include-siblings --json`.
+- To select project-aware retrieval benchmark profiles, run `dukememory benchmark-profiles --json`.
+- To inspect README, screenshot, license, package metadata, and GitHub install readiness, run `dukememory install-polish --json`.
 - To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`.
 - To inspect live memory usefulness from reads and feedback, run `dukememory eval live --json`.
 - To inspect all local projects, run `dukememory dashboard --json`.

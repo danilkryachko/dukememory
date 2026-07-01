@@ -1265,6 +1265,75 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Build the local-first VDS sync pack with dry-run, apply, and verify commands.
+    VdsSyncPack {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render the V5 web control model with 0.24 control surfaces.
+    WebControlCenterV5 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run quality autopilot v3.1 with safe feedback, cost, health, and benchmark checks.
+    QualityAutopilotV31 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Route memory across projects while keeping writes pinned to the current project.
+    MemoryRouterV2 {
+        query: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        include_siblings: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Select project-aware retrieval benchmark profiles and optional baselines.
+    BenchmarkProfiles {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, value_enum)]
+        kind: Option<ProjectTemplateKind>,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        write_baseline: bool,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check GitHub, install, README, screenshot, and package polish for release.
+    InstallPolish {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Write starter memory configuration for a project type.
     ProjectTemplate {
         #[arg(long, default_value = ".")]

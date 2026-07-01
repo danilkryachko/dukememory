@@ -1069,7 +1069,7 @@ pub(crate) struct WebControlCenterV4Report {
     pub(crate) recommendations: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct WebControlAction {
     pub(crate) name: String,
     pub(crate) label: String,
@@ -1141,6 +1141,124 @@ pub(crate) struct UpgradeAllProjectSummary {
     pub(crate) actions: usize,
     pub(crate) current_version: Option<String>,
     pub(crate) target_version: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct VdsSyncPackReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) target: Option<String>,
+    pub(crate) applied: bool,
+    pub(crate) pack_path: String,
+    pub(crate) local_first: bool,
+    pub(crate) control: RemoteSyncControlReport,
+    pub(crate) dry_run_commands: Vec<String>,
+    pub(crate) apply_commands: Vec<String>,
+    pub(crate) verify_commands: Vec<String>,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WebControlCenterV5Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) target: Option<String>,
+    pub(crate) v4: WebControlCenterV4Report,
+    pub(crate) vds_sync: VdsSyncPackReport,
+    pub(crate) quality_autopilot: QualityAutopilotV31Report,
+    pub(crate) router: MemoryRouterV2Report,
+    pub(crate) benchmark_profiles: BenchmarkProfilesReport,
+    pub(crate) install_polish: InstallPolishReport,
+    pub(crate) controls: Vec<WebControlAction>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct QualityAutopilotV31Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) applied: bool,
+    pub(crate) loop_v2: FeedbackLoopV2Report,
+    pub(crate) quality: QualityReport,
+    pub(crate) cost_guard: CostGuardReport,
+    pub(crate) health: MemoryHealthScoreReport,
+    pub(crate) actions: Vec<String>,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryRouterV2Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) query: String,
+    pub(crate) include_siblings: bool,
+    pub(crate) selected_authority: Option<String>,
+    pub(crate) route_count: usize,
+    pub(crate) sibling_hint_count: usize,
+    pub(crate) routes: Vec<MemoryRouterV2Route>,
+    pub(crate) base: MemoryRouterReport,
+    pub(crate) guardrails: Vec<String>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryRouterV2Route {
+    pub(crate) root: String,
+    pub(crate) db: String,
+    pub(crate) role: String,
+    pub(crate) matches: usize,
+    pub(crate) selected_for_write: bool,
+    pub(crate) top_titles: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct BenchmarkProfilesReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) selected_kind: String,
+    pub(crate) since_days: i64,
+    pub(crate) profile_path: String,
+    pub(crate) benchmark: RecallBenchmarkSuiteReport,
+    pub(crate) role_profile: ProjectRoleProfileReport,
+    pub(crate) commands: Vec<String>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct InstallPolishReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) checks: Vec<InstallPolishCheck>,
+    pub(crate) commands: Vec<String>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct InstallPolishCheck {
+    pub(crate) name: String,
+    pub(crate) ok: bool,
+    pub(crate) detail: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -6555,6 +6673,610 @@ pub(crate) fn web_control_center_v4_report(
     })
 }
 
+pub(crate) fn print_vds_sync_pack(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = vds_sync_pack_report(conn, db, root, target, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("VDS Sync Pack");
+    println!("status: {}", report.status);
+    println!("applied: {}", report.applied);
+    for blocker in &report.blockers {
+        println!("blocker: {blocker}");
+    }
+    for command in &report.dry_run_commands {
+        println!("dry-run: {command}");
+    }
+    Ok(())
+}
+
+pub(crate) fn vds_sync_pack_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    apply: bool,
+) -> Result<VdsSyncPackReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let target_string = target.map(|path| path.display().to_string());
+    let control = remote_sync_control_report(conn, db, &root, target, since_days, false)?;
+    let target_arg = target_string.as_deref().unwrap_or("TARGET");
+    let pack_path = root.join(".agent/vds-sync-pack.json");
+    let dry_run_commands = vec![
+        format!("dukememory sync push {target_arg} --dry-run --json"),
+        format!("dukememory sync status {target_arg} --json"),
+        format!("dukememory sync pull {target_arg} --policy manual --dry-run --json"),
+    ];
+    let apply_commands = vec![
+        format!("dukememory sync push {target_arg} --json"),
+        format!("dukememory sync pull {target_arg} --policy newer-wins --dry-run --json"),
+        "dukememory embed-index".to_string(),
+    ];
+    let verify_commands = vec![
+        "dukememory doctor-project --json".to_string(),
+        "dukememory sync-latency --json".to_string(),
+        "dukememory remote-sync-control --target TARGET --json".to_string(),
+    ];
+    let mut blockers = control.blockers.clone();
+    if target.is_none() {
+        blockers.push("target is required before writing VDS sync pack".to_string());
+    }
+    blockers.sort();
+    blockers.dedup();
+    let ok = blockers.is_empty();
+    let mut actions = Vec::new();
+    if apply && ok {
+        write_file(
+            &pack_path,
+            serde_json::to_string_pretty(&json!({
+                "version": 1,
+                "target": target_string,
+                "local_first": true,
+                "dry_run_commands": &dry_run_commands,
+                "apply_commands": &apply_commands,
+                "verify_commands": &verify_commands,
+                "updated_at": now_ms(),
+            }))?
+            .as_bytes(),
+        )?;
+        let _ = log_event(
+            conn,
+            "vds_sync_pack",
+            None,
+            &serde_json::to_string(&json!({
+                "status": "ok",
+                "path": pack_path.display().to_string(),
+            }))?,
+        );
+        actions.push(format!("vds_sync_pack_written:{}", pack_path.display()));
+    } else if apply {
+        actions.push("vds_sync_pack_not_written:blockers_present".to_string());
+    } else {
+        actions.push("dry_run:vds_sync_pack_not_written".to_string());
+    }
+    let mut recommendations = control.recommendations.clone();
+    recommendations
+        .push("agents must keep reads local and use VDS only for explicit sync".to_string());
+    recommendations
+        .push("run push dry-run, status, pull manual dry-run before any real import".to_string());
+    recommendations.sort();
+    recommendations.dedup();
+    Ok(VdsSyncPackReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "blocked" }.to_string(),
+        root: root.display().to_string(),
+        target: target_string,
+        applied: apply && ok,
+        pack_path: pack_path.display().to_string(),
+        local_first: true,
+        control,
+        dry_run_commands,
+        apply_commands,
+        verify_commands,
+        blockers,
+        actions,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_quality_autopilot_v31(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = quality_autopilot_v31_report(conn, db, root, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Quality Autopilot v3.1");
+    println!("status: {}", report.status);
+    println!("applied: {}", report.applied);
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    Ok(())
+}
+
+pub(crate) fn quality_autopilot_v31_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+) -> Result<QualityAutopilotV31Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let loop_v2 = feedback_loop_v2_report(conn, &root, since_days, apply)?;
+    let quality = quality_report(conn, since_days, 50)?;
+    let cost_guard = cost_guard_report(conn, since_days)?;
+    let health = memory_health_score_report(conn, db, &root, since_days)?;
+    let policy_path = root.join(".agent/quality-autopilot-v31.json");
+    let mut actions = loop_v2.actions.clone();
+    if apply {
+        write_file(
+            &policy_path,
+            serde_json::to_string_pretty(&json!({
+                "version": 1,
+                "since_days": since_days,
+                "quality_average": quality.average_score,
+                "cost_profile": cost_guard.recommended_profile,
+                "health_score": health.score,
+                "updated_at": now_ms(),
+            }))?
+            .as_bytes(),
+        )?;
+        actions.push(format!(
+            "quality_autopilot_policy_written:{}",
+            policy_path.display()
+        ));
+    } else {
+        actions.push("dry_run:quality_autopilot_policy_not_written".to_string());
+    }
+    let mut issues = loop_v2.issues.clone();
+    issues.extend(cost_guard.issues.clone());
+    issues.extend(health.issues.clone());
+    if quality.average_score < 70.0 {
+        issues.push(format!(
+            "quality average is low: {:.1}",
+            quality.average_score
+        ));
+    }
+    issues.sort();
+    issues.dedup();
+    let mut recommendations = loop_v2.recommendations.clone();
+    recommendations.extend(cost_guard.actions.clone());
+    recommendations.extend(health.recommendations.clone());
+    recommendations.push(
+        "prefer safe feedback, supersede, diff apply, and benchmark baseline before broad cleanup"
+            .to_string(),
+    );
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = loop_v2.ok && cost_guard.score >= 70.0 && health.ok && quality.average_score >= 70.0;
+    Ok(QualityAutopilotV31Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        since_days,
+        applied: apply,
+        loop_v2,
+        quality,
+        cost_guard,
+        health,
+        actions,
+        issues,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_memory_router_v2(
+    default_db: &Path,
+    root: &Path,
+    query: &str,
+    include_siblings: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_router_v2_report(default_db, root, query, include_siblings)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Router v2");
+    println!("status: {}", report.status);
+    println!(
+        "selected_authority: {}",
+        report.selected_authority.as_deref().unwrap_or("-")
+    );
+    for route in &report.routes {
+        println!("{} {} match(es) {}", route.role, route.matches, route.root);
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_router_v2_report(
+    default_db: &Path,
+    root: &Path,
+    query: &str,
+    include_siblings: bool,
+) -> Result<MemoryRouterV2Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let base = memory_router_report(default_db, &root, query, include_siblings)?;
+    let selected_authority = base
+        .routes
+        .iter()
+        .find(|route| route.current)
+        .map(|route| route.root.clone())
+        .or_else(|| base.selected_route.clone());
+    let routes = base
+        .routes
+        .iter()
+        .map(|route| MemoryRouterV2Route {
+            root: route.root.clone(),
+            db: route.db.clone(),
+            role: if route.current {
+                "authoritative".to_string()
+            } else {
+                "advisory".to_string()
+            },
+            matches: route.matches,
+            selected_for_write: route.current,
+            top_titles: route.top_titles.clone(),
+        })
+        .collect::<Vec<_>>();
+    let sibling_hint_count = routes
+        .iter()
+        .filter(|route| !route.selected_for_write && route.matches > 0)
+        .count();
+    let guardrails = vec![
+        "write only to the current project's .agent/memory.db".to_string(),
+        "use sibling memories as hints unless the user explicitly switches project root"
+            .to_string(),
+        "include sibling routes only when useful; keep briefs token-light".to_string(),
+    ];
+    let mut warnings = base.warnings.clone();
+    if selected_authority.is_none() {
+        warnings.push("no authoritative current project route was selected".to_string());
+    }
+    warnings.sort();
+    warnings.dedup();
+    let mut recommendations = base.recommendations.clone();
+    if sibling_hint_count > 0 {
+        recommendations.push(
+            "review advisory sibling matches before copying decisions across projects".to_string(),
+        );
+    }
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = selected_authority.is_some() && warnings.is_empty();
+    Ok(MemoryRouterV2Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        query: query.to_string(),
+        include_siblings,
+        selected_authority,
+        route_count: routes.len(),
+        sibling_hint_count,
+        routes,
+        base,
+        guardrails,
+        warnings,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_benchmark_profiles(
+    conn: &Connection,
+    root: &Path,
+    kind: Option<ProjectTemplateKind>,
+    since_days: i64,
+    write_baseline: bool,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = benchmark_profiles_report(conn, root, kind, since_days, write_baseline, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Benchmark Profiles");
+    println!("status: {}", report.status);
+    println!("kind: {}", report.selected_kind);
+    println!("score: {:.1}", report.benchmark.score);
+    Ok(())
+}
+
+pub(crate) fn benchmark_profiles_report(
+    conn: &Connection,
+    root: &Path,
+    kind: Option<ProjectTemplateKind>,
+    since_days: i64,
+    write_baseline: bool,
+    apply: bool,
+) -> Result<BenchmarkProfilesReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let role_profile = project_role_profile_report(&root, kind, apply)?;
+    let benchmark = recall_benchmark_suite_report(conn, &root, since_days, 8, write_baseline)?;
+    let selected_kind = role_profile.inferred_kind.clone();
+    let profile_path = root.join(".agent/benchmark-profile.json");
+    let commands = vec![
+        "dukememory recall-benchmark-suite --json".to_string(),
+        "dukememory recall-benchmark-suite --write-baseline --json".to_string(),
+        "dukememory project-role-profile --json".to_string(),
+        "dukememory memory-test-harness --json".to_string(),
+    ];
+    let mut actions = role_profile.actions.clone();
+    if apply {
+        write_file(
+            &profile_path,
+            serde_json::to_string_pretty(&json!({
+                "version": 1,
+                "kind": selected_kind,
+                "score": benchmark.score,
+                "baseline_score": benchmark.baseline_score,
+                "updated_at": now_ms(),
+            }))?
+            .as_bytes(),
+        )?;
+        actions.push(format!(
+            "benchmark_profile_written:{}",
+            profile_path.display()
+        ));
+    } else {
+        actions.push("dry_run:benchmark_profile_not_written".to_string());
+    }
+    let mut recommendations = benchmark.recommendations.clone();
+    recommendations.extend(role_profile.recommendations.clone());
+    recommendations.push(
+        "treat regressions as release blockers when benchmark score drops more than five points"
+            .to_string(),
+    );
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = benchmark.ok && benchmark.score >= 70.0;
+    Ok(BenchmarkProfilesReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        applied: apply,
+        selected_kind,
+        since_days,
+        profile_path: profile_path.display().to_string(),
+        benchmark,
+        role_profile,
+        commands,
+        actions,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_install_polish(root: &Path, apply: bool, json_out: bool) -> Result<()> {
+    let report = install_polish_report(root, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Install Polish");
+    println!("status: {}", report.status);
+    for check in &report.checks {
+        println!("{} {}", if check.ok { "ok" } else { "warn" }, check.name);
+    }
+    Ok(())
+}
+
+pub(crate) fn install_polish_report(root: &Path, apply: bool) -> Result<InstallPolishReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let cargo_toml = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
+    let readme = fs::read_to_string(root.join("README.md")).unwrap_or_default();
+    let license = fs::read_to_string(root.join("LICENSE")).unwrap_or_default();
+    let screenshot_exists = root.join("docs/screenshot.png").exists();
+    let checks = vec![
+        InstallPolishCheck {
+            name: "package_name".to_string(),
+            ok: cargo_toml.contains("name = \"dukememory\""),
+            detail: "Cargo package should be lowercase dukememory".to_string(),
+        },
+        InstallPolishCheck {
+            name: "version_0_24".to_string(),
+            ok: cargo_toml.contains("version = \"0.24.0\""),
+            detail: "Cargo version should match release 0.24.0".to_string(),
+        },
+        InstallPolishCheck {
+            name: "apache_2_license".to_string(),
+            ok: cargo_toml.contains("license = \"Apache-2.0\"")
+                && license.contains("Apache License"),
+            detail: "Apache-2.0 should be declared and present in LICENSE".to_string(),
+        },
+        InstallPolishCheck {
+            name: "github_repository".to_string(),
+            ok: cargo_toml.contains("github.com/danilkryachko/dukememory")
+                && readme.contains("github.com/danilkryachko/dukememory"),
+            detail: "Repository metadata and README should point to GitHub".to_string(),
+        },
+        InstallPolishCheck {
+            name: "screenshot".to_string(),
+            ok: screenshot_exists && readme.contains("docs/screenshot.png"),
+            detail: "README should show the web UI screenshot".to_string(),
+        },
+        InstallPolishCheck {
+            name: "search_keywords".to_string(),
+            ok: cargo_toml.contains("ai-agent")
+                && cargo_toml.contains("memory")
+                && readme.to_lowercase().contains("local-first"),
+            detail: "Metadata should remain searchable for AI agent memory use cases".to_string(),
+        },
+    ];
+    let polish_path = root.join(".agent/install-polish.json");
+    let mut actions = Vec::new();
+    if apply {
+        write_file(
+            &polish_path,
+            serde_json::to_string_pretty(&json!({
+                "version": 1,
+                "checks": checks,
+                "updated_at": now_ms(),
+            }))?
+            .as_bytes(),
+        )?;
+        actions.push(format!("install_polish_written:{}", polish_path.display()));
+    } else {
+        actions.push("dry_run:install_polish_not_written".to_string());
+    }
+    let commands = vec![
+        "cargo package --list".to_string(),
+        "cargo test --test cli".to_string(),
+        "dukememory release-gate-v2 --run --json".to_string(),
+        "gh repo view danilkryachko/dukememory --json name,visibility,licenseInfo".to_string(),
+    ];
+    let recommendations = vec![
+        "keep README short, screenshot visible, and install commands copy-pasteable".to_string(),
+        "publish GitHub updates on minor releases and keep patch releases local unless requested"
+            .to_string(),
+    ];
+    let ok = checks.iter().all(|check| check.ok);
+    Ok(InstallPolishReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        applied: apply,
+        checks,
+        commands,
+        actions,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_web_control_center_v5(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = web_control_center_v5_report(conn, db, root, target, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Web Control Center v5");
+    println!("status: {}", report.status);
+    for control in &report.controls {
+        println!("{} {} {}", control.name, control.method, control.endpoint);
+    }
+    Ok(())
+}
+
+pub(crate) fn web_control_center_v5_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+) -> Result<WebControlCenterV5Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let v4 = web_control_center_v4_report(conn, db, &root, target, since_days)?;
+    let vds_sync = vds_sync_pack_report(conn, db, &root, target, since_days, false)?;
+    let quality_autopilot = quality_autopilot_v31_report(conn, db, &root, since_days, false)?;
+    let router = memory_router_v2_report(db, &root, "project memory", true)?;
+    let benchmark_profiles =
+        benchmark_profiles_report(conn, &root, None, since_days, false, false)?;
+    let install_polish = install_polish_report(&root, false)?;
+    let target_arg = target
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "TARGET".to_string());
+    let mut controls = v4.controls.clone();
+    controls.extend(vec![
+        WebControlAction {
+            name: "vds_sync_pack".to_string(),
+            label: "VDS sync pack".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/vds-sync-pack/apply".to_string(),
+            cli: format!("dukememory vds-sync-pack --target {target_arg} --apply --json"),
+            safe_auto: true,
+            requires_apply: true,
+            status: vds_sync.status.clone(),
+        },
+        WebControlAction {
+            name: "quality_autopilot_v31".to_string(),
+            label: "Quality autopilot".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/quality-autopilot-v31/apply".to_string(),
+            cli: "dukememory quality-autopilot-v31 --apply --json".to_string(),
+            safe_auto: true,
+            requires_apply: true,
+            status: quality_autopilot.status.clone(),
+        },
+        WebControlAction {
+            name: "benchmark_profiles".to_string(),
+            label: "Benchmark profiles".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/benchmark-profiles/apply".to_string(),
+            cli: "dukememory benchmark-profiles --apply --json".to_string(),
+            safe_auto: true,
+            requires_apply: true,
+            status: benchmark_profiles.status.clone(),
+        },
+        WebControlAction {
+            name: "install_polish".to_string(),
+            label: "Install polish".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/install-polish/apply".to_string(),
+            cli: "dukememory install-polish --apply --json".to_string(),
+            safe_auto: true,
+            requires_apply: true,
+            status: install_polish.status.clone(),
+        },
+    ]);
+    let mut recommendations = v4.recommendations.clone();
+    recommendations.extend(vds_sync.recommendations.clone());
+    recommendations.extend(quality_autopilot.recommendations.clone());
+    recommendations.extend(router.recommendations.clone());
+    recommendations.extend(benchmark_profiles.recommendations.clone());
+    recommendations.extend(install_polish.recommendations.clone());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = v4.ok
+        && vds_sync.ok
+        && quality_autopilot.ok
+        && router.ok
+        && benchmark_profiles.ok
+        && install_polish.ok;
+    Ok(WebControlCenterV5Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        target: target.map(|path| path.display().to_string()),
+        v4,
+        vds_sync,
+        quality_autopilot,
+        router,
+        benchmark_profiles,
+        install_polish,
+        controls,
+        recommendations,
+    })
+}
+
 fn auto_supersede_confidence(candidate: &MergeCandidate) -> f64 {
     let reason = candidate.reason.to_lowercase();
     let title_bonus: f64 = if reason.contains("same title") || reason.contains("duplicate") {
@@ -7629,6 +8351,12 @@ fn agent_required_commands() -> &'static [&'static str] {
         "mcp-discipline-v2",
         "feedback-loop-v2",
         "upgrade-all-projects-v2",
+        "vds-sync-pack",
+        "web-control-center-v5",
+        "quality-autopilot-v31",
+        "memory-router-v2",
+        "benchmark-profiles",
+        "install-polish",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",

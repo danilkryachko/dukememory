@@ -1042,6 +1042,159 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 since_days,
             )?}))
         }
+        ("GET", "/vds-sync-pack") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let target = params.get("target").map(PathBuf::from);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"vds_sync_pack": vds_sync_pack_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/vds-sync-pack/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let target = value
+                .get("target")
+                .and_then(Value::as_str)
+                .map(PathBuf::from);
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"vds_sync_pack": vds_sync_pack_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                since_days,
+                true,
+            )?}))
+        }
+        ("GET", "/web-control-center-v5") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let target = params.get("target").map(PathBuf::from);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"control_v5": web_control_center_v5_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                since_days,
+            )?}))
+        }
+        ("GET", "/quality-autopilot-v31") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"quality_autopilot": quality_autopilot_v31_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/quality-autopilot-v31/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"quality_autopilot": quality_autopilot_v31_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                true,
+            )?}))
+        }
+        ("GET", "/memory-router-v2") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let query_text = params.get("q").map(String::as_str).unwrap_or("memory");
+            let include_siblings = params
+                .get("include_siblings")
+                .is_some_and(|value| value == "true" || value == "1");
+            HttpResponse::ok(json!({"router_v2": memory_router_v2_report(
+                &ctx.db,
+                &ctx.root,
+                query_text,
+                include_siblings,
+            )?}))
+        }
+        ("GET", "/benchmark-profiles") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"benchmark_profiles": benchmark_profiles_report(
+                &conn,
+                &ctx.root,
+                None,
+                since_days,
+                false,
+                false,
+            )?}))
+        }
+        ("POST", "/benchmark-profiles/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            let write_baseline = value
+                .get("write_baseline")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            HttpResponse::ok(json!({"benchmark_profiles": benchmark_profiles_report(
+                &conn,
+                &ctx.root,
+                None,
+                since_days,
+                write_baseline,
+                true,
+            )?}))
+        }
+        ("GET", "/install-polish") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            HttpResponse::ok(json!({"install_polish": install_polish_report(
+                &ctx.root,
+                false,
+            )?}))
+        }
+        ("POST", "/install-polish/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            HttpResponse::ok(json!({"install_polish": install_polish_report(
+                &ctx.root,
+                true,
+            )?}))
+        }
         ("GET", "/mcp-discipline-v2") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);

@@ -8713,6 +8713,12 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "mcp-discipline-v2",
         "feedback-loop-v2",
         "upgrade-all-projects-v2",
+        "vds-sync-pack",
+        "web-control-center-v5",
+        "quality-autopilot-v31",
+        "memory-router-v2",
+        "benchmark-profiles",
+        "install-polish",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -8788,6 +8794,12 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "mcp-discipline-v2",
         "feedback-loop-v2",
         "upgrade-all-projects-v2",
+        "vds-sync-pack",
+        "web-control-center-v5",
+        "quality-autopilot-v31",
+        "memory-router-v2",
+        "benchmark-profiles",
+        "install-polish",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -9729,6 +9741,12 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/mcp-discipline-v2"));
     assert!(html.contains("/feedback-loop-v2"));
     assert!(html.contains("/upgrade-all-projects-v2"));
+    assert!(html.contains("/vds-sync-pack"));
+    assert!(html.contains("/web-control-center-v5"));
+    assert!(html.contains("/quality-autopilot-v31"));
+    assert!(html.contains("/memory-router-v2"));
+    assert!(html.contains("/benchmark-profiles"));
+    assert!(html.contains("/install-polish"));
     assert!(html.contains("/project-diff"));
     assert!(html.contains("/intelligence-dashboard"));
     assert!(html.contains("/remote-sync-dry-run"));
@@ -10461,6 +10479,48 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(upgrade_all_v2.contains("\"upgrade_all_v2\""));
     assert!(upgrade_all_v2.contains("\"project_summaries\""));
     assert!(upgrade_all_v2.contains("\"dry_run\":true"));
+
+    let vds_sync_pack = http_once(
+        &db,
+        "GET /vds-sync-pack?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(vds_sync_pack.contains("\"vds_sync_pack\""));
+    assert!(vds_sync_pack.contains("\"verify_commands\""));
+
+    let web_control_v5 = http_once(
+        &db,
+        "GET /web-control-center-v5?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(web_control_v5.contains("\"control_v5\""));
+    assert!(web_control_v5.contains("\"quality_autopilot\""));
+
+    let quality_autopilot = http_once(
+        &db,
+        "GET /quality-autopilot-v31?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(quality_autopilot.contains("\"quality_autopilot\""));
+    assert!(quality_autopilot.contains("\"cost_guard\""));
+
+    let router_v2 = http_once(
+        &db,
+        "GET /memory-router-v2?q=memory&include_siblings=true HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(router_v2.contains("\"router_v2\""));
+    assert!(router_v2.contains("\"guardrails\""));
+
+    let benchmark_profiles = http_once(
+        &db,
+        "GET /benchmark-profiles?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(benchmark_profiles.contains("\"benchmark_profiles\""));
+    assert!(benchmark_profiles.contains("\"selected_kind\""));
+
+    let install_polish = http_once(
+        &db,
+        "GET /install-polish HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(install_polish.contains("\"install_polish\""));
+    assert!(install_polish.contains("\"checks\""));
 
     let project_template = http_once(
         &db,
@@ -12265,6 +12325,86 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .is_some()
     );
 
+    let vds_sync_pack = stdout(
+        cmd(&db)
+            .arg("vds-sync-pack")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(dir.path().join("remote-sync-target"))
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let vds_sync_pack_json: Value = serde_json::from_str(&vds_sync_pack).unwrap();
+    assert_eq!(vds_sync_pack_json["version"], 1);
+    assert!(vds_sync_pack_json["verify_commands"].as_array().is_some());
+
+    let web_control_v5 = stdout(
+        cmd(&db)
+            .arg("web-control-center-v5")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(dir.path().join("remote-sync-target"))
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let web_control_v5_json: Value = serde_json::from_str(&web_control_v5).unwrap();
+    assert_eq!(web_control_v5_json["version"], 1);
+    assert!(web_control_v5_json["controls"].as_array().unwrap().len() >= 9);
+
+    let quality_autopilot = stdout(
+        cmd(&db)
+            .arg("quality-autopilot-v31")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let quality_autopilot_json: Value = serde_json::from_str(&quality_autopilot).unwrap();
+    assert_eq!(quality_autopilot_json["version"], 1);
+    assert!(quality_autopilot_json["cost_guard"].is_object());
+
+    let router_v2 = stdout(
+        cmd(&db)
+            .arg("memory-router-v2")
+            .arg("project memory")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--include-siblings")
+            .arg("--json"),
+    );
+    let router_v2_json: Value = serde_json::from_str(&router_v2).unwrap();
+    assert_eq!(router_v2_json["version"], 1);
+    assert!(router_v2_json["guardrails"].as_array().is_some());
+
+    let benchmark_profiles = stdout(
+        cmd(&db)
+            .arg("benchmark-profiles")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let benchmark_profiles_json: Value = serde_json::from_str(&benchmark_profiles).unwrap();
+    assert_eq!(benchmark_profiles_json["version"], 1);
+    assert!(benchmark_profiles_json["benchmark"].is_object());
+
+    let install_polish = stdout(
+        cmd(&db)
+            .arg("install-polish")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    );
+    let install_polish_json: Value = serde_json::from_str(&install_polish).unwrap();
+    assert_eq!(install_polish_json["version"], 1);
+    assert!(install_polish_json["checks"].as_array().is_some());
+
     let project_template = stdout(
         cmd(&db)
             .arg("project-template")
@@ -12487,6 +12627,12 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         "mcp-discipline-v2",
         "feedback-loop-v2",
         "upgrade-all-projects-v2",
+        "vds-sync-pack",
+        "web-control-center-v5",
+        "quality-autopilot-v31",
+        "memory-router-v2",
+        "benchmark-profiles",
+        "install-polish",
     ] {
         assert!(
             agent_enforce_json["required_commands"]

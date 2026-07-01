@@ -9,6 +9,8 @@
 
 **Local-first memory for AI coding agents.**
 
+[GitHub](https://github.com/danilkryachko/dukememory)
+
 `dukememory` is a Rust CLI, MCP server, and Codex skill that gives Codex,
 Claude, Cursor, and other AI coding agents durable project memory. It stores
 decisions, constraints, commands, known issues, task state, user preferences,
@@ -123,12 +125,13 @@ local SQLite database, while push/pull moves reviewable sync bundles.
 
 ```bash
 dukememory remote-sync-control --target /mnt/vds/dukememory --json
+dukememory vds-sync-pack --target /mnt/vds/dukememory --json
 dukememory sync push /mnt/vds/dukememory --dry-run --json
 dukememory sync status /mnt/vds/dukememory --json
 dukememory sync pull /mnt/vds/dukememory --policy manual --dry-run --json
 ```
 
-`web-control-center-v4` exposes the same model for UI buttons: preview first,
+`web-control-center-v5` exposes the same model for UI buttons: preview first,
 apply only guarded reversible actions, and keep rollback hints visible.
 
 ## Embeddings
@@ -219,6 +222,12 @@ dukememory web-control-center-v4 --json
 dukememory mcp-discipline-v2 --json
 dukememory feedback-loop-v2 --json
 dukememory upgrade-all-projects-v2 --dry-run --json
+dukememory vds-sync-pack --target /mnt/vds/dukememory --json
+dukememory web-control-center-v5 --json
+dukememory quality-autopilot-v31 --json
+dukememory memory-router-v2 "project memory" --include-siblings --json
+dukememory benchmark-profiles --json
+dukememory install-polish --json
 dukememory auto-ranking-tune --apply --json
 dukememory ranking-profile --profile balanced --apply --json
 dukememory project-template --kind rust-cli --apply --json

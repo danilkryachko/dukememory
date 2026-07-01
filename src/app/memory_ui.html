@@ -559,7 +559,8 @@
       autoSupersedeV2: null, memoryDiffApply: null, recallBenchmark: null, releaseGateV2: null, remoteSyncWizard: null, governancePolicy: null,
       autonomousLoopV2: null, governanceEnforce: null, qualityCi: null, fleetV2: null, remoteApplyFlow: null, mcpSurfaceV2: null,
       autopilotV3: null, selfLearning: null, roleProfile: null, inboxReviewer: null, webControlV3: null, remoteApply: null, mcpQuality: null,
-      remoteSyncControl: null, webControlV4: null, mcpDisciplineV2: null, feedbackLoopV2: null, upgradeAllV2: null
+      remoteSyncControl: null, webControlV4: null, mcpDisciplineV2: null, feedbackLoopV2: null, upgradeAllV2: null,
+      vdsSyncPack: null, webControlV5: null, qualityAutopilotV31: null, memoryRouterV2: null, benchmarkProfiles: null, installPolish: null
     };
     const $ = (id) => document.getElementById(id);
     const t = (key) => i18n[state.lang][key] || i18n.en[key] || key;
@@ -857,7 +858,7 @@
       const params = new URLSearchParams({ since_days: "7" });
       if (state.project) params.set("project", state.project);
       const taskQuery = $("q")?.value || "memory task";
-      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch, loop, journal, engine, latency, syncProfile, enforce, watchInstall, rankingProfile, projectTemplate, diffReview, contextGovernor, memoryRouter, autoRanking, watchControl, autonomyCenter, remoteSyncV2, memoryHealth, explainRecall, intentMap, memoryHarness, agentAuditV2, controlCenterV2, autoSupersedeV2, memoryDiffApply, recallBenchmark, releaseGateV2, remoteSyncWizard, governancePolicy, autonomousLoopV2, governanceEnforce, qualityCi, fleetV2, remoteApplyFlow, mcpSurfaceV2, autopilotV3, selfLearning, roleProfile, inboxReviewer, webControlV3, remoteApply, mcpQuality, remoteSyncControl, webControlV4, mcpDisciplineV2, feedbackLoopV2, upgradeAllV2] = await Promise.all([
+      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch, loop, journal, engine, latency, syncProfile, enforce, watchInstall, rankingProfile, projectTemplate, diffReview, contextGovernor, memoryRouter, autoRanking, watchControl, autonomyCenter, remoteSyncV2, memoryHealth, explainRecall, intentMap, memoryHarness, agentAuditV2, controlCenterV2, autoSupersedeV2, memoryDiffApply, recallBenchmark, releaseGateV2, remoteSyncWizard, governancePolicy, autonomousLoopV2, governanceEnforce, qualityCi, fleetV2, remoteApplyFlow, mcpSurfaceV2, autopilotV3, selfLearning, roleProfile, inboxReviewer, webControlV3, remoteApply, mcpQuality, remoteSyncControl, webControlV4, mcpDisciplineV2, feedbackLoopV2, upgradeAllV2, vdsSyncPack, webControlV5, qualityAutopilotV31, memoryRouterV2, benchmarkProfiles, installPolish] = await Promise.all([
         api(`/roi-report?${params.toString()}`),
         api(`/agent-audit?${params.toString()}`),
         api(`/remote-status?${params.toString()}`),
@@ -916,7 +917,13 @@
         api(`/web-control-center-v4?${params.toString()}`),
         api(`/mcp-discipline-v2?${params.toString()}`),
         api(`/feedback-loop-v2?${params.toString()}`),
-        api(`/upgrade-all-projects-v2?${params.toString()}`)
+        api(`/upgrade-all-projects-v2?${params.toString()}`),
+        api(`/vds-sync-pack?${params.toString()}`),
+        api(`/web-control-center-v5?${params.toString()}`),
+        api(`/quality-autopilot-v31?${params.toString()}`),
+        api(`/memory-router-v2?${params.toString()}&q=${encodeURIComponent(taskQuery)}&include_siblings=true`),
+        api(`/benchmark-profiles?${params.toString()}`),
+        api(`/install-polish?${params.toString()}`)
       ]);
       state.roi = roi.roi;
       state.agentAudit = audit.agent_audit;
@@ -977,6 +984,12 @@
       state.mcpDisciplineV2 = mcpDisciplineV2.discipline;
       state.feedbackLoopV2 = feedbackLoopV2.feedback_loop;
       state.upgradeAllV2 = upgradeAllV2.upgrade_all_v2;
+      state.vdsSyncPack = vdsSyncPack.vds_sync_pack;
+      state.webControlV5 = webControlV5.control_v5;
+      state.qualityAutopilotV31 = qualityAutopilotV31.quality_autopilot;
+      state.memoryRouterV2 = memoryRouterV2.router_v2;
+      state.benchmarkProfiles = benchmarkProfiles.benchmark_profiles;
+      state.installPolish = installPolish.install_polish;
       renderSettings();
     }
 
@@ -1039,6 +1052,14 @@
         await api("/feedback-loop-v2/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
       } else if (action === "upgrade-all-v2") {
         await api("/upgrade-all-projects-v2/apply", { method: "POST", body: JSON.stringify({ dry_run: false }) });
+      } else if (action === "vds-sync-pack") {
+        await api("/vds-sync-pack/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
+      } else if (action === "quality-autopilot-v31") {
+        await api("/quality-autopilot-v31/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
+      } else if (action === "benchmark-profiles") {
+        await api("/benchmark-profiles/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7, write_baseline: false })) });
+      } else if (action === "install-polish") {
+        await api("/install-polish/apply", { method: "POST", body: JSON.stringify(withProject({})) });
       }
       setToast(action);
       await Promise.all([loadIntelligence(), loadMemoryQa(), loadOpsStatus(), loadProjects(), loadDashboard()]);
@@ -1376,6 +1397,12 @@
       const mcpDisciplineV2 = state.mcpDisciplineV2 || {};
       const feedbackLoopV2 = state.feedbackLoopV2 || {};
       const upgradeAllV2 = state.upgradeAllV2 || {};
+      const vdsSyncPack = state.vdsSyncPack || {};
+      const webControlV5 = state.webControlV5 || {};
+      const qualityAutopilotV31 = state.qualityAutopilotV31 || {};
+      const memoryRouterV2 = state.memoryRouterV2 || {};
+      const benchmarkProfiles = state.benchmarkProfiles || {};
+      const installPolish = state.installPolish || {};
       const contract = state.contract || {};
       const ops = state.ops || {};
       const effectiveness = ops.effectiveness || {};
@@ -1470,10 +1497,16 @@
         <div class="stat"><strong>${escapeHtml(mcpDisciplineV2.status || "-")}</strong><span>mcp discipline</span></div>
         <div class="stat"><strong>${escapeHtml(feedbackLoopV2.status || "-")}</strong><span>feedback loop</span></div>
         <div class="stat"><strong>${Number(upgradeAllV2.attention_projects || 0)}</strong><span>upgrade attention</span></div>
+        <div class="stat"><strong>${escapeHtml(vdsSyncPack.status || "-")}</strong><span>vds sync pack</span></div>
+        <div class="stat"><strong>${escapeHtml(webControlV5.status || "-")}</strong><span>control v5</span></div>
+        <div class="stat"><strong>${escapeHtml(qualityAutopilotV31.status || "-")}</strong><span>quality autopilot</span></div>
+        <div class="stat"><strong>${Number(memoryRouterV2.sibling_hint_count || 0)}</strong><span>router hints</span></div>
+        <div class="stat"><strong>${Number(benchmarkProfiles.benchmark?.score || 0).toFixed(1)}</strong><span>profile benchmark</span></div>
+        <div class="stat"><strong>${escapeHtml(installPolish.status || "-")}</strong><span>install polish</span></div>
       </div>
       <div class="card"><div class="title">doctor project</div><div class="body">status ${escapeHtml(doctor.status || "-")}<br>qa ${Number(doctor.memory_qa?.score || 0).toFixed(1)}<br>embedding ${doctor.embedding ? `${Number(doctor.embedding.missing || 0)} missing / ${Number(doctor.embedding.stale || 0)} stale` : "-"}<br>${doctor.checks?.length ? doctor.checks.slice(0, 6).map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">release gate</div><div class="body">status ${escapeHtml(releaseGate.status || "-")}<br>strict ${releaseGate.strict ? "yes" : "no"}<br>${releaseGate.checks?.length ? releaseGate.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}<br>${releaseGate.issues?.length ? releaseGate.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
-      <div class="card"><div class="title">intelligence actions</div><div class="actions"><button data-intelligence="doctor-fix">Doctor fix</button><button data-intelligence="loop-apply">Loop apply</button><button data-intelligence="loop-v2-apply">Loop v2</button><button data-intelligence="autopilot-v3">Autopilot v3</button><button data-intelligence="remote-sync-control">Sync control</button><button data-intelligence="mcp-discipline-v2">MCP discipline</button><button data-intelligence="feedback-loop-v2">Feedback loop</button><button data-intelligence="upgrade-all-v2">Upgrade v2</button><button data-intelligence="self-learning">Self learning</button><button data-intelligence="role-profile">Role profile</button><button data-intelligence="inbox-reviewer">Inbox reviewer</button><button data-intelligence="governance-enforce">Governance enforce</button><button data-intelligence="engine-apply">Engine apply</button><button data-intelligence="sync-profile">Sync profile</button><button data-intelligence="ranking-apply">Ranking profile</button><button data-intelligence="auto-ranking">Auto ranking</button><button data-intelligence="template-apply">Template</button><button data-intelligence="diff-review">Diff review</button><button data-intelligence="diff-apply">Diff apply</button><button data-intelligence="supersede-v2">Supersede v2</button><button data-intelligence="benchmark-baseline">Benchmark baseline</button><button data-intelligence="governance-policy">Governance</button><button data-intelligence="watch-control">Watch control</button><button data-intelligence="upgrade-all">Upgrade all</button><button data-intelligence="enforce-fix">Enforce fix</button><button data-intelligence="auto-feedback">Auto feedback</button><button data-intelligence="watch-fix">Watch fix</button><button data-intelligence="release-run">Release run</button><button data-intelligence="release-v2-run">Release v2</button></div></div>
+      <div class="card"><div class="title">intelligence actions</div><div class="actions"><button data-intelligence="doctor-fix">Doctor fix</button><button data-intelligence="loop-apply">Loop apply</button><button data-intelligence="loop-v2-apply">Loop v2</button><button data-intelligence="autopilot-v3">Autopilot v3</button><button data-intelligence="vds-sync-pack">VDS sync pack</button><button data-intelligence="quality-autopilot-v31">Quality autopilot</button><button data-intelligence="benchmark-profiles">Benchmark profiles</button><button data-intelligence="install-polish">Install polish</button><button data-intelligence="remote-sync-control">Sync control</button><button data-intelligence="mcp-discipline-v2">MCP discipline</button><button data-intelligence="feedback-loop-v2">Feedback loop</button><button data-intelligence="upgrade-all-v2">Upgrade v2</button><button data-intelligence="self-learning">Self learning</button><button data-intelligence="role-profile">Role profile</button><button data-intelligence="inbox-reviewer">Inbox reviewer</button><button data-intelligence="governance-enforce">Governance enforce</button><button data-intelligence="engine-apply">Engine apply</button><button data-intelligence="sync-profile">Sync profile</button><button data-intelligence="ranking-apply">Ranking profile</button><button data-intelligence="auto-ranking">Auto ranking</button><button data-intelligence="template-apply">Template</button><button data-intelligence="diff-review">Diff review</button><button data-intelligence="diff-apply">Diff apply</button><button data-intelligence="supersede-v2">Supersede v2</button><button data-intelligence="benchmark-baseline">Benchmark baseline</button><button data-intelligence="governance-policy">Governance</button><button data-intelligence="watch-control">Watch control</button><button data-intelligence="upgrade-all">Upgrade all</button><button data-intelligence="enforce-fix">Enforce fix</button><button data-intelligence="auto-feedback">Auto feedback</button><button data-intelligence="watch-fix">Watch fix</button><button data-intelligence="release-run">Release run</button><button data-intelligence="release-v2-run">Release v2</button></div></div>
       <div class="card"><div class="title">context governor</div><div class="body">budget ${escapeHtml(contextGovernor.budget?.profile || "-")} / ${Number(contextGovernor.max_context_chars || 0)} chars<br>${contextGovernor.selected_flow?.length ? contextGovernor.selected_flow.map(escapeHtml).join("<br>") : "-"}<br>${contextGovernor.commands?.length ? contextGovernor.commands.slice(0, 4).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">memory router</div><div class="body">selected ${escapeHtml(memoryRouter.selected_route || "-")}<br>${memoryRouter.routes?.length ? memoryRouter.routes.slice(0, 5).map((route) => `${escapeHtml(route.mode)} ${Number(route.matches || 0)} ${escapeHtml(route.root)}`).join("<br>") : "-"}<br>${memoryRouter.warnings?.length ? memoryRouter.warnings.map(escapeHtml).join("<br>") : ""}</div></div>
       <div class="card"><div class="title">auto ranking tune</div><div class="body">profile ${escapeHtml(autoRanking.selected_profile || "-")}<br>qa ${Number(autoRanking.qa_score || 0).toFixed(1)} / useful ${formatPercent(autoRanking.useful_rate)}<br>missing ${Number(autoRanking.inferred_missing || 0)} / semantic empty ${Number(autoRanking.semantic_empty || 0)} / noisy ${Number(autoRanking.noisy_cards || 0)}<br>${autoRanking.reasons?.length ? autoRanking.reasons.map(escapeHtml).join("<br>") : "-"}</div></div>
@@ -1510,6 +1543,12 @@
       <div class="card"><div class="title">mcp discipline v2</div><div class="body">status ${escapeHtml(mcpDisciplineV2.status || "-")}<br>missing ${Number(mcpDisciplineV2.missing_commands?.length || 0)}<br>startup ${mcpDisciplineV2.startup_flow?.length ? mcpDisciplineV2.startup_flow.map(escapeHtml).join(" -> ") : "-"}<br>after ${mcpDisciplineV2.after_task_flow?.length ? mcpDisciplineV2.after_task_flow.map(escapeHtml).join(" -> ") : "-"}</div></div>
       <div class="card"><div class="title">feedback loop v2</div><div class="body">status ${escapeHtml(feedbackLoopV2.status || "-")}<br>qa ${Number(feedbackLoopV2.qa?.score || 0).toFixed(1)} / benchmark ${Number(feedbackLoopV2.benchmark?.score || 0).toFixed(1)}<br>feedback ${Number(feedbackLoopV2.auto_feedback?.written || 0)} / supersede ${Number(feedbackLoopV2.supersede?.candidates?.length || 0)} / diff ${Number(feedbackLoopV2.diff_apply?.reviewed?.write_ready?.length || 0)}<br>${feedbackLoopV2.issues?.length ? feedbackLoopV2.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
       <div class="card"><div class="title">upgrade all v2</div><div class="body">status ${escapeHtml(upgradeAllV2.status || "-")}<br>projects ${Number(upgradeAllV2.total_projects || 0)} / ready ${Number(upgradeAllV2.ready_projects || 0)} / attention ${Number(upgradeAllV2.attention_projects || 0)}<br>${upgradeAllV2.project_summaries?.length ? upgradeAllV2.project_summaries.slice(0, 6).map((project) => `${escapeHtml(project.status)} ${escapeHtml(project.root)} -> ${escapeHtml(project.target_version || "-")}`).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">vds sync pack</div><div class="body">status ${escapeHtml(vdsSyncPack.status || "-")}<br>target ${escapeHtml(vdsSyncPack.target || "-")}<br>local first ${vdsSyncPack.local_first ? "yes" : "no"}<br>${vdsSyncPack.blockers?.length ? vdsSyncPack.blockers.map(escapeHtml).join("<br>") : vdsSyncPack.dry_run_commands?.slice(0, 4).map(escapeHtml).join("<br>") || "-"}</div></div>
+      <div class="card"><div class="title">web control center v5</div><div class="body">status ${escapeHtml(webControlV5.status || "-")}<br>${webControlV5.controls?.length ? webControlV5.controls.slice(0, 8).map((item) => `${escapeHtml(item.status)} ${escapeHtml(item.label)} ${escapeHtml(item.method)}`).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">quality autopilot v3.1</div><div class="body">status ${escapeHtml(qualityAutopilotV31.status || "-")}<br>health ${Number(qualityAutopilotV31.health?.score || 0).toFixed(1)} / cost ${Number(qualityAutopilotV31.cost_guard?.score || 0).toFixed(1)} / quality ${Number(qualityAutopilotV31.quality?.average_score || 0).toFixed(1)}<br>${qualityAutopilotV31.issues?.length ? qualityAutopilotV31.issues.slice(0, 6).map(escapeHtml).join("<br>") : "issues -"}</div></div>
+      <div class="card"><div class="title">memory router v2</div><div class="body">authority ${escapeHtml(memoryRouterV2.selected_authority || "-")}<br>routes ${Number(memoryRouterV2.route_count || 0)} / hints ${Number(memoryRouterV2.sibling_hint_count || 0)}<br>${memoryRouterV2.routes?.length ? memoryRouterV2.routes.slice(0, 5).map((route) => `${escapeHtml(route.role)} ${Number(route.matches || 0)} ${escapeHtml(route.root)}`).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">benchmark profiles</div><div class="body">kind ${escapeHtml(benchmarkProfiles.selected_kind || "-")}<br>score ${Number(benchmarkProfiles.benchmark?.score || 0).toFixed(1)} / baseline ${benchmarkProfiles.benchmark?.baseline_score == null ? "-" : Number(benchmarkProfiles.benchmark.baseline_score).toFixed(1)}<br>${benchmarkProfiles.recommendations?.length ? benchmarkProfiles.recommendations.slice(0, 5).map(escapeHtml).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">install polish</div><div class="body">status ${escapeHtml(installPolish.status || "-")}<br>${installPolish.checks?.length ? installPolish.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}<br>${installPolish.commands?.slice(0, 3).map(escapeHtml).join("<br>") || ""}</div></div>
       <div class="card"><div class="title">autonomous loop</div><div class="body">status ${escapeHtml(loop.status || "-")}<br>applied ${loop.applied ? "yes" : "no"}<br>watch attention ${Number(loop.watch?.attention_projects || 0)}<br>${loop.actions?.length ? loop.actions.slice(0, 5).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">action journal</div><div class="body">events ${Number(journal.total || 0)}<br>applied ${Number(journal.applied || 0)} / skipped ${Number(journal.skipped || 0)} / failed ${Number(journal.failed || 0)}<br>rollback ${Number(journal.rollback_events || 0)}<br>${journal.items?.length ? journal.items.slice(0, 5).map((item) => `${escapeHtml(item.status)} ${escapeHtml(item.action)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">usefulness engine</div><div class="body">status ${escapeHtml(engine.status || "-")}<br>applied ${engine.applied ? "yes" : "no"}<br>promote ${Number(engine.promote_candidates?.length || 0)} / suppress ${Number(engine.suppress_candidates?.length || 0)}<br>${engine.ranking_policy?.length ? engine.ranking_policy.slice(0, 4).map(escapeHtml).join("<br>") : "-"}</div></div>

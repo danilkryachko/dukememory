@@ -1191,6 +1191,50 @@ pub(crate) fn run() -> Result<()> {
             dry_run,
             json,
         )?,
+        Command::VdsSyncPack {
+            root,
+            target,
+            since_days,
+            apply,
+            json,
+        } => print_vds_sync_pack(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            since_days,
+            apply,
+            json,
+        )?,
+        Command::WebControlCenterV5 {
+            root,
+            target,
+            since_days,
+            json,
+        } => {
+            print_web_control_center_v5(&conn, &cli.db, &root, target.as_deref(), since_days, json)?
+        }
+        Command::QualityAutopilotV31 {
+            root,
+            since_days,
+            apply,
+            json,
+        } => print_quality_autopilot_v31(&conn, &cli.db, &root, since_days, apply, json)?,
+        Command::MemoryRouterV2 {
+            query,
+            root,
+            include_siblings,
+            json,
+        } => print_memory_router_v2(&cli.db, &root, &query, include_siblings, json)?,
+        Command::BenchmarkProfiles {
+            root,
+            kind,
+            since_days,
+            write_baseline,
+            apply,
+            json,
+        } => print_benchmark_profiles(&conn, &root, kind, since_days, write_baseline, apply, json)?,
+        Command::InstallPolish { root, apply, json } => print_install_polish(&root, apply, json)?,
         Command::ProjectTemplate {
             root,
             kind,
@@ -3563,6 +3607,18 @@ Use `dukememory feedback-loop-v2 --json` to inspect autonomous usefulness feedba
 
 Use `dukememory upgrade-all-projects-v2 --json` to inspect all installed project memories with richer version/action summaries before applying upgrades.
 
+Use `dukememory vds-sync-pack --json` to inspect a local-first VDS sync pack with dry-run, apply, and verify commands; pass `--target PATH` before `--apply`.
+
+Use `dukememory web-control-center-v5 --json` to inspect the 0.24 web control model with VDS sync pack, quality autopilot, router v2, benchmark profiles, and install polish.
+
+Use `dukememory quality-autopilot-v31 --json` to inspect safe feedback, quality, cost, health, diff apply, supersede, and benchmark gates; use `--apply` only for reversible policy writes.
+
+Use `dukememory memory-router-v2 "<query>" --include-siblings --json` to route cross-project memory while keeping writes pinned to the current project.
+
+Use `dukememory benchmark-profiles --json` to select project-aware retrieval benchmark profiles; use `--write-baseline` only after reviewing probes.
+
+Use `dukememory install-polish --json` to inspect README, screenshot, license, package metadata, and GitHub install readiness before release.
+
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
 Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens.
@@ -3684,6 +3740,12 @@ dukememory web-control-center-v4 --json
 dukememory mcp-discipline-v2 --json
 dukememory feedback-loop-v2 --json
 dukememory upgrade-all-projects-v2 --json
+dukememory vds-sync-pack --json
+dukememory web-control-center-v5 --json
+dukememory quality-autopilot-v31 --json
+dukememory memory-router-v2 "project memory" --include-siblings --json
+dukememory benchmark-profiles --json
+dukememory install-polish --json
 dukememory doctor-project --json
 dukememory release-gate --json
 dukememory project-watch --json
@@ -4311,6 +4373,12 @@ fn print_manpage() {
         "  feedback-loop-v2 --json       autonomous usefulness, supersede, diff, benchmark loop"
     );
     println!("  upgrade-all-projects-v2       richer all-project upgrade/version summary");
+    println!("  vds-sync-pack --json          local-first VDS sync pack with verify commands");
+    println!("  web-control-center-v5         0.24 UI control model and release surfaces");
+    println!("  quality-autopilot-v31         safe quality/cost/health autopilot");
+    println!("  memory-router-v2 QUERY        cross-project router with current-write guardrails");
+    println!("  benchmark-profiles --json     project-aware retrieval benchmark profile");
+    println!("  install-polish --json         README/license/screenshot/install release checks");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");
