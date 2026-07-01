@@ -33,7 +33,7 @@ Transcript-based memory quickly turns into noise.
 - **Small context briefs** before coding, including file and symbol impact checks.
 - **Optional semantic recall** with Ollama or OpenAI-compatible embeddings.
 - **Autonomous maintenance** for freshness, backups, repair hints, gap review, and safe cleanup.
-- **Lightweight control surfaces** for ranking profiles, project templates, sync dry-runs, release gates, and changed-file memory review.
+- **Lightweight control surfaces** for context governance, memory routing, ranking profiles, sync dry-runs, release gates, and changed-file review.
 
 ## What It Remembers
 
@@ -86,6 +86,7 @@ dukememory brief "fix checkout validation" --budget-profile tiny
 dukememory impact src/checkout.ts --budget-profile tiny
 dukememory recall "checkout validation" --max-chars 1200
 dukememory drift --root . --json
+dukememory context-governor "fix checkout validation" --target src/checkout.ts --json
 dukememory memory-diff-review --json
 ```
 
@@ -132,7 +133,7 @@ dukememory serve-http --host 127.0.0.1 --port 8765
 Open `http://127.0.0.1:8765/`.
 
 Use it to search memory, inspect evidence, review inbox items, watch usage,
-check autonomous health, tune ranking, and review memory gaps.
+check autonomous health, tune ranking, route project memory, and review gaps.
 
 For one compact health view:
 
@@ -160,6 +161,7 @@ only durable outcomes, then re-index embeddings after important writes.
 ```bash
 dukememory autonomous install --force --level normal
 dukememory autonomous-watch-install --dry-run --json
+dukememory watch-control --json
 dukememory autonomous status --json
 dukememory autonomous rollback --json
 ```
@@ -167,15 +169,22 @@ dukememory autonomous rollback --json
 ## Control Surfaces
 
 ```bash
+dukememory context-governor "ship auth fix" --target src/auth.ts --json
+dukememory memory-router "auth decisions" --include-siblings --json
+dukememory auto-ranking-tune --apply --json
 dukememory ranking-profile --profile balanced --apply --json
 dukememory project-template --kind rust-cli --apply --json
 dukememory sync-profile --profile local-first-backup --run-dry-run --json
+dukememory remote-sync-v2 --target /mnt/vds/dukememory --json
+dukememory autonomy-control-center --json
+dukememory upgrade-all-projects --json
 dukememory release-gate --run --json
 ```
 
-These commands keep memory useful without making it heavy: ranking profiles tune
-retrieval strictness, templates seed project defaults, sync profiles stay
-local-first, and release gates catch broken memory wiring before publishing.
+These commands keep memory useful without making it heavy: context governance
+chooses the smallest read flow, routing keeps project facts separated, ranking
+tunes itself from live signals, sync stays local-first, and release gates catch
+broken memory wiring before publishing.
 
 ## Development
 

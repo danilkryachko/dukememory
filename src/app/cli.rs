@@ -921,6 +921,37 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Plan the smallest useful memory context for a task.
+    ContextGovernor {
+        task: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Route a memory query across local project memories without mixing facts.
+    MemoryRouter {
+        query: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        include_siblings: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Tune retrieval ranking profile from recent usefulness and quality signals.
+    AutoRankingTune {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Write starter memory configuration for a project type.
     ProjectTemplate {
         #[arg(long, default_value = ".")]
@@ -929,6 +960,28 @@ pub(crate) enum Command {
         kind: ProjectTemplateKind,
         #[arg(long)]
         apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect or enable the autonomous watch loop control plane.
+    WatchControl {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 3600)]
+        interval_secs: u64,
+        #[arg(long, default_value = "com.dukememory.autonomous-loop")]
+        label: String,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Aggregate autonomy, ranking, watch, diff, and sync health in one view.
+    AutonomyControlCenter {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
         #[arg(long)]
         json: bool,
     },
@@ -967,6 +1020,19 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Plan local-first remote/VDS sync v2 with conflict and latency guardrails.
+    RemoteSyncV2 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Enforce agent memory wiring for new chats, optionally repairing it.
     AgentEnforce {
         #[arg(long, default_value = ".")]
@@ -975,6 +1041,19 @@ pub(crate) enum Command {
         since_days: i64,
         #[arg(long)]
         fix: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Update all discovered project memories with current binary, skill, rules, and contract.
+    UpgradeAllProjects {
+        #[arg(long)]
+        from: Option<PathBuf>,
+        #[arg(long, default_value = "~/.local/bin/dukememory")]
+        to: String,
+        #[arg(long, default_value = ".agent/install-backups")]
+        backup_dir: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long)]
         json: bool,
     },

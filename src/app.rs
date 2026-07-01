@@ -964,12 +964,42 @@ pub(crate) fn run() -> Result<()> {
             apply,
             json,
         } => print_ranking_profile(&root, profile, apply, json)?,
+        Command::ContextGovernor {
+            task,
+            root,
+            target,
+            json,
+        } => print_context_governor(&conn, &root, &task, target.as_deref(), json)?,
+        Command::MemoryRouter {
+            query,
+            root,
+            include_siblings,
+            json,
+        } => print_memory_router(&cli.db, &root, &query, include_siblings, json)?,
+        Command::AutoRankingTune {
+            root,
+            since_days,
+            apply,
+            json,
+        } => print_auto_ranking_tune(&conn, &root, since_days, apply, json)?,
         Command::ProjectTemplate {
             root,
             kind,
             apply,
             json,
         } => print_project_template(&root, kind, apply, json)?,
+        Command::WatchControl {
+            root,
+            interval_secs,
+            label,
+            apply,
+            json,
+        } => print_watch_control(&cli.db, &root, interval_secs, &label, apply, json)?,
+        Command::AutonomyControlCenter {
+            root,
+            since_days,
+            json,
+        } => print_autonomy_control_center(&conn, &cli.db, &root, since_days, json)?,
         Command::SyncLatency {
             root,
             target,
@@ -996,6 +1026,21 @@ pub(crate) fn run() -> Result<()> {
         Command::MemoryDiffReview { root, apply, json } => {
             print_memory_diff_review(&conn, &root, apply, json)?
         }
+        Command::RemoteSyncV2 {
+            root,
+            target,
+            since_days,
+            apply,
+            json,
+        } => print_remote_sync_v2(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            since_days,
+            apply,
+            json,
+        )?,
         Command::AgentEnforce {
             root,
             since_days,
@@ -1032,6 +1077,13 @@ pub(crate) fn run() -> Result<()> {
             dry_run,
             json,
         )?,
+        Command::UpgradeAllProjects {
+            from,
+            to,
+            backup_dir,
+            dry_run,
+            json,
+        } => print_upgrade_all_projects(&cli.db, from.as_deref(), &to, &backup_dir, dry_run, json)?,
         Command::CodexDoctor { config, json } => print_codex_doctor(&expand_tilde(&config), json)?,
         Command::WorkspaceInit { root, force } => workspace_init(&root, force)?,
         Command::Bundle { output, redact } => {
@@ -3236,7 +3288,11 @@ Use `dukememory auto-feedback --dry-run --json` to preview autonomous inferred f
 
 Use `dukememory cost-guard --json` to keep memory token-light and detect high budgets, high write pressure, noisy cards, or oversized cards.
 
+Use `dukememory context-governor "<task>" --json` to choose the smallest useful read flow; add `--target <file-or-symbol>` before focused edits.
+
 Use `dukememory budget-plan "<task>" --json` when unsure how much memory context is enough. Prefer the returned smallest useful profile.
+
+Use `dukememory memory-router "<query>" --include-siblings --json` to route memory across nearby projects without treating other projects as authoritative.
 
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
@@ -3274,7 +3330,13 @@ Use `dukememory usefulness-engine --json` to rank useful/noisy memory and previe
 
 Use `dukememory ranking-profile --profile balanced|strict|recall-heavy|precision-heavy --json` to inspect retrieval ranking weights; use `--apply` to make the profile durable for a project.
 
+Use `dukememory auto-ranking-tune --json` to adapt retrieval strictness from live usefulness, semantic, and quality signals.
+
 Use `dukememory project-template --kind rust-cli|frontend-app|game-mod|electronics-cad|docs-research --json` to seed project-type memory defaults.
+
+Use `dukememory watch-control --json` to inspect launchd watch readiness; use `--apply` to write/load the autonomous watch plist.
+
+Use `dukememory autonomy-control-center --json` to inspect context, ranking, watch, diff, and sync readiness in one control view.
 
 Use `dukememory sync-latency --json` to measure local/VDS sync latency while keeping reads local-first.
 
@@ -3283,6 +3345,8 @@ Use `dukememory sync-profile --profile local-first-backup --run-dry-run --json` 
 Use `dukememory agent-enforce --json` to verify future chats will use memory; use `dukememory agent-enforce --fix --json` to repair AGENTS/skill/project wiring.
 
 Use `dukememory memory-diff-review --json` to review changed files against memory and decide whether durable task_state/design_note cards are needed.
+
+Use `dukememory remote-sync-v2 --json` to plan encrypted local-first VDS/remote sync with manual conflict policy.
 
 Use `dukememory sync export bundle.json --dry-run --json` before writing a local-first sync bundle; use `dukememory sync import bundle.json --dry-run --json` before applying it.
 
@@ -3299,6 +3363,8 @@ Use `dukememory memory-qa --json` to answer whether memory is actually useful, n
 Use `dukememory memory-contract --write` after meaningful project changes to keep one compact project-wide contract current.
 
 Use `dukememory upgrade-project --json` after a dukememory release to refresh binary, skill, AGENTS/rules, memory contract, and QA in one pass.
+
+Use `dukememory upgrade-all-projects --json` after a dukememory release to refresh every discovered local project memory.
 
 After a task, record lightweight feedback when memory was notably helpful, misleading, or missing:
 
@@ -3317,6 +3383,8 @@ dukememory embed-status --json
 dukememory memory-qa --json
 dukememory intelligence-dashboard --json
 dukememory cost-guard --json
+dukememory context-governor "task" --json
+dukememory memory-router "query" --include-siblings --json
 dukememory doctor-project --json
 dukememory release-gate --json
 dukememory project-watch --json
@@ -3326,11 +3394,15 @@ dukememory autonomous-watch-install --dry-run --json
 dukememory action-journal --json
 dukememory usefulness-engine --json
 dukememory ranking-profile --json
+dukememory auto-ranking-tune --json
 dukememory project-template --kind rust-cli --json
+dukememory watch-control --json
+dukememory autonomy-control-center --json
 dukememory sync-latency --json
 dukememory sync-profile --run-dry-run --json
 dukememory agent-enforce --json
 dukememory memory-diff-review --json
+dukememory remote-sync-v2 --json
 dukememory autonomous run-once --level normal --json
 dukememory autonomous status --json
 dukememory drift --root . --json
@@ -3748,6 +3820,8 @@ fn print_completions(shell: CompletionShell) {
         "decision-trace",
         "auto-feedback",
         "cost-guard",
+        "context-governor",
+        "memory-router",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -3770,16 +3844,21 @@ fn print_completions(shell: CompletionShell) {
         "action-journal",
         "usefulness-engine",
         "ranking-profile",
+        "auto-ranking-tune",
         "project-template",
+        "watch-control",
+        "autonomy-control-center",
         "sync-latency",
         "sync-profile",
         "memory-diff-review",
+        "remote-sync-v2",
         "agent-enforce",
         "inbox-v2",
         "policy-tune",
         "memory-qa",
         "memory-contract",
         "upgrade-project",
+        "upgrade-all-projects",
         "codex-doctor",
         "workspace-init",
         "bundle",
@@ -3869,6 +3948,8 @@ fn print_manpage() {
     println!("  decision-trace --json         explain recent memory influence");
     println!("  auto-feedback --dry-run       infer feedback from recent reads");
     println!("  cost-guard --json             protect memory token budget");
+    println!("  context-governor TASK         choose smallest memory read flow");
+    println!("  memory-router QUERY           route memory across local projects");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");
@@ -3890,10 +3971,14 @@ fn print_manpage() {
     println!("  action-journal --json         inspect autonomous action timeline");
     println!("  usefulness-engine --apply     rank memory and apply safe feedback");
     println!("  ranking-profile --apply       configure retrieval ranking strictness");
+    println!("  auto-ranking-tune --apply     tune ranking profile from live signals");
     println!("  project-template --apply      write project-type starter memory defaults");
+    println!("  watch-control --apply         inspect or enable autonomous watch loop");
+    println!("  autonomy-control-center       aggregate autonomy control status");
     println!("  sync-latency --json           measure local/VDS sync latency");
     println!("  sync-profile --json           choose a local-first sync profile");
     println!("  memory-diff-review --json     review changed files for memory updates");
+    println!("  remote-sync-v2 --json         plan encrypted local-first remote sync");
     println!("  agent-enforce --fix --json    enforce memory use for future chats");
     println!("  onboard --root DIR            initialize memory/profile/embeddings");
     println!("  inbox-v2 report|auto-apply    group and process pending suggestions");
@@ -3901,6 +3986,7 @@ fn print_manpage() {
     println!("  memory-qa --json              score memory usefulness, noise, and health");
     println!("  memory-contract --write       write compact project memory contract");
     println!("  upgrade-project --json        refresh binary/skill/rules/contract/QA");
+    println!("  upgrade-all-projects --json   refresh every discovered project memory");
     println!("  codex-doctor                  check Codex MCP dukememory wiring");
     println!("  workspace-init                create .agent/rules.rhai");
     println!("  bundle out.json --redact      diagnostics + export bundle");

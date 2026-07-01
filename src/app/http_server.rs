@@ -378,6 +378,66 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
             let profile = parse_ranking_profile(params.get("profile").map(String::as_str));
             HttpResponse::ok(json!({"ranking": ranking_profile_report(&ctx.root, profile, false)?}))
         }
+        ("GET", "/context-governor") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let task = params
+                .get("task")
+                .map(String::as_str)
+                .unwrap_or("memory task");
+            let target = params.get("target").map(String::as_str);
+            HttpResponse::ok(json!({"governor": context_governor_report(
+                &conn,
+                &ctx.root,
+                task,
+                target,
+            )?}))
+        }
+        ("GET", "/memory-router") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let query_text = params.get("q").map(String::as_str).unwrap_or("memory");
+            let include_siblings = params
+                .get("include_siblings")
+                .is_some_and(|value| value == "true" || value == "1");
+            HttpResponse::ok(json!({"router": memory_router_report(
+                &ctx.db,
+                &ctx.root,
+                query_text,
+                include_siblings,
+            )?}))
+        }
+        ("GET", "/auto-ranking-tune") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"tune": auto_ranking_tune_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/auto-ranking-tune/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"tune": auto_ranking_tune_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                true,
+            )?}))
+        }
         ("POST", "/ranking-profile/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
@@ -396,6 +456,53 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
             let ctx = selected_project_from_body(db, &value)?;
             let kind = parse_project_template(value.get("kind").and_then(Value::as_str));
             HttpResponse::ok(json!({"template": project_template_report(&ctx.root, kind, true)?}))
+        }
+        ("GET", "/watch-control") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let interval_secs = params
+                .get("interval_secs")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(3600);
+            HttpResponse::ok(json!({"watch_control": watch_control_report(
+                &ctx.db,
+                &ctx.root,
+                interval_secs,
+                "com.dukememory.autonomous-loop",
+                false,
+            )?}))
+        }
+        ("POST", "/watch-control/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let interval_secs = value
+                .get("interval_secs")
+                .and_then(Value::as_u64)
+                .unwrap_or(3600);
+            HttpResponse::ok(json!({"watch_control": watch_control_report(
+                &ctx.db,
+                &ctx.root,
+                interval_secs,
+                "com.dukememory.autonomous-loop",
+                true,
+            )?}))
+        }
+        ("GET", "/autonomy-control-center") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"control": autonomy_control_center_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+            )?}))
         }
         ("GET", "/usefulness-engine") => {
             let params = parse_query(query);
@@ -711,6 +818,43 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
             let conn = open_db(&ctx.db)?;
             HttpResponse::ok(json!({"review": memory_diff_review_report(&conn, &ctx.root, true)?}))
         }
+        ("GET", "/remote-sync-v2") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let target = params.get("target").map(PathBuf::from);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"remote_sync_v2": remote_sync_v2_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/remote-sync-v2/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let target = value
+                .get("target")
+                .and_then(Value::as_str)
+                .map(PathBuf::from);
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"remote_sync_v2": remote_sync_v2_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                since_days,
+                true,
+            )?}))
+        }
         ("GET", "/intelligence-dashboard") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
@@ -906,6 +1050,20 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 None,
                 "~/.local/bin/dukememory",
                 &ctx.root.join(".agent/install-backups"),
+                dry_run,
+            )?}))
+        }
+        ("POST", "/upgrade-all-projects") => {
+            let value = parse_json_body(body)?;
+            let dry_run = value
+                .get("dry_run")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            HttpResponse::ok(json!({"upgrade_all": upgrade_all_projects_report(
+                db,
+                None,
+                "~/.local/bin/dukememory",
+                &PathBuf::from(".agent/install-backups"),
                 dry_run,
             )?}))
         }

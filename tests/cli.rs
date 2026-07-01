@@ -8606,6 +8606,8 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "decision-trace",
         "auto-feedback",
         "cost-guard",
+        "context-governor",
+        "memory-router",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -8618,11 +8620,16 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "action-journal",
         "usefulness-engine",
         "ranking-profile",
+        "auto-ranking-tune",
         "project-template",
+        "watch-control",
+        "autonomy-control-center",
         "sync-latency",
         "sync-profile",
         "memory-diff-review",
+        "remote-sync-v2",
         "agent-enforce",
+        "upgrade-all-projects",
         "sync export",
         "sync import",
         "sync push",
@@ -8644,6 +8651,8 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "decision-trace",
         "auto-feedback",
         "cost-guard",
+        "context-governor",
+        "memory-router",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -8656,11 +8665,16 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "action-journal",
         "usefulness-engine",
         "ranking-profile",
+        "auto-ranking-tune",
         "project-template",
+        "watch-control",
+        "autonomy-control-center",
         "sync-latency",
         "sync-profile",
         "memory-diff-review",
+        "remote-sync-v2",
         "agent-enforce",
+        "upgrade-all-projects",
         "sync export",
         "sync import",
         "sync push",
@@ -9548,6 +9562,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/decision-trace"));
     assert!(html.contains("/auto-feedback"));
     assert!(html.contains("/cost-guard"));
+    assert!(html.contains("/context-governor"));
+    assert!(html.contains("/memory-router"));
     assert!(html.contains("/project-diff"));
     assert!(html.contains("/intelligence-dashboard"));
     assert!(html.contains("/remote-sync-dry-run"));
@@ -9559,11 +9575,15 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/autonomous-watch-install"));
     assert!(html.contains("/action-journal"));
     assert!(html.contains("/usefulness-engine"));
+    assert!(html.contains("/auto-ranking-tune"));
     assert!(html.contains("/ranking-profile"));
     assert!(html.contains("/project-template"));
+    assert!(html.contains("/watch-control"));
+    assert!(html.contains("/autonomy-control-center"));
     assert!(html.contains("/sync-latency"));
     assert!(html.contains("/sync-profile"));
     assert!(html.contains("/memory-diff-review"));
+    assert!(html.contains("/remote-sync-v2"));
     assert!(html.contains("/agent-enforce"));
     assert!(html.contains("memory ROI"));
     assert!(html.contains("agent audit"));
@@ -9581,6 +9601,12 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("usefulness engine"));
     assert!(html.contains("watch install"));
     assert!(html.contains("ranking profile"));
+    assert!(html.contains("context governor"));
+    assert!(html.contains("memory router"));
+    assert!(html.contains("auto ranking tune"));
+    assert!(html.contains("watch control"));
+    assert!(html.contains("autonomy control center"));
+    assert!(html.contains("remote sync v2"));
     assert!(html.contains("project template"));
     assert!(html.contains("memory diff review"));
     assert!(html.contains("sync latency"));
@@ -9594,8 +9620,11 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("Engine apply"));
     assert!(html.contains("Sync profile"));
     assert!(html.contains("Ranking profile"));
+    assert!(html.contains("Auto ranking"));
     assert!(html.contains("Template"));
     assert!(html.contains("Diff review"));
+    assert!(html.contains("Watch control"));
+    assert!(html.contains("Upgrade all"));
     assert!(html.contains("Enforce fix"));
     assert!(html.contains("Auto feedback"));
     assert!(html.contains("/upgrade-project"));
@@ -9964,6 +9993,30 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(ranking_profile.contains("\"profile\":\"precision_heavy\""));
     assert!(ranking_profile.contains("\"weights\""));
 
+    let context_governor = http_once(
+        &db,
+        "GET /context-governor?task=memory%20task&target=src/app.rs HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(context_governor.contains("\"governor\""));
+    assert!(context_governor.contains("\"selected_flow\""));
+    assert!(context_governor.contains("\"budget\""));
+
+    let memory_router = http_once(
+        &db,
+        "GET /memory-router?q=memory&include_siblings=true HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(memory_router.contains("\"router\""));
+    assert!(memory_router.contains("\"routes\""));
+    assert!(memory_router.contains("\"authoritative\""));
+
+    let auto_ranking = http_once(
+        &db,
+        "GET /auto-ranking-tune?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(auto_ranking.contains("\"tune\""));
+    assert!(auto_ranking.contains("\"selected_profile\""));
+    assert!(auto_ranking.contains("\"ranking\""));
+
     let project_template = http_once(
         &db,
         "GET /project-template?kind=rust-cli HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
@@ -9971,6 +10024,22 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(project_template.contains("\"template\""));
     assert!(project_template.contains("\"kind\":\"rust_cli\""));
     assert!(project_template.contains("\"recommended_commands\""));
+
+    let watch_control = http_once(
+        &db,
+        "GET /watch-control?interval_secs=60 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(watch_control.contains("\"watch_control\""));
+    assert!(watch_control.contains("\"installed\""));
+    assert!(watch_control.contains("\"running\""));
+
+    let autonomy_control = http_once(
+        &db,
+        "GET /autonomy-control-center?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(autonomy_control.contains("\"control\""));
+    assert!(autonomy_control.contains("\"diff_review\""));
+    assert!(autonomy_control.contains("\"remote_sync\""));
 
     let sync_latency = http_once(
         &db,
@@ -10003,7 +10072,17 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(memory_diff_review.contains("\"review\""));
     assert!(memory_diff_review.contains("\"suggested_memory\""));
+    assert!(memory_diff_review.contains("\"candidate_cards\""));
+    assert!(memory_diff_review.contains("\"write_ready\""));
     assert!(memory_diff_review.contains("\"stale_memory_ids\""));
+
+    let remote_sync_v2 = http_once(
+        &db,
+        "GET /remote-sync-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(remote_sync_v2.contains("\"remote_sync_v2\""));
+    assert!(remote_sync_v2.contains("\"encrypted_bundle\":true"));
+    assert!(remote_sync_v2.contains("\"conflict_policy\":\"manual\""));
 
     let contract = http_once(
         &db,
@@ -10023,6 +10102,16 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(upgrade.contains("\"dry_run\":true"));
     assert!(upgrade.contains("\"install_ux\""));
     assert!(upgrade.contains("\"future_chats_ready\""));
+
+    let upgrade_all_request = format!(
+        "POST /upgrade-all-projects HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        upgrade_body.len(),
+        upgrade_body
+    );
+    let upgrade_all = http_once(&db, &upgrade_all_request);
+    assert!(upgrade_all.contains("\"upgrade_all\""));
+    assert!(upgrade_all.contains("\"total_projects\""));
+    assert!(upgrade_all.contains("\"dry_run\":true"));
 
     let embed_status = http_once(
         &db,
@@ -11243,6 +11332,54 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(ranking_profile_json["profile"], "precision_heavy");
     assert!(dir.path().join(".agent/ranking-profile.json").exists());
 
+    let context_governor = stdout(
+        cmd(&db)
+            .arg("context-governor")
+            .arg("release memory task")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg("src/app.rs")
+            .arg("--json"),
+    );
+    let context_governor_json: Value = serde_json::from_str(&context_governor).unwrap();
+    assert_eq!(context_governor_json["version"], 1);
+    assert!(
+        context_governor_json["selected_flow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("impact"))
+    );
+
+    let memory_router = stdout(
+        cmd(&db)
+            .arg("memory-router")
+            .arg("memory route")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--include-siblings")
+            .arg("--json"),
+    );
+    let memory_router_json: Value = serde_json::from_str(&memory_router).unwrap();
+    assert_eq!(memory_router_json["version"], 1);
+    assert!(memory_router_json["routes"].as_array().is_some());
+
+    let auto_ranking = stdout(
+        cmd(&db)
+            .arg("auto-ranking-tune")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--apply")
+            .arg("--json"),
+    );
+    let auto_ranking_json: Value = serde_json::from_str(&auto_ranking).unwrap();
+    assert_eq!(auto_ranking_json["version"], 1);
+    assert_eq!(auto_ranking_json["applied"], true);
+    assert!(auto_ranking_json["selected_profile"].as_str().is_some());
+
     let project_template = stdout(
         cmd(&db)
             .arg("project-template")
@@ -11265,6 +11402,36 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .any(|item| item.as_str() == Some("cargo check"))
     );
     assert!(dir.path().join(".agent/project-template.json").exists());
+
+    let watch_control = stdout(
+        cmd(&db)
+            .arg("watch-control")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--interval-secs")
+            .arg("60")
+            .arg("--json"),
+    );
+    let watch_control_json: Value = serde_json::from_str(&watch_control).unwrap();
+    assert_eq!(watch_control_json["version"], 1);
+    assert!(watch_control_json["installed"].as_bool().is_some());
+
+    let autonomy_control = stdout(
+        cmd(&db)
+            .arg("autonomy-control-center")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let autonomy_control_json: Value = serde_json::from_str(&autonomy_control).unwrap();
+    assert_eq!(autonomy_control_json["version"], 1);
+    assert!(
+        autonomy_control_json["ranking"]["selected_profile"]
+            .as_str()
+            .is_some()
+    );
 
     let sync_latency = stdout(
         cmd(&db)
@@ -11325,6 +11492,22 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     assert!(dir.path().join(".agent/memory-diff-review.json").exists());
 
+    let remote_sync_v2 = stdout(
+        cmd(&db)
+            .arg("remote-sync-v2")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(dir.path().join("remote-sync-target"))
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let remote_sync_v2_json: Value = serde_json::from_str(&remote_sync_v2).unwrap();
+    assert_eq!(remote_sync_v2_json["version"], 1);
+    assert_eq!(remote_sync_v2_json["local_first"], true);
+    assert_eq!(remote_sync_v2_json["encrypted_bundle"], true);
+
     let agent_enforce = stdout(
         cmd(&db)
             .arg("agent-enforce")
@@ -11349,6 +11532,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .unwrap()
             .iter()
             .any(|item| item.as_str() == Some("memory-diff-review"))
+    );
+    assert!(
+        agent_enforce_json["required_commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("context-governor"))
     );
 
     let gap_run = stdout(
@@ -11700,6 +11890,18 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .unwrap()
             .contains("MCP")
     );
+
+    let upgrade_all = stdout(
+        cmd(&db)
+            .arg("upgrade-all-projects")
+            .arg("--dry-run")
+            .arg("--json"),
+    );
+    let upgrade_all_json: Value = serde_json::from_str(&upgrade_all).unwrap();
+    assert_eq!(upgrade_all_json["version"], 1);
+    assert_eq!(upgrade_all_json["dry_run"], true);
+    assert!(upgrade_all_json["total_projects"].as_u64().unwrap() >= 1);
+    assert!(upgrade_all_json["projects"].as_array().is_some());
 
     Connection::open(&db)
         .unwrap()

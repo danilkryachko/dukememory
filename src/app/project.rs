@@ -659,7 +659,9 @@ For every new chat or coding task in this repository:
 - To explain which memory cards influenced recent agent behavior, run `dukememory decision-trace --json`.
 - To materialize autonomous inferred feedback, run `dukememory auto-feedback --json` or preview with `--dry-run`.
 - To keep memory token-light, run `dukememory cost-guard --json`.
+- To choose the smallest full read flow, run `dukememory context-governor "<task>" --json`; add `--target <file-or-symbol>` before focused edits.
 - To choose the smallest useful context budget, run `dukememory budget-plan "<task>" --json`.
+- To route memory across nearby projects without mixing facts, run `dukememory memory-router "<query>" --include-siblings --json`; treat non-current routes as advisory.
 - To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`.
 - To inspect live memory usefulness from reads and feedback, run `dukememory eval live --json`.
 - To inspect all local projects, run `dukememory dashboard --json`.
@@ -677,16 +679,21 @@ For every new chat or coding task in this repository:
 - To inspect autonomous actions, skipped work, failures, and rollback availability, run `dukememory action-journal --json`.
 - To rank useful/noisy memory and materialize safe inferred feedback, run `dukememory usefulness-engine --json` or `dukememory usefulness-engine --apply --json`.
 - To choose retrieval strictness, run `dukememory ranking-profile --profile balanced|strict|recall-heavy|precision-heavy --json`; use `--apply` only for durable project policy.
+- To adapt retrieval strictness from live quality signals, run `dukememory auto-ranking-tune --json`; use `--apply` only for durable project policy.
 - To seed project-type defaults, run `dukememory project-template --kind rust-cli|frontend-app|game-mod|electronics-cad|docs-research --json`; use `--apply` only after review.
+- To inspect or enable the autonomous watch loop, run `dukememory watch-control --json`; use `--apply` only when launchd should be updated.
+- To inspect the autonomy cockpit, run `dukememory autonomy-control-center --json`.
 - To measure local/VDS sync latency while keeping reads local-first, run `dukememory sync-latency --json`.
 - To choose a safe sync mode, run `dukememory sync-profile --profile local-first-backup --run-dry-run --json` before push/pull.
 - To enforce memory wiring for future chats, run `dukememory agent-enforce --json` or `dukememory agent-enforce --fix --json`.
 - To review changed files for durable memory updates, run `dukememory memory-diff-review --json`.
+- To plan encrypted local-first VDS/remote sync, run `dukememory remote-sync-v2 --json`; use `--target` and `DUKEMEMORY_SYNC_PASSPHRASE` before `--apply`.
 - To sync memory safely, preview first with `dukememory sync export bundle.json --dry-run --json` and `dukememory sync import bundle.json --policy manual --dry-run --json`.
 - To use a local-first remote/VDS connector, run `dukememory sync push TARGET --dry-run --json`, `dukememory sync pull TARGET --dry-run --json`, and `dukememory sync status TARGET --json`.
 - To safely group and process inbox suggestions, run `dukememory inbox-v2 report --json`.
 - To check whether memory is useful or noisy, run `dukememory memory-qa --json`.
 - To refresh project-wide memory instructions and the compact contract, run `dukememory upgrade-project --json`.
+- To refresh all discovered project memories, run `dukememory upgrade-all-projects --json`.
 - After a task, agents may record lightweight memory utility feedback with `dukememory feedback --id <memory-id> --rating useful|useless|missing`.
 
 Keep memory use lightweight: prefer `brief`/`impact`; do not dump large context packs unless needed.

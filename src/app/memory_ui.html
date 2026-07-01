@@ -851,7 +851,8 @@
     async function loadIntelligence() {
       const params = new URLSearchParams({ since_days: "7" });
       if (state.project) params.set("project", state.project);
-      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch, loop, journal, engine, latency, syncProfile, enforce, watchInstall, rankingProfile, projectTemplate, diffReview] = await Promise.all([
+      const taskQuery = $("q")?.value || "memory task";
+      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch, loop, journal, engine, latency, syncProfile, enforce, watchInstall, rankingProfile, projectTemplate, diffReview, contextGovernor, memoryRouter, autoRanking, watchControl, autonomyCenter, remoteSyncV2] = await Promise.all([
         api(`/roi-report?${params.toString()}`),
         api(`/agent-audit?${params.toString()}`),
         api(`/remote-status?${params.toString()}`),
@@ -874,7 +875,13 @@
         api(`/autonomous-watch-install?${params.toString()}`),
         api(`/ranking-profile?${params.toString()}&profile=balanced`),
         api(`/project-template?${params.toString()}&kind=rust-cli`),
-        api(`/memory-diff-review?${params.toString()}`)
+        api(`/memory-diff-review?${params.toString()}`),
+        api(`/context-governor?${params.toString()}&task=${encodeURIComponent(taskQuery)}`),
+        api(`/memory-router?${params.toString()}&q=${encodeURIComponent(taskQuery)}&include_siblings=true`),
+        api(`/auto-ranking-tune?${params.toString()}`),
+        api(`/watch-control?${params.toString()}`),
+        api(`/autonomy-control-center?${params.toString()}`),
+        api(`/remote-sync-v2?${params.toString()}`)
       ]);
       state.roi = roi.roi;
       state.agentAudit = audit.agent_audit;
@@ -899,6 +906,12 @@
       state.rankingProfile = rankingProfile.ranking;
       state.projectTemplate = projectTemplate.template;
       state.diffReview = diffReview.review;
+      state.contextGovernor = contextGovernor.governor;
+      state.memoryRouter = memoryRouter.router;
+      state.autoRanking = autoRanking.tune;
+      state.watchControl = watchControl.watch_control;
+      state.autonomyCenter = autonomyCenter.control;
+      state.remoteSyncV2 = remoteSyncV2.remote_sync_v2;
       renderSettings();
     }
 
@@ -925,6 +938,12 @@
         await api("/project-template/apply", { method: "POST", body: JSON.stringify(withProject({ kind: "rust-cli" })) });
       } else if (action === "diff-review") {
         await api("/memory-diff-review/apply", { method: "POST", body: JSON.stringify(withProject({})) });
+      } else if (action === "auto-ranking") {
+        await api("/auto-ranking-tune/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
+      } else if (action === "watch-control") {
+        await api("/watch-control/apply", { method: "POST", body: JSON.stringify(withProject({ interval_secs: 3600 })) });
+      } else if (action === "upgrade-all") {
+        await api("/upgrade-all-projects", { method: "POST", body: JSON.stringify({ dry_run: false }) });
       }
       setToast(action);
       await Promise.all([loadIntelligence(), loadMemoryQa(), loadOpsStatus(), loadProjects(), loadDashboard()]);
@@ -1226,6 +1245,12 @@
       const rankingProfile = state.rankingProfile || {};
       const projectTemplate = state.projectTemplate || {};
       const diffReview = state.diffReview || {};
+      const contextGovernor = state.contextGovernor || {};
+      const memoryRouter = state.memoryRouter || {};
+      const autoRanking = state.autoRanking || {};
+      const watchControl = state.watchControl || {};
+      const autonomyCenter = state.autonomyCenter || {};
+      const remoteSyncV2 = state.remoteSyncV2 || {};
       const contract = state.contract || {};
       const ops = state.ops || {};
       const effectiveness = ops.effectiveness || {};
@@ -1284,10 +1309,22 @@
         <div class="stat"><strong>${escapeHtml(rankingProfile.profile || "-")}</strong><span>ranking profile</span></div>
         <div class="stat"><strong>${escapeHtml(projectTemplate.kind || "-")}</strong><span>template</span></div>
         <div class="stat"><strong>${Number(diffReview.suggested_memory?.length || 0)}</strong><span>diff review</span></div>
+        <div class="stat"><strong>${escapeHtml(contextGovernor.budget?.profile || "-")}</strong><span>context governor</span></div>
+        <div class="stat"><strong>${Number(memoryRouter.routes?.length || 0)}</strong><span>memory routes</span></div>
+        <div class="stat"><strong>${escapeHtml(autoRanking.selected_profile || "-")}</strong><span>auto ranking</span></div>
+        <div class="stat"><strong>${watchControl.running ? "running" : watchControl.installed ? "installed" : "-"}</strong><span>watch control</span></div>
+        <div class="stat"><strong>${escapeHtml(autonomyCenter.status || "-")}</strong><span>control center</span></div>
+        <div class="stat"><strong>${escapeHtml(remoteSyncV2.status || "-")}</strong><span>remote sync v2</span></div>
       </div>
       <div class="card"><div class="title">doctor project</div><div class="body">status ${escapeHtml(doctor.status || "-")}<br>qa ${Number(doctor.memory_qa?.score || 0).toFixed(1)}<br>embedding ${doctor.embedding ? `${Number(doctor.embedding.missing || 0)} missing / ${Number(doctor.embedding.stale || 0)} stale` : "-"}<br>${doctor.checks?.length ? doctor.checks.slice(0, 6).map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">release gate</div><div class="body">status ${escapeHtml(releaseGate.status || "-")}<br>strict ${releaseGate.strict ? "yes" : "no"}<br>${releaseGate.checks?.length ? releaseGate.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}<br>${releaseGate.issues?.length ? releaseGate.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
-      <div class="card"><div class="title">intelligence actions</div><div class="actions"><button data-intelligence="doctor-fix">Doctor fix</button><button data-intelligence="loop-apply">Loop apply</button><button data-intelligence="engine-apply">Engine apply</button><button data-intelligence="sync-profile">Sync profile</button><button data-intelligence="ranking-apply">Ranking profile</button><button data-intelligence="template-apply">Template</button><button data-intelligence="diff-review">Diff review</button><button data-intelligence="enforce-fix">Enforce fix</button><button data-intelligence="auto-feedback">Auto feedback</button><button data-intelligence="watch-fix">Watch fix</button><button data-intelligence="release-run">Release run</button></div></div>
+      <div class="card"><div class="title">intelligence actions</div><div class="actions"><button data-intelligence="doctor-fix">Doctor fix</button><button data-intelligence="loop-apply">Loop apply</button><button data-intelligence="engine-apply">Engine apply</button><button data-intelligence="sync-profile">Sync profile</button><button data-intelligence="ranking-apply">Ranking profile</button><button data-intelligence="auto-ranking">Auto ranking</button><button data-intelligence="template-apply">Template</button><button data-intelligence="diff-review">Diff review</button><button data-intelligence="watch-control">Watch control</button><button data-intelligence="upgrade-all">Upgrade all</button><button data-intelligence="enforce-fix">Enforce fix</button><button data-intelligence="auto-feedback">Auto feedback</button><button data-intelligence="watch-fix">Watch fix</button><button data-intelligence="release-run">Release run</button></div></div>
+      <div class="card"><div class="title">context governor</div><div class="body">budget ${escapeHtml(contextGovernor.budget?.profile || "-")} / ${Number(contextGovernor.max_context_chars || 0)} chars<br>${contextGovernor.selected_flow?.length ? contextGovernor.selected_flow.map(escapeHtml).join("<br>") : "-"}<br>${contextGovernor.commands?.length ? contextGovernor.commands.slice(0, 4).map(escapeHtml).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">memory router</div><div class="body">selected ${escapeHtml(memoryRouter.selected_route || "-")}<br>${memoryRouter.routes?.length ? memoryRouter.routes.slice(0, 5).map((route) => `${escapeHtml(route.mode)} ${Number(route.matches || 0)} ${escapeHtml(route.root)}`).join("<br>") : "-"}<br>${memoryRouter.warnings?.length ? memoryRouter.warnings.map(escapeHtml).join("<br>") : ""}</div></div>
+      <div class="card"><div class="title">auto ranking tune</div><div class="body">profile ${escapeHtml(autoRanking.selected_profile || "-")}<br>qa ${Number(autoRanking.qa_score || 0).toFixed(1)} / useful ${formatPercent(autoRanking.useful_rate)}<br>missing ${Number(autoRanking.inferred_missing || 0)} / semantic empty ${Number(autoRanking.semantic_empty || 0)} / noisy ${Number(autoRanking.noisy_cards || 0)}<br>${autoRanking.reasons?.length ? autoRanking.reasons.map(escapeHtml).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">watch control</div><div class="body">installed ${watchControl.installed ? "yes" : "no"} / running ${watchControl.running ? "yes" : "no"}<br>plist ${escapeHtml(watchControl.plist || "-")}<br>${watchControl.issues?.length ? watchControl.issues.map(escapeHtml).join("<br>") : "issues -"}<br>${watchControl.recommendations?.length ? watchControl.recommendations.map(escapeHtml).join("<br>") : ""}</div></div>
+      <div class="card"><div class="title">autonomy control center</div><div class="body">status ${escapeHtml(autonomyCenter.status || "-")}<br>qa ${Number(autonomyCenter.qa?.score || 0).toFixed(1)}<br>ranking ${escapeHtml(autonomyCenter.ranking?.selected_profile || "-")}<br>watch ${autonomyCenter.watch?.running ? "running" : autonomyCenter.watch?.installed ? "installed" : "-"}<br>${autonomyCenter.issues?.length ? autonomyCenter.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
+      <div class="card"><div class="title">remote sync v2</div><div class="body">status ${escapeHtml(remoteSyncV2.status || "-")}<br>local first ${remoteSyncV2.local_first ? "yes" : "no"} / encrypted ${remoteSyncV2.encrypted_bundle ? "yes" : "no"}<br>policy ${escapeHtml(remoteSyncV2.conflict_policy || "-")}<br>${remoteSyncV2.blockers?.length ? remoteSyncV2.blockers.map(escapeHtml).join("<br>") : "blockers -"}</div></div>
       <div class="card"><div class="title">autonomous loop</div><div class="body">status ${escapeHtml(loop.status || "-")}<br>applied ${loop.applied ? "yes" : "no"}<br>watch attention ${Number(loop.watch?.attention_projects || 0)}<br>${loop.actions?.length ? loop.actions.slice(0, 5).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">action journal</div><div class="body">events ${Number(journal.total || 0)}<br>applied ${Number(journal.applied || 0)} / skipped ${Number(journal.skipped || 0)} / failed ${Number(journal.failed || 0)}<br>rollback ${Number(journal.rollback_events || 0)}<br>${journal.items?.length ? journal.items.slice(0, 5).map((item) => `${escapeHtml(item.status)} ${escapeHtml(item.action)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">usefulness engine</div><div class="body">status ${escapeHtml(engine.status || "-")}<br>applied ${engine.applied ? "yes" : "no"}<br>promote ${Number(engine.promote_candidates?.length || 0)} / suppress ${Number(engine.suppress_candidates?.length || 0)}<br>${engine.ranking_policy?.length ? engine.ranking_policy.slice(0, 4).map(escapeHtml).join("<br>") : "-"}</div></div>
@@ -1298,7 +1335,7 @@
       <div class="card"><div class="title">watch install</div><div class="body">label ${escapeHtml(watchInstall.label || "-")}<br>interval ${Number(watchInstall.interval_secs || 0)}s<br>plist ${escapeHtml(watchInstall.plist || "-")}<br>${watchInstall.actions?.length ? watchInstall.actions.map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">ranking profile</div><div class="body">profile ${escapeHtml(rankingProfile.profile || "-")}<br>applied ${rankingProfile.applied ? "yes" : "no"}<br>path ${escapeHtml(rankingProfile.path || "-")}<br>${rankingProfile.weights ? Object.entries(rankingProfile.weights).map(([key, value]) => `${escapeHtml(key)} ${Number(value)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">project template</div><div class="body">kind ${escapeHtml(projectTemplate.kind || "-")}<br>budget ${escapeHtml(projectTemplate.budget_profile || "-")}<br>${projectTemplate.recommended_commands?.length ? projectTemplate.recommended_commands.map(escapeHtml).join("<br>") : "-"}<br>${projectTemplate.starter_memory?.length ? projectTemplate.starter_memory.map(escapeHtml).join("<br>") : "-"}</div></div>
-      <div class="card"><div class="title">memory diff review</div><div class="body">changed ${Number(diffReview.changed_files?.length || 0)}<br>stale ${Number(diffReview.stale_memory_ids?.length || 0)}<br>conflicts ${Number(diffReview.conflict_count || 0)}<br>${diffReview.suggested_memory?.length ? diffReview.suggested_memory.slice(0, 6).map(escapeHtml).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">memory diff review</div><div class="body">changed ${Number(diffReview.changed_files?.length || 0)}<br>write ready ${Number(diffReview.write_ready?.length || 0)}<br>stale ${Number(diffReview.stale_memory_ids?.length || 0)}<br>conflicts ${Number(diffReview.conflict_count || 0)}<br>${diffReview.candidate_cards?.length ? diffReview.candidate_cards.slice(0, 6).map((item) => `${escapeHtml(item.type)} ${escapeHtml(item.title)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">memory replay</div><div class="body">reads ${Number(replay.reads || 0)}<br>influenced ${Number(replay.influenced_reads || 0)}<br>semantic ${Number(replay.semantic_reads || 0)}<br>${replay.items?.length ? replay.items.slice(0, 5).map((item) => `${escapeHtml(item.command)}: ${escapeHtml(item.effect)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">project watch</div><div class="body">projects ${Number(watch.total_projects || 0)}<br>attention ${Number(watch.attention_projects || 0)}<br>${watch.projects?.length ? watch.projects.slice(0, 5).map((item) => `${item.ok ? "ok" : "warn"} ${escapeHtml(item.root)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">decision trace</div><div class="body">traced ${Number(trace.traced_reads || 0)}<br>empty ${Number(trace.empty_reads || 0)}<br>positive ${Number(trace.positive_feedback || 0)} / negative ${Number(trace.negative_feedback || 0)} / missing ${Number(trace.missing_feedback || 0)}<br>${trace.items?.length ? trace.items.slice(0, 4).map((item) => `${escapeHtml(item.command)}: ${escapeHtml(item.influence)} (${Number(item.result_count || 0)})`).join("<br>") : "-"}</div></div>

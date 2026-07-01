@@ -504,6 +504,60 @@ pub(crate) struct RankingProfileReport {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct ContextGovernorReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) task: String,
+    pub(crate) target: Option<String>,
+    pub(crate) selected_flow: Vec<String>,
+    pub(crate) budget: BudgetPlan,
+    pub(crate) max_context_chars: usize,
+    pub(crate) commands: Vec<String>,
+    pub(crate) reasons: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryRouterReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) query: String,
+    pub(crate) include_siblings: bool,
+    pub(crate) routes: Vec<MemoryRouteItem>,
+    pub(crate) selected_route: Option<String>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryRouteItem {
+    pub(crate) root: String,
+    pub(crate) db: String,
+    pub(crate) current: bool,
+    pub(crate) mode: String,
+    pub(crate) matches: usize,
+    pub(crate) top_titles: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AutoRankingTuneReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) selected_profile: String,
+    pub(crate) applied: bool,
+    pub(crate) qa_score: f64,
+    pub(crate) useful_rate: f64,
+    pub(crate) inferred_missing: usize,
+    pub(crate) semantic_empty: usize,
+    pub(crate) noisy_cards: usize,
+    pub(crate) reasons: Vec<String>,
+    pub(crate) ranking: RankingProfileReport,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct ProjectTemplateReport {
     pub(crate) version: u32,
     pub(crate) ok: bool,
@@ -569,9 +623,85 @@ pub(crate) struct MemoryDiffReviewReport {
     pub(crate) applied: bool,
     pub(crate) changed_files: Vec<String>,
     pub(crate) suggested_memory: Vec<String>,
+    pub(crate) candidate_cards: Vec<MemoryDiffCandidate>,
+    pub(crate) write_ready: Vec<MemoryDiffCandidate>,
     pub(crate) stale_memory_ids: Vec<String>,
     pub(crate) conflict_count: usize,
     pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemoryDiffCandidate {
+    #[serde(rename = "type")]
+    pub(crate) memory_type: String,
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) confidence: f64,
+    pub(crate) link: String,
+    pub(crate) reason: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WatchControlReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) installed: bool,
+    pub(crate) running: bool,
+    pub(crate) label: String,
+    pub(crate) plist: String,
+    pub(crate) status_file: String,
+    pub(crate) install: AutonomousWatchInstallReport,
+    pub(crate) actions: Vec<String>,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AutonomyControlCenterReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) qa: MemoryQaReport,
+    pub(crate) ranking: AutoRankingTuneReport,
+    pub(crate) watch: WatchControlReport,
+    pub(crate) diff_review: MemoryDiffReviewReport,
+    pub(crate) remote_sync: RemoteSyncV2Report,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RemoteSyncV2Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) target: Option<String>,
+    pub(crate) applied: bool,
+    pub(crate) local_first: bool,
+    pub(crate) encrypted_bundle: bool,
+    pub(crate) latency: SyncLatencyReport,
+    pub(crate) conflict_policy: String,
+    pub(crate) commands: Vec<String>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct UpgradeAllProjectsReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) dry_run: bool,
+    pub(crate) total_projects: usize,
+    pub(crate) upgraded_projects: usize,
+    pub(crate) projects: Vec<Value>,
+    pub(crate) errors: Vec<String>,
     pub(crate) recommendations: Vec<String>,
 }
 
@@ -2703,6 +2833,275 @@ pub(crate) fn ranking_profile_report(
     })
 }
 
+pub(crate) fn print_context_governor(
+    conn: &Connection,
+    root: &Path,
+    task: &str,
+    target: Option<&str>,
+    json_out: bool,
+) -> Result<()> {
+    let report = context_governor_report(conn, root, task, target)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Context Governor");
+    println!(
+        "budget: {} / {}",
+        report.budget.profile, report.max_context_chars
+    );
+    for command in &report.commands {
+        println!("command: {command}");
+    }
+    Ok(())
+}
+
+pub(crate) fn context_governor_report(
+    conn: &Connection,
+    root: &Path,
+    task: &str,
+    target: Option<&str>,
+) -> Result<ContextGovernorReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let budget = budget_plan(conn, task, Some("project"))?;
+    let mut selected_flow = vec!["brief".to_string()];
+    let mut commands = vec![format!(
+        "dukememory brief \"{}\" --budget-profile {}",
+        shell_safe_inline(task),
+        budget.profile
+    )];
+    let mut reasons = budget.reasons.clone();
+    if let Some(target) = target {
+        selected_flow.push("impact".to_string());
+        commands.push(format!(
+            "dukememory impact {} --budget-profile tiny",
+            shell_safe_inline(target)
+        ));
+        reasons.push("target supplied; impact memory should be read before edits".to_string());
+    }
+    if budget.profile != "tiny" || task.to_lowercase().contains("architecture") {
+        selected_flow.push("doctrine".to_string());
+        commands.push("dukememory doctrine --json".to_string());
+        reasons.push("broad task may depend on durable decisions".to_string());
+    }
+    if task.to_lowercase().contains("release") || task.to_lowercase().contains("schema") {
+        selected_flow.push("drift".to_string());
+        commands.push("dukememory drift --root . --json".to_string());
+        reasons.push("release/schema task needs drift check before mutation".to_string());
+    }
+    if budget.semantic {
+        selected_flow.push("recall-if-needed".to_string());
+        commands.push(format!(
+            "dukememory recall \"{}\" --max-chars {}",
+            shell_safe_inline(task),
+            budget.max_chars.min(1200)
+        ));
+    }
+    selected_flow.sort();
+    selected_flow.dedup();
+    reasons.sort();
+    reasons.dedup();
+    Ok(ContextGovernorReport {
+        version: 1,
+        ok: true,
+        root: root.display().to_string(),
+        task: task.to_string(),
+        target: target.map(str::to_string),
+        selected_flow,
+        max_context_chars: budget.max_chars.min(1600),
+        budget,
+        commands,
+        reasons,
+    })
+}
+
+fn shell_safe_inline(value: &str) -> String {
+    value.replace('"', "\\\"")
+}
+
+pub(crate) fn print_memory_router(
+    default_db: &Path,
+    root: &Path,
+    query: &str,
+    include_siblings: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_router_report(default_db, root, query, include_siblings)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Router");
+    for route in &report.routes {
+        println!(
+            "{}: {} match(es), {}",
+            route.mode, route.matches, route.root
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_router_report(
+    default_db: &Path,
+    root: &Path,
+    query: &str,
+    include_siblings: bool,
+) -> Result<MemoryRouterReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let current_db = root.join(".agent/memory.db");
+    let mut dbs = vec![if current_db.exists() {
+        current_db
+    } else {
+        default_db.to_path_buf()
+    }];
+    if include_siblings {
+        for db in discover_project_dbs(default_db)? {
+            if !dbs.iter().any(|existing| paths_same(existing, &db)) {
+                dbs.push(db);
+            }
+        }
+    }
+    let mut routes = Vec::new();
+    let mut warnings = Vec::new();
+    for db in dbs {
+        let project_root = app_project_root_for_db(&db).unwrap_or_else(|| root.clone());
+        let current = paths_same(&project_root, &root);
+        let conn = match open_db(&db) {
+            Ok(conn) => conn,
+            Err(err) => {
+                warnings.push(format!("{}: {err}", db.display()));
+                continue;
+            }
+        };
+        let matches = query_memories(
+            &conn,
+            Some(query),
+            &[],
+            &["active".to_string(), "uncertain".to_string()],
+            Some("project"),
+            5,
+        )?;
+        routes.push(MemoryRouteItem {
+            root: project_root.display().to_string(),
+            db: db.display().to_string(),
+            current,
+            mode: if current { "authoritative" } else { "advisory" }.to_string(),
+            matches: matches.len(),
+            top_titles: matches.into_iter().map(|memory| memory.title).collect(),
+        });
+    }
+    routes.sort_by(|a, b| {
+        b.current
+            .cmp(&a.current)
+            .then_with(|| b.matches.cmp(&a.matches))
+            .then_with(|| a.root.cmp(&b.root))
+    });
+    let selected_route = routes
+        .iter()
+        .find(|route| route.current)
+        .or_else(|| routes.first())
+        .map(|route| route.root.clone());
+    let mut recommendations =
+        vec!["treat non-current project routes as advisory until evidence is checked".to_string()];
+    if !include_siblings {
+        recommendations
+            .push("pass --include-siblings to inspect nearby project memories".to_string());
+    }
+    Ok(MemoryRouterReport {
+        version: 1,
+        ok: warnings.is_empty(),
+        root: root.display().to_string(),
+        query: query.to_string(),
+        include_siblings,
+        routes,
+        selected_route,
+        warnings,
+        recommendations,
+    })
+}
+
+fn paths_same(left: &Path, right: &Path) -> bool {
+    left.canonicalize().ok() == right.canonicalize().ok()
+}
+
+pub(crate) fn print_auto_ranking_tune(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = auto_ranking_tune_report(conn, root, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Auto Ranking Tune");
+    println!("selected_profile: {}", report.selected_profile);
+    println!("applied: {}", report.applied);
+    for reason in &report.reasons {
+        println!("- {reason}");
+    }
+    Ok(())
+}
+
+pub(crate) fn auto_ranking_tune_report(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+) -> Result<AutoRankingTuneReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let qa = memory_qa_report(conn, &root, since_days)?;
+    let quality = quality_report(conn, since_days, 30)?;
+    let noisy_cards = quality
+        .weakest
+        .iter()
+        .filter(|item| item.score < 55.0 && item.request_count > 0)
+        .count();
+    let (profile, mut reasons) =
+        if qa.inferred_missing > 0 || qa.semantic_eligible_empty_read_count > 0 {
+            (
+                RankingProfileMode::RecallHeavy,
+                vec!["missing or empty semantic reads need broader recall".to_string()],
+            )
+        } else if noisy_cards > 0 || qa.useful_rate < 0.85 || qa.quality_average < 65.0 {
+            (
+                RankingProfileMode::Strict,
+                vec!["noisy/weak memory signals need stricter retrieval".to_string()],
+            )
+        } else if qa.useful_rate > 0.95 && qa.semantic_eligible_result_rate >= 0.95 {
+            (
+                RankingProfileMode::Balanced,
+                vec!["memory reads are useful and semantic recall is healthy".to_string()],
+            )
+        } else {
+            (
+                RankingProfileMode::PrecisionHeavy,
+                vec!["mixed quality signals favor precision over recall".to_string()],
+            )
+        };
+    if apply {
+        reasons.push("applied durable .agent/ranking-profile.json".to_string());
+    }
+    let ranking = ranking_profile_report(&root, profile, apply)?;
+    Ok(AutoRankingTuneReport {
+        version: 1,
+        ok: true,
+        root: root.display().to_string(),
+        since_days,
+        selected_profile: profile.to_string(),
+        applied: apply,
+        qa_score: qa.score,
+        useful_rate: qa.useful_rate,
+        inferred_missing: qa.inferred_missing,
+        semantic_empty: qa.semantic_eligible_empty_read_count,
+        noisy_cards,
+        reasons,
+        ranking,
+    })
+}
+
 pub(crate) fn print_project_template(
     root: &Path,
     kind: ProjectTemplateKind,
@@ -2861,14 +3260,21 @@ pub(crate) fn memory_diff_review_report(
 ) -> Result<MemoryDiffReviewReport> {
     let diff = project_diff_report(conn, root, true)?;
     let mut suggested_memory = Vec::new();
+    let mut candidate_cards = Vec::new();
     for file in diff.changed_files.iter().take(10) {
         suggested_memory.push(format!(
             "review durable task_state/design_note for changed file {file}"
         ));
+        candidate_cards.push(memory_diff_candidate_for_file(file));
     }
     if diff.changed_files.is_empty() {
         suggested_memory.push("no changed files detected; no memory write suggested".to_string());
     }
+    let write_ready = candidate_cards
+        .iter()
+        .filter(|candidate| candidate.confidence >= 0.85)
+        .cloned()
+        .collect::<Vec<_>>();
     let stale_memory_ids = diff
         .drift
         .stale_active
@@ -2884,6 +3290,8 @@ pub(crate) fn memory_diff_review_report(
                 "version": 1,
                 "changed_files": &diff.changed_files,
                 "suggested_memory": &suggested_memory,
+                "candidate_cards": &candidate_cards,
+                "write_ready": &write_ready,
                 "stale_memory_ids": &stale_memory_ids,
                 "conflict_count": diff.conflicts,
                 "updated_at": now_ms(),
@@ -2901,11 +3309,141 @@ pub(crate) fn memory_diff_review_report(
         applied: apply,
         changed_files: diff.changed_files,
         suggested_memory,
+        candidate_cards,
+        write_ready,
         stale_memory_ids,
         conflict_count: diff.conflicts,
         actions,
         recommendations: diff.recommendations,
     })
+}
+
+fn memory_diff_candidate_for_file(file: &str) -> MemoryDiffCandidate {
+    let memory_type = if file.ends_with("Cargo.toml")
+        || file.ends_with("Cargo.lock")
+        || file.ends_with("README.md")
+        || file.ends_with("AGENTS.md")
+    {
+        "task_state"
+    } else if file.ends_with(".rs") || file.ends_with(".html") || file.ends_with(".ts") {
+        "design_note"
+    } else {
+        "known_issue"
+    };
+    let title = format!("Review durable memory for {file}");
+    let body = format!(
+        "Changed file {file}. Save a compact durable note only if this change affects future agent behavior, commands, constraints, risks, or project architecture."
+    );
+    let confidence = if memory_type == "design_note" {
+        0.86
+    } else {
+        0.78
+    };
+    MemoryDiffCandidate {
+        memory_type: memory_type.to_string(),
+        title,
+        body,
+        confidence,
+        link: format!("file:{file}"),
+        reason: "changed file may carry reusable project context".to_string(),
+    }
+}
+
+pub(crate) fn print_watch_control(
+    db: &Path,
+    root: &Path,
+    interval_secs: u64,
+    label: &str,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = watch_control_report(db, root, interval_secs, label, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Watch Control");
+    println!("installed: {}", report.installed);
+    println!("running: {}", report.running);
+    for action in &report.actions {
+        println!("action: {action}");
+    }
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    Ok(())
+}
+
+pub(crate) fn watch_control_report(
+    db: &Path,
+    root: &Path,
+    interval_secs: u64,
+    label: &str,
+    apply: bool,
+) -> Result<WatchControlReport> {
+    let install = autonomous_watch_install_report(db, root, interval_secs, label, !apply)?;
+    let plist = PathBuf::from(&install.plist);
+    let installed = plist.exists();
+    let mut actions = install.actions.clone();
+    let mut issues = Vec::new();
+    let mut running = launchctl_label_running(&install.label);
+    if apply {
+        if cfg!(target_os = "macos") {
+            let output = ProcessCommand::new("launchctl")
+                .arg("load")
+                .arg("-w")
+                .arg(&install.plist)
+                .output();
+            match output {
+                Ok(output) if output.status.success() => {
+                    actions.push(format!("launchctl_loaded:{}", install.label));
+                    running = launchctl_label_running(&install.label);
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    issues.push(format!("launchctl load failed: {stderr}"));
+                }
+                Err(err) => issues.push(format!("launchctl unavailable: {err}")),
+            }
+        } else {
+            issues.push("watch-control apply is only supported on macOS launchd".to_string());
+        }
+    }
+    let mut recommendations = Vec::new();
+    if !installed && !apply {
+        recommendations
+            .push("rerun watch-control --apply to write and load the watch plist".to_string());
+    }
+    if installed && !running {
+        recommendations.push("check launchctl list com.dukememory.autonomous-loop".to_string());
+    }
+    Ok(WatchControlReport {
+        version: 1,
+        ok: issues.is_empty(),
+        root: install.root.clone(),
+        applied: apply,
+        installed: plist.exists(),
+        running,
+        label: install.label.clone(),
+        plist: install.plist.clone(),
+        status_file: install.status_file.clone(),
+        install,
+        actions,
+        issues,
+        recommendations,
+    })
+}
+
+fn launchctl_label_running(label: &str) -> bool {
+    if !cfg!(target_os = "macos") {
+        return false;
+    }
+    ProcessCommand::new("launchctl")
+        .arg("list")
+        .arg(label)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 pub(crate) fn print_sync_latency(
@@ -3191,6 +3729,245 @@ pub(crate) fn sync_profile_report(
     })
 }
 
+pub(crate) fn print_remote_sync_v2(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = remote_sync_v2_report(conn, db, root, target, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Remote Sync V2");
+    println!("status: {}", report.status);
+    for command in &report.commands {
+        println!("command: {command}");
+    }
+    for blocker in &report.blockers {
+        println!("blocker: {blocker}");
+    }
+    Ok(())
+}
+
+pub(crate) fn remote_sync_v2_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    _since_days: i64,
+    apply: bool,
+) -> Result<RemoteSyncV2Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let latency = sync_latency_report(conn, db, &root, target, 1)?;
+    let target_string = target.map(|path| path.display().to_string());
+    let target_arg = target_string.as_deref().unwrap_or("TARGET");
+    let encrypted_bundle = true;
+    let mut blockers = Vec::new();
+    if target.is_none() {
+        blockers.push(
+            "remote-sync-v2 needs --target PATH for apply or measured VDS planning".to_string(),
+        );
+    }
+    if apply && std::env::var("DUKEMEMORY_SYNC_PASSPHRASE").is_err() {
+        blockers.push(
+            "DUKEMEMORY_SYNC_PASSPHRASE is required before writing an encrypted sync plan"
+                .to_string(),
+        );
+    }
+    if !latency.ok {
+        blockers.extend(latency.issues.iter().cloned());
+    }
+    blockers.sort();
+    blockers.dedup();
+    let commands = vec![
+        "dukememory sync export memory-sync.json --dry-run --json".to_string(),
+        "openssl enc -aes-256-cbc -pbkdf2 -salt -in memory-sync.json -out memory-sync.json.enc -pass env:DUKEMEMORY_SYNC_PASSPHRASE".to_string(),
+        format!("dukememory sync push {target_arg} --dry-run --json"),
+        format!("dukememory sync pull {target_arg} --policy manual --dry-run --json"),
+        format!("dukememory sync status {target_arg} --json"),
+    ];
+    let mut recommendations = latency.recommendations.clone();
+    recommendations.push(
+        "keep agent reads local; never use remote as authoritative memory by default".to_string(),
+    );
+    recommendations.push("review conflicts manually before import or pull apply".to_string());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = blockers.is_empty();
+    let mut actions = Vec::new();
+    if apply && ok {
+        let path = root.join(".agent/remote-sync-v2.json");
+        let value = json!({
+            "version": 1,
+            "local_first": true,
+            "target": &target_string,
+            "encrypted_bundle": encrypted_bundle,
+            "conflict_policy": "manual",
+            "commands": &commands,
+            "updated_at": now_ms(),
+        });
+        write_file(&path, serde_json::to_string_pretty(&value)?.as_bytes())?;
+        actions.push(format!("remote_sync_v2_written:{}", path.display()));
+    } else if apply {
+        actions.push("remote_sync_v2_not_written:blockers_present".to_string());
+    } else {
+        actions.push("dry_run:remote_sync_v2_not_written".to_string());
+    }
+    Ok(RemoteSyncV2Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "blocked" }.to_string(),
+        root: root.display().to_string(),
+        target: target_string,
+        applied: apply && ok,
+        local_first: true,
+        encrypted_bundle,
+        latency,
+        conflict_policy: "manual".to_string(),
+        commands,
+        actions,
+        blockers,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_autonomy_control_center(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = autonomy_control_center_report(conn, db, root, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Autonomy Control Center");
+    println!("status: {}", report.status);
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    Ok(())
+}
+
+pub(crate) fn autonomy_control_center_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+) -> Result<AutonomyControlCenterReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let qa = memory_qa_report(conn, &root, since_days)?;
+    let ranking = auto_ranking_tune_report(conn, &root, since_days, false)?;
+    let watch = watch_control_report(db, &root, 3600, "com.dukememory.autonomous-loop", false)?;
+    let diff_review = memory_diff_review_report(conn, &root, false)?;
+    let remote_sync = remote_sync_v2_report(conn, db, &root, None, since_days, false)?;
+    let mut issues = qa.issues.clone();
+    if !watch.ok {
+        issues.extend(watch.issues.iter().cloned());
+    }
+    if !diff_review.ok {
+        issues.push("memory diff review needs attention".to_string());
+    }
+    let mut recommendations = qa.recommendations.clone();
+    recommendations.extend(ranking.reasons.iter().cloned());
+    recommendations.extend(watch.recommendations.iter().cloned());
+    recommendations.extend(remote_sync.recommendations.iter().cloned());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = issues.is_empty();
+    Ok(AutonomyControlCenterReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        since_days,
+        qa,
+        ranking,
+        watch,
+        diff_review,
+        remote_sync,
+        issues,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_upgrade_all_projects(
+    default_db: &Path,
+    from: Option<&Path>,
+    to: &str,
+    backup_dir: &Path,
+    dry_run: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = upgrade_all_projects_report(default_db, from, to, backup_dir, dry_run)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Upgrade All Projects");
+    println!(
+        "projects: {}/{}",
+        report.upgraded_projects, report.total_projects
+    );
+    for error in &report.errors {
+        println!("error: {error}");
+    }
+    Ok(())
+}
+
+pub(crate) fn upgrade_all_projects_report(
+    default_db: &Path,
+    from: Option<&Path>,
+    to: &str,
+    backup_dir: &Path,
+    dry_run: bool,
+) -> Result<UpgradeAllProjectsReport> {
+    let mut projects = Vec::new();
+    let mut errors = Vec::new();
+    for db in discover_project_dbs(default_db)? {
+        let root = app_project_root_for_db(&db).unwrap_or_else(|| {
+            db.parent()
+                .and_then(Path::parent)
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf()
+        });
+        match open_db(&db)
+            .and_then(|conn| upgrade_project_report(&conn, &root, from, to, backup_dir, dry_run))
+        {
+            Ok(report) => projects.push(serde_json::to_value(report)?),
+            Err(err) => errors.push(format!("{}: {err}", root.display())),
+        }
+    }
+    let upgraded_projects = projects
+        .iter()
+        .filter(|project| project.get("ok").and_then(Value::as_bool).unwrap_or(false))
+        .count();
+    let total_projects = projects.len() + errors.len();
+    let ok = errors.is_empty() && upgraded_projects == total_projects;
+    let recommendations = if ok {
+        vec!["all discovered project memories refreshed".to_string()]
+    } else {
+        vec!["inspect errors and rerun upgrade-all-projects".to_string()]
+    };
+    Ok(UpgradeAllProjectsReport {
+        version: 1,
+        ok,
+        dry_run,
+        total_projects,
+        upgraded_projects,
+        projects,
+        errors,
+        recommendations,
+    })
+}
+
 pub(crate) fn print_agent_enforce(
     conn: &Connection,
     db: &Path,
@@ -3275,6 +4052,8 @@ fn agent_required_commands() -> &'static [&'static str] {
         "decision-trace",
         "auto-feedback",
         "cost-guard",
+        "context-governor",
+        "memory-router",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -3287,12 +4066,17 @@ fn agent_required_commands() -> &'static [&'static str] {
         "action-journal",
         "usefulness-engine",
         "ranking-profile",
+        "auto-ranking-tune",
         "project-template",
+        "watch-control",
+        "autonomy-control-center",
         "sync-latency",
         "sync-profile",
         "memory-diff-review",
+        "remote-sync-v2",
         "agent-enforce",
         "upgrade-project",
+        "upgrade-all-projects",
     ]
 }
 
