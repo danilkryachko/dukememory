@@ -343,6 +343,10 @@ pub(crate) struct ReleaseGateReport {
     pub(crate) commands: Vec<ReleaseGateCommandResult>,
     pub(crate) doctor: ProjectDoctorReport,
     pub(crate) intelligence: IntelligenceDashboardReport,
+    pub(crate) autonomous_loop: AutonomousLoopReport,
+    pub(crate) usefulness_engine: UsefulnessEngineReport,
+    pub(crate) sync_latency: SyncLatencyReport,
+    pub(crate) agent_enforce: AgentEnforceReport,
     pub(crate) issues: Vec<String>,
     pub(crate) recommendations: Vec<String>,
 }
@@ -407,6 +411,73 @@ pub(crate) struct ProjectWatchItem {
     pub(crate) intelligence_status: String,
     pub(crate) fix_actions: Vec<String>,
     pub(crate) issues: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AutonomousLoopReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) level: String,
+    pub(crate) applied: bool,
+    pub(crate) watch: ProjectWatchReport,
+    pub(crate) doctor: ProjectDoctorReport,
+    pub(crate) intelligence: IntelligenceDashboardReport,
+    pub(crate) actions: Vec<String>,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct UsefulnessEngineReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) qa: MemoryQaReport,
+    pub(crate) quality: QualityReport,
+    pub(crate) replay: MemoryReplayReport,
+    pub(crate) auto_feedback: AutoFeedbackV2Report,
+    pub(crate) ranking_policy: Vec<String>,
+    pub(crate) suppress_candidates: Vec<String>,
+    pub(crate) promote_candidates: Vec<String>,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SyncLatencyReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) local_first: bool,
+    pub(crate) samples: usize,
+    pub(crate) local_db_bytes: u64,
+    pub(crate) local_read_ms: u128,
+    pub(crate) target: Option<String>,
+    pub(crate) target_write_ms: Option<u128>,
+    pub(crate) target_read_ms: Option<u128>,
+    pub(crate) estimated_roundtrip_ms: u32,
+    pub(crate) recommended_mode: String,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AgentEnforceReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) fixed: bool,
+    pub(crate) required_commands: Vec<String>,
+    pub(crate) missing_commands: Vec<String>,
+    pub(crate) doctor: ProjectDoctorReport,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1942,6 +2013,418 @@ pub(crate) fn project_watch_report(
     })
 }
 
+pub(crate) fn print_autonomous_loop(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    level: AutonomousLevel,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = autonomous_loop_report(conn, db, root, since_days, level, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Autonomous Loop");
+    println!("status: {}", report.status);
+    println!("applied: {}", report.applied);
+    for action in &report.actions {
+        println!("action: {action}");
+    }
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn autonomous_loop_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    level: AutonomousLevel,
+    apply: bool,
+) -> Result<AutonomousLoopReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut actions = Vec::new();
+    if apply {
+        let (provider, endpoint, model) = read_project_embedding_config(&root);
+        let report = autonomous_run_once(
+            conn,
+            AutonomousRunRequest {
+                level,
+                status_file: &root.join(".agent/autonomous-status.json"),
+                rollback_dir: &root.join(".agent/autonomous-rollbacks"),
+                backup_dir: &root.join(".agent/backups"),
+                backup_keep: 10,
+                rollback_keep: 10,
+                db,
+                scope: "project",
+                provider: &provider,
+                endpoint: &endpoint,
+                model: &model,
+            },
+        )?;
+        actions.push(format!(
+            "autonomous_run_once:ok={} actions={}",
+            report.ok,
+            report.actions.len()
+        ));
+    } else {
+        actions.push("plan: run reversible autonomous run-once".to_string());
+    }
+    let watch = project_watch_report(db, since_days, apply)?;
+    if apply {
+        actions.push(format!(
+            "project_watch_fix:projects={} attention={}",
+            watch.total_projects, watch.attention_projects
+        ));
+    } else {
+        actions.push("plan: project-watch --fix if attention appears".to_string());
+    }
+    let doctor = project_doctor_report(conn, db, &root, since_days, false)?;
+    let intelligence = intelligence_dashboard_report(conn, db, &root, since_days)?;
+    let mut issues = Vec::new();
+    if !watch.ok {
+        issues.push("project watch has attention projects".to_string());
+    }
+    issues.extend(doctor.issues.iter().cloned());
+    issues.extend(intelligence.issues.iter().cloned());
+    issues.sort();
+    issues.dedup();
+    let mut recommendations = Vec::new();
+    if !apply {
+        recommendations.push("rerun with --apply to execute reversible maintenance".to_string());
+    }
+    recommendations.extend(watch.recommendations.iter().cloned());
+    recommendations.extend(doctor.recommendations.iter().cloned());
+    recommendations.extend(intelligence.recommendations.iter().cloned());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = issues.is_empty();
+    Ok(AutonomousLoopReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        level: level.to_string(),
+        applied: apply,
+        watch,
+        doctor,
+        intelligence,
+        actions,
+        issues,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_usefulness_engine(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = usefulness_engine_report(conn, root, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Usefulness Engine");
+    println!("status: {}", report.status);
+    println!("applied: {}", report.applied);
+    for item in &report.promote_candidates {
+        println!("promote: {item}");
+    }
+    for item in &report.suppress_candidates {
+        println!("suppress: {item}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn usefulness_engine_report(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+) -> Result<UsefulnessEngineReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let qa = memory_qa_report(conn, &root, since_days)?;
+    let quality = quality_report(conn, since_days, 30)?;
+    let replay = memory_replay_report(conn, since_days, 30)?;
+    let auto_feedback = auto_feedback_v2_report(conn, since_days, 100, apply)?;
+    let suppress_candidates = quality
+        .weakest
+        .iter()
+        .filter(|item| item.score < 55.0 && item.request_count == 0)
+        .take(10)
+        .map(|item| item.id.clone())
+        .collect::<Vec<_>>();
+    let promote_candidates = quality
+        .strongest
+        .iter()
+        .filter(|item| item.request_count > 0)
+        .take(10)
+        .map(|item| item.id.clone())
+        .collect::<Vec<_>>();
+    let ranking_policy = vec![
+        "prefer cards with recent useful reads and positive feedback".to_string(),
+        "keep semantic recall enabled when eligible result rate is healthy".to_string(),
+        "soft-suppress unused weak cards before deletion; never hard-delete automatically"
+            .to_string(),
+        "materialize inferred feedback only when --apply is explicit".to_string(),
+    ];
+    let mut issues = qa.issues.clone();
+    issues.sort();
+    issues.dedup();
+    let mut recommendations = qa.recommendations.clone();
+    if !apply && auto_feedback.written > 0 {
+        recommendations
+            .push("rerun usefulness-engine --apply to materialize inferred feedback".to_string());
+    }
+    if !suppress_candidates.is_empty() {
+        recommendations.push(
+            "review soft-suppress candidates in quality-report before changing statuses"
+                .to_string(),
+        );
+    }
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = issues.is_empty();
+    Ok(UsefulnessEngineReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        applied: apply,
+        qa,
+        quality,
+        replay,
+        auto_feedback,
+        ranking_policy,
+        suppress_candidates,
+        promote_candidates,
+        issues,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_sync_latency(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    samples: usize,
+    json_out: bool,
+) -> Result<()> {
+    let report = sync_latency_report(conn, db, root, target, samples)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Sync Latency");
+    println!("status: {}", report.status);
+    println!("mode: {}", report.recommended_mode);
+    println!("local_read_ms: {}", report.local_read_ms);
+    if let Some(ms) = report.target_write_ms {
+        println!("target_write_ms: {ms}");
+    }
+    if let Some(ms) = report.target_read_ms {
+        println!("target_read_ms: {ms}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn sync_latency_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    samples: usize,
+) -> Result<SyncLatencyReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let samples = samples.clamp(1, 10);
+    let remote = remote_sync_dry_run_report(conn, db, &root, 7)?;
+    let db_bytes = fs::metadata(db).map(|meta| meta.len()).unwrap_or(0);
+    let mut local_total = 0u128;
+    for _ in 0..samples {
+        let started = Instant::now();
+        let _ = fs::metadata(db)?;
+        local_total = local_total.saturating_add(started.elapsed().as_millis());
+    }
+    let local_read_ms = local_total / samples as u128;
+    let mut target_write_ms = None;
+    let mut target_read_ms = None;
+    let target_string = target.map(|path| path.display().to_string());
+    if let Some(target) = target {
+        fs::create_dir_all(target)?;
+        let probe = target.join(".dukememory-latency-check.tmp");
+        let payload = format!("dukememory latency {}\n", now_ms());
+        let mut write_total = 0u128;
+        let mut read_total = 0u128;
+        for _ in 0..samples {
+            let started = Instant::now();
+            write_file(&probe, payload.as_bytes())?;
+            write_total = write_total.saturating_add(started.elapsed().as_millis());
+            let started = Instant::now();
+            let _ = fs::read(&probe)?;
+            read_total = read_total.saturating_add(started.elapsed().as_millis());
+        }
+        let _ = fs::remove_file(&probe);
+        target_write_ms = Some(write_total / samples as u128);
+        target_read_ms = Some(read_total / samples as u128);
+    }
+    let measured_roundtrip = target_write_ms
+        .zip(target_read_ms)
+        .map(|(write, read)| write.saturating_add(read));
+    let mut issues = Vec::new();
+    if measured_roundtrip.is_some_and(|ms| ms > 800) || remote.estimated_roundtrip_ms > 800 {
+        issues.push("remote sync latency is high for interactive reads".to_string());
+    }
+    let recommended_mode = if issues.is_empty() {
+        "local_first_with_optional_sync".to_string()
+    } else {
+        "local_only_reads_remote_backup".to_string()
+    };
+    let mut recommendations = remote.recommendations.clone();
+    recommendations.push(
+        "keep agent memory reads local; sync remote/VDS in explicit push/pull steps".to_string(),
+    );
+    if target.is_none() {
+        recommendations.push("pass --target PATH to measure a real sync directory".to_string());
+    }
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = issues.is_empty();
+    Ok(SyncLatencyReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        local_first: true,
+        samples,
+        local_db_bytes: db_bytes,
+        local_read_ms,
+        target: target_string,
+        target_write_ms,
+        target_read_ms,
+        estimated_roundtrip_ms: remote.estimated_roundtrip_ms,
+        recommended_mode,
+        issues,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_agent_enforce(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    fix: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = agent_enforce_report(conn, db, root, since_days, fix)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Agent Enforce");
+    println!("status: {}", report.status);
+    println!("fixed: {}", report.fixed);
+    for missing in &report.missing_commands {
+        println!("missing: {missing}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn agent_enforce_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    fix: bool,
+) -> Result<AgentEnforceReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let doctor = project_doctor_report(conn, db, &root, since_days, fix)?;
+    let required_commands = agent_required_commands()
+        .iter()
+        .map(|command| (*command).to_string())
+        .collect::<Vec<_>>();
+    let agents_content = fs::read_to_string(root.join("AGENTS.md")).unwrap_or_default();
+    let skill_content = fs::read_to_string(expand_tilde("~/.codex/skills/dukememory-use/SKILL.md"))
+        .unwrap_or_default();
+    let missing_commands = required_commands
+        .iter()
+        .filter(|command| {
+            !agents_content.contains(command.as_str()) || !skill_content.contains(command.as_str())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut issues = doctor.issues.clone();
+    if !missing_commands.is_empty() {
+        issues.push("agent memory instructions are missing required commands".to_string());
+    }
+    issues.sort();
+    issues.dedup();
+    let mut recommendations = doctor.recommendations.clone();
+    if !fix && (!doctor.ok || !missing_commands.is_empty()) {
+        recommendations.push("rerun agent-enforce --fix --json".to_string());
+    }
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = issues.is_empty();
+    Ok(AgentEnforceReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        fixed: fix,
+        required_commands,
+        missing_commands,
+        doctor,
+        issues,
+        recommendations,
+    })
+}
+
+fn agent_required_commands() -> &'static [&'static str] {
+    &[
+        "brief",
+        "impact",
+        "memory-qa",
+        "usage-report",
+        "decision-trace",
+        "auto-feedback",
+        "cost-guard",
+        "intelligence-dashboard",
+        "project-diff",
+        "remote-sync-dry-run",
+        "doctor-project",
+        "release-gate",
+        "memory-replay",
+        "project-watch",
+        "autonomous-loop",
+        "usefulness-engine",
+        "sync-latency",
+        "agent-enforce",
+        "upgrade-project",
+    ]
+}
+
 pub(crate) fn print_auto_feedback_v2(
     conn: &Connection,
     since_days: i64,
@@ -2389,19 +2872,7 @@ pub(crate) fn project_doctor_report(
     let agents_content = fs::read_to_string(root.join("AGENTS.md")).unwrap_or_default();
     let skill_content = fs::read_to_string(expand_tilde("~/.codex/skills/dukememory-use/SKILL.md"))
         .unwrap_or_default();
-    let required_commands = [
-        "brief",
-        "impact",
-        "memory-qa",
-        "usage-report",
-        "decision-trace",
-        "auto-feedback",
-        "cost-guard",
-        "intelligence-dashboard",
-        "project-diff",
-        "remote-sync-dry-run",
-        "upgrade-project",
-    ];
+    let required_commands = agent_required_commands();
     let agents_commands_ok = required_commands
         .iter()
         .all(|command| agents_content.contains(command));
@@ -2592,6 +3063,11 @@ pub(crate) fn release_gate_report(
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let doctor = project_doctor_report(conn, db, &root, since_days, false)?;
     let intelligence = intelligence_dashboard_report(conn, db, &root, since_days)?;
+    let autonomous_loop =
+        autonomous_loop_report(conn, db, &root, since_days, AutonomousLevel::Normal, false)?;
+    let usefulness_engine = usefulness_engine_report(conn, &root, since_days, false)?;
+    let sync_latency = sync_latency_report(conn, db, &root, None, 1)?;
+    let agent_enforce = agent_enforce_report(conn, db, &root, since_days, false)?;
     let project_diff = project_diff_report(conn, &root, true)?;
     let cargo_toml = root.join("Cargo.toml");
     let cargo_version_ok = fs::read_to_string(&cargo_toml)
@@ -2658,6 +3134,30 @@ pub(crate) fn release_gate_report(
             ),
         },
         ReleaseGateCheck {
+            name: "autonomous_loop".to_string(),
+            ok: autonomous_loop.ok,
+            required: true,
+            detail: autonomous_loop.status.clone(),
+        },
+        ReleaseGateCheck {
+            name: "usefulness_engine".to_string(),
+            ok: usefulness_engine.ok,
+            required: true,
+            detail: usefulness_engine.status.clone(),
+        },
+        ReleaseGateCheck {
+            name: "sync_latency".to_string(),
+            ok: sync_latency.ok,
+            required: true,
+            detail: sync_latency.recommended_mode.clone(),
+        },
+        ReleaseGateCheck {
+            name: "agent_enforce".to_string(),
+            ok: agent_enforce.ok,
+            required: true,
+            detail: agent_enforce.status.clone(),
+        },
+        ReleaseGateCheck {
             name: "cargo_version".to_string(),
             ok: cargo_version_ok,
             required: true,
@@ -2697,6 +3197,10 @@ pub(crate) fn release_gate_report(
     }
     recommendations.extend(doctor.recommendations.iter().cloned());
     recommendations.extend(intelligence.recommendations.iter().cloned());
+    recommendations.extend(autonomous_loop.recommendations.iter().cloned());
+    recommendations.extend(usefulness_engine.recommendations.iter().cloned());
+    recommendations.extend(sync_latency.recommendations.iter().cloned());
+    recommendations.extend(agent_enforce.recommendations.iter().cloned());
     recommendations.sort();
     recommendations.dedup();
     let ok = issues.is_empty();
@@ -2711,6 +3215,10 @@ pub(crate) fn release_gate_report(
         commands,
         doctor,
         intelligence,
+        autonomous_loop,
+        usefulness_engine,
+        sync_latency,
+        agent_enforce,
         issues,
         recommendations,
     })

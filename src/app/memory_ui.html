@@ -851,7 +851,7 @@
     async function loadIntelligence() {
       const params = new URLSearchParams({ since_days: "7" });
       if (state.project) params.set("project", state.project);
-      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch] = await Promise.all([
+      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch, loop, engine, latency, enforce] = await Promise.all([
         api(`/roi-report?${params.toString()}`),
         api(`/agent-audit?${params.toString()}`),
         api(`/remote-status?${params.toString()}`),
@@ -864,7 +864,11 @@
         api(`/doctor-project?${params.toString()}`),
         api(`/release-gate?${params.toString()}`),
         api(`/memory-replay?${params.toString()}&limit=12`),
-        api(`/project-watch?${params.toString()}`)
+        api(`/project-watch?${params.toString()}`),
+        api(`/autonomous-loop?${params.toString()}`),
+        api(`/usefulness-engine?${params.toString()}`),
+        api(`/sync-latency?${params.toString()}`),
+        api(`/agent-enforce?${params.toString()}`)
       ]);
       state.roi = roi.roi;
       state.agentAudit = audit.agent_audit;
@@ -879,6 +883,10 @@
       state.releaseGate = releaseGate.release_gate;
       state.replay = replay.replay;
       state.watch = watch.watch;
+      state.loop = loop.loop;
+      state.engine = engine.engine;
+      state.latency = latency.latency;
+      state.enforce = enforce.enforce;
       renderSettings();
     }
 
@@ -891,6 +899,12 @@
         await api("/auto-feedback", { method: "POST", body: JSON.stringify(withProject({ since_days: 7, limit: 100, dry_run: false })) });
       } else if (action === "watch-fix") {
         await api("/project-watch/fix", { method: "POST", body: JSON.stringify({ since_days: 7 }) });
+      } else if (action === "loop-apply") {
+        await api("/autonomous-loop/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7, level: "normal" })) });
+      } else if (action === "engine-apply") {
+        await api("/usefulness-engine/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
+      } else if (action === "enforce-fix") {
+        await api("/agent-enforce/fix", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
       }
       setToast(action);
       await Promise.all([loadIntelligence(), loadMemoryQa(), loadOpsStatus(), loadProjects(), loadDashboard()]);
@@ -1182,6 +1196,10 @@
       const releaseGate = state.releaseGate || {};
       const replay = state.replay || {};
       const watch = state.watch || {};
+      const loop = state.loop || {};
+      const engine = state.engine || {};
+      const latency = state.latency || {};
+      const enforce = state.enforce || {};
       const contract = state.contract || {};
       const ops = state.ops || {};
       const effectiveness = ops.effectiveness || {};
@@ -1230,10 +1248,18 @@
         <div class="stat"><strong>${escapeHtml(remoteSync.status || "-")}</strong><span>sync dry-run</span></div>
         <div class="stat"><strong>${escapeHtml(doctor.status || "-")}</strong><span>doctor project</span></div>
         <div class="stat"><strong>${escapeHtml(releaseGate.status || "-")}</strong><span>release gate</span></div>
+        <div class="stat"><strong>${escapeHtml(loop.status || "-")}</strong><span>autonomous loop</span></div>
+        <div class="stat"><strong>${escapeHtml(engine.status || "-")}</strong><span>usefulness engine</span></div>
+        <div class="stat"><strong>${escapeHtml(latency.status || "-")}</strong><span>sync latency</span></div>
+        <div class="stat"><strong>${escapeHtml(enforce.status || "-")}</strong><span>agent enforce</span></div>
       </div>
       <div class="card"><div class="title">doctor project</div><div class="body">status ${escapeHtml(doctor.status || "-")}<br>qa ${Number(doctor.memory_qa?.score || 0).toFixed(1)}<br>embedding ${doctor.embedding ? `${Number(doctor.embedding.missing || 0)} missing / ${Number(doctor.embedding.stale || 0)} stale` : "-"}<br>${doctor.checks?.length ? doctor.checks.slice(0, 6).map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">release gate</div><div class="body">status ${escapeHtml(releaseGate.status || "-")}<br>strict ${releaseGate.strict ? "yes" : "no"}<br>${releaseGate.checks?.length ? releaseGate.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}<br>${releaseGate.issues?.length ? releaseGate.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
-      <div class="card"><div class="title">intelligence actions</div><div class="actions"><button data-intelligence="doctor-fix">Doctor fix</button><button data-intelligence="auto-feedback">Auto feedback</button><button data-intelligence="watch-fix">Watch fix</button><button data-intelligence="release-run">Release run</button></div></div>
+      <div class="card"><div class="title">intelligence actions</div><div class="actions"><button data-intelligence="doctor-fix">Doctor fix</button><button data-intelligence="loop-apply">Loop apply</button><button data-intelligence="engine-apply">Engine apply</button><button data-intelligence="enforce-fix">Enforce fix</button><button data-intelligence="auto-feedback">Auto feedback</button><button data-intelligence="watch-fix">Watch fix</button><button data-intelligence="release-run">Release run</button></div></div>
+      <div class="card"><div class="title">autonomous loop</div><div class="body">status ${escapeHtml(loop.status || "-")}<br>applied ${loop.applied ? "yes" : "no"}<br>watch attention ${Number(loop.watch?.attention_projects || 0)}<br>${loop.actions?.length ? loop.actions.slice(0, 5).map(escapeHtml).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">usefulness engine</div><div class="body">status ${escapeHtml(engine.status || "-")}<br>applied ${engine.applied ? "yes" : "no"}<br>promote ${Number(engine.promote_candidates?.length || 0)} / suppress ${Number(engine.suppress_candidates?.length || 0)}<br>${engine.ranking_policy?.length ? engine.ranking_policy.slice(0, 4).map(escapeHtml).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">sync latency</div><div class="body">status ${escapeHtml(latency.status || "-")}<br>mode ${escapeHtml(latency.recommended_mode || "-")}<br>local read ${Number(latency.local_read_ms || 0)}ms<br>roundtrip ${Number(latency.estimated_roundtrip_ms || 0)}ms<br>${latency.issues?.length ? latency.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
+      <div class="card"><div class="title">agent enforce</div><div class="body">status ${escapeHtml(enforce.status || "-")}<br>fixed ${enforce.fixed ? "yes" : "no"}<br>missing ${Number(enforce.missing_commands?.length || 0)}<br>${enforce.missing_commands?.length ? enforce.missing_commands.slice(0, 8).map(escapeHtml).join("<br>") : "all required commands present"}</div></div>
       <div class="card"><div class="title">memory replay</div><div class="body">reads ${Number(replay.reads || 0)}<br>influenced ${Number(replay.influenced_reads || 0)}<br>semantic ${Number(replay.semantic_reads || 0)}<br>${replay.items?.length ? replay.items.slice(0, 5).map((item) => `${escapeHtml(item.command)}: ${escapeHtml(item.effect)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">project watch</div><div class="body">projects ${Number(watch.total_projects || 0)}<br>attention ${Number(watch.attention_projects || 0)}<br>${watch.projects?.length ? watch.projects.slice(0, 5).map((item) => `${item.ok ? "ok" : "warn"} ${escapeHtml(item.root)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">decision trace</div><div class="body">traced ${Number(trace.traced_reads || 0)}<br>empty ${Number(trace.empty_reads || 0)}<br>positive ${Number(trace.positive_feedback || 0)} / negative ${Number(trace.negative_feedback || 0)} / missing ${Number(trace.missing_feedback || 0)}<br>${trace.items?.length ? trace.items.slice(0, 4).map((item) => `${escapeHtml(item.command)}: ${escapeHtml(item.influence)} (${Number(item.result_count || 0)})`).join("<br>") : "-"}</div></div>

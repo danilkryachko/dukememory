@@ -8601,6 +8601,10 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "release-gate",
         "memory-replay",
         "project-watch",
+        "autonomous-loop",
+        "usefulness-engine",
+        "sync-latency",
+        "agent-enforce",
         "sync export",
         "sync import",
         "sync push",
@@ -8629,6 +8633,10 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "release-gate",
         "memory-replay",
         "project-watch",
+        "autonomous-loop",
+        "usefulness-engine",
+        "sync-latency",
+        "agent-enforce",
         "sync export",
         "sync import",
         "sync push",
@@ -9523,6 +9531,10 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/release-gate"));
     assert!(html.contains("/memory-replay"));
     assert!(html.contains("/project-watch"));
+    assert!(html.contains("/autonomous-loop"));
+    assert!(html.contains("/usefulness-engine"));
+    assert!(html.contains("/sync-latency"));
+    assert!(html.contains("/agent-enforce"));
     assert!(html.contains("memory ROI"));
     assert!(html.contains("agent audit"));
     assert!(html.contains("remote readiness"));
@@ -9534,9 +9546,16 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("remote sync dry-run"));
     assert!(html.contains("doctor project"));
     assert!(html.contains("release gate"));
+    assert!(html.contains("autonomous loop"));
+    assert!(html.contains("usefulness engine"));
+    assert!(html.contains("sync latency"));
+    assert!(html.contains("agent enforce"));
     assert!(html.contains("memory replay"));
     assert!(html.contains("project watch"));
     assert!(html.contains("Doctor fix"));
+    assert!(html.contains("Loop apply"));
+    assert!(html.contains("Engine apply"));
+    assert!(html.contains("Enforce fix"));
     assert!(html.contains("Auto feedback"));
     assert!(html.contains("/upgrade-project"));
 
@@ -9863,6 +9882,38 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(watch.contains("\"watch\""));
     assert!(watch.contains("\"total_projects\""));
     assert!(watch.contains("\"attention_projects\""));
+
+    let autonomous_loop = http_once(
+        &db,
+        "GET /autonomous-loop?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(autonomous_loop.contains("\"loop\""));
+    assert!(autonomous_loop.contains("\"applied\":false"));
+    assert!(autonomous_loop.contains("\"watch\""));
+
+    let usefulness_engine = http_once(
+        &db,
+        "GET /usefulness-engine?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(usefulness_engine.contains("\"engine\""));
+    assert!(usefulness_engine.contains("\"ranking_policy\""));
+    assert!(usefulness_engine.contains("\"suppress_candidates\""));
+
+    let sync_latency = http_once(
+        &db,
+        "GET /sync-latency?samples=1 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(sync_latency.contains("\"latency\""));
+    assert!(sync_latency.contains("\"local_first\":true"));
+    assert!(sync_latency.contains("\"recommended_mode\""));
+
+    let agent_enforce = http_once(
+        &db,
+        "GET /agent-enforce?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(agent_enforce.contains("\"enforce\""));
+    assert!(agent_enforce.contains("\"required_commands\""));
+    assert!(agent_enforce.contains("\"missing_commands\""));
 
     let contract = http_once(
         &db,
@@ -10933,6 +10984,22 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_f64()
             .is_some()
     );
+    assert!(
+        release_gate_json["autonomous_loop"]["status"]
+            .as_str()
+            .is_some()
+    );
+    assert!(
+        release_gate_json["usefulness_engine"]["ranking_policy"]
+            .as_array()
+            .is_some()
+    );
+    assert_eq!(release_gate_json["sync_latency"]["local_first"], true);
+    assert!(
+        release_gate_json["agent_enforce"]["required_commands"]
+            .as_array()
+            .is_some()
+    );
 
     let replay = stdout(
         cmd(&db)
@@ -10959,6 +11026,82 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(watch_json["version"], 1);
     assert!(watch_json["total_projects"].as_u64().is_some());
     assert!(watch_json["projects"].as_array().is_some());
+
+    let autonomous_loop = stdout(
+        cmd(&db)
+            .arg("autonomous-loop")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let autonomous_loop_json: Value = serde_json::from_str(&autonomous_loop).unwrap();
+    assert_eq!(autonomous_loop_json["version"], 1);
+    assert_eq!(autonomous_loop_json["applied"], false);
+    assert!(
+        autonomous_loop_json["watch"]["projects"]
+            .as_array()
+            .is_some()
+    );
+    assert!(
+        autonomous_loop_json["intelligence"]["remote_sync"]["local_first"]
+            .as_bool()
+            .is_some()
+    );
+
+    let usefulness_engine = stdout(
+        cmd(&db)
+            .arg("usefulness-engine")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let usefulness_engine_json: Value = serde_json::from_str(&usefulness_engine).unwrap();
+    assert_eq!(usefulness_engine_json["version"], 1);
+    assert_eq!(usefulness_engine_json["applied"], false);
+    assert!(
+        usefulness_engine_json["ranking_policy"]
+            .as_array()
+            .unwrap()
+            .len()
+            >= 3
+    );
+
+    let sync_latency = stdout(
+        cmd(&db)
+            .arg("sync-latency")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--samples")
+            .arg("1")
+            .arg("--json"),
+    );
+    let sync_latency_json: Value = serde_json::from_str(&sync_latency).unwrap();
+    assert_eq!(sync_latency_json["version"], 1);
+    assert_eq!(sync_latency_json["local_first"], true);
+    assert!(sync_latency_json["recommended_mode"].as_str().is_some());
+
+    let agent_enforce = stdout(
+        cmd(&db)
+            .arg("agent-enforce")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let agent_enforce_json: Value = serde_json::from_str(&agent_enforce).unwrap();
+    assert_eq!(agent_enforce_json["version"], 1);
+    assert!(
+        agent_enforce_json["required_commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("autonomous-loop"))
+    );
 
     let gap_run = stdout(
         cmd(&db)

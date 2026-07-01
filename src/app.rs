@@ -919,6 +919,31 @@ pub(crate) fn run() -> Result<()> {
             fix,
             json,
         } => print_project_watch(&cli.db, since_days, fix, json)?,
+        Command::AutonomousLoop {
+            root,
+            since_days,
+            level,
+            apply,
+            json,
+        } => print_autonomous_loop(&conn, &cli.db, &root, since_days, level, apply, json)?,
+        Command::UsefulnessEngine {
+            root,
+            since_days,
+            apply,
+            json,
+        } => print_usefulness_engine(&conn, &root, since_days, apply, json)?,
+        Command::SyncLatency {
+            root,
+            target,
+            samples,
+            json,
+        } => print_sync_latency(&conn, &cli.db, &root, target.as_deref(), samples, json)?,
+        Command::AgentEnforce {
+            root,
+            since_days,
+            fix,
+            json,
+        } => print_agent_enforce(&conn, &cli.db, &root, since_days, fix, json)?,
         Command::InboxV2 { command } => handle_inbox_v2(&conn, command)?,
         Command::PolicyTune {
             output,
@@ -3179,6 +3204,14 @@ Use `dukememory memory-replay --json` to inspect how recent memory reads influen
 
 Use `dukememory project-watch --json` to inspect all discovered project memories; use `dukememory project-watch --fix --json` for autonomous repair.
 
+Use `dukememory autonomous-loop --json` to plan one autonomous memory control loop; use `dukememory autonomous-loop --apply --json` to run reversible maintenance and project repair.
+
+Use `dukememory usefulness-engine --json` to rank useful/noisy memory and preview safe inferred feedback; use `dukememory usefulness-engine --apply --json` to materialize safe feedback.
+
+Use `dukememory sync-latency --json` to measure local/VDS sync latency while keeping reads local-first.
+
+Use `dukememory agent-enforce --json` to verify future chats will use memory; use `dukememory agent-enforce --fix --json` to repair AGENTS/skill/project wiring.
+
 Use `dukememory sync export bundle.json --dry-run --json` before writing a local-first sync bundle; use `dukememory sync import bundle.json --dry-run --json` before applying it.
 
 Use `dukememory sync import bundle.json --policy manual|local-wins|remote-wins|newer-wins --dry-run --json` to inspect conflicts before applying.
@@ -3216,6 +3249,10 @@ dukememory doctor-project --json
 dukememory release-gate --json
 dukememory project-watch --json
 dukememory memory-replay --json
+dukememory autonomous-loop --json
+dukememory usefulness-engine --json
+dukememory sync-latency --json
+dukememory agent-enforce --json
 dukememory autonomous run-once --level normal --json
 dukememory autonomous status --json
 dukememory drift --root . --json
@@ -3650,6 +3687,10 @@ fn print_completions(shell: CompletionShell) {
         "release-gate",
         "memory-replay",
         "project-watch",
+        "autonomous-loop",
+        "usefulness-engine",
+        "sync-latency",
+        "agent-enforce",
         "inbox-v2",
         "policy-tune",
         "memory-qa",
@@ -3760,6 +3801,10 @@ fn print_manpage() {
     println!("  release-gate --json           aggregate local release readiness");
     println!("  memory-replay --json          replay recent memory influence");
     println!("  project-watch --fix --json    inspect or repair installed project memories");
+    println!("  autonomous-loop --apply       run reversible memory control loop");
+    println!("  usefulness-engine --apply     rank memory and apply safe feedback");
+    println!("  sync-latency --json           measure local/VDS sync latency");
+    println!("  agent-enforce --fix --json    enforce memory use for future chats");
     println!("  onboard --root DIR            initialize memory/profile/embeddings");
     println!("  inbox-v2 report|auto-apply    group and process pending suggestions");
     println!("  policy-tune --json            tune autonomous policy from feedback");

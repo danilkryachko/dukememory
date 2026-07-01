@@ -858,6 +858,52 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Run the autonomous project memory loop plan, optionally applying safe fixes.
+    AutonomousLoop {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long, value_enum, default_value_t = AutonomousLevel::Normal)]
+        level: AutonomousLevel,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Score memory usefulness as an action engine, optionally materializing safe feedback.
+    UsefulnessEngine {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Measure local-first sync latency and recommend local/VDS usage.
+    SyncLatency {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value_t = 3)]
+        samples: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Enforce agent memory wiring for new chats, optionally repairing it.
+    AgentEnforce {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        fix: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Group and safely process inbox suggestions.
     InboxV2 {
         #[command(subcommand)]

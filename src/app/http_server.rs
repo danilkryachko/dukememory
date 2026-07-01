@@ -281,6 +281,116 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"watch": project_watch_report(db, since_days, true)?}))
         }
+        ("GET", "/autonomous-loop") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            let level = parse_autonomous_level(params.get("level").map(String::as_str));
+            HttpResponse::ok(json!({"loop": autonomous_loop_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                level,
+                false,
+            )?}))
+        }
+        ("POST", "/autonomous-loop/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            let level = parse_autonomous_level(value.get("level").and_then(Value::as_str));
+            HttpResponse::ok(json!({"loop": autonomous_loop_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                level,
+                true,
+            )?}))
+        }
+        ("GET", "/usefulness-engine") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"engine": usefulness_engine_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/usefulness-engine/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"engine": usefulness_engine_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                true,
+            )?}))
+        }
+        ("GET", "/sync-latency") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let samples = params
+                .get("samples")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(3);
+            let target = params.get("target").map(PathBuf::from);
+            HttpResponse::ok(json!({"latency": sync_latency_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                samples,
+            )?}))
+        }
+        ("GET", "/agent-enforce") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"enforce": agent_enforce_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/agent-enforce/fix") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"enforce": agent_enforce_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                true,
+            )?}))
+        }
         ("GET", "/dashboard-repair-history") => {
             let params = parse_query(query);
             let since_days = params
