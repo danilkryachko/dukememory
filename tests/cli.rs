@@ -5481,6 +5481,147 @@ fn quality_and_usefulness_do_not_suggest_review_unused_for_broad_history() {
 }
 
 #[test]
+fn autonomous_infers_basename_links_triages_unused_and_throttles_write_pressure() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".agent")).unwrap();
+    fs::create_dir_all(dir.path().join("src").join("app")).unwrap();
+    fs::write(dir.path().join("src").join("app").join("autonomous.rs"), "").unwrap();
+    let db = dir.path().join(".agent").join("memory.db");
+    let status_file = dir.path().join(".agent").join("autonomous-status.json");
+    let rollback_dir = dir.path().join(".agent").join("autonomous-rollbacks");
+    let backup_dir = dir.path().join(".agent").join("backups");
+
+    let basename_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Basename autonomous link")
+            .arg("The autonomous.rs module owns the maintenance flow.")
+            .arg("--scope")
+            .arg("project"),
+    )
+    .trim()
+    .to_string();
+    let triage_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg("Unused linked triage candidate")
+            .arg("This linked design note can become uncertain when unused.")
+            .arg("--scope")
+            .arg("project")
+            .arg("--link")
+            .arg("file:src/app/autonomous.rs"),
+    )
+    .trim()
+    .to_string();
+    Connection::open(&db)
+        .unwrap()
+        .execute(
+            "UPDATE memories SET updated_at = ?1 WHERE id IN (?2, ?3)",
+            params![now_ms() - 172_800_000, basename_id, triage_id],
+        )
+        .unwrap();
+
+    let run = stdout(
+        cmd(&db)
+            .arg("autonomous")
+            .arg("run-once")
+            .arg("--level")
+            .arg("normal")
+            .arg("--status-file")
+            .arg(&status_file)
+            .arg("--rollback-dir")
+            .arg(&rollback_dir)
+            .arg("--backup-dir")
+            .arg(&backup_dir)
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let run_json: Value = serde_json::from_str(&run).unwrap();
+    assert!(
+        run_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| { item["kind"] == "repair_explicit_file_links" && item["status"] == "ok" })
+    );
+    assert!(
+        run_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| { item["kind"] == "triage_unused_memory" && item["status"] == "ok" })
+    );
+    let conn = Connection::open(&db).unwrap();
+    let basename_links: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_links WHERE memory_id = ?1 AND target = 'src/app/autonomous.rs'",
+            [&basename_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(basename_links, 1);
+    let triage_status: String = conn
+        .query_row(
+            "SELECT status FROM memories WHERE id = ?1",
+            [&triage_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(triage_status, "uncertain");
+
+    for idx in 0..20 {
+        insert_read_event(&db, "brief", &format!("high pressure query {idx}"), false);
+    }
+    let conn = Connection::open(&db).unwrap();
+    for idx in 0..80 {
+        conn.execute(
+            "INSERT INTO memory_events (event_type, memory_id, detail, created_at) VALUES ('memory_updated', NULL, ?1, ?2)",
+            params![format!("pressure {idx}"), now_ms()],
+        )
+        .unwrap();
+    }
+    let pressure_run = stdout(
+        cmd(&db)
+            .arg("autonomous")
+            .arg("run-once")
+            .arg("--level")
+            .arg("normal")
+            .arg("--status-file")
+            .arg(&status_file)
+            .arg("--rollback-dir")
+            .arg(&rollback_dir)
+            .arg("--backup-dir")
+            .arg(&backup_dir)
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--json"),
+    );
+    let pressure_json: Value = serde_json::from_str(&pressure_run).unwrap();
+    assert!(
+        pressure_json["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["kind"] == "quality_inbox"
+                    && item["status"] == "skipped"
+                    && item["detail"].as_str().unwrap().contains("write pressure")
+            })
+    );
+}
+
+#[test]
 fn v14_context_and_impact_filter_query_useless_feedback() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
@@ -7568,6 +7709,8 @@ fn usage_report_counts_semantic_eligible_reads_only() {
     let usage = stdout(cmd(&db).arg("usage-report").arg("--json"));
     let usage_json: Value = serde_json::from_str(&usage).unwrap();
     assert_eq!(usage_json["read_count"], 7);
+    assert_eq!(usage_json["write_count"], 2);
+    assert!(usage_json["write_pressure"].as_f64().unwrap() > 0.0);
     assert_eq!(usage_json["semantic_read_count"], 4);
     assert_eq!(usage_json["fallback_read_count"], 3);
     assert_eq!(usage_json["semantic_eligible_total"], 5);
@@ -7662,6 +7805,38 @@ fn dashboard_reports_semantic_empty_result_attention() {
             .iter()
             .any(|action| action["code"] == "embed_index" && action["safe_auto"] == true)
     );
+}
+
+#[test]
+fn dashboard_surfaces_top_memories_and_write_pressure() {
+    let dir = tempdir().unwrap();
+    let project = dir.path().join("usage_project");
+    fs::create_dir_all(project.join(".agent")).unwrap();
+    let db = project.join(".agent").join("memory.db");
+
+    let memory_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("decision")
+            .arg("Top dashboard memory")
+            .arg("Dashboard should expose top memory reuse."),
+    )
+    .trim()
+    .to_string();
+    insert_read_event_with_ids(&db, "brief", "top dashboard memory", &[&memory_id]);
+    insert_read_event_with_ids(&db, "impact", "top dashboard memory", &[&memory_id]);
+
+    let dashboard = stdout(cmd(&db).arg("dashboard").arg("--json"));
+    let dashboard_json: Value = serde_json::from_str(&dashboard).unwrap();
+    let project_json = dashboard_json["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["name"] == "usage_project")
+        .unwrap();
+    assert!(project_json["write_pressure"].as_f64().unwrap() > 0.0);
+    assert_eq!(project_json["top_memories"][0]["id"], memory_id);
+    assert_eq!(project_json["top_memories"][0]["request_count"], 2);
 }
 
 #[test]

@@ -21,6 +21,7 @@ pub(crate) struct UsageReport {
     pub(crate) since_days: i64,
     pub(crate) read_count: usize,
     pub(crate) write_count: usize,
+    pub(crate) write_pressure: f64,
     pub(crate) semantic_read_count: usize,
     pub(crate) fallback_read_count: usize,
     pub(crate) semantic_eligible_read_count: usize,
@@ -42,7 +43,7 @@ pub(crate) struct UsageReport {
     pub(crate) recent_reads: Vec<MemoryReadEvent>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct UsageMemoryItem {
     pub(crate) id: String,
     #[serde(rename = "type")]
@@ -318,6 +319,8 @@ pub(crate) struct ProjectDashboardItem {
     pub(crate) semantic_eligible_empty_read_count: Option<usize>,
     pub(crate) semantic_empty_queries: Vec<String>,
     pub(crate) recommended_budget: Option<String>,
+    pub(crate) write_pressure: Option<f64>,
+    pub(crate) top_memories: Vec<UsageMemoryItem>,
     pub(crate) repair_loop: OpsRepairLoopStatus,
     pub(crate) gap_inbox: DashboardGapInboxStatus,
     pub(crate) attention_reasons: Vec<String>,
@@ -351,6 +354,8 @@ pub(crate) struct MemoryQaReport {
     pub(crate) root: String,
     pub(crate) since_days: i64,
     pub(crate) reads: usize,
+    pub(crate) writes: usize,
+    pub(crate) write_pressure: f64,
     pub(crate) semantic_read_rate: f64,
     pub(crate) semantic_result_rate: f64,
     pub(crate) semantic_empty_read_count: usize,
@@ -633,6 +638,7 @@ pub(crate) fn print_usage_report(
     println!("since_days: {}", report.since_days);
     println!("reads: {}", report.read_count);
     println!("writes: {}", report.write_count);
+    println!("write_pressure: {:.2}", report.write_pressure);
     println!("semantic_reads: {}", report.semantic_read_count);
     println!("fallback_reads: {}", report.fallback_read_count);
     println!(
@@ -791,6 +797,7 @@ pub(crate) fn usage_report(
         since_days,
         read_count: all_reads.len(),
         write_count,
+        write_pressure: ratio(write_count, all_reads.len().max(1)),
         semantic_read_count,
         fallback_read_count: all_reads.len().saturating_sub(semantic_read_count),
         semantic_eligible_read_count,
@@ -1947,6 +1954,8 @@ pub(crate) fn dashboard_repair_history_report(
             semantic_eligible_empty_read_count: None,
             semantic_empty_queries: Vec::new(),
             recommended_budget: None,
+            write_pressure: None,
+            top_memories: Vec::new(),
             repair_loop: empty_repair_loop_status(),
             gap_inbox: DashboardGapInboxStatus::default(),
             attention_reasons: Vec::new(),
@@ -2740,6 +2749,11 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                     .map(|usage| usage.semantic_empty_queries.clone())
                     .unwrap_or_default(),
                 recommended_budget: profile.map(|profile| profile.recommended_budget),
+                write_pressure: usage.as_ref().map(|usage| usage.write_pressure),
+                top_memories: usage
+                    .as_ref()
+                    .map(|usage| usage.top_memories.clone())
+                    .unwrap_or_default(),
                 repair_loop,
                 gap_inbox,
                 attention_reasons,
@@ -3005,6 +3019,16 @@ pub(crate) fn memory_qa_report(
         recommendations
             .push("ensure agents start with dukememory brief or MCP memory_brief".to_string());
     }
+    if usage.read_count >= 20 && usage.write_pressure > 2.0 {
+        issues.push(format!(
+            "memory write pressure is high: {:.2} writes per read",
+            usage.write_pressure
+        ));
+        recommendations.push(
+            "let autonomous throttling reduce non-critical writes before adding more memory"
+                .to_string(),
+        );
+    }
     if semantic_read_rate < 0.50 && usage.semantic_eligible_total > 0 {
         issues
             .push("semantic recall is used by less than half of eligible recent reads".to_string());
@@ -3115,6 +3139,8 @@ pub(crate) fn memory_qa_report(
         root: root.display().to_string(),
         since_days,
         reads: usage.read_count,
+        writes: usage.write_count,
+        write_pressure: usage.write_pressure,
         semantic_read_rate,
         semantic_result_rate,
         semantic_empty_read_count,

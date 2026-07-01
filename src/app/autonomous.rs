@@ -1442,6 +1442,7 @@ pub(crate) fn autonomous_run_once(
                 request.scope,
                 &mut report,
             )?;
+            autonomous_triage_unused_memories(conn, effective_level, request.scope, &mut report)?;
             autonomous_resolve_quality_inbox(conn, effective_level, request.scope, &mut report)?;
         }
         let quality_level = if matches!(request.level, AutonomousLevel::Conservative) {
@@ -1956,6 +1957,12 @@ fn autonomous_create_quality_inbox(
         });
         return Ok(());
     }
+    if let Some(pressure) = autonomous_write_pressure_throttled(conn)? {
+        report
+            .actions
+            .push(write_pressure_throttled_action("quality_inbox", pressure));
+        return Ok(());
+    }
     let quality = quality_report(conn, 30, 50)?;
     let candidates = quality
         .weakest
@@ -2454,11 +2461,12 @@ fn explicit_file_link_candidates(root: &Path, memory: &Memory, max: usize) -> Ve
     let mut links = Vec::new();
     let mut seen = HashSet::new();
     let text = format!("{} {}", memory.title, memory.body);
+    let normalized_text = text.to_lowercase();
     for raw in text.split_whitespace() {
         let token = raw.trim_matches(|ch: char| {
             matches!(
                 ch,
-                '`' | '"' | '\'' | ',' | ';' | ':' | ')' | '(' | '[' | ']' | '{' | '}'
+                '`' | '"' | '\'' | ',' | ';' | ':' | ')' | '(' | '[' | ']' | '{' | '}' | '.'
             )
         });
         if !token.contains('/') || token.contains("://") {
@@ -2483,12 +2491,117 @@ fn explicit_file_link_candidates(root: &Path, memory: &Memory, max: usize) -> Ve
             if seen.insert(link.clone()) {
                 links.push(link);
                 if links.len() >= max {
-                    break;
+                    return links;
                 }
             }
         }
     }
+    for candidate in inferred_project_file_candidates(root, &normalized_text, max) {
+        if seen.insert(candidate.clone()) {
+            links.push(candidate);
+            if links.len() >= max {
+                break;
+            }
+        }
+    }
     links
+}
+
+fn inferred_project_file_candidates(root: &Path, normalized_text: &str, max: usize) -> Vec<String> {
+    let files = collect_project_files(root, 2_000);
+    let mut keys: HashMap<String, Option<String>> = HashMap::new();
+    for file in files {
+        let Some(file_name) = file.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let Some(stem) = file.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let rel = file.to_string_lossy().replace('\\', "/");
+        let link = format!("file:{rel}");
+        for key in [
+            file_name.to_lowercase(),
+            stem.to_lowercase(),
+            rel.to_lowercase(),
+        ] {
+            if key.len() < 4 {
+                continue;
+            }
+            keys.entry(key)
+                .and_modify(|value| {
+                    if value.as_deref() != Some(&link) {
+                        *value = None;
+                    }
+                })
+                .or_insert_with(|| Some(link.clone()));
+        }
+    }
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut unique = keys
+        .into_iter()
+        .filter_map(|(key, link)| link.map(|link| (key, link)))
+        .collect::<Vec<_>>();
+    unique.sort_by(|left, right| {
+        right
+            .0
+            .len()
+            .cmp(&left.0.len())
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    for (key, link) in unique {
+        if !normalized_text.contains(&key) || !seen.insert(link.clone()) {
+            continue;
+        }
+        out.push(link);
+        if out.len() >= max {
+            break;
+        }
+    }
+    out
+}
+
+fn collect_project_files(root: &Path, max: usize) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            if path.is_dir() {
+                if matches!(
+                    name,
+                    ".git" | ".agent" | ".codegraph" | "target" | "node_modules" | ".next" | "dist"
+                ) {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            if !path.is_file() || !project_linkable_file(&path) {
+                continue;
+            }
+            let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+            out.push(rel);
+            if out.len() >= max {
+                return out;
+            }
+        }
+    }
+    out
+}
+
+fn project_linkable_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|value| value.to_str()),
+        Some("rs" | "toml" | "md" | "json" | "html" | "js" | "ts" | "tsx" | "py" | "css")
+    )
 }
 
 fn autonomous_repair_explicit_file_links(
@@ -2586,6 +2699,132 @@ fn autonomous_repair_explicit_file_links(
         kind: "repair_explicit_file_links".to_string(),
         status: "ok".to_string(),
         detail: format!("repaired explicit file links on {changed} card(s)"),
+        memory_id: None,
+    });
+    Ok(())
+}
+
+fn autonomous_write_pressure_throttled(conn: &Connection) -> Result<Option<f64>> {
+    let usage = usage_report(conn, 7, 10)?;
+    if usage.read_count >= 20 && usage.write_pressure > 2.0 {
+        Ok(Some(usage.write_pressure))
+    } else {
+        Ok(None)
+    }
+}
+
+fn write_pressure_throttled_action(kind: &str, pressure: f64) -> AutonomousAction {
+    AutonomousAction {
+        kind: kind.to_string(),
+        status: "skipped".to_string(),
+        detail: format!(
+            "write pressure {:.2} is above 2.00; throttled non-critical writes",
+            pressure
+        ),
+        memory_id: None,
+    }
+}
+
+fn autonomous_triage_unused_memories(
+    conn: &Connection,
+    level: AutonomousLevel,
+    scope: &str,
+    report: &mut AutonomousReport,
+) -> Result<()> {
+    let max = match level {
+        AutonomousLevel::Conservative => 0,
+        AutonomousLevel::Normal => 2,
+        AutonomousLevel::Aggressive => 5,
+    };
+    if max == 0 {
+        return Ok(());
+    }
+    if let Some(pressure) = autonomous_write_pressure_throttled(conn)? {
+        report.actions.push(write_pressure_throttled_action(
+            "triage_unused_memory",
+            pressure,
+        ));
+        return Ok(());
+    }
+    let quality = quality_report(conn, 30, 100)?;
+    let mut candidates = Vec::new();
+    for item in quality.items {
+        if candidates.len() >= max {
+            break;
+        }
+        if !matches!(item.memory_type.as_str(), "design_note" | "task_state")
+            || item.request_count > 0
+            || item.positive_feedback > 0
+            || item.negative_feedback > 0
+            || item.score > 50.0
+            || item.links == 0
+            || item
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("broad history card"))
+        {
+            continue;
+        }
+        let memory = get_memory(conn, &item.id)?;
+        if memory.scope != scope || memory.status != "active" {
+            continue;
+        }
+        candidates.push(memory);
+    }
+    let decision = autonomous_policy_decision(AutonomousPolicyInput {
+        action: "triage_unused_memory",
+        level,
+        risk_score: 22.0,
+        usefulness_score: (candidates.len().min(5) as f64) * 8.0,
+        token_saving_score: (candidates.len().min(5) as f64) * 5.0,
+        confidence: if candidates.is_empty() { 0.0 } else { 0.78 },
+        rollback: true,
+        reason: format!("{} low-risk unused memory card(s)", candidates.len()),
+    });
+    report.policy.push(decision.clone());
+    if candidates.is_empty() {
+        report.actions.push(AutonomousAction {
+            kind: "triage_unused_memory".to_string(),
+            status: "skipped".to_string(),
+            detail: "no low-risk unused memory cards".to_string(),
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    if !decision.allowed {
+        report.actions.push(AutonomousAction {
+            kind: "triage_unused_memory".to_string(),
+            status: "skipped".to_string(),
+            detail: decision.reason,
+            memory_id: None,
+        });
+        return Ok(());
+    }
+    let mut changed = 0;
+    for memory in candidates {
+        report
+            .rollback
+            .push(AutonomousRollback::RestoreMemoryStatus {
+                id: memory.id.clone(),
+                status: memory.status.clone(),
+                superseded_by: memory.superseded_by.clone(),
+            });
+        conn.execute(
+            "UPDATE memories SET status = 'uncertain', updated_at = ?1 WHERE id = ?2 AND status = 'active'",
+            params![now_ms(), memory.id],
+        )?;
+        log_event(
+            conn,
+            "autonomous_triage_unused_memory",
+            Some(&memory.id),
+            "marked low-risk unused memory uncertain",
+        )?;
+        changed += 1;
+    }
+    report.actions.push(AutonomousAction {
+        kind: "triage_unused_memory".to_string(),
+        status: "ok".to_string(),
+        detail: format!("marked {changed} low-risk unused card(s) uncertain"),
         memory_id: None,
     });
     Ok(())
