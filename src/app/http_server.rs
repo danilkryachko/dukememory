@@ -438,6 +438,100 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 true,
             )?}))
         }
+        ("GET", "/memory-health-score") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"health": memory_health_score_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+            )?}))
+        }
+        ("GET", "/explain-recall") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let query_text = params
+                .get("q")
+                .map(String::as_str)
+                .unwrap_or("project memory");
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(8);
+            HttpResponse::ok(json!({"explain": explain_recall_report(
+                &conn,
+                &ctx.root,
+                query_text,
+                limit,
+            )?}))
+        }
+        ("GET", "/project-intent-map") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            HttpResponse::ok(json!({"intent_map": project_intent_map_report(&conn, &ctx.root)?}))
+        }
+        ("GET", "/memory-test-harness") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(8);
+            HttpResponse::ok(json!({"harness": memory_test_harness_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                limit,
+            )?}))
+        }
+        ("GET", "/agent-audit-v2") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"audit_v2": agent_audit_v2_report(
+                &conn,
+                &ctx.root,
+                since_days,
+            )?}))
+        }
+        ("GET", "/memory-control-center-v2") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"control_v2": memory_control_center_v2_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+            )?}))
+        }
         ("POST", "/ranking-profile/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;

@@ -557,6 +557,152 @@ pub(crate) struct AutoRankingTuneReport {
     pub(crate) ranking: RankingProfileReport,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemoryHealthScoreReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) score: f64,
+    pub(crate) grade: String,
+    pub(crate) qa_score: f64,
+    pub(crate) roi_score: f64,
+    pub(crate) agent_score: f64,
+    pub(crate) cost_score: f64,
+    pub(crate) autonomy_ready: bool,
+    pub(crate) semantic_ready: bool,
+    pub(crate) write_pressure: f64,
+    pub(crate) token_saving_estimate: usize,
+    pub(crate) components: Vec<MemoryHealthComponent>,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemoryHealthComponent {
+    pub(crate) name: String,
+    pub(crate) score: f64,
+    pub(crate) weight: f64,
+    pub(crate) status: String,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ExplainRecallReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) query: String,
+    pub(crate) limit: usize,
+    pub(crate) hits: Vec<ExplainRecallHit>,
+    pub(crate) missing_signals: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ExplainRecallHit {
+    pub(crate) id: String,
+    #[serde(rename = "type")]
+    pub(crate) memory_type: String,
+    pub(crate) title: String,
+    pub(crate) status: String,
+    pub(crate) confidence: f64,
+    pub(crate) score: f64,
+    pub(crate) matched_terms: Vec<String>,
+    pub(crate) reasons: Vec<String>,
+    pub(crate) explanation: String,
+    pub(crate) preview: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ProjectIntentMapReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) goals: Vec<IntentMapItem>,
+    pub(crate) decisions: Vec<IntentMapItem>,
+    pub(crate) constraints: Vec<IntentMapItem>,
+    pub(crate) commands: Vec<IntentMapItem>,
+    pub(crate) risks: Vec<IntentMapItem>,
+    pub(crate) active_tasks: Vec<IntentMapItem>,
+    pub(crate) contract_path: String,
+    pub(crate) contract_preview: String,
+    pub(crate) recommended_start_flow: Vec<String>,
+    pub(crate) gaps: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct IntentMapItem {
+    pub(crate) id: String,
+    #[serde(rename = "type")]
+    pub(crate) memory_type: String,
+    pub(crate) title: String,
+    pub(crate) summary: String,
+    pub(crate) confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemoryTestHarnessReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) score: f64,
+    pub(crate) probes: Vec<MemoryTestProbe>,
+    pub(crate) failures: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemoryTestProbe {
+    pub(crate) query: String,
+    pub(crate) expected_type: Option<String>,
+    pub(crate) expected_id: Option<String>,
+    pub(crate) found: bool,
+    pub(crate) matched_id: Option<String>,
+    pub(crate) matched_title: Option<String>,
+    pub(crate) result_count: usize,
+    pub(crate) explanation: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AgentAuditV2Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) score: f64,
+    pub(crate) base_score: f64,
+    pub(crate) disciplined_reads: bool,
+    pub(crate) semantic_effective: bool,
+    pub(crate) writes_controlled: bool,
+    pub(crate) feedback_loop_active: bool,
+    pub(crate) trace_explainable: bool,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+    pub(crate) audit: AgentAuditReport,
+    pub(crate) trace: DecisionTraceReport,
+    pub(crate) cost_guard: CostGuardReport,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryControlCenterV2Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) health: MemoryHealthScoreReport,
+    pub(crate) intent_map: ProjectIntentMapReport,
+    pub(crate) test_harness: MemoryTestHarnessReport,
+    pub(crate) agent_audit_v2: AgentAuditV2Report,
+    pub(crate) explain_recall: ExplainRecallReport,
+    pub(crate) autonomy: AutonomyControlCenterReport,
+    pub(crate) next_actions: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct ProjectTemplateReport {
     pub(crate) version: u32,
@@ -3102,6 +3248,777 @@ pub(crate) fn auto_ranking_tune_report(
     })
 }
 
+pub(crate) fn print_memory_health_score(
+    conn: &Connection,
+    default_db: &Path,
+    root: &Path,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_health_score_report(conn, default_db, root, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Health Score: {:.1} {}", report.score, report.grade);
+    println!("status: {}", report.status);
+    for component in &report.components {
+        println!(
+            "- {} {:.1} ({:.0}%): {}",
+            component.name,
+            component.score,
+            component.weight * 100.0,
+            component.detail
+        );
+    }
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_health_score_report(
+    conn: &Connection,
+    default_db: &Path,
+    root: &Path,
+    since_days: i64,
+) -> Result<MemoryHealthScoreReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let qa = memory_qa_report(conn, &root, since_days)?;
+    let roi = roi_report(conn, since_days)?;
+    let audit = agent_audit_report(conn, since_days)?;
+    let cost = cost_guard_report(conn, since_days)?;
+    let autonomy = autonomy_control_center_report(conn, default_db, &root, since_days).ok();
+    let autonomy_ready = autonomy.as_ref().is_some_and(|item| item.ok);
+    let semantic_ready = qa.embedding_missing == 0
+        && qa.embedding_stale == 0
+        && qa.semantic_eligible_result_rate >= 0.80;
+    let cost_score = cost.score;
+    let autonomy_score = if autonomy_ready { 100.0 } else { 65.0 };
+    let components = vec![
+        MemoryHealthComponent {
+            name: "qa".to_string(),
+            score: qa.score,
+            weight: 0.30,
+            status: score_status(qa.score),
+            detail: format!(
+                "quality {:.1}, useful {:.0}%, active {}",
+                qa.quality_average,
+                qa.useful_rate * 100.0,
+                qa.active_memories
+            ),
+        },
+        MemoryHealthComponent {
+            name: "roi".to_string(),
+            score: roi.score,
+            weight: 0.20,
+            status: score_status(roi.score),
+            detail: format!(
+                "reuse {:.0}%, token saving {}",
+                roi.reused_card_rate * 100.0,
+                roi.token_saving_estimate
+            ),
+        },
+        MemoryHealthComponent {
+            name: "agent".to_string(),
+            score: audit.score,
+            weight: 0.20,
+            status: score_status(audit.score),
+            detail: format!(
+                "brief {} impact {} feedback {}",
+                audit.brief_reads, audit.impact_reads, audit.feedback_events
+            ),
+        },
+        MemoryHealthComponent {
+            name: "cost".to_string(),
+            score: cost_score,
+            weight: 0.15,
+            status: score_status(cost_score),
+            detail: format!(
+                "profile {}, max chars {}",
+                cost.recommended_profile, cost.recommended_max_chars
+            ),
+        },
+        MemoryHealthComponent {
+            name: "autonomy".to_string(),
+            score: autonomy_score,
+            weight: 0.15,
+            status: score_status(autonomy_score),
+            detail: autonomy
+                .as_ref()
+                .map(|item| item.status.clone())
+                .unwrap_or_else(|| "unavailable".to_string()),
+        },
+    ];
+    let score = components
+        .iter()
+        .map(|component| component.score * component.weight)
+        .sum::<f64>()
+        .clamp(0.0, 100.0);
+    let mut issues = Vec::new();
+    issues.extend(qa.issues.clone());
+    issues.extend(roi.issues.clone());
+    issues.extend(audit.issues.clone());
+    issues.extend(cost.issues.clone());
+    if !autonomy_ready {
+        issues.push("autonomy control center is not fully ready".to_string());
+    }
+    let mut recommendations = Vec::new();
+    recommendations.extend(qa.recommendations.clone());
+    recommendations.extend(roi.recommendations.clone());
+    recommendations.extend(audit.recommendations.clone());
+    recommendations.extend(cost.actions.clone());
+    if !semantic_ready {
+        recommendations.push("refresh embeddings and inspect semantic empty reads".to_string());
+    }
+    if !autonomy_ready {
+        recommendations.push("run dukememory autonomous-loop --apply --json".to_string());
+    }
+    issues.sort();
+    issues.dedup();
+    recommendations.sort();
+    recommendations.dedup();
+    let status = if score >= 85.0 && issues.len() <= 2 {
+        "ready"
+    } else if score >= 70.0 {
+        "attention"
+    } else {
+        "blocked"
+    }
+    .to_string();
+    Ok(MemoryHealthScoreReport {
+        version: 1,
+        ok: status == "ready" || status == "attention",
+        status,
+        root: root.display().to_string(),
+        since_days,
+        score,
+        grade: health_grade(score),
+        qa_score: qa.score,
+        roi_score: roi.score,
+        agent_score: audit.score,
+        cost_score,
+        autonomy_ready,
+        semantic_ready,
+        write_pressure: qa.write_pressure,
+        token_saving_estimate: qa.token_saving_estimate,
+        components,
+        issues,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_explain_recall(
+    conn: &Connection,
+    root: &Path,
+    query: &str,
+    limit: usize,
+    json_out: bool,
+) -> Result<()> {
+    let report = explain_recall_report(conn, root, query, limit)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Explain Recall: {}", report.query);
+    for hit in &report.hits {
+        println!(
+            "- {:.2} {} [{}] {}",
+            hit.score, hit.id, hit.memory_type, hit.explanation
+        );
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn explain_recall_report(
+    conn: &Connection,
+    root: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<ExplainRecallReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let limit = limit.clamp(1, 25);
+    let memories = query_memories(
+        conn,
+        Some(query),
+        &[],
+        &["active".to_string(), "uncertain".to_string()],
+        Some("project"),
+        limit,
+    )?;
+    let usage = usage_report(conn, 30, 50).ok();
+    let usage_counts = usage
+        .as_ref()
+        .map(|usage| {
+            usage
+                .top_memories
+                .iter()
+                .map(|item| (item.id.clone(), item.request_count))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let terms = recall_terms(query);
+    let mut hits = Vec::new();
+    for memory in memories {
+        let haystack = format!(
+            "{} {} {}",
+            memory.title.to_lowercase(),
+            memory.body.to_lowercase(),
+            memory.memory_type.to_lowercase()
+        );
+        let matched_terms = terms
+            .iter()
+            .filter(|term| haystack.contains(term.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let reuse = usage_counts.get(&memory.id).copied().unwrap_or(0);
+        let type_weight = recall_type_weight(&memory.memory_type);
+        let status_weight = if memory.status == "active" { 8.0 } else { 2.0 };
+        let score = (matched_terms.len() as f64 * 12.0)
+            + memory.confidence.clamp(0.0, 1.0) * 20.0
+            + type_weight
+            + status_weight
+            + (reuse.min(5) as f64 * 4.0);
+        let mut reasons = Vec::new();
+        if !matched_terms.is_empty() {
+            reasons.push(format!("matched terms: {}", matched_terms.join(", ")));
+        }
+        if reuse > 0 {
+            reasons.push(format!("reused by recent agents {reuse} time(s)"));
+        }
+        if memory.confidence >= 0.9 {
+            reasons.push("high-confidence durable memory".to_string());
+        }
+        reasons.push(format!(
+            "type {} is useful for task context",
+            memory.memory_type
+        ));
+        let explanation = if matched_terms.is_empty() {
+            format!(
+                "selected by FTS fallback and durable {} context",
+                memory.memory_type
+            )
+        } else {
+            format!(
+                "selected because {} matched the query and {} has confidence {:.2}",
+                matched_terms.join(", "),
+                memory.memory_type,
+                memory.confidence
+            )
+        };
+        hits.push(ExplainRecallHit {
+            id: memory.id,
+            memory_type: memory.memory_type,
+            title: memory.title,
+            status: memory.status,
+            confidence: memory.confidence,
+            score,
+            matched_terms,
+            reasons,
+            explanation,
+            preview: truncate_chars(&memory.body, 220),
+        });
+    }
+    hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.title.cmp(&b.title))
+    });
+    let mut missing_signals = Vec::new();
+    if hits.is_empty() {
+        missing_signals.push("no active project memory matched this query".to_string());
+    }
+    if !terms.is_empty() && hits.iter().all(|hit| hit.matched_terms.is_empty()) {
+        missing_signals.push("no recalled card shares explicit query terms".to_string());
+    }
+    let mut recommendations = Vec::new();
+    if hits.is_empty() {
+        recommendations.push("add a durable card if this is a repeated project fact".to_string());
+    } else {
+        recommendations
+            .push("use top hits as bounded context; do not expand to full memory dump".to_string());
+    }
+    Ok(ExplainRecallReport {
+        version: 1,
+        ok: missing_signals.is_empty(),
+        root: root.display().to_string(),
+        query: query.to_string(),
+        limit,
+        hits,
+        missing_signals,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_project_intent_map(
+    conn: &Connection,
+    root: &Path,
+    json_out: bool,
+) -> Result<()> {
+    let report = project_intent_map_report(conn, root)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Project Intent Map");
+    for goal in &report.goals {
+        println!("goal: {}", goal.title);
+    }
+    for decision in &report.decisions {
+        println!("decision: {}", decision.title);
+    }
+    for gap in &report.gaps {
+        println!("gap: {gap}");
+    }
+    Ok(())
+}
+
+pub(crate) fn project_intent_map_report(
+    conn: &Connection,
+    root: &Path,
+) -> Result<ProjectIntentMapReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let goals = intent_items(conn, &["product_goal"], 5)?;
+    let decisions = intent_items(conn, &["decision", "design_note"], 8)?;
+    let constraints = intent_items(conn, &["constraint", "user_preference"], 6)?;
+    let commands = intent_items(conn, &["command"], 6)?;
+    let risks = intent_items(conn, &["known_issue"], 6)?;
+    let active_tasks = intent_items(conn, &["task_state"], 8)?;
+    let contract = memory_contract_report(conn, &root, false)?;
+    let mut gaps = Vec::new();
+    if goals.is_empty() {
+        gaps.push("no product_goal cards define project intent".to_string());
+    }
+    if decisions.is_empty() {
+        gaps.push("no active decisions/design notes were found".to_string());
+    }
+    if commands.is_empty() {
+        gaps.push("no command cards document validation workflows".to_string());
+    }
+    Ok(ProjectIntentMapReport {
+        version: 1,
+        ok: gaps.len() <= 1,
+        root: root.display().to_string(),
+        goals,
+        decisions,
+        constraints,
+        commands,
+        risks,
+        active_tasks,
+        contract_path: contract.path,
+        contract_preview: truncate_chars(&contract.content, 1400),
+        recommended_start_flow: vec![
+            "context-governor".to_string(),
+            "brief".to_string(),
+            "impact when target is known".to_string(),
+            "explain-recall for surprising context".to_string(),
+        ],
+        gaps,
+    })
+}
+
+pub(crate) fn print_memory_test_harness(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    limit: usize,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_test_harness_report(conn, root, since_days, limit)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Test Harness: {:.1}", report.score);
+    for probe in &report.probes {
+        println!(
+            "- {}: {} ({})",
+            if probe.found { "ok" } else { "miss" },
+            probe.query,
+            probe.explanation
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_test_harness_report(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    limit: usize,
+) -> Result<MemoryTestHarnessReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let limit = limit.clamp(3, 20);
+    let usage = usage_report(conn, since_days, 10)?;
+    let mut seed_queries = Vec::new();
+    for item in usage.top_memories.iter().take(4) {
+        seed_queries.push((
+            item.title.clone(),
+            Some(item.memory_type.clone()),
+            Some(item.id.clone()),
+        ));
+    }
+    if seed_queries.len() < limit {
+        for item in intent_items(
+            conn,
+            &["decision", "constraint", "command", "task_state"],
+            limit,
+        )? {
+            seed_queries.push((item.title, Some(item.memory_type), Some(item.id)));
+            if seed_queries.len() >= limit {
+                break;
+            }
+        }
+    }
+    seed_queries.sort_by(|a, b| a.0.cmp(&b.0));
+    seed_queries.dedup_by(|a, b| a.0 == b.0);
+    let mut probes = Vec::new();
+    let mut failures = Vec::new();
+    for (query, expected_type, expected_id) in seed_queries.into_iter().take(limit) {
+        let hits = query_memories(
+            conn,
+            Some(&query),
+            &[],
+            &["active".to_string(), "uncertain".to_string()],
+            Some("project"),
+            5,
+        )?;
+        let matched = hits.iter().find(|memory| {
+            expected_id.as_ref().is_some_and(|id| memory.id == *id)
+                || expected_type
+                    .as_ref()
+                    .is_some_and(|kind| memory.memory_type == *kind)
+        });
+        let found = matched.is_some();
+        if !found {
+            failures.push(format!("query did not recover expected memory: {query}"));
+        }
+        probes.push(MemoryTestProbe {
+            query: query.clone(),
+            expected_type,
+            expected_id,
+            found,
+            matched_id: matched.map(|memory| memory.id.clone()),
+            matched_title: matched.map(|memory| memory.title.clone()),
+            result_count: hits.len(),
+            explanation: if found {
+                "retrieval recovered the expected card or type".to_string()
+            } else if hits.is_empty() {
+                "retrieval returned no active project cards".to_string()
+            } else {
+                "retrieval returned cards, but not the expected card/type".to_string()
+            },
+        });
+    }
+    if probes.is_empty() {
+        failures.push("no suitable memory cards were available for probes".to_string());
+    }
+    let score = if probes.is_empty() {
+        0.0
+    } else {
+        probes.iter().filter(|probe| probe.found).count() as f64 / probes.len() as f64 * 100.0
+    };
+    let mut recommendations = Vec::new();
+    if score < 80.0 {
+        recommendations
+            .push("review missing probes and add links or compact clearer card titles".to_string());
+    }
+    if probes.len() < 3 {
+        recommendations.push(
+            "add durable decision/constraint/command cards before relying on memory tests"
+                .to_string(),
+        );
+    }
+    Ok(MemoryTestHarnessReport {
+        version: 1,
+        ok: score >= 75.0 && !probes.is_empty(),
+        root: root.display().to_string(),
+        since_days,
+        score,
+        probes,
+        failures,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_agent_audit_v2(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = agent_audit_v2_report(conn, root, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Agent Audit v2: {:.1} {}", report.score, report.status);
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn agent_audit_v2_report(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+) -> Result<AgentAuditV2Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let audit = agent_audit_report(conn, since_days)?;
+    let trace = decision_trace_report(conn, since_days, 20)?;
+    let cost_guard = cost_guard_report(conn, since_days)?;
+    let disciplined_reads = audit.read_count == 0
+        || audit.brief_reads > 0
+        || audit.impact_reads > 0
+        || audit.commands.contains_key("recall");
+    let semantic_effective = audit.semantic_eligible_result_rate >= 0.75 || audit.read_count < 3;
+    let writes_controlled = cost_guard.write_pressure <= 1.0 || audit.read_count < 5;
+    let feedback_loop_active = audit.feedback_events > 0 || trace.positive_feedback > 0;
+    let trace_explainable = trace.traced_reads == 0
+        || trace.influenced_reads > 0
+        || trace
+            .items
+            .iter()
+            .any(|item| !item.memory_titles.is_empty());
+    let mut score = audit.score;
+    if !disciplined_reads {
+        score -= 12.0;
+    }
+    if !semantic_effective {
+        score -= 12.0;
+    }
+    if !writes_controlled {
+        score -= 10.0;
+    }
+    if !feedback_loop_active {
+        score -= 6.0;
+    }
+    if !trace_explainable {
+        score -= 8.0;
+    }
+    score = score.clamp(0.0, 100.0);
+    let mut issues = audit.issues.clone();
+    if !disciplined_reads {
+        issues.push("recent agents did not start with brief/impact/recall".to_string());
+    }
+    if !semantic_effective {
+        issues.push("semantic eligible reads are not returning enough results".to_string());
+    }
+    if !writes_controlled {
+        issues.push("memory write pressure is too high for lightweight use".to_string());
+    }
+    if !trace_explainable {
+        issues.push("recent memory influence is not explainable enough".to_string());
+    }
+    let mut recommendations = audit.recommendations.clone();
+    recommendations.extend(trace.recommendations.clone());
+    recommendations.extend(cost_guard.actions.clone());
+    if !feedback_loop_active {
+        recommendations
+            .push("record lightweight feedback for useful/useless/missing cards".to_string());
+    }
+    issues.sort();
+    issues.dedup();
+    recommendations.sort();
+    recommendations.dedup();
+    let status = if score >= 85.0 {
+        "ready"
+    } else if score >= 70.0 {
+        "attention"
+    } else {
+        "blocked"
+    }
+    .to_string();
+    Ok(AgentAuditV2Report {
+        version: 1,
+        ok: status != "blocked",
+        status,
+        root: root.display().to_string(),
+        since_days,
+        score,
+        base_score: audit.score,
+        disciplined_reads,
+        semantic_effective,
+        writes_controlled,
+        feedback_loop_active,
+        trace_explainable,
+        issues,
+        recommendations,
+        audit,
+        trace,
+        cost_guard,
+    })
+}
+
+pub(crate) fn print_memory_control_center_v2(
+    conn: &Connection,
+    default_db: &Path,
+    root: &Path,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_control_center_v2_report(conn, default_db, root, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Control Center v2: {}", report.status);
+    println!("health: {:.1}", report.health.score);
+    println!("test harness: {:.1}", report.test_harness.score);
+    for action in &report.next_actions {
+        println!("next: {action}");
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_control_center_v2_report(
+    conn: &Connection,
+    default_db: &Path,
+    root: &Path,
+    since_days: i64,
+) -> Result<MemoryControlCenterV2Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let health = memory_health_score_report(conn, default_db, &root, since_days)?;
+    let intent_map = project_intent_map_report(conn, &root)?;
+    let test_harness = memory_test_harness_report(conn, &root, since_days, 8)?;
+    let agent_audit_v2 = agent_audit_v2_report(conn, &root, since_days)?;
+    let explain_query = intent_map
+        .active_tasks
+        .first()
+        .or_else(|| intent_map.decisions.first())
+        .map(|item| item.title.as_str())
+        .unwrap_or("project memory");
+    let explain_recall = explain_recall_report(conn, &root, explain_query, 6)?;
+    let autonomy = autonomy_control_center_report(conn, default_db, &root, since_days)?;
+    let mut next_actions = Vec::new();
+    if health.score < 85.0 {
+        next_actions.push("inspect memory-health-score recommendations".to_string());
+    }
+    if !test_harness.ok {
+        next_actions.push("fix retrieval probes before expanding memory usage".to_string());
+    }
+    if !agent_audit_v2.ok {
+        next_actions.push("run agent-audit-v2 and repair read/write discipline".to_string());
+    }
+    if !intent_map.gaps.is_empty() {
+        next_actions.push("fill project-intent-map gaps with durable cards".to_string());
+    }
+    if !autonomy.ok {
+        next_actions.push("run autonomous-loop --apply, then project-watch --fix".to_string());
+    }
+    if next_actions.is_empty() {
+        next_actions
+            .push("keep using context-governor and explain-recall for new tasks".to_string());
+    }
+    let ok = health.ok && test_harness.ok && agent_audit_v2.ok && autonomy.ok;
+    let status = if ok {
+        "ready"
+    } else if health.score >= 70.0 {
+        "attention"
+    } else {
+        "blocked"
+    }
+    .to_string();
+    Ok(MemoryControlCenterV2Report {
+        version: 1,
+        ok,
+        status,
+        root: root.display().to_string(),
+        since_days,
+        health,
+        intent_map,
+        test_harness,
+        agent_audit_v2,
+        explain_recall,
+        autonomy,
+        next_actions,
+    })
+}
+
+fn score_status(score: f64) -> String {
+    if score >= 85.0 {
+        "ready"
+    } else if score >= 70.0 {
+        "attention"
+    } else {
+        "blocked"
+    }
+    .to_string()
+}
+
+fn health_grade(score: f64) -> String {
+    if score >= 95.0 {
+        "A+"
+    } else if score >= 90.0 {
+        "A"
+    } else if score >= 80.0 {
+        "B"
+    } else if score >= 70.0 {
+        "C"
+    } else {
+        "D"
+    }
+    .to_string()
+}
+
+fn recall_terms(query: &str) -> Vec<String> {
+    let mut terms = query
+        .split(|ch: char| !ch.is_alphanumeric() && ch != '_' && ch != '-')
+        .map(str::trim)
+        .filter(|term| term.chars().count() >= 3)
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    terms.sort();
+    terms.dedup();
+    terms
+}
+
+fn recall_type_weight(memory_type: &str) -> f64 {
+    match memory_type {
+        "decision" | "constraint" | "user_preference" => 14.0,
+        "task_state" | "known_issue" => 12.0,
+        "command" | "design_note" => 10.0,
+        "product_goal" => 8.0,
+        _ => 4.0,
+    }
+}
+
+fn intent_items(conn: &Connection, types: &[&str], limit: usize) -> Result<Vec<IntentMapItem>> {
+    let type_filters = types
+        .iter()
+        .map(|item| item.to_string())
+        .collect::<Vec<_>>();
+    let rows = query_memories(
+        conn,
+        None,
+        &type_filters,
+        &["active".to_string(), "uncertain".to_string()],
+        Some("project"),
+        limit,
+    )?;
+    Ok(rows
+        .into_iter()
+        .map(|memory| IntentMapItem {
+            id: memory.id,
+            memory_type: memory.memory_type,
+            title: memory.title,
+            summary: truncate_chars(&memory.body, 260),
+            confidence: memory.confidence,
+        })
+        .collect())
+}
+
 pub(crate) fn print_project_template(
     root: &Path,
     kind: ProjectTemplateKind,
@@ -4054,6 +4971,12 @@ fn agent_required_commands() -> &'static [&'static str] {
         "cost-guard",
         "context-governor",
         "memory-router",
+        "memory-health-score",
+        "explain-recall",
+        "project-intent-map",
+        "memory-test-harness",
+        "agent-audit-v2",
+        "memory-control-center-v2",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",

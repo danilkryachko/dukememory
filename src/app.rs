@@ -982,6 +982,34 @@ pub(crate) fn run() -> Result<()> {
             apply,
             json,
         } => print_auto_ranking_tune(&conn, &root, since_days, apply, json)?,
+        Command::MemoryHealthScore {
+            root,
+            since_days,
+            json,
+        } => print_memory_health_score(&conn, &cli.db, &root, since_days, json)?,
+        Command::ExplainRecall {
+            query,
+            root,
+            limit,
+            json,
+        } => print_explain_recall(&conn, &root, &query, limit, json)?,
+        Command::ProjectIntentMap { root, json } => print_project_intent_map(&conn, &root, json)?,
+        Command::MemoryTestHarness {
+            root,
+            since_days,
+            limit,
+            json,
+        } => print_memory_test_harness(&conn, &root, since_days, limit, json)?,
+        Command::AgentAuditV2 {
+            root,
+            since_days,
+            json,
+        } => print_agent_audit_v2(&conn, &root, since_days, json)?,
+        Command::MemoryControlCenterV2 {
+            root,
+            since_days,
+            json,
+        } => print_memory_control_center_v2(&conn, &cli.db, &root, since_days, json)?,
         Command::ProjectTemplate {
             root,
             kind,
@@ -3294,6 +3322,18 @@ Use `dukememory budget-plan "<task>" --json` when unsure how much memory context
 
 Use `dukememory memory-router "<query>" --include-siblings --json` to route memory across nearby projects without treating other projects as authoritative.
 
+Use `dukememory memory-health-score --json` to inspect one end-to-end project memory health score.
+
+Use `dukememory explain-recall "<query>" --json` to explain why specific cards would be recalled.
+
+Use `dukememory project-intent-map --json` to inspect goals, decisions, constraints, commands, risks, active tasks, and the compact contract.
+
+Use `dukememory memory-test-harness --json` to run lightweight retrieval probes against durable memory.
+
+Use `dukememory agent-audit-v2 --json` to audit read discipline, semantic effectiveness, write pressure, feedback, and explainability.
+
+Use `dukememory memory-control-center-v2 --json` to aggregate health, intent, probes, audit, recall explanations, and autonomy.
+
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
 Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens.
@@ -3385,6 +3425,12 @@ dukememory intelligence-dashboard --json
 dukememory cost-guard --json
 dukememory context-governor "task" --json
 dukememory memory-router "query" --include-siblings --json
+dukememory memory-health-score --json
+dukememory explain-recall "query" --json
+dukememory project-intent-map --json
+dukememory memory-test-harness --json
+dukememory agent-audit-v2 --json
+dukememory memory-control-center-v2 --json
 dukememory doctor-project --json
 dukememory release-gate --json
 dukememory project-watch --json
@@ -3822,6 +3868,12 @@ fn print_completions(shell: CompletionShell) {
         "cost-guard",
         "context-governor",
         "memory-router",
+        "memory-health-score",
+        "explain-recall",
+        "project-intent-map",
+        "memory-test-harness",
+        "agent-audit-v2",
+        "memory-control-center-v2",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -3950,6 +4002,12 @@ fn print_manpage() {
     println!("  cost-guard --json             protect memory token budget");
     println!("  context-governor TASK         choose smallest memory read flow");
     println!("  memory-router QUERY           route memory across local projects");
+    println!("  memory-health-score --json    score end-to-end memory health");
+    println!("  explain-recall QUERY --json   explain recalled memory cards");
+    println!("  project-intent-map --json     summarize goals, constraints, tasks");
+    println!("  memory-test-harness --json    run retrieval quality probes");
+    println!("  agent-audit-v2 --json         stricter agent memory behavior audit");
+    println!("  memory-control-center-v2      aggregate health, recall, tests, autonomy");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");

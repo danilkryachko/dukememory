@@ -8608,6 +8608,12 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "cost-guard",
         "context-governor",
         "memory-router",
+        "memory-health-score",
+        "explain-recall",
+        "project-intent-map",
+        "memory-test-harness",
+        "agent-audit-v2",
+        "memory-control-center-v2",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -8653,6 +8659,12 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "cost-guard",
         "context-governor",
         "memory-router",
+        "memory-health-score",
+        "explain-recall",
+        "project-intent-map",
+        "memory-test-harness",
+        "agent-audit-v2",
+        "memory-control-center-v2",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -9564,6 +9576,12 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/cost-guard"));
     assert!(html.contains("/context-governor"));
     assert!(html.contains("/memory-router"));
+    assert!(html.contains("/memory-health-score"));
+    assert!(html.contains("/explain-recall"));
+    assert!(html.contains("/project-intent-map"));
+    assert!(html.contains("/memory-test-harness"));
+    assert!(html.contains("/agent-audit-v2"));
+    assert!(html.contains("/memory-control-center-v2"));
     assert!(html.contains("/project-diff"));
     assert!(html.contains("/intelligence-dashboard"));
     assert!(html.contains("/remote-sync-dry-run"));
@@ -9603,6 +9621,12 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("ranking profile"));
     assert!(html.contains("context governor"));
     assert!(html.contains("memory router"));
+    assert!(html.contains("memory health score"));
+    assert!(html.contains("explainable recall"));
+    assert!(html.contains("project intent map"));
+    assert!(html.contains("memory test harness"));
+    assert!(html.contains("agent audit v2"));
+    assert!(html.contains("control center v2"));
     assert!(html.contains("auto ranking tune"));
     assert!(html.contains("watch control"));
     assert!(html.contains("autonomy control center"));
@@ -10016,6 +10040,54 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(auto_ranking.contains("\"tune\""));
     assert!(auto_ranking.contains("\"selected_profile\""));
     assert!(auto_ranking.contains("\"ranking\""));
+
+    let memory_health = http_once(
+        &db,
+        "GET /memory-health-score?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(memory_health.contains("\"health\""));
+    assert!(memory_health.contains("\"components\""));
+    assert!(memory_health.contains("\"grade\""));
+
+    let explain_recall = http_once(
+        &db,
+        "GET /explain-recall?q=memory&limit=4 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(explain_recall.contains("\"explain\""));
+    assert!(explain_recall.contains("\"hits\""));
+    assert!(explain_recall.contains("\"recommendations\""));
+
+    let intent_map = http_once(
+        &db,
+        "GET /project-intent-map HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(intent_map.contains("\"intent_map\""));
+    assert!(intent_map.contains("\"recommended_start_flow\""));
+    assert!(intent_map.contains("\"contract_preview\""));
+
+    let memory_harness = http_once(
+        &db,
+        "GET /memory-test-harness?since_days=7&limit=4 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(memory_harness.contains("\"harness\""));
+    assert!(memory_harness.contains("\"probes\""));
+    assert!(memory_harness.contains("\"failures\""));
+
+    let audit_v2 = http_once(
+        &db,
+        "GET /agent-audit-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(audit_v2.contains("\"audit_v2\""));
+    assert!(audit_v2.contains("\"disciplined_reads\""));
+    assert!(audit_v2.contains("\"trace_explainable\""));
+
+    let control_v2 = http_once(
+        &db,
+        "GET /memory-control-center-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(control_v2.contains("\"control_v2\""));
+    assert!(control_v2.contains("\"health\""));
+    assert!(control_v2.contains("\"next_actions\""));
 
     let project_template = http_once(
         &db,
@@ -11380,6 +11452,95 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(auto_ranking_json["applied"], true);
     assert!(auto_ranking_json["selected_profile"].as_str().is_some());
 
+    let memory_health = stdout(
+        cmd(&db)
+            .arg("memory-health-score")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let memory_health_json: Value = serde_json::from_str(&memory_health).unwrap();
+    assert_eq!(memory_health_json["version"], 1);
+    assert!(memory_health_json["score"].as_f64().is_some());
+    assert!(memory_health_json["components"].as_array().unwrap().len() >= 4);
+
+    let explain_recall = stdout(
+        cmd(&db)
+            .arg("explain-recall")
+            .arg("memory route")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--limit")
+            .arg("5")
+            .arg("--json"),
+    );
+    let explain_recall_json: Value = serde_json::from_str(&explain_recall).unwrap();
+    assert_eq!(explain_recall_json["version"], 1);
+    assert!(explain_recall_json["hits"].as_array().is_some());
+    assert!(explain_recall_json["recommendations"].as_array().is_some());
+
+    let intent_map = stdout(
+        cmd(&db)
+            .arg("project-intent-map")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    );
+    let intent_map_json: Value = serde_json::from_str(&intent_map).unwrap();
+    assert_eq!(intent_map_json["version"], 1);
+    assert!(
+        intent_map_json["recommended_start_flow"]
+            .as_array()
+            .is_some()
+    );
+    assert!(intent_map_json["contract_preview"].as_str().is_some());
+
+    let memory_harness = stdout(
+        cmd(&db)
+            .arg("memory-test-harness")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--limit")
+            .arg("5")
+            .arg("--json"),
+    );
+    let memory_harness_json: Value = serde_json::from_str(&memory_harness).unwrap();
+    assert_eq!(memory_harness_json["version"], 1);
+    assert!(memory_harness_json["probes"].as_array().is_some());
+    assert!(memory_harness_json["score"].as_f64().is_some());
+
+    let agent_audit_v2 = stdout(
+        cmd(&db)
+            .arg("agent-audit-v2")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let agent_audit_v2_json: Value = serde_json::from_str(&agent_audit_v2).unwrap();
+    assert_eq!(agent_audit_v2_json["version"], 1);
+    assert!(agent_audit_v2_json["disciplined_reads"].as_bool().is_some());
+    assert!(agent_audit_v2_json["trace_explainable"].as_bool().is_some());
+
+    let control_v2 = stdout(
+        cmd(&db)
+            .arg("memory-control-center-v2")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let control_v2_json: Value = serde_json::from_str(&control_v2).unwrap();
+    assert_eq!(control_v2_json["version"], 1);
+    assert!(control_v2_json["health"]["score"].as_f64().is_some());
+    assert!(control_v2_json["next_actions"].as_array().is_some());
+
     let project_template = stdout(
         cmd(&db)
             .arg("project-template")
@@ -11539,6 +11700,20 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .unwrap()
             .iter()
             .any(|item| item.as_str() == Some("context-governor"))
+    );
+    assert!(
+        agent_enforce_json["required_commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("memory-health-score"))
+    );
+    assert!(
+        agent_enforce_json["required_commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("memory-control-center-v2"))
     );
 
     let gap_run = stdout(

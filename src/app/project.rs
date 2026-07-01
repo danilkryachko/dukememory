@@ -15,13 +15,13 @@ pub(crate) struct OnboardReport {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct MemoryContractReport {
-    version: u32,
-    root: String,
-    path: String,
-    written: bool,
-    memory_id: Option<String>,
-    max_chars: usize,
-    content: String,
+    pub(crate) version: u32,
+    pub(crate) root: String,
+    pub(crate) path: String,
+    pub(crate) written: bool,
+    pub(crate) memory_id: Option<String>,
+    pub(crate) max_chars: usize,
+    pub(crate) content: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -662,6 +662,12 @@ For every new chat or coding task in this repository:
 - To choose the smallest full read flow, run `dukememory context-governor "<task>" --json`; add `--target <file-or-symbol>` before focused edits.
 - To choose the smallest useful context budget, run `dukememory budget-plan "<task>" --json`.
 - To route memory across nearby projects without mixing facts, run `dukememory memory-router "<query>" --include-siblings --json`; treat non-current routes as advisory.
+- To inspect one end-to-end project memory health score, run `dukememory memory-health-score --json`.
+- To explain why specific cards would be recalled, run `dukememory explain-recall "<query>" --json`.
+- To inspect goals, decisions, constraints, commands, risks, active tasks, and the compact contract, run `dukememory project-intent-map --json`.
+- To run lightweight retrieval quality probes against durable memory, run `dukememory memory-test-harness --json`.
+- To audit read discipline, semantic effectiveness, write pressure, feedback, and explainability, run `dukememory agent-audit-v2 --json`.
+- To aggregate health, intent, probes, audit, recall explanations, and autonomy, run `dukememory memory-control-center-v2 --json`.
 - To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`.
 - To inspect live memory usefulness from reads and feedback, run `dukememory eval live --json`.
 - To inspect all local projects, run `dukememory dashboard --json`.

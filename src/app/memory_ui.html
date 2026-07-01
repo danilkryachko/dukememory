@@ -554,7 +554,8 @@
       lang: savedLang === "en" ? "en" : "ru", activity: [], usefulness: null, embedding: null, autonomous: null,
       quality: null, profile: null, budget: null, dashboard: null, dashboardRepair: null, dashboardRepairHistory: null, qa: null, contract: null, ops: null, roi: null, agentAudit: null, remote: null,
       trace: null, autoFeedback: null, costGuard: null, projectDiff: null, intelligence: null, remoteSync: null,
-      doctor: null, releaseGate: null, replay: null, watch: null
+      doctor: null, releaseGate: null, replay: null, watch: null,
+      memoryHealth: null, explainRecall: null, intentMap: null, memoryHarness: null, agentAuditV2: null, controlCenterV2: null
     };
     const $ = (id) => document.getElementById(id);
     const t = (key) => i18n[state.lang][key] || i18n.en[key] || key;
@@ -852,7 +853,7 @@
       const params = new URLSearchParams({ since_days: "7" });
       if (state.project) params.set("project", state.project);
       const taskQuery = $("q")?.value || "memory task";
-      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch, loop, journal, engine, latency, syncProfile, enforce, watchInstall, rankingProfile, projectTemplate, diffReview, contextGovernor, memoryRouter, autoRanking, watchControl, autonomyCenter, remoteSyncV2] = await Promise.all([
+      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch, loop, journal, engine, latency, syncProfile, enforce, watchInstall, rankingProfile, projectTemplate, diffReview, contextGovernor, memoryRouter, autoRanking, watchControl, autonomyCenter, remoteSyncV2, memoryHealth, explainRecall, intentMap, memoryHarness, agentAuditV2, controlCenterV2] = await Promise.all([
         api(`/roi-report?${params.toString()}`),
         api(`/agent-audit?${params.toString()}`),
         api(`/remote-status?${params.toString()}`),
@@ -881,7 +882,13 @@
         api(`/auto-ranking-tune?${params.toString()}`),
         api(`/watch-control?${params.toString()}`),
         api(`/autonomy-control-center?${params.toString()}`),
-        api(`/remote-sync-v2?${params.toString()}`)
+        api(`/remote-sync-v2?${params.toString()}`),
+        api(`/memory-health-score?${params.toString()}`),
+        api(`/explain-recall?${params.toString()}&q=${encodeURIComponent(taskQuery)}&limit=8`),
+        api(`/project-intent-map?${params.toString()}`),
+        api(`/memory-test-harness?${params.toString()}&limit=8`),
+        api(`/agent-audit-v2?${params.toString()}`),
+        api(`/memory-control-center-v2?${params.toString()}`)
       ]);
       state.roi = roi.roi;
       state.agentAudit = audit.agent_audit;
@@ -912,6 +919,12 @@
       state.watchControl = watchControl.watch_control;
       state.autonomyCenter = autonomyCenter.control;
       state.remoteSyncV2 = remoteSyncV2.remote_sync_v2;
+      state.memoryHealth = memoryHealth.health;
+      state.explainRecall = explainRecall.explain;
+      state.intentMap = intentMap.intent_map;
+      state.memoryHarness = memoryHarness.harness;
+      state.agentAuditV2 = agentAuditV2.audit_v2;
+      state.controlCenterV2 = controlCenterV2.control_v2;
       renderSettings();
     }
 
@@ -1251,6 +1264,12 @@
       const watchControl = state.watchControl || {};
       const autonomyCenter = state.autonomyCenter || {};
       const remoteSyncV2 = state.remoteSyncV2 || {};
+      const memoryHealth = state.memoryHealth || {};
+      const explainRecall = state.explainRecall || {};
+      const intentMap = state.intentMap || {};
+      const memoryHarness = state.memoryHarness || {};
+      const agentAuditV2 = state.agentAuditV2 || {};
+      const controlCenterV2 = state.controlCenterV2 || {};
       const contract = state.contract || {};
       const ops = state.ops || {};
       const effectiveness = ops.effectiveness || {};
@@ -1315,6 +1334,12 @@
         <div class="stat"><strong>${watchControl.running ? "running" : watchControl.installed ? "installed" : "-"}</strong><span>watch control</span></div>
         <div class="stat"><strong>${escapeHtml(autonomyCenter.status || "-")}</strong><span>control center</span></div>
         <div class="stat"><strong>${escapeHtml(remoteSyncV2.status || "-")}</strong><span>remote sync v2</span></div>
+        <div class="stat"><strong>${Number(memoryHealth.score || 0).toFixed(1)}</strong><span>health ${escapeHtml(memoryHealth.grade || "")}</span></div>
+        <div class="stat"><strong>${Number(explainRecall.hits?.length || 0)}</strong><span>explain recall</span></div>
+        <div class="stat"><strong>${Number((intentMap.goals?.length || 0) + (intentMap.decisions?.length || 0) + (intentMap.constraints?.length || 0))}</strong><span>intent map</span></div>
+        <div class="stat"><strong>${Number(memoryHarness.score || 0).toFixed(1)}</strong><span>test harness</span></div>
+        <div class="stat"><strong>${Number(agentAuditV2.score || 0).toFixed(1)}</strong><span>audit v2</span></div>
+        <div class="stat"><strong>${escapeHtml(controlCenterV2.status || "-")}</strong><span>control v2</span></div>
       </div>
       <div class="card"><div class="title">doctor project</div><div class="body">status ${escapeHtml(doctor.status || "-")}<br>qa ${Number(doctor.memory_qa?.score || 0).toFixed(1)}<br>embedding ${doctor.embedding ? `${Number(doctor.embedding.missing || 0)} missing / ${Number(doctor.embedding.stale || 0)} stale` : "-"}<br>${doctor.checks?.length ? doctor.checks.slice(0, 6).map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">release gate</div><div class="body">status ${escapeHtml(releaseGate.status || "-")}<br>strict ${releaseGate.strict ? "yes" : "no"}<br>${releaseGate.checks?.length ? releaseGate.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}<br>${releaseGate.issues?.length ? releaseGate.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
@@ -1325,6 +1350,12 @@
       <div class="card"><div class="title">watch control</div><div class="body">installed ${watchControl.installed ? "yes" : "no"} / running ${watchControl.running ? "yes" : "no"}<br>plist ${escapeHtml(watchControl.plist || "-")}<br>${watchControl.issues?.length ? watchControl.issues.map(escapeHtml).join("<br>") : "issues -"}<br>${watchControl.recommendations?.length ? watchControl.recommendations.map(escapeHtml).join("<br>") : ""}</div></div>
       <div class="card"><div class="title">autonomy control center</div><div class="body">status ${escapeHtml(autonomyCenter.status || "-")}<br>qa ${Number(autonomyCenter.qa?.score || 0).toFixed(1)}<br>ranking ${escapeHtml(autonomyCenter.ranking?.selected_profile || "-")}<br>watch ${autonomyCenter.watch?.running ? "running" : autonomyCenter.watch?.installed ? "installed" : "-"}<br>${autonomyCenter.issues?.length ? autonomyCenter.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
       <div class="card"><div class="title">remote sync v2</div><div class="body">status ${escapeHtml(remoteSyncV2.status || "-")}<br>local first ${remoteSyncV2.local_first ? "yes" : "no"} / encrypted ${remoteSyncV2.encrypted_bundle ? "yes" : "no"}<br>policy ${escapeHtml(remoteSyncV2.conflict_policy || "-")}<br>${remoteSyncV2.blockers?.length ? remoteSyncV2.blockers.map(escapeHtml).join("<br>") : "blockers -"}</div></div>
+      <div class="card"><div class="title">memory health score</div><div class="body">status ${escapeHtml(memoryHealth.status || "-")} / grade ${escapeHtml(memoryHealth.grade || "-")}<br>qa ${Number(memoryHealth.qa_score || 0).toFixed(1)} / roi ${Number(memoryHealth.roi_score || 0).toFixed(1)} / agent ${Number(memoryHealth.agent_score || 0).toFixed(1)} / cost ${Number(memoryHealth.cost_score || 0).toFixed(1)}<br>semantic ${memoryHealth.semantic_ready ? "ready" : "attention"} / autonomy ${memoryHealth.autonomy_ready ? "ready" : "attention"}<br>${memoryHealth.recommendations?.length ? memoryHealth.recommendations.slice(0, 5).map(escapeHtml).join("<br>") : "recommendations -"}</div></div>
+      <div class="card"><div class="title">explainable recall</div><div class="body">query ${escapeHtml(explainRecall.query || "-")}<br>${explainRecall.hits?.length ? explainRecall.hits.slice(0, 5).map((hit) => `${Number(hit.score || 0).toFixed(1)} ${escapeHtml(hit.title)}: ${escapeHtml(hit.explanation || "")}`).join("<br>") : "-"}<br>${explainRecall.missing_signals?.length ? explainRecall.missing_signals.map(escapeHtml).join("<br>") : ""}</div></div>
+      <div class="card"><div class="title">project intent map</div><div class="body">goals ${Number(intentMap.goals?.length || 0)} / decisions ${Number(intentMap.decisions?.length || 0)} / constraints ${Number(intentMap.constraints?.length || 0)} / tasks ${Number(intentMap.active_tasks?.length || 0)}<br>${intentMap.goals?.length ? intentMap.goals.slice(0, 3).map((item) => `goal: ${escapeHtml(item.title)}`).join("<br>") : ""}${intentMap.decisions?.length ? "<br>" + intentMap.decisions.slice(0, 4).map((item) => `decision: ${escapeHtml(item.title)}`).join("<br>") : ""}<br>${intentMap.gaps?.length ? intentMap.gaps.map(escapeHtml).join("<br>") : "gaps -"}</div></div>
+      <div class="card"><div class="title">memory test harness</div><div class="body">score ${Number(memoryHarness.score || 0).toFixed(1)}<br>probes ${Number(memoryHarness.probes?.length || 0)} / failures ${Number(memoryHarness.failures?.length || 0)}<br>${memoryHarness.probes?.length ? memoryHarness.probes.slice(0, 5).map((probe) => `${probe.found ? "ok" : "miss"} ${escapeHtml(probe.query)}`).join("<br>") : "-"}<br>${memoryHarness.recommendations?.length ? memoryHarness.recommendations.map(escapeHtml).join("<br>") : ""}</div></div>
+      <div class="card"><div class="title">agent audit v2</div><div class="body">status ${escapeHtml(agentAuditV2.status || "-")} / score ${Number(agentAuditV2.score || 0).toFixed(1)}<br>disciplined ${agentAuditV2.disciplined_reads ? "yes" : "no"} / semantic ${agentAuditV2.semantic_effective ? "yes" : "no"} / writes ${agentAuditV2.writes_controlled ? "controlled" : "high"}<br>feedback ${agentAuditV2.feedback_loop_active ? "active" : "quiet"} / trace ${agentAuditV2.trace_explainable ? "explainable" : "weak"}<br>${agentAuditV2.issues?.length ? agentAuditV2.issues.slice(0, 5).map(escapeHtml).join("<br>") : "issues -"}</div></div>
+      <div class="card"><div class="title">control center v2</div><div class="body">status ${escapeHtml(controlCenterV2.status || "-")}<br>health ${Number(controlCenterV2.health?.score || 0).toFixed(1)} / harness ${Number(controlCenterV2.test_harness?.score || 0).toFixed(1)} / audit ${Number(controlCenterV2.agent_audit_v2?.score || 0).toFixed(1)}<br>${controlCenterV2.next_actions?.length ? controlCenterV2.next_actions.map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">autonomous loop</div><div class="body">status ${escapeHtml(loop.status || "-")}<br>applied ${loop.applied ? "yes" : "no"}<br>watch attention ${Number(loop.watch?.attention_projects || 0)}<br>${loop.actions?.length ? loop.actions.slice(0, 5).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">action journal</div><div class="body">events ${Number(journal.total || 0)}<br>applied ${Number(journal.applied || 0)} / skipped ${Number(journal.skipped || 0)} / failed ${Number(journal.failed || 0)}<br>rollback ${Number(journal.rollback_events || 0)}<br>${journal.items?.length ? journal.items.slice(0, 5).map((item) => `${escapeHtml(item.status)} ${escapeHtml(item.action)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">usefulness engine</div><div class="body">status ${escapeHtml(engine.status || "-")}<br>applied ${engine.applied ? "yes" : "no"}<br>promote ${Number(engine.promote_candidates?.length || 0)} / suppress ${Number(engine.suppress_candidates?.length || 0)}<br>${engine.ranking_policy?.length ? engine.ranking_policy.slice(0, 4).map(escapeHtml).join("<br>") : "-"}</div></div>
