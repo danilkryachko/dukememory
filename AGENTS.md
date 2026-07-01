@@ -57,6 +57,12 @@ For every new chat or coding task in this repository:
 - To gate releases with health, recall benchmark, audit v2, and control-center checks, run `dukememory release-gate-v2 --json`.
 - To configure local-first VDS/remote sync safely, run `dukememory remote-sync-wizard --json`; use `--target` and `DUKEMEMORY_SYNC_PASSPHRASE` before `--apply`.
 - To inspect or write autonomous memory governance policy, run `dukememory memory-governance-policy --json`; use `--apply` to write `.agent/memory-governance.json`.
+- To run the V2 autonomous memory loop with governance and quality gates, run `dukememory autonomous-loop-v2 --json`; use `--apply` only when governance is ready.
+- To enforce autonomous memory governance, run `dukememory governance-enforce --json`; use `--apply` to log a clean enforcement pass.
+- To run a CI-friendly memory quality gate, run `dukememory memory-quality-ci --json`.
+- To inspect all discovered project memories with V2 quality metrics, run `dukememory fleet-dashboard-v2 --json`.
+- To plan guarded remote sync apply, run `dukememory remote-sync-apply-flow --json`; use `--target` and `DUKEMEMORY_SYNC_PASSPHRASE` before `--apply`.
+- To inspect MCP V2 memory tool exposure, run `dukememory mcp-tool-surface-v2 --json`.
 - To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`.
 - To inspect live memory usefulness from reads and feedback, run `dukememory eval live --json`.
 - To inspect all local projects, run `dukememory dashboard --json`.

@@ -1184,6 +1184,18 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
             serde_json::json!({"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"memory_feedback","arguments":{"rating":"missing","command":"mcp-test","query":"missing mcp card"}}})
         )
         .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"memory_health_score","arguments":{"since_days":7,"max_chars":4000}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"memory_quality_ci","arguments":{"since_days":7,"minimal":true,"max_chars":4000}}})
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
 
@@ -1196,6 +1208,10 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
     assert!(stdout.contains("memory_feedback"));
     assert!(stdout.contains("memory_drift"));
     assert!(stdout.contains("memory_context_pack"));
+    assert!(stdout.contains("memory_health_score"));
+    assert!(stdout.contains("memory_quality_ci"));
+    assert!(stdout.contains("memory_fleet_dashboard_v2"));
+    assert!(stdout.contains("memory_governance_policy"));
     assert!(stdout.find("memory_brief") < stdout.find("memory_context_pack"));
     assert!(stdout.contains("MCP decision"));
     assert!(stdout.contains("needle mcp exact detail"));
@@ -1222,6 +1238,17 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         .unwrap();
     assert!(snapshot.contains("Relevant Memory"));
     assert!(!snapshot.contains(&"mcp prefix noise ".repeat(10)));
+    let mcp_health = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":24"))
+        .unwrap();
+    assert!(mcp_health.contains("score"));
+    assert!(mcp_health.contains("grade"));
+    let mcp_quality_ci = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":25"))
+        .unwrap();
+    assert!(mcp_quality_ci.contains("failed_checks"));
     let review = stdout
         .lines()
         .find(|line| line.contains("\"id\":7"))
@@ -8620,6 +8647,12 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "release-gate-v2",
         "remote-sync-wizard",
         "memory-governance-policy",
+        "autonomous-loop-v2",
+        "governance-enforce",
+        "memory-quality-ci",
+        "fleet-dashboard-v2",
+        "remote-sync-apply-flow",
+        "mcp-tool-surface-v2",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -8677,6 +8710,12 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "release-gate-v2",
         "remote-sync-wizard",
         "memory-governance-policy",
+        "autonomous-loop-v2",
+        "governance-enforce",
+        "memory-quality-ci",
+        "fleet-dashboard-v2",
+        "remote-sync-apply-flow",
+        "mcp-tool-surface-v2",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -9600,6 +9639,12 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/release-gate-v2"));
     assert!(html.contains("/remote-sync-wizard"));
     assert!(html.contains("/memory-governance-policy"));
+    assert!(html.contains("/autonomous-loop-v2"));
+    assert!(html.contains("/governance-enforce"));
+    assert!(html.contains("/memory-quality-ci"));
+    assert!(html.contains("/fleet-dashboard-v2"));
+    assert!(html.contains("/remote-sync-apply-flow"));
+    assert!(html.contains("/mcp-tool-surface-v2"));
     assert!(html.contains("/project-diff"));
     assert!(html.contains("/intelligence-dashboard"));
     assert!(html.contains("/remote-sync-dry-run"));
@@ -9651,6 +9696,12 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("release gate v2"));
     assert!(html.contains("remote sync wizard"));
     assert!(html.contains("memory governance"));
+    assert!(html.contains("autonomous loop v2"));
+    assert!(html.contains("governance enforce"));
+    assert!(html.contains("memory quality ci"));
+    assert!(html.contains("fleet dashboard v2"));
+    assert!(html.contains("remote apply flow"));
+    assert!(html.contains("mcp tool surface v2"));
     assert!(html.contains("auto ranking tune"));
     assert!(html.contains("watch control"));
     assert!(html.contains("autonomy control center"));
@@ -9665,6 +9716,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("project watch"));
     assert!(html.contains("Doctor fix"));
     assert!(html.contains("Loop apply"));
+    assert!(html.contains("Loop v2"));
+    assert!(html.contains("Governance enforce"));
     assert!(html.contains("Engine apply"));
     assert!(html.contains("Sync profile"));
     assert!(html.contains("Ranking profile"));
@@ -10160,6 +10213,54 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(governance_policy.contains("\"governance\""));
     assert!(governance_policy.contains("\"auto_write_types\""));
     assert!(governance_policy.contains("\"max_write_pressure\""));
+
+    let autonomous_loop_v2 = http_once(
+        &db,
+        "GET /autonomous-loop-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(autonomous_loop_v2.contains("\"loop_v2\""));
+    assert!(autonomous_loop_v2.contains("\"governance\""));
+    assert!(autonomous_loop_v2.contains("\"release_gate_v2\""));
+
+    let governance_enforce = http_once(
+        &db,
+        "GET /governance-enforce?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(governance_enforce.contains("\"enforce\""));
+    assert!(governance_enforce.contains("\"write_pressure\""));
+    assert!(governance_enforce.contains("\"violations\""));
+
+    let quality_ci = http_once(
+        &db,
+        "GET /memory-quality-ci?since_days=7&minimal=true HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(quality_ci.contains("\"ci\""));
+    assert!(quality_ci.contains("\"failed_checks\""));
+    assert!(quality_ci.contains("\"health_score\""));
+
+    let fleet_v2 = http_once(
+        &db,
+        "GET /fleet-dashboard-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(fleet_v2.contains("\"fleet\""));
+    assert!(fleet_v2.contains("\"total_projects\""));
+    assert!(fleet_v2.contains("\"attention_projects\""));
+
+    let remote_apply_flow = http_once(
+        &db,
+        "GET /remote-sync-apply-flow?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(remote_apply_flow.contains("\"flow\""));
+    assert!(remote_apply_flow.contains("\"apply_allowed\""));
+    assert!(remote_apply_flow.contains("\"passphrase_ready\""));
+
+    let mcp_surface_v2 = http_once(
+        &db,
+        "GET /mcp-tool-surface-v2 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(mcp_surface_v2.contains("\"mcp\""));
+    assert!(mcp_surface_v2.contains("\"expected_tools\""));
+    assert!(mcp_surface_v2.contains("\"missing_tools\""));
 
     let project_template = http_once(
         &db,
@@ -11706,6 +11807,90 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(governance_policy_json["applied"], true);
     assert!(dir.path().join(".agent/memory-governance.json").exists());
 
+    let autonomous_loop_v2 = stdout(
+        cmd(&db)
+            .arg("autonomous-loop-v2")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let autonomous_loop_v2_json: Value = serde_json::from_str(&autonomous_loop_v2).unwrap();
+    assert_eq!(autonomous_loop_v2_json["version"], 1);
+    assert!(autonomous_loop_v2_json["governance"].is_object());
+    assert!(autonomous_loop_v2_json["release_gate_v2"].is_object());
+
+    let governance_enforce = stdout(
+        cmd(&db)
+            .arg("governance-enforce")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--apply")
+            .arg("--json"),
+    );
+    let governance_enforce_json: Value = serde_json::from_str(&governance_enforce).unwrap();
+    assert_eq!(governance_enforce_json["version"], 1);
+    assert!(governance_enforce_json["violations"].as_array().is_some());
+
+    let memory_quality_ci = stdout(
+        cmd(&db)
+            .arg("memory-quality-ci")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--minimal")
+            .arg("--json"),
+    );
+    let memory_quality_ci_json: Value = serde_json::from_str(&memory_quality_ci).unwrap();
+    assert_eq!(memory_quality_ci_json["version"], 1);
+    assert!(memory_quality_ci_json["failed_checks"].as_array().is_some());
+    assert!(memory_quality_ci_json["release_gate_v2"].is_null());
+
+    let fleet_dashboard_v2 = stdout(
+        cmd(&db)
+            .arg("fleet-dashboard-v2")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let fleet_dashboard_v2_json: Value = serde_json::from_str(&fleet_dashboard_v2).unwrap();
+    assert_eq!(fleet_dashboard_v2_json["version"], 1);
+    assert!(fleet_dashboard_v2_json["projects"].as_array().is_some());
+
+    let remote_sync_apply_flow = stdout(
+        cmd(&db)
+            .arg("remote-sync-apply-flow")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(dir.path().join("remote-sync-target"))
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let remote_sync_apply_flow_json: Value = serde_json::from_str(&remote_sync_apply_flow).unwrap();
+    assert_eq!(remote_sync_apply_flow_json["version"], 1);
+    assert!(remote_sync_apply_flow_json["commands"].as_array().is_some());
+    assert!(
+        remote_sync_apply_flow_json["apply_allowed"]
+            .as_bool()
+            .is_some()
+    );
+
+    let mcp_tool_surface_v2 = stdout(cmd(&db).arg("mcp-tool-surface-v2").arg("--json"));
+    let mcp_tool_surface_v2_json: Value = serde_json::from_str(&mcp_tool_surface_v2).unwrap();
+    assert_eq!(mcp_tool_surface_v2_json["version"], 1);
+    assert!(
+        mcp_tool_surface_v2_json["missing_tools"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
     let project_template = stdout(
         cmd(&db)
             .arg("project-template")
@@ -11857,7 +12042,21 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_array()
             .unwrap()
             .iter()
+            .any(|item| item.as_str() == Some("autonomous-loop-v2"))
+    );
+    assert!(
+        agent_enforce_json["required_commands"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|item| item.as_str() == Some("memory-diff-review"))
+    );
+    assert!(
+        agent_enforce_json["required_commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("memory-quality-ci"))
     );
     assert!(
         agent_enforce_json["required_commands"]
@@ -11893,6 +12092,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .unwrap()
             .iter()
             .any(|item| item.as_str() == Some("memory-governance-policy"))
+    );
+    assert!(
+        agent_enforce_json["required_commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("mcp-tool-surface-v2"))
     );
 
     let gap_run = stdout(

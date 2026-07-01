@@ -1075,6 +1075,64 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Run the V2 autonomous memory loop with governance and quality gates.
+    AutonomousLoopV2 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Enforce the memory governance policy against current project metrics.
+    GovernanceEnforce {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// CI-friendly memory quality gate with concise machine-readable output.
+    MemoryQualityCi {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        minimal: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect all discovered project memories with V2 health metrics.
+    FleetDashboardV2 {
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Plan or apply a guarded remote sync flow after wizard checks.
+    RemoteSyncApplyFlow {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect MCP exposure for V2 memory control tools.
+    McpToolSurfaceV2 {
+        #[arg(long)]
+        json: bool,
+    },
     /// Write starter memory configuration for a project type.
     ProjectTemplate {
         #[arg(long, default_value = ".")]

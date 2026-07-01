@@ -186,6 +186,12 @@ dukememory memory-diff-apply --json
 dukememory recall-benchmark-suite --json
 dukememory release-gate-v2 --json
 dukememory memory-governance-policy --json
+dukememory autonomous-loop-v2 --json
+dukememory governance-enforce --json
+dukememory memory-quality-ci --json
+dukememory fleet-dashboard-v2 --json
+dukememory remote-sync-apply-flow --target /mnt/vds/dukememory --json
+dukememory mcp-tool-surface-v2 --json
 dukememory auto-ranking-tune --apply --json
 dukememory ranking-profile --profile balanced --apply --json
 dukememory project-template --kind rust-cli --apply --json

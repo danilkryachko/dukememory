@@ -688,6 +688,132 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 true,
             )?}))
         }
+        ("GET", "/autonomous-loop-v2") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"loop_v2": autonomous_loop_v2_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/autonomous-loop-v2/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"loop_v2": autonomous_loop_v2_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                true,
+            )?}))
+        }
+        ("GET", "/governance-enforce") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"enforce": governance_enforce_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/governance-enforce/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"enforce": governance_enforce_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                true,
+            )?}))
+        }
+        ("GET", "/memory-quality-ci") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            let minimal = params
+                .get("minimal")
+                .is_some_and(|value| value == "1" || value == "true");
+            HttpResponse::ok(json!({"ci": memory_quality_ci_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                minimal,
+            )?}))
+        }
+        ("GET", "/fleet-dashboard-v2") => {
+            let params = parse_query(query);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"fleet": fleet_dashboard_v2_report(db, since_days)?}))
+        }
+        ("GET", "/remote-sync-apply-flow") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let target = params.get("target").map(PathBuf::from);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"flow": remote_sync_apply_flow_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/remote-sync-apply-flow/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let target = value
+                .get("target")
+                .and_then(Value::as_str)
+                .map(PathBuf::from);
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"flow": remote_sync_apply_flow_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                since_days,
+                true,
+            )?}))
+        }
+        ("GET", "/mcp-tool-surface-v2") => {
+            HttpResponse::ok(json!({"mcp": mcp_tool_surface_v2_report()}))
+        }
         ("POST", "/ranking-profile/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;

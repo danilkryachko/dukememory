@@ -820,6 +820,107 @@ pub(crate) struct MemoryGovernancePolicyReport {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct AutonomousLoopV2Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) governance: MemoryGovernancePolicyReport,
+    pub(crate) enforcement: GovernanceEnforceReport,
+    pub(crate) loop_v1: AutonomousLoopReport,
+    pub(crate) supersede: AutoSupersedeV2Report,
+    pub(crate) diff_apply: MemoryDiffApplyReport,
+    pub(crate) benchmark: RecallBenchmarkSuiteReport,
+    pub(crate) release_gate_v2: ReleaseGateV2Report,
+    pub(crate) actions: Vec<String>,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct GovernanceEnforceReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) policy: MemoryGovernancePolicyReport,
+    pub(crate) write_pressure: f64,
+    pub(crate) embedding_required_ok: bool,
+    pub(crate) remote_mode_ok: bool,
+    pub(crate) allowed_auto_write_types: Vec<String>,
+    pub(crate) violations: Vec<String>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryQualityCiReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) minimal: bool,
+    pub(crate) health_score: f64,
+    pub(crate) benchmark_score: f64,
+    pub(crate) audit_score: f64,
+    pub(crate) failed_checks: Vec<String>,
+    pub(crate) release_gate_v2: Option<ReleaseGateV2Report>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct FleetDashboardV2Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) since_days: i64,
+    pub(crate) total_projects: usize,
+    pub(crate) ready_projects: usize,
+    pub(crate) attention_projects: usize,
+    pub(crate) projects: Vec<FleetDashboardV2Project>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct FleetDashboardV2Project {
+    pub(crate) root: String,
+    pub(crate) db: String,
+    pub(crate) status: String,
+    pub(crate) health_score: f64,
+    pub(crate) benchmark_score: f64,
+    pub(crate) audit_score: f64,
+    pub(crate) issues: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RemoteSyncApplyFlowReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) wizard: RemoteSyncWizardReport,
+    pub(crate) dry_run_commands: Vec<String>,
+    pub(crate) commands: Vec<String>,
+    pub(crate) passphrase_ready: bool,
+    pub(crate) apply_allowed: bool,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct McpToolSurfaceV2Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) expected_tools: Vec<String>,
+    pub(crate) exposed_tools: Vec<String>,
+    pub(crate) missing_tools: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct ProjectTemplateReport {
     pub(crate) version: u32,
     pub(crate) ok: bool,
@@ -4620,6 +4721,475 @@ pub(crate) fn memory_governance_policy_report(
     Ok(report)
 }
 
+pub(crate) fn print_autonomous_loop_v2(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = autonomous_loop_v2_report(conn, db, root, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Autonomous Loop v2");
+    println!("status: {}", report.status);
+    println!("applied: {}", report.applied);
+    for action in &report.actions {
+        println!("action: {action}");
+    }
+    for blocker in &report.blockers {
+        println!("blocker: {blocker}");
+    }
+    Ok(())
+}
+
+pub(crate) fn autonomous_loop_v2_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+) -> Result<AutonomousLoopV2Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let governance = memory_governance_policy_report(&root, apply)?;
+    let enforcement = governance_enforce_report(conn, &root, since_days, apply)?;
+    let loop_v1 = autonomous_loop_report(
+        conn,
+        db,
+        &root,
+        since_days,
+        AutonomousLevel::Normal,
+        apply && enforcement.ok,
+    )?;
+    let supersede = auto_supersede_v2_report(conn, &root, since_days, apply && enforcement.ok)?;
+    let diff_apply = memory_diff_apply_report(conn, &root, apply && enforcement.ok)?;
+    let benchmark = recall_benchmark_suite_report(conn, &root, since_days, 8, apply)?;
+    let release_gate_v2 = release_gate_v2_report(conn, db, &root, since_days, false, false)?;
+    let mut actions = Vec::new();
+    actions.extend(governance.actions.clone());
+    actions.extend(enforcement.actions.clone());
+    actions.extend(loop_v1.actions.clone());
+    actions.extend(
+        supersede
+            .superseded
+            .iter()
+            .map(|id| format!("superseded:{id}")),
+    );
+    actions.extend(diff_apply.actions.clone());
+    if benchmark.baseline_written {
+        actions.push(format!(
+            "benchmark_baseline_written:{}",
+            benchmark.baseline_path
+        ));
+    }
+    let mut blockers = enforcement.violations.clone();
+    if !loop_v1.ok {
+        blockers.push("autonomous-loop v1 is not ready".to_string());
+    }
+    if !benchmark.ok {
+        blockers.push("recall benchmark is not ready".to_string());
+    }
+    if !release_gate_v2.ok {
+        blockers.push("release-gate-v2 is not ready".to_string());
+    }
+    blockers.sort();
+    blockers.dedup();
+    let mut recommendations = Vec::new();
+    recommendations.extend(enforcement.recommendations.clone());
+    recommendations.extend(loop_v1.recommendations.clone());
+    recommendations.extend(supersede.recommendations.clone());
+    recommendations.extend(diff_apply.recommendations.clone());
+    recommendations.extend(benchmark.recommendations.clone());
+    recommendations.extend(release_gate_v2.recommendations.clone());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = blockers.is_empty();
+    Ok(AutonomousLoopV2Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        applied: apply && ok,
+        governance,
+        enforcement,
+        loop_v1,
+        supersede,
+        diff_apply,
+        benchmark,
+        release_gate_v2,
+        actions,
+        blockers,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_governance_enforce(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = governance_enforce_report(conn, root, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Governance Enforce");
+    println!("status: {}", report.status);
+    for violation in &report.violations {
+        println!("violation: {violation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn governance_enforce_report(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+) -> Result<GovernanceEnforceReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let policy = memory_governance_policy_report(&root, apply)?;
+    let qa = memory_qa_report(conn, &root, since_days)?;
+    let remote_mode_ok = policy.remote_sync_mode == "local-first-backup";
+    let embedding_required_ok = !policy.require_embeddings_for_semantic
+        || (qa.embedding_missing == 0 && qa.embedding_stale == 0);
+    let mut violations = Vec::new();
+    if qa.write_pressure > policy.max_write_pressure {
+        violations.push(format!(
+            "write pressure {:.2} exceeds policy {:.2}",
+            qa.write_pressure, policy.max_write_pressure
+        ));
+    }
+    if !embedding_required_ok {
+        violations.push("semantic embeddings are required but missing/stale".to_string());
+    }
+    if !remote_mode_ok {
+        violations.push(format!(
+            "remote sync mode {} is not local-first-backup",
+            policy.remote_sync_mode
+        ));
+    }
+    let mut actions = policy.actions.clone();
+    if apply && violations.is_empty() {
+        actions.push("governance_enforced:ok".to_string());
+        let _ = log_event(
+            conn,
+            "governance_enforce",
+            None,
+            &serde_json::to_string(&json!({
+                "status": "ok",
+                "root": root.display().to_string(),
+                "write_pressure": qa.write_pressure,
+            }))?,
+        );
+    } else if apply {
+        actions.push("governance_enforced:blocked".to_string());
+    } else {
+        actions.push("dry_run: governance not enforced".to_string());
+    }
+    let mut recommendations = policy.recommendations.clone();
+    if !violations.is_empty() {
+        recommendations.push("resolve governance violations before autonomous apply".to_string());
+    }
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = violations.is_empty();
+    Ok(GovernanceEnforceReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "blocked" }.to_string(),
+        root: root.display().to_string(),
+        applied: apply && ok,
+        policy,
+        write_pressure: qa.write_pressure,
+        embedding_required_ok,
+        remote_mode_ok,
+        allowed_auto_write_types: vec![
+            "task_state".to_string(),
+            "design_note".to_string(),
+            "command".to_string(),
+            "known_issue".to_string(),
+        ],
+        violations,
+        actions,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_memory_quality_ci(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    minimal: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_quality_ci_report(conn, db, root, since_days, minimal)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Quality CI: {}", report.status);
+    println!("health: {:.1}", report.health_score);
+    println!("benchmark: {:.1}", report.benchmark_score);
+    println!("audit: {:.1}", report.audit_score);
+    for failed in &report.failed_checks {
+        println!("failed: {failed}");
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_quality_ci_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    minimal: bool,
+) -> Result<MemoryQualityCiReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let gate = release_gate_v2_report(conn, db, &root, since_days, true, false)?;
+    let mut failed_checks = gate
+        .checks
+        .iter()
+        .filter(|check| {
+            check.required
+                && !check.ok
+                && !matches!(check.name.as_str(), "cargo_version" | "git_clean")
+        })
+        .map(|check| check.name.clone())
+        .collect::<Vec<_>>();
+    failed_checks.sort();
+    failed_checks.dedup();
+    let ok = failed_checks.is_empty()
+        && gate.health.score >= 85.0
+        && gate.benchmark.score >= 80.0
+        && gate.audit_v2.score >= 80.0;
+    Ok(MemoryQualityCiReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "blocked" }.to_string(),
+        root: root.display().to_string(),
+        since_days,
+        minimal,
+        health_score: gate.health.score,
+        benchmark_score: gate.benchmark.score,
+        audit_score: gate.audit_v2.score,
+        failed_checks,
+        release_gate_v2: if minimal { None } else { Some(gate) },
+        recommendations: if ok {
+            vec!["memory quality CI passed".to_string()]
+        } else {
+            vec!["inspect release-gate-v2 failed checks before publishing".to_string()]
+        },
+    })
+}
+
+pub(crate) fn print_fleet_dashboard_v2(
+    default_db: &Path,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = fleet_dashboard_v2_report(default_db, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Fleet Dashboard v2");
+    println!("projects: {}", report.total_projects);
+    println!("ready: {}", report.ready_projects);
+    for project in &report.projects {
+        println!(
+            "{} {:.1} {}",
+            project.status, project.health_score, project.root
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn fleet_dashboard_v2_report(
+    default_db: &Path,
+    since_days: i64,
+) -> Result<FleetDashboardV2Report> {
+    let mut projects = Vec::new();
+    for db in discover_project_dbs(default_db)? {
+        let root = app_project_root_for_db(&db).unwrap_or_else(|| {
+            db.parent()
+                .and_then(Path::parent)
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf()
+        });
+        match open_db(&db) {
+            Ok(conn) => {
+                let ci = memory_quality_ci_report(&conn, &db, &root, since_days, true)?;
+                projects.push(FleetDashboardV2Project {
+                    root: root.display().to_string(),
+                    db: db.display().to_string(),
+                    status: ci.status,
+                    health_score: ci.health_score,
+                    benchmark_score: ci.benchmark_score,
+                    audit_score: ci.audit_score,
+                    issues: ci.failed_checks,
+                });
+            }
+            Err(err) => projects.push(FleetDashboardV2Project {
+                root: root.display().to_string(),
+                db: db.display().to_string(),
+                status: "blocked".to_string(),
+                health_score: 0.0,
+                benchmark_score: 0.0,
+                audit_score: 0.0,
+                issues: vec![err.to_string()],
+            }),
+        }
+    }
+    let ready_projects = projects
+        .iter()
+        .filter(|project| project.status == "ready")
+        .count();
+    let total_projects = projects.len();
+    let attention_projects = total_projects.saturating_sub(ready_projects);
+    let ok = attention_projects == 0;
+    Ok(FleetDashboardV2Report {
+        version: 1,
+        ok,
+        since_days,
+        total_projects,
+        ready_projects,
+        attention_projects,
+        projects,
+        recommendations: if ok {
+            vec!["all discovered project memories passed V2 quality gates".to_string()]
+        } else {
+            vec!["inspect blocked projects and run project-watch --fix".to_string()]
+        },
+    })
+}
+
+pub(crate) fn print_remote_sync_apply_flow(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = remote_sync_apply_flow_report(conn, db, root, target, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Remote Sync Apply Flow");
+    println!("status: {}", report.status);
+    for blocker in &report.blockers {
+        println!("blocker: {blocker}");
+    }
+    Ok(())
+}
+
+pub(crate) fn remote_sync_apply_flow_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    apply: bool,
+) -> Result<RemoteSyncApplyFlowReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let wizard = remote_sync_wizard_report(conn, db, &root, target, since_days, apply)?;
+    let dry_run_commands = wizard.sync.commands.clone();
+    let mut blockers = wizard.blockers.clone();
+    let passphrase_ready = std::env::var("DUKEMEMORY_SYNC_PASSPHRASE")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    if apply && !passphrase_ready {
+        blockers.push("encrypted apply requires DUKEMEMORY_SYNC_PASSPHRASE".to_string());
+    }
+    if !wizard.sync.local_first {
+        blockers.push("remote sync apply requires local-first mode".to_string());
+    }
+    blockers.sort();
+    blockers.dedup();
+    let apply_allowed = blockers.is_empty() && target.is_some() && passphrase_ready;
+    Ok(RemoteSyncApplyFlowReport {
+        version: 1,
+        ok: blockers.is_empty(),
+        status: if blockers.is_empty() {
+            "ready"
+        } else {
+            "blocked"
+        }
+        .to_string(),
+        root: root.display().to_string(),
+        applied: apply && wizard.applied && apply_allowed,
+        wizard,
+        commands: dry_run_commands.clone(),
+        dry_run_commands,
+        passphrase_ready,
+        apply_allowed,
+        blockers,
+        recommendations: vec![
+            "run dry-run commands and inspect conflicts before apply".to_string(),
+            "keep reads local-first; use remote only as encrypted backup/sync target".to_string(),
+        ],
+    })
+}
+
+pub(crate) fn print_mcp_tool_surface_v2(json_out: bool) -> Result<()> {
+    let report = mcp_tool_surface_v2_report();
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("MCP Tool Surface v2");
+    println!("ok: {}", report.ok);
+    for missing in &report.missing_tools {
+        println!("missing: {missing}");
+    }
+    Ok(())
+}
+
+pub(crate) fn mcp_tool_surface_v2_report() -> McpToolSurfaceV2Report {
+    let expected_tools = mcp_v2_tool_names();
+    let exposed_tools = mcp_v2_tool_names();
+    let missing_tools = expected_tools
+        .iter()
+        .filter(|tool| !exposed_tools.contains(tool))
+        .cloned()
+        .collect::<Vec<_>>();
+    McpToolSurfaceV2Report {
+        version: 1,
+        ok: missing_tools.is_empty(),
+        expected_tools,
+        exposed_tools,
+        missing_tools,
+        recommendations: vec![
+            "use MCP V2 tools for health, recall explanation, release gates, and fleet checks"
+                .to_string(),
+        ],
+    }
+}
+
+fn mcp_v2_tool_names() -> Vec<String> {
+    [
+        "memory_health_score",
+        "memory_explain_recall",
+        "memory_control_center_v2",
+        "memory_release_gate_v2",
+        "memory_quality_ci",
+        "memory_fleet_dashboard_v2",
+        "memory_governance_policy",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
 fn auto_supersede_confidence(candidate: &MergeCandidate) -> f64 {
     let reason = candidate.reason.to_lowercase();
     let title_bonus: f64 = if reason.contains("same title") || reason.contains("duplicate") {
@@ -5676,6 +6246,12 @@ fn agent_required_commands() -> &'static [&'static str] {
         "release-gate-v2",
         "remote-sync-wizard",
         "memory-governance-policy",
+        "autonomous-loop-v2",
+        "governance-enforce",
+        "memory-quality-ci",
+        "fleet-dashboard-v2",
+        "remote-sync-apply-flow",
+        "mcp-tool-surface-v2",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",

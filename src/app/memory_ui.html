@@ -556,7 +556,8 @@
       trace: null, autoFeedback: null, costGuard: null, projectDiff: null, intelligence: null, remoteSync: null,
       doctor: null, releaseGate: null, replay: null, watch: null,
       memoryHealth: null, explainRecall: null, intentMap: null, memoryHarness: null, agentAuditV2: null, controlCenterV2: null,
-      autoSupersedeV2: null, memoryDiffApply: null, recallBenchmark: null, releaseGateV2: null, remoteSyncWizard: null, governancePolicy: null
+      autoSupersedeV2: null, memoryDiffApply: null, recallBenchmark: null, releaseGateV2: null, remoteSyncWizard: null, governancePolicy: null,
+      autonomousLoopV2: null, governanceEnforce: null, qualityCi: null, fleetV2: null, remoteApplyFlow: null, mcpSurfaceV2: null
     };
     const $ = (id) => document.getElementById(id);
     const t = (key) => i18n[state.lang][key] || i18n.en[key] || key;
@@ -854,7 +855,7 @@
       const params = new URLSearchParams({ since_days: "7" });
       if (state.project) params.set("project", state.project);
       const taskQuery = $("q")?.value || "memory task";
-      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch, loop, journal, engine, latency, syncProfile, enforce, watchInstall, rankingProfile, projectTemplate, diffReview, contextGovernor, memoryRouter, autoRanking, watchControl, autonomyCenter, remoteSyncV2, memoryHealth, explainRecall, intentMap, memoryHarness, agentAuditV2, controlCenterV2, autoSupersedeV2, memoryDiffApply, recallBenchmark, releaseGateV2, remoteSyncWizard, governancePolicy] = await Promise.all([
+      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch, loop, journal, engine, latency, syncProfile, enforce, watchInstall, rankingProfile, projectTemplate, diffReview, contextGovernor, memoryRouter, autoRanking, watchControl, autonomyCenter, remoteSyncV2, memoryHealth, explainRecall, intentMap, memoryHarness, agentAuditV2, controlCenterV2, autoSupersedeV2, memoryDiffApply, recallBenchmark, releaseGateV2, remoteSyncWizard, governancePolicy, autonomousLoopV2, governanceEnforce, qualityCi, fleetV2, remoteApplyFlow, mcpSurfaceV2] = await Promise.all([
         api(`/roi-report?${params.toString()}`),
         api(`/agent-audit?${params.toString()}`),
         api(`/remote-status?${params.toString()}`),
@@ -895,7 +896,13 @@
         api(`/recall-benchmark-suite?${params.toString()}&limit=8`),
         api(`/release-gate-v2?${params.toString()}`),
         api(`/remote-sync-wizard?${params.toString()}`),
-        api(`/memory-governance-policy?${params.toString()}`)
+        api(`/memory-governance-policy?${params.toString()}`),
+        api(`/autonomous-loop-v2?${params.toString()}`),
+        api(`/governance-enforce?${params.toString()}`),
+        api(`/memory-quality-ci?${params.toString()}&minimal=true`),
+        api(`/fleet-dashboard-v2?${params.toString()}`),
+        api(`/remote-sync-apply-flow?${params.toString()}`),
+        api(`/mcp-tool-surface-v2?${params.toString()}`)
       ]);
       state.roi = roi.roi;
       state.agentAudit = audit.agent_audit;
@@ -938,6 +945,12 @@
       state.releaseGateV2 = releaseGateV2.release_gate_v2;
       state.remoteSyncWizard = remoteSyncWizard.wizard;
       state.governancePolicy = governancePolicy.governance;
+      state.autonomousLoopV2 = autonomousLoopV2.loop_v2;
+      state.governanceEnforce = governanceEnforce.enforce;
+      state.qualityCi = qualityCi.ci;
+      state.fleetV2 = fleetV2.fleet;
+      state.remoteApplyFlow = remoteApplyFlow.flow;
+      state.mcpSurfaceV2 = mcpSurfaceV2.mcp;
       renderSettings();
     }
 
@@ -972,6 +985,10 @@
         await api("/recall-benchmark-suite/baseline", { method: "POST", body: JSON.stringify(withProject({ since_days: 7, limit: 8 })) });
       } else if (action === "governance-policy") {
         await api("/memory-governance-policy/apply", { method: "POST", body: JSON.stringify(withProject({})) });
+      } else if (action === "loop-v2-apply") {
+        await api("/autonomous-loop-v2/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
+      } else if (action === "governance-enforce") {
+        await api("/governance-enforce/apply", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
       } else if (action === "release-v2-run") {
         await api("/release-gate-v2/run", { method: "POST", body: JSON.stringify(withProject({ since_days: 7, strict: false })) });
       } else if (action === "auto-ranking") {
@@ -1299,6 +1316,12 @@
       const releaseGateV2 = state.releaseGateV2 || {};
       const remoteSyncWizard = state.remoteSyncWizard || {};
       const governancePolicy = state.governancePolicy || {};
+      const autonomousLoopV2 = state.autonomousLoopV2 || {};
+      const governanceEnforce = state.governanceEnforce || {};
+      const qualityCi = state.qualityCi || {};
+      const fleetV2 = state.fleetV2 || {};
+      const remoteApplyFlow = state.remoteApplyFlow || {};
+      const mcpSurfaceV2 = state.mcpSurfaceV2 || {};
       const contract = state.contract || {};
       const ops = state.ops || {};
       const effectiveness = ops.effectiveness || {};
@@ -1375,10 +1398,16 @@
         <div class="stat"><strong>${escapeHtml(releaseGateV2.status || "-")}</strong><span>gate v2</span></div>
         <div class="stat"><strong>${escapeHtml(remoteSyncWizard.status || "-")}</strong><span>sync wizard</span></div>
         <div class="stat"><strong>${governancePolicy.ok ? "ready" : "-"}</strong><span>governance</span></div>
+        <div class="stat"><strong>${escapeHtml(autonomousLoopV2.status || "-")}</strong><span>loop v2</span></div>
+        <div class="stat"><strong>${escapeHtml(governanceEnforce.status || "-")}</strong><span>governance enforce</span></div>
+        <div class="stat"><strong>${escapeHtml(qualityCi.status || "-")}</strong><span>quality ci</span></div>
+        <div class="stat"><strong>${Number(fleetV2.attention_projects || 0)}</strong><span>fleet attention</span></div>
+        <div class="stat"><strong>${remoteApplyFlow.apply_allowed ? "ready" : escapeHtml(remoteApplyFlow.status || "-")}</strong><span>remote apply</span></div>
+        <div class="stat"><strong>${Number(mcpSurfaceV2.missing_tools?.length || 0)}</strong><span>mcp missing</span></div>
       </div>
       <div class="card"><div class="title">doctor project</div><div class="body">status ${escapeHtml(doctor.status || "-")}<br>qa ${Number(doctor.memory_qa?.score || 0).toFixed(1)}<br>embedding ${doctor.embedding ? `${Number(doctor.embedding.missing || 0)} missing / ${Number(doctor.embedding.stale || 0)} stale` : "-"}<br>${doctor.checks?.length ? doctor.checks.slice(0, 6).map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">release gate</div><div class="body">status ${escapeHtml(releaseGate.status || "-")}<br>strict ${releaseGate.strict ? "yes" : "no"}<br>${releaseGate.checks?.length ? releaseGate.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}<br>${releaseGate.issues?.length ? releaseGate.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
-      <div class="card"><div class="title">intelligence actions</div><div class="actions"><button data-intelligence="doctor-fix">Doctor fix</button><button data-intelligence="loop-apply">Loop apply</button><button data-intelligence="engine-apply">Engine apply</button><button data-intelligence="sync-profile">Sync profile</button><button data-intelligence="ranking-apply">Ranking profile</button><button data-intelligence="auto-ranking">Auto ranking</button><button data-intelligence="template-apply">Template</button><button data-intelligence="diff-review">Diff review</button><button data-intelligence="diff-apply">Diff apply</button><button data-intelligence="supersede-v2">Supersede v2</button><button data-intelligence="benchmark-baseline">Benchmark baseline</button><button data-intelligence="governance-policy">Governance</button><button data-intelligence="watch-control">Watch control</button><button data-intelligence="upgrade-all">Upgrade all</button><button data-intelligence="enforce-fix">Enforce fix</button><button data-intelligence="auto-feedback">Auto feedback</button><button data-intelligence="watch-fix">Watch fix</button><button data-intelligence="release-run">Release run</button><button data-intelligence="release-v2-run">Release v2</button></div></div>
+      <div class="card"><div class="title">intelligence actions</div><div class="actions"><button data-intelligence="doctor-fix">Doctor fix</button><button data-intelligence="loop-apply">Loop apply</button><button data-intelligence="loop-v2-apply">Loop v2</button><button data-intelligence="governance-enforce">Governance enforce</button><button data-intelligence="engine-apply">Engine apply</button><button data-intelligence="sync-profile">Sync profile</button><button data-intelligence="ranking-apply">Ranking profile</button><button data-intelligence="auto-ranking">Auto ranking</button><button data-intelligence="template-apply">Template</button><button data-intelligence="diff-review">Diff review</button><button data-intelligence="diff-apply">Diff apply</button><button data-intelligence="supersede-v2">Supersede v2</button><button data-intelligence="benchmark-baseline">Benchmark baseline</button><button data-intelligence="governance-policy">Governance</button><button data-intelligence="watch-control">Watch control</button><button data-intelligence="upgrade-all">Upgrade all</button><button data-intelligence="enforce-fix">Enforce fix</button><button data-intelligence="auto-feedback">Auto feedback</button><button data-intelligence="watch-fix">Watch fix</button><button data-intelligence="release-run">Release run</button><button data-intelligence="release-v2-run">Release v2</button></div></div>
       <div class="card"><div class="title">context governor</div><div class="body">budget ${escapeHtml(contextGovernor.budget?.profile || "-")} / ${Number(contextGovernor.max_context_chars || 0)} chars<br>${contextGovernor.selected_flow?.length ? contextGovernor.selected_flow.map(escapeHtml).join("<br>") : "-"}<br>${contextGovernor.commands?.length ? contextGovernor.commands.slice(0, 4).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">memory router</div><div class="body">selected ${escapeHtml(memoryRouter.selected_route || "-")}<br>${memoryRouter.routes?.length ? memoryRouter.routes.slice(0, 5).map((route) => `${escapeHtml(route.mode)} ${Number(route.matches || 0)} ${escapeHtml(route.root)}`).join("<br>") : "-"}<br>${memoryRouter.warnings?.length ? memoryRouter.warnings.map(escapeHtml).join("<br>") : ""}</div></div>
       <div class="card"><div class="title">auto ranking tune</div><div class="body">profile ${escapeHtml(autoRanking.selected_profile || "-")}<br>qa ${Number(autoRanking.qa_score || 0).toFixed(1)} / useful ${formatPercent(autoRanking.useful_rate)}<br>missing ${Number(autoRanking.inferred_missing || 0)} / semantic empty ${Number(autoRanking.semantic_empty || 0)} / noisy ${Number(autoRanking.noisy_cards || 0)}<br>${autoRanking.reasons?.length ? autoRanking.reasons.map(escapeHtml).join("<br>") : "-"}</div></div>
@@ -1397,6 +1426,12 @@
       <div class="card"><div class="title">release gate v2</div><div class="body">status ${escapeHtml(releaseGateV2.status || "-")}<br>${releaseGateV2.checks?.length ? releaseGateV2.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}<br>${releaseGateV2.issues?.length ? releaseGateV2.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
       <div class="card"><div class="title">remote sync wizard</div><div class="body">status ${escapeHtml(remoteSyncWizard.status || "-")}<br>${remoteSyncWizard.steps?.length ? remoteSyncWizard.steps.map((step) => `${step.ok ? "ok" : "warn"} ${escapeHtml(step.name)}: ${escapeHtml(step.detail)}`).join("<br>") : "-"}<br>${remoteSyncWizard.blockers?.length ? remoteSyncWizard.blockers.map(escapeHtml).join("<br>") : "blockers -"}</div></div>
       <div class="card"><div class="title">memory governance</div><div class="body">write pressure max ${Number(governancePolicy.max_write_pressure || 0).toFixed(2)}<br>supersede min ${Number(governancePolicy.auto_supersede_min_confidence || 0).toFixed(2)} / diff min ${Number(governancePolicy.diff_apply_min_confidence || 0).toFixed(2)}<br>remote ${escapeHtml(governancePolicy.remote_sync_mode || "-")}<br>${governancePolicy.auto_write_types?.length ? governancePolicy.auto_write_types.map(escapeHtml).join(", ") : "-"}</div></div>
+      <div class="card"><div class="title">autonomous loop v2</div><div class="body">status ${escapeHtml(autonomousLoopV2.status || "-")}<br>applied ${autonomousLoopV2.applied ? "yes" : "no"}<br>blockers ${Number(autonomousLoopV2.blockers?.length || 0)}<br>${autonomousLoopV2.blockers?.length ? autonomousLoopV2.blockers.slice(0, 6).map(escapeHtml).join("<br>") : autonomousLoopV2.actions?.slice(0, 6).map(escapeHtml).join("<br>") || "-"}</div></div>
+      <div class="card"><div class="title">governance enforce</div><div class="body">status ${escapeHtml(governanceEnforce.status || "-")}<br>write pressure ${Number(governanceEnforce.write_pressure || 0).toFixed(2)}<br>embedding required ${governanceEnforce.embedding_required_ok ? "ok" : "warn"} / remote ${governanceEnforce.remote_mode_ok ? "ok" : "warn"}<br>${governanceEnforce.violations?.length ? governanceEnforce.violations.map(escapeHtml).join("<br>") : "violations -"}</div></div>
+      <div class="card"><div class="title">memory quality ci</div><div class="body">status ${escapeHtml(qualityCi.status || "-")}<br>health ${Number(qualityCi.health_score || 0).toFixed(1)} / benchmark ${Number(qualityCi.benchmark_score || 0).toFixed(1)} / audit ${Number(qualityCi.audit_score || 0).toFixed(1)}<br>${qualityCi.failed_checks?.length ? qualityCi.failed_checks.map(escapeHtml).join("<br>") : "failed checks -"}</div></div>
+      <div class="card"><div class="title">fleet dashboard v2</div><div class="body">projects ${Number(fleetV2.total_projects || 0)} / ready ${Number(fleetV2.ready_projects || 0)} / attention ${Number(fleetV2.attention_projects || 0)}<br>${fleetV2.projects?.length ? fleetV2.projects.slice(0, 5).map((project) => `${escapeHtml(project.status)} ${Number(project.health_score || 0).toFixed(1)} ${escapeHtml(project.root)}`).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">remote apply flow</div><div class="body">status ${escapeHtml(remoteApplyFlow.status || "-")}<br>apply allowed ${remoteApplyFlow.apply_allowed ? "yes" : "no"} / passphrase ${remoteApplyFlow.passphrase_ready ? "ready" : "missing"}<br>${remoteApplyFlow.blockers?.length ? remoteApplyFlow.blockers.map(escapeHtml).join("<br>") : remoteApplyFlow.commands?.slice(0, 4).map(escapeHtml).join("<br>") || "blockers -"}</div></div>
+      <div class="card"><div class="title">mcp tool surface v2</div><div class="body">expected ${Number(mcpSurfaceV2.expected_tools?.length || 0)} / exposed ${Number(mcpSurfaceV2.exposed_tools?.length || 0)} / missing ${Number(mcpSurfaceV2.missing_tools?.length || 0)}<br>${mcpSurfaceV2.missing_tools?.length ? mcpSurfaceV2.missing_tools.map(escapeHtml).join("<br>") : mcpSurfaceV2.expected_tools?.slice(0, 8).map(escapeHtml).join("<br>") || "-"}</div></div>
       <div class="card"><div class="title">autonomous loop</div><div class="body">status ${escapeHtml(loop.status || "-")}<br>applied ${loop.applied ? "yes" : "no"}<br>watch attention ${Number(loop.watch?.attention_projects || 0)}<br>${loop.actions?.length ? loop.actions.slice(0, 5).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">action journal</div><div class="body">events ${Number(journal.total || 0)}<br>applied ${Number(journal.applied || 0)} / skipped ${Number(journal.skipped || 0)} / failed ${Number(journal.failed || 0)}<br>rollback ${Number(journal.rollback_events || 0)}<br>${journal.items?.length ? journal.items.slice(0, 5).map((item) => `${escapeHtml(item.status)} ${escapeHtml(item.action)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">usefulness engine</div><div class="body">status ${escapeHtml(engine.status || "-")}<br>applied ${engine.applied ? "yes" : "no"}<br>promote ${Number(engine.promote_candidates?.length || 0)} / suppress ${Number(engine.suppress_candidates?.length || 0)}<br>${engine.ranking_policy?.length ? engine.ranking_policy.slice(0, 4).map(escapeHtml).join("<br>") : "-"}</div></div>

@@ -126,7 +126,14 @@ fn mcp_tools() -> Value {
         {"name":"memory_get","description":"Get one memory card as compact summary by default","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_review","description":"Review stale/conflicting memory as a bounded summary","inputSchema":{"type":"object","properties":{"limit":{"type":"number"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_doctor","description":"Run compact memory health checks","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
-        {"name":"memory_inbox_list","description":"List pending inbox items as compact summaries by default","inputSchema":{"type":"object","properties":{"limit":{"type":"number"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}
+        {"name":"memory_inbox_list","description":"List pending inbox items as compact summaries by default","inputSchema":{"type":"object","properties":{"limit":{"type":"number"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_health_score","description":"Return V2 memory health score","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_explain_recall","description":"Explain why memory cards would be recalled","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
+        {"name":"memory_control_center_v2","description":"Aggregate health, intent, recall probes, audit, and autonomy","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_release_gate_v2","description":"Run V2 release readiness checks without build commands","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"strict":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_quality_ci","description":"CI-friendly memory quality gate","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"minimal":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_fleet_dashboard_v2","description":"Inspect all discovered project memories with V2 quality metrics","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"db":{"type":"string"}}}},
+        {"name":"memory_governance_policy","description":"Inspect autonomous memory governance policy","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}
     ])
 }
 
@@ -141,6 +148,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         .unwrap_or_else(|| json!({}));
     let selected_db = mcp_selected_db(db, &args);
     let conn = open_db(&selected_db).map_err(|err| err.to_string())?;
+    let selected_root = mcp_selected_root(&selected_db, &args);
     let text = match name {
         "memory_add" => {
             let memory_type = json_string(&args, "type").unwrap_or_else(|| "note".to_string());
@@ -684,6 +692,92 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     .map_err(|err| err.to_string())?
             }
         }
+        "memory_health_score" => {
+            let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let report =
+                memory_health_score_report(&conn, &selected_db, &selected_root, since_days)
+                    .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(
+                &report,
+                max_chars,
+                &["recommendations", "memory_qa_recommendations"],
+            )
+            .map_err(|err| err.to_string())?
+        }
+        "memory_explain_recall" => {
+            let query = json_string(&args, "query").ok_or_else(|| "missing query".to_string())?;
+            let limit = json_usize(&args, "limit").unwrap_or(8);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let report = explain_recall_report(&conn, &selected_root, &query, limit)
+                .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&report, max_chars, &["items"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_control_center_v2" => {
+            let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1800);
+            let report =
+                memory_control_center_v2_report(&conn, &selected_db, &selected_root, since_days)
+                    .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(
+                &report,
+                max_chars,
+                &[
+                    "recommendations",
+                    "recall_probes",
+                    "explain_recall",
+                    "audit_v2",
+                    "health",
+                ],
+            )
+            .map_err(|err| err.to_string())?
+        }
+        "memory_release_gate_v2" => {
+            let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
+            let strict = args.get("strict").and_then(Value::as_bool).unwrap_or(false);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1800);
+            let report = release_gate_v2_report(
+                &conn,
+                &selected_db,
+                &selected_root,
+                since_days,
+                strict,
+                false,
+            )
+            .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(
+                &report,
+                max_chars,
+                &["checks", "recommendations", "control_center"],
+            )
+            .map_err(|err| err.to_string())?
+        }
+        "memory_quality_ci" => {
+            let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
+            let minimal = args.get("minimal").and_then(Value::as_bool).unwrap_or(true);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1600);
+            let report =
+                memory_quality_ci_report(&conn, &selected_db, &selected_root, since_days, minimal)
+                    .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&report, max_chars, &["failed_checks", "recommendations"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_fleet_dashboard_v2" => {
+            let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(2200);
+            let report = fleet_dashboard_v2_report(&selected_db, since_days)
+                .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&report, max_chars, &["projects", "attention"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_governance_policy" => {
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let report = memory_governance_policy_report(&selected_root, false)
+                .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&report, max_chars, &["recommendations"])
+                .map_err(|err| err.to_string())?
+        }
         other => return Err(format!("unsupported tool: {other}")),
     };
     Ok(json!({"content":[{"type":"text","text":text}]}))
@@ -1206,6 +1300,21 @@ fn mcp_selected_db(default_db: &Path, args: &Value) -> PathBuf {
         return project_memory_db(&scope);
     }
     default_db.to_path_buf()
+}
+
+fn mcp_selected_root(selected_db: &Path, args: &Value) -> PathBuf {
+    for key in ["root", "project_root", "project"] {
+        if let Some(root) = json_string(args, key).filter(|value| !value.trim().is_empty()) {
+            return expand_mcp_path(&root);
+        }
+    }
+    app_project_root_for_db(selected_db).unwrap_or_else(|| {
+        selected_db
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    })
 }
 
 fn mcp_memory_scope(args: &Value) -> Option<String> {

@@ -1051,6 +1051,43 @@ pub(crate) fn run() -> Result<()> {
         Command::MemoryGovernancePolicy { root, apply, json } => {
             print_memory_governance_policy(&root, apply, json)?
         }
+        Command::AutonomousLoopV2 {
+            root,
+            since_days,
+            apply,
+            json,
+        } => print_autonomous_loop_v2(&conn, &cli.db, &root, since_days, apply, json)?,
+        Command::GovernanceEnforce {
+            root,
+            since_days,
+            apply,
+            json,
+        } => print_governance_enforce(&conn, &root, since_days, apply, json)?,
+        Command::MemoryQualityCi {
+            root,
+            since_days,
+            minimal,
+            json,
+        } => print_memory_quality_ci(&conn, &cli.db, &root, since_days, minimal, json)?,
+        Command::FleetDashboardV2 { since_days, json } => {
+            print_fleet_dashboard_v2(&cli.db, since_days, json)?
+        }
+        Command::RemoteSyncApplyFlow {
+            root,
+            target,
+            since_days,
+            apply,
+            json,
+        } => print_remote_sync_apply_flow(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            since_days,
+            apply,
+            json,
+        )?,
+        Command::McpToolSurfaceV2 { json } => print_mcp_tool_surface_v2(json)?,
         Command::ProjectTemplate {
             root,
             kind,
@@ -3387,6 +3424,18 @@ Use `dukememory remote-sync-wizard --json` to configure local-first VDS/remote s
 
 Use `dukememory memory-governance-policy --json` to inspect or write autonomous memory governance policy.
 
+Use `dukememory autonomous-loop-v2 --json` to run the V2 autonomous memory loop with governance and quality gates; use `--apply` only when governance is ready.
+
+Use `dukememory governance-enforce --json` to enforce autonomous memory governance; use `--apply` to log a clean enforcement pass.
+
+Use `dukememory memory-quality-ci --json` to run a CI-friendly memory quality gate.
+
+Use `dukememory fleet-dashboard-v2 --json` to inspect all discovered project memories with V2 quality metrics.
+
+Use `dukememory remote-sync-apply-flow --json` to plan guarded remote sync apply; use `--target` and `DUKEMEMORY_SYNC_PASSPHRASE` before `--apply`.
+
+Use `dukememory mcp-tool-surface-v2 --json` to inspect MCP V2 memory tool exposure.
+
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
 Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens.
@@ -3490,6 +3539,12 @@ dukememory recall-benchmark-suite --json
 dukememory release-gate-v2 --json
 dukememory remote-sync-wizard --json
 dukememory memory-governance-policy --json
+dukememory autonomous-loop-v2 --json
+dukememory governance-enforce --json
+dukememory memory-quality-ci --json
+dukememory fleet-dashboard-v2 --json
+dukememory remote-sync-apply-flow --json
+dukememory mcp-tool-surface-v2 --json
 dukememory doctor-project --json
 dukememory release-gate --json
 dukememory project-watch --json
@@ -3939,6 +3994,12 @@ fn print_completions(shell: CompletionShell) {
         "release-gate-v2",
         "remote-sync-wizard",
         "memory-governance-policy",
+        "autonomous-loop-v2",
+        "governance-enforce",
+        "memory-quality-ci",
+        "fleet-dashboard-v2",
+        "remote-sync-apply-flow",
+        "mcp-tool-surface-v2",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -4079,6 +4140,12 @@ fn print_manpage() {
     println!("  release-gate-v2 --json        release gate with memory health checks");
     println!("  remote-sync-wizard --json     guided local-first remote sync setup");
     println!("  memory-governance-policy      inspect/write autonomous memory policy");
+    println!("  autonomous-loop-v2 --json     guarded autonomous loop with quality gates");
+    println!("  governance-enforce --json     enforce autonomous memory governance");
+    println!("  memory-quality-ci --json      CI-friendly memory quality gate");
+    println!("  fleet-dashboard-v2 --json     V2 quality status for all project memories");
+    println!("  remote-sync-apply-flow        guarded local-first remote sync apply plan");
+    println!("  mcp-tool-surface-v2 --json    inspect exposed MCP V2 memory tools");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");
