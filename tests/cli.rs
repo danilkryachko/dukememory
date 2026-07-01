@@ -8733,6 +8733,9 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-eval-story",
         "import-review",
         "web-control-center-v7",
+        "autonomous-usefulness",
+        "benchmark-polish",
+        "web-control-center-v8",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -8828,6 +8831,9 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-eval-story",
         "import-review",
         "web-control-center-v7",
+        "autonomous-usefulness",
+        "benchmark-polish",
+        "web-control-center-v8",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -9789,6 +9795,9 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/memory-eval-story"));
     assert!(html.contains("/import-review"));
     assert!(html.contains("/web-control-center-v7"));
+    assert!(html.contains("/autonomous-usefulness"));
+    assert!(html.contains("/benchmark-polish"));
+    assert!(html.contains("/web-control-center-v8"));
     assert!(html.contains("/project-diff"));
     assert!(html.contains("/intelligence-dashboard"));
     assert!(html.contains("/remote-sync-dry-run"));
@@ -10673,6 +10682,27 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(web_control_v7.contains("\"control_v7\""));
     assert!(web_control_v7.contains("\"connect_codex\""));
+
+    let autonomous_usefulness = http_once(
+        &db,
+        "GET /autonomous-usefulness?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(autonomous_usefulness.contains("\"autonomous_usefulness\""));
+    assert!(autonomous_usefulness.contains("\"action_plan\""));
+
+    let benchmark_polish = http_once(
+        &db,
+        "GET /benchmark-polish?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(benchmark_polish.contains("\"benchmark_polish\""));
+    assert!(benchmark_polish.contains("\"dashboard_stats\""));
+
+    let web_control_v8 = http_once(
+        &db,
+        "GET /web-control-center-v8?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(web_control_v8.contains("\"control_v8\""));
+    assert!(web_control_v8.contains("\"panels\""));
 
     let project_template = http_once(
         &db,
@@ -12751,6 +12781,57 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(web_control_v7_json["version"], 1);
     assert!(web_control_v7_json["controls"].as_array().is_some());
 
+    let autonomous_usefulness = stdout(
+        cmd(&db)
+            .arg("autonomous-usefulness")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let autonomous_usefulness_json: Value = serde_json::from_str(&autonomous_usefulness).unwrap();
+    assert_eq!(autonomous_usefulness_json["version"], 1);
+    assert!(
+        autonomous_usefulness_json["action_plan"]
+            .as_array()
+            .is_some()
+    );
+
+    let benchmark_polish = stdout(
+        cmd(&db)
+            .arg("benchmark-polish")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let benchmark_polish_json: Value = serde_json::from_str(&benchmark_polish).unwrap();
+    assert_eq!(benchmark_polish_json["version"], 1);
+    assert!(
+        benchmark_polish_json["dashboard_stats"]
+            .as_array()
+            .is_some()
+    );
+
+    let web_control_v8 = stdout(
+        cmd(&db)
+            .arg("web-control-center-v8")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(dir.path().join("remote-sync-target"))
+            .arg("--task")
+            .arg("project memory")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let web_control_v8_json: Value = serde_json::from_str(&web_control_v8).unwrap();
+    assert_eq!(web_control_v8_json["version"], 1);
+    assert!(web_control_v8_json["panels"].as_array().is_some());
+
     let project_template = stdout(
         cmd(&db)
             .arg("project-template")
@@ -12993,6 +13074,9 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         "memory-eval-story",
         "import-review",
         "web-control-center-v7",
+        "autonomous-usefulness",
+        "benchmark-polish",
+        "web-control-center-v8",
     ] {
         assert!(
             agent_enforce_json["required_commands"]

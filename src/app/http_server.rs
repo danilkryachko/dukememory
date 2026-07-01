@@ -1524,6 +1524,80 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 since_days,
             )?}))
         }
+        ("GET", "/autonomous-usefulness") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(
+                json!({"autonomous_usefulness": autonomous_usefulness_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                false,
+            )?}),
+            )
+        }
+        ("POST", "/autonomous-usefulness/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(
+                json!({"autonomous_usefulness": autonomous_usefulness_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                true,
+            )?}),
+            )
+        }
+        ("GET", "/benchmark-polish") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            let write_baseline = params
+                .get("write_baseline")
+                .is_some_and(|value| value == "true" || value == "1");
+            HttpResponse::ok(json!({"benchmark_polish": benchmark_polish_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                write_baseline,
+            )?}))
+        }
+        ("GET", "/web-control-center-v8") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let target = params.get("target").map(PathBuf::from);
+            let task = params
+                .get("task")
+                .map(String::as_str)
+                .unwrap_or("project memory");
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"control_v8": web_control_center_v8_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                task,
+                since_days,
+            )?}))
+        }
         ("GET", "/mcp-discipline-v2") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);

@@ -95,6 +95,8 @@ dukememory answer "what should we remember about checkout validation?" --json
 dukememory explain-recall "checkout validation" --json
 dukememory memory-health-score --json
 dukememory memory-eval-story --json
+dukememory autonomous-usefulness --json
+dukememory benchmark-polish --json
 dukememory recall-benchmark-suite --json
 dukememory import-review docs/project-notes.md --json
 dukememory memory-diff-review --json
@@ -248,6 +250,9 @@ dukememory memory-type-guide --json
 dukememory memory-eval-story --json
 dukememory import-review README.md --json
 dukememory web-control-center-v7 --json
+dukememory autonomous-usefulness --json
+dukememory benchmark-polish --json
+dukememory web-control-center-v8 --json
 dukememory auto-ranking-tune --apply --json
 dukememory ranking-profile --profile balanced --apply --json
 dukememory project-template --kind rust-cli --apply --json

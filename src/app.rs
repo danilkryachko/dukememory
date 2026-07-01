@@ -1340,6 +1340,33 @@ pub(crate) fn run() -> Result<()> {
             since_days,
             json,
         )?,
+        Command::AutonomousUsefulness {
+            root,
+            since_days,
+            apply,
+            json,
+        } => print_autonomous_usefulness(&conn, &root, since_days, apply, json)?,
+        Command::BenchmarkPolish {
+            root,
+            since_days,
+            write_baseline,
+            json,
+        } => print_benchmark_polish(&conn, &root, since_days, write_baseline, json)?,
+        Command::WebControlCenterV8 {
+            root,
+            target,
+            task,
+            since_days,
+            json,
+        } => print_web_control_center_v8(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            &task,
+            since_days,
+            json,
+        )?,
         Command::ProjectTemplate {
             root,
             kind,
@@ -3752,6 +3779,12 @@ Use `dukememory import-review FILE --json` to turn text into reviewed inbox cand
 
 Use `dukememory web-control-center-v7 --json` to inspect the 0.26 web control model with answer, connect, type guide, eval story, and import review controls.
 
+Use `dukememory autonomous-usefulness --json` to plan autonomous memory usefulness improvements; use `--apply` only for reversible feedback materialization.
+
+Use `dukememory benchmark-polish --json` to inspect polished local benchmark evidence and dashboard-ready proof points.
+
+Use `dukememory web-control-center-v8 --json` to inspect the 0.27 web control model with Answer v2, autonomous usefulness, and benchmark polish panels.
+
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
 Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens.
@@ -3893,6 +3926,9 @@ dukememory memory-type-guide --json
 dukememory memory-eval-story --json
 dukememory import-review README.md --json
 dukememory web-control-center-v7 --json
+dukememory autonomous-usefulness --json
+dukememory benchmark-polish --json
+dukememory web-control-center-v8 --json
 dukememory doctor-project --json
 dukememory release-gate --json
 dukememory project-watch --json
@@ -4380,6 +4416,9 @@ fn print_completions(shell: CompletionShell) {
         "memory-eval-story",
         "import-review",
         "web-control-center-v7",
+        "autonomous-usefulness",
+        "benchmark-polish",
+        "web-control-center-v8",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -4560,6 +4599,9 @@ fn print_manpage() {
     println!("  memory-eval-story --json      reproducible recall/effectiveness story");
     println!("  import-review FILE --json     turn text into reviewed inbox candidates");
     println!("  web-control-center-v7         0.26 answer/connect/eval/import control model");
+    println!("  autonomous-usefulness --json  plan autonomous usefulness improvements");
+    println!("  benchmark-polish --json       polished local benchmark evidence");
+    println!("  web-control-center-v8         0.27 answer/usefulness/benchmark control model");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");

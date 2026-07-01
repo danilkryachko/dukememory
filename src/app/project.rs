@@ -712,6 +712,9 @@ For every new chat or coding task in this repository:
 - To inspect reproducible local recall/effectiveness evaluation, run `dukememory memory-eval-story --json`.
 - To turn a text file into reviewed inbox candidates, run `dukememory import-review FILE --json`; use `--apply` only for safe durable input.
 - To inspect the 0.26 web control model, run `dukememory web-control-center-v7 --json`.
+- To plan autonomous memory usefulness improvements, run `dukememory autonomous-usefulness --json`; use `--apply` only for reversible feedback materialization.
+- To inspect polished local benchmark evidence, run `dukememory benchmark-polish --json`.
+- To inspect the 0.27 web control model, run `dukememory web-control-center-v8 --json`.
 - To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`.
 - To inspect live memory usefulness from reads and feedback, run `dukememory eval live --json`.
 - To inspect all local projects, run `dukememory dashboard --json`.

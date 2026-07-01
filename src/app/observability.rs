@@ -1442,9 +1442,13 @@ pub(crate) struct MemoryAnswerReport {
     pub(crate) root: String,
     pub(crate) question: String,
     pub(crate) answer: String,
+    pub(crate) actionable_answer: String,
+    pub(crate) certainty: String,
+    pub(crate) needs_verification: bool,
     pub(crate) semantic_used: bool,
     pub(crate) citation_count: usize,
     pub(crate) citations: Vec<MemoryAnswerCitation>,
+    pub(crate) evidence_groups: Vec<MemoryAnswerGroup>,
     pub(crate) gaps: Vec<String>,
     pub(crate) recommendations: Vec<String>,
 }
@@ -1458,6 +1462,15 @@ pub(crate) struct MemoryAnswerCitation {
     pub(crate) summary: String,
     pub(crate) confidence: f64,
     pub(crate) status: String,
+    pub(crate) why: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryAnswerGroup {
+    pub(crate) name: String,
+    pub(crate) count: usize,
+    pub(crate) ids: Vec<String>,
+    pub(crate) summary: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1510,7 +1523,15 @@ pub(crate) struct MemoryEvalStoryReport {
     pub(crate) effectiveness: MemoryEffectivenessLabReport,
     pub(crate) commands: Vec<String>,
     pub(crate) public_claims: Vec<String>,
+    pub(crate) proof_points: Vec<MemoryEvalProofPoint>,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemoryEvalProofPoint {
+    pub(crate) name: String,
+    pub(crate) value: String,
+    pub(crate) status: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1524,7 +1545,9 @@ pub(crate) struct ImportReviewReport {
     pub(crate) applied: bool,
     pub(crate) candidate_count: usize,
     pub(crate) inserted: usize,
+    pub(crate) duplicate_count: usize,
     pub(crate) candidates: Vec<ImportReviewCandidate>,
+    pub(crate) quality_checks: Vec<InstallPolishCheck>,
     pub(crate) actions: Vec<String>,
     pub(crate) recommendations: Vec<String>,
 }
@@ -1536,6 +1559,48 @@ pub(crate) struct ImportReviewCandidate {
     pub(crate) memory_type: String,
     pub(crate) body: String,
     pub(crate) confidence: f64,
+    pub(crate) reason: String,
+    pub(crate) duplicate: bool,
+    pub(crate) fingerprint: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AutonomousUsefulnessReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) usefulness: UsefulnessEngineReport,
+    pub(crate) effectiveness: MemoryEffectivenessLabReport,
+    pub(crate) quality: QualityReport,
+    pub(crate) action_plan: Vec<AutonomousUsefulnessAction>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AutonomousUsefulnessAction {
+    pub(crate) kind: String,
+    pub(crate) target: String,
+    pub(crate) reason: String,
+    pub(crate) safe_auto: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct BenchmarkPolishReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) write_baseline: bool,
+    pub(crate) eval_story: MemoryEvalStoryReport,
+    pub(crate) benchmark: RecallBenchmarkSuiteReport,
+    pub(crate) public_summary: Vec<String>,
+    pub(crate) dashboard_stats: Vec<MemoryEvalProofPoint>,
+    pub(crate) commands: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1553,6 +1618,30 @@ pub(crate) struct WebControlCenterV7Report {
     pub(crate) import_review: Option<ImportReviewReport>,
     pub(crate) controls: Vec<WebControlAction>,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WebControlCenterV8Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) target: Option<String>,
+    pub(crate) v7: WebControlCenterV7Report,
+    pub(crate) autonomous_usefulness: AutonomousUsefulnessReport,
+    pub(crate) benchmark_polish: BenchmarkPolishReport,
+    pub(crate) panels: Vec<WebControlPanel>,
+    pub(crate) controls: Vec<WebControlAction>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WebControlPanel {
+    pub(crate) name: String,
+    pub(crate) status: String,
+    pub(crate) headline: String,
+    pub(crate) metrics: Vec<MemoryEvalProofPoint>,
+    pub(crate) actions: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -8455,6 +8544,7 @@ pub(crate) fn memory_answer_report(
             summary: truncate_chars(&memory.body, 320),
             confidence: memory.confidence,
             status: memory.status.clone(),
+            why: memory_answer_citation_why(memory),
         })
         .collect::<Vec<_>>();
     let mut gaps = Vec::new();
@@ -8469,6 +8559,12 @@ pub(crate) fn memory_answer_report(
             "some cited memory is uncertain and should be verified before acting".to_string(),
         );
     }
+    let certainty = memory_answer_certainty(&citations);
+    let needs_verification = citations.is_empty()
+        || citations.iter().any(|item| item.status == "uncertain")
+        || certainty == "low";
+    let evidence_groups = memory_answer_groups(&citations);
+    let actionable_answer = memory_answer_actionable_answer(question, &citations, &gaps);
     let answer = if citations.is_empty() {
         format!(
             "I do not have enough grounded project memory to answer \"{}\". Add or approve a concise memory card first, then rerun `dukememory answer`.",
@@ -8511,12 +8607,111 @@ pub(crate) fn memory_answer_report(
         root: root.display().to_string(),
         question: question.to_string(),
         answer,
+        actionable_answer,
+        certainty,
+        needs_verification,
         semantic_used,
         citation_count: citations.len(),
         citations,
+        evidence_groups,
         gaps,
         recommendations,
     })
+}
+
+fn memory_answer_citation_why(memory: &Memory) -> String {
+    let mut parts = vec![format!("matched {} memory", memory.memory_type)];
+    if memory.confidence > 0.0 {
+        parts.push(format!("confidence {:.2}", memory.confidence));
+    }
+    if memory.status == "uncertain" {
+        parts.push("requires verification".to_string());
+    } else {
+        parts.push(format!("status {}", memory.status));
+    }
+    parts.join("; ")
+}
+
+fn memory_answer_certainty(citations: &[MemoryAnswerCitation]) -> String {
+    if citations.len() >= 5 && citations.iter().all(|item| item.status == "active") {
+        "high"
+    } else if citations.len() >= 3 && citations.iter().all(|item| item.status != "rejected") {
+        "medium"
+    } else {
+        "low"
+    }
+    .to_string()
+}
+
+fn memory_answer_groups(citations: &[MemoryAnswerCitation]) -> Vec<MemoryAnswerGroup> {
+    let mut grouped: BTreeMap<String, Vec<&MemoryAnswerCitation>> = BTreeMap::new();
+    for citation in citations {
+        grouped
+            .entry(citation.memory_type.clone())
+            .or_default()
+            .push(citation);
+    }
+    grouped
+        .into_iter()
+        .map(|(name, items)| {
+            let ids = items
+                .iter()
+                .take(6)
+                .map(|item| item.id.clone())
+                .collect::<Vec<_>>();
+            let summary = items
+                .iter()
+                .take(2)
+                .map(|item| format!("{}: {}", item.title, truncate_chars(&item.summary, 120)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            MemoryAnswerGroup {
+                name,
+                count: items.len(),
+                ids,
+                summary,
+            }
+        })
+        .collect()
+}
+
+fn memory_answer_actionable_answer(
+    question: &str,
+    citations: &[MemoryAnswerCitation],
+    gaps: &[String],
+) -> String {
+    if citations.is_empty() {
+        return format!(
+            "No grounded answer yet for \"{}\". Add a reviewed memory card or narrow the question.",
+            truncate_chars(question, 120)
+        );
+    }
+    let confirmed = citations
+        .iter()
+        .filter(|item| item.status == "active")
+        .take(4)
+        .map(|item| format!("{}: {}", item.title, truncate_chars(&item.summary, 170)))
+        .collect::<Vec<_>>();
+    let uncertain = citations
+        .iter()
+        .filter(|item| item.status == "uncertain")
+        .take(2)
+        .map(|item| item.title.clone())
+        .collect::<Vec<_>>();
+    let mut parts = Vec::new();
+    if !confirmed.is_empty() {
+        parts.push(format!("Use: {}", confirmed.join(" ")));
+    }
+    if !uncertain.is_empty() {
+        parts.push(format!(
+            "Verify before relying on: {}",
+            uncertain.join(", ")
+        ));
+    }
+    if !gaps.is_empty() {
+        parts.push(format!("Gap: {}", gaps.join("; ")));
+    }
+    parts.join(" ")
 }
 
 pub(crate) fn print_connect_codex(
@@ -8792,6 +8987,33 @@ pub(crate) fn memory_eval_story_report(
         format!("effectiveness score {:.1}", effectiveness.score),
         "benchmarks are local, reproducible, and project-specific; they are not broad public dataset claims".to_string(),
     ];
+    let proof_points = vec![
+        MemoryEvalProofPoint {
+            name: "recall_benchmark".to_string(),
+            value: format!("{:.1}", benchmark.harness.score),
+            status: if benchmark.regression {
+                "regression"
+            } else {
+                "ready"
+            }
+            .to_string(),
+        },
+        MemoryEvalProofPoint {
+            name: "test_harness".to_string(),
+            value: format!("{:.1}", harness.score),
+            status: score_status(harness.score),
+        },
+        MemoryEvalProofPoint {
+            name: "effectiveness".to_string(),
+            value: format!("{:.1}", effectiveness.score),
+            status: score_status(effectiveness.score),
+        },
+        MemoryEvalProofPoint {
+            name: "baseline_write".to_string(),
+            value: write_baseline.to_string(),
+            status: if write_baseline { "applied" } else { "dry_run" }.to_string(),
+        },
+    ];
     let mut recommendations = benchmark.recommendations.clone();
     recommendations.extend(profiles.recommendations.clone());
     recommendations.extend(effectiveness.recommendations.clone());
@@ -8813,6 +9035,7 @@ pub(crate) fn memory_eval_story_report(
         effectiveness,
         commands,
         public_claims,
+        proof_points,
         recommendations,
     })
 }
@@ -8853,11 +9076,15 @@ pub(crate) fn import_review_report(
     };
     let content = fs::read_to_string(&input)
         .with_context(|| format!("failed to read import input {}", input.display()))?;
-    let candidates = import_review_candidates(&content);
+    let candidates = import_review_candidates(conn, &content, &input.display().to_string())?;
     let mut inserted = 0;
     let mut actions = Vec::new();
     if apply {
         for candidate in &candidates {
+            if candidate.duplicate {
+                actions.push(format!("skipped_duplicate:{}", candidate.title));
+                continue;
+            }
             reject_sensitive(&candidate.title, &candidate.body, false)?;
             if import_review_inbox_exists(conn, &candidate.title, &input.display().to_string())? {
                 actions.push(format!("skipped_duplicate:{}", candidate.title));
@@ -8896,6 +9123,32 @@ pub(crate) fn import_review_report(
         "run embed-index after approving imported memory cards".to_string(),
     ];
     let ok = !candidates.is_empty();
+    let duplicate_count = candidates
+        .iter()
+        .filter(|candidate| candidate.duplicate)
+        .count();
+    let quality_checks = vec![
+        InstallPolishCheck {
+            name: "input_readable".to_string(),
+            ok: !content.trim().is_empty(),
+            detail: input.display().to_string(),
+        },
+        InstallPolishCheck {
+            name: "candidate_count".to_string(),
+            ok,
+            detail: candidates.len().to_string(),
+        },
+        InstallPolishCheck {
+            name: "duplicate_screen".to_string(),
+            ok: duplicate_count < candidates.len().max(1),
+            detail: format!("{duplicate_count} duplicate candidate(s)"),
+        },
+        InstallPolishCheck {
+            name: "inbox_first".to_string(),
+            ok: true,
+            detail: "import review writes pending inbox candidates, not active memory".to_string(),
+        },
+    ];
     Ok(ImportReviewReport {
         version: 1,
         ok,
@@ -8906,13 +9159,19 @@ pub(crate) fn import_review_report(
         applied: apply,
         candidate_count: candidates.len(),
         inserted,
+        duplicate_count,
         candidates,
+        quality_checks,
         actions,
         recommendations,
     })
 }
 
-fn import_review_candidates(content: &str) -> Vec<ImportReviewCandidate> {
+fn import_review_candidates(
+    conn: &Connection,
+    content: &str,
+    source_path: &str,
+) -> Result<Vec<ImportReviewCandidate>> {
     content
         .split("\n\n")
         .map(str::trim)
@@ -8924,15 +9183,21 @@ fn import_review_candidates(content: &str) -> Vec<ImportReviewCandidate> {
                 .find(|line| !line.trim().is_empty())
                 .unwrap_or(part);
             let memory_type = import_review_type(part);
-            ImportReviewCandidate {
-                title: truncate_chars(
-                    first_line.trim_matches(|ch: char| matches!(ch, '#' | '-' | '*' | ' ')),
-                    90,
-                ),
-                memory_type,
+            let title = truncate_chars(
+                first_line.trim_matches(|ch: char| matches!(ch, '#' | '-' | '*' | ' ')),
+                90,
+            );
+            let duplicate = memory_title_exists(conn, &memory_type, &title)?
+                || import_review_inbox_exists(conn, &title, source_path)?;
+            Ok(ImportReviewCandidate {
+                title,
+                memory_type: memory_type.clone(),
                 body: truncate_chars(part, 900),
-                confidence: 0.64,
-            }
+                confidence: import_review_confidence(part, duplicate),
+                reason: import_review_reason(part, &memory_type, duplicate),
+                duplicate,
+                fingerprint: import_review_fingerprint(part),
+            })
         })
         .collect()
 }
@@ -8954,6 +9219,58 @@ fn import_review_type(part: &str) -> String {
         "design_note"
     }
     .to_string()
+}
+
+fn import_review_confidence(part: &str, duplicate: bool) -> f64 {
+    let mut confidence: f64 = 0.58;
+    let lower = part.to_lowercase();
+    if lower.contains("must")
+        || lower.contains("decision")
+        || lower.contains("decided")
+        || lower.contains("нужно")
+        || lower.contains("решили")
+    {
+        confidence += 0.12;
+    }
+    if part.contains("file:") || part.contains("cargo ") || part.contains("dukememory ") {
+        confidence += 0.08;
+    }
+    if part.chars().count() > 220 {
+        confidence += 0.05;
+    }
+    if duplicate {
+        confidence -= 0.22;
+    }
+    confidence.clamp(0.35, 0.92)
+}
+
+fn import_review_reason(part: &str, memory_type: &str, duplicate: bool) -> String {
+    let mut reasons = vec![format!("classified as {memory_type}")];
+    let lower = part.to_lowercase();
+    if lower.contains("must") || lower.contains("нужно") {
+        reasons.push("contains durable requirement language".to_string());
+    }
+    if lower.contains("decision") || lower.contains("решили") {
+        reasons.push("contains decision language".to_string());
+    }
+    if lower.contains("bug") || lower.contains("risk") || lower.contains("issue") {
+        reasons.push("contains risk/issue language".to_string());
+    }
+    if duplicate {
+        reasons.push("similar active memory or pending inbox candidate already exists".to_string());
+    }
+    reasons.join("; ")
+}
+
+fn import_review_fingerprint(part: &str) -> String {
+    let normalized = part
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let mut hasher = Sha256::new();
+    hasher.update(normalized.as_bytes());
+    format!("{:x}", hasher.finalize())[..12].to_string()
 }
 
 fn import_review_inbox_exists(conn: &Connection, title: &str, source_path: &str) -> Result<bool> {
@@ -9075,6 +9392,320 @@ pub(crate) fn web_control_center_v7_report(
         type_guide,
         eval_story,
         import_review: None,
+        controls,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_autonomous_usefulness(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = autonomous_usefulness_report(conn, root, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Autonomous Usefulness");
+    println!("status: {}", report.status);
+    println!("applied: {}", report.applied);
+    for action in &report.action_plan {
+        println!("{}: {} ({})", action.kind, action.target, action.reason);
+    }
+    Ok(())
+}
+
+pub(crate) fn autonomous_usefulness_report(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+) -> Result<AutonomousUsefulnessReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let usefulness = usefulness_engine_report(conn, &root, since_days, apply)?;
+    let effectiveness = memory_effectiveness_lab_report(conn, &root, since_days)?;
+    let quality = quality_report(conn, since_days, 20)?;
+    let mut action_plan = Vec::new();
+    for id in &usefulness.promote_candidates {
+        action_plan.push(AutonomousUsefulnessAction {
+            kind: "promote".to_string(),
+            target: id.clone(),
+            reason: "recent useful reads or positive feedback".to_string(),
+            safe_auto: true,
+        });
+    }
+    for id in &usefulness.suppress_candidates {
+        action_plan.push(AutonomousUsefulnessAction {
+            kind: "soft_suppress_review".to_string(),
+            target: id.clone(),
+            reason: "weak quality and no recent requests".to_string(),
+            safe_auto: false,
+        });
+    }
+    for suggestion in quality.suggestions.iter().take(8) {
+        action_plan.push(AutonomousUsefulnessAction {
+            kind: suggestion.action.clone(),
+            target: suggestion
+                .id
+                .clone()
+                .unwrap_or_else(|| "project_memory".to_string()),
+            reason: suggestion.detail.clone(),
+            safe_auto: suggestion.action.contains("feedback")
+                || suggestion.action.contains("link")
+                || suggestion.action.contains("compact"),
+        });
+    }
+    let mut actions = Vec::new();
+    if apply {
+        actions.push("applied: usefulness-engine feedback materialization requested".to_string());
+    } else {
+        actions.push("dry_run: autonomous usefulness actions were only planned".to_string());
+    }
+    let mut recommendations = usefulness.recommendations.clone();
+    recommendations.extend(effectiveness.recommendations.clone());
+    recommendations.extend(
+        quality
+            .suggestions
+            .iter()
+            .take(5)
+            .map(|item| format!("{}: {}", item.action, item.detail)),
+    );
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = usefulness.ok && effectiveness.ok && quality.average_score >= 60.0;
+    Ok(AutonomousUsefulnessReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        applied: apply,
+        usefulness,
+        effectiveness,
+        quality,
+        action_plan,
+        actions,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_benchmark_polish(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    write_baseline: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = benchmark_polish_report(conn, root, since_days, write_baseline)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Benchmark Polish");
+    println!("status: {}", report.status);
+    for summary in &report.public_summary {
+        println!("summary: {summary}");
+    }
+    Ok(())
+}
+
+pub(crate) fn benchmark_polish_report(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    write_baseline: bool,
+) -> Result<BenchmarkPolishReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let eval_story = memory_eval_story_report(conn, &root, since_days, write_baseline)?;
+    let benchmark = recall_benchmark_suite_report(conn, &root, since_days, 8, false)?;
+    let dashboard_stats = vec![
+        MemoryEvalProofPoint {
+            name: "benchmark_score".to_string(),
+            value: format!("{:.1}", benchmark.score),
+            status: score_status(benchmark.score),
+        },
+        MemoryEvalProofPoint {
+            name: "harness_score".to_string(),
+            value: format!("{:.1}", eval_story.harness.score),
+            status: score_status(eval_story.harness.score),
+        },
+        MemoryEvalProofPoint {
+            name: "effectiveness_score".to_string(),
+            value: format!("{:.1}", eval_story.effectiveness.score),
+            status: score_status(eval_story.effectiveness.score),
+        },
+        MemoryEvalProofPoint {
+            name: "regression".to_string(),
+            value: benchmark.regression.to_string(),
+            status: if benchmark.regression {
+                "attention"
+            } else {
+                "ready"
+            }
+            .to_string(),
+        },
+    ];
+    let public_summary = vec![
+        format!("Local recall benchmark score: {:.1}", benchmark.score),
+        format!(
+            "Agent effectiveness score: {:.1}",
+            eval_story.effectiveness.score
+        ),
+        "Use these numbers as project-local regression checks, not public leaderboard claims"
+            .to_string(),
+    ];
+    let commands = vec![
+        "dukememory benchmark-polish --json".to_string(),
+        "dukememory memory-eval-story --json".to_string(),
+        "dukememory recall-benchmark-suite --json".to_string(),
+        "dukememory benchmark-profiles --json".to_string(),
+    ];
+    let mut recommendations = eval_story.recommendations.clone();
+    recommendations.extend(benchmark.recommendations.clone());
+    if benchmark.regression {
+        recommendations.push(
+            "inspect changed retrieval/ranking behavior before writing a new baseline".to_string(),
+        );
+    }
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = eval_story.ok && benchmark.ok && !benchmark.regression;
+    Ok(BenchmarkPolishReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        since_days,
+        write_baseline,
+        eval_story,
+        benchmark,
+        public_summary,
+        dashboard_stats,
+        commands,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_web_control_center_v8(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    task: &str,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = web_control_center_v8_report(conn, db, root, target, task, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Web Control Center v8");
+    println!("status: {}", report.status);
+    for panel in &report.panels {
+        println!("{}: {}", panel.name, panel.headline);
+    }
+    Ok(())
+}
+
+pub(crate) fn web_control_center_v8_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    task: &str,
+    since_days: i64,
+) -> Result<WebControlCenterV8Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let v7 = web_control_center_v7_report(conn, db, &root, target, task, since_days)?;
+    let autonomous_usefulness = autonomous_usefulness_report(conn, &root, since_days, false)?;
+    let benchmark_polish = benchmark_polish_report(conn, &root, since_days, false)?;
+    let panels = vec![
+        WebControlPanel {
+            name: "answer_v2".to_string(),
+            status: v7.answer.status.clone(),
+            headline: format!(
+                "{} certainty, {} citation(s)",
+                v7.answer.certainty, v7.answer.citation_count
+            ),
+            metrics: vec![MemoryEvalProofPoint {
+                name: "needs_verification".to_string(),
+                value: v7.answer.needs_verification.to_string(),
+                status: if v7.answer.needs_verification {
+                    "attention"
+                } else {
+                    "ready"
+                }
+                .to_string(),
+            }],
+            actions: vec!["dukememory answer \"QUESTION\" --json".to_string()],
+        },
+        WebControlPanel {
+            name: "autonomous_usefulness".to_string(),
+            status: autonomous_usefulness.status.clone(),
+            headline: format!(
+                "{} planned action(s)",
+                autonomous_usefulness.action_plan.len()
+            ),
+            metrics: vec![MemoryEvalProofPoint {
+                name: "effectiveness".to_string(),
+                value: format!("{:.1}", autonomous_usefulness.effectiveness.score),
+                status: score_status(autonomous_usefulness.effectiveness.score),
+            }],
+            actions: vec![
+                "dukememory autonomous-usefulness --json".to_string(),
+                "dukememory autonomous-usefulness --apply --json".to_string(),
+            ],
+        },
+        WebControlPanel {
+            name: "benchmark_polish".to_string(),
+            status: benchmark_polish.status.clone(),
+            headline: format!("benchmark {:.1}", benchmark_polish.benchmark.score),
+            metrics: benchmark_polish.dashboard_stats.clone(),
+            actions: benchmark_polish.commands.clone(),
+        },
+    ];
+    let mut controls = v7.controls.clone();
+    controls.extend(vec![
+        WebControlAction {
+            name: "autonomous_usefulness".to_string(),
+            label: "Autonomous usefulness".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/autonomous-usefulness/apply".to_string(),
+            cli: "dukememory autonomous-usefulness --apply --json".to_string(),
+            safe_auto: true,
+            requires_apply: true,
+            status: autonomous_usefulness.status.clone(),
+        },
+        WebControlAction {
+            name: "benchmark_polish".to_string(),
+            label: "Benchmark polish".to_string(),
+            method: "GET".to_string(),
+            endpoint: "/benchmark-polish".to_string(),
+            cli: "dukememory benchmark-polish --json".to_string(),
+            safe_auto: true,
+            requires_apply: false,
+            status: benchmark_polish.status.clone(),
+        },
+    ]);
+    let mut recommendations = v7.recommendations.clone();
+    recommendations.extend(autonomous_usefulness.recommendations.clone());
+    recommendations.extend(benchmark_polish.recommendations.clone());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = v7.ok && autonomous_usefulness.ok && benchmark_polish.ok;
+    Ok(WebControlCenterV8Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        target: target.map(|path| path.display().to_string()),
+        v7,
+        autonomous_usefulness,
+        benchmark_polish,
+        panels,
         controls,
         recommendations,
     })
@@ -10174,6 +10805,9 @@ fn agent_required_commands() -> &'static [&'static str] {
         "memory-eval-story",
         "import-review",
         "web-control-center-v7",
+        "autonomous-usefulness",
+        "benchmark-polish",
+        "web-control-center-v8",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
