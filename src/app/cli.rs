@@ -636,6 +636,20 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Estimate memory ROI from reuse, feedback, token savings, and write pressure.
+    RoiReport {
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Audit whether agents follow memory read/write discipline.
+    AgentAudit {
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Record lightweight agent feedback for memory ids returned by a task.
     Feedback {
         #[arg(long = "id")]
@@ -732,6 +746,15 @@ pub(crate) enum Command {
     },
     /// Print one operational readiness report for UI, autonomy, embeddings, and sync.
     OpsStatus {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect local-first remote/VDS sync readiness without moving memory remotely.
+    RemoteStatus {
         #[arg(long, default_value = ".")]
         root: PathBuf,
         #[arg(long, default_value_t = 7)]

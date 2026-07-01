@@ -9332,6 +9332,12 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("avg semantic results"));
     assert!(html.contains("Storage"));
     assert!(html.contains("/ops-status"));
+    assert!(html.contains("/roi-report"));
+    assert!(html.contains("/agent-audit"));
+    assert!(html.contains("/remote-status"));
+    assert!(html.contains("memory ROI"));
+    assert!(html.contains("agent audit"));
+    assert!(html.contains("remote readiness"));
     assert!(html.contains("/upgrade-project"));
 
     let memory = http_once(
@@ -9544,6 +9550,31 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(ops.contains("\"vacuum_recommended\""));
     assert!(ops.contains("\"multi_device\""));
     assert!(ops.contains("\"inferred_missing\":1"));
+
+    let roi = http_once(
+        &db,
+        "GET /roi-report?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(roi.contains("\"roi\""));
+    assert!(roi.contains("\"score\""));
+    assert!(roi.contains("\"write_pressure\""));
+    assert!(roi.contains("\"top_memories\""));
+
+    let agent_audit = http_once(
+        &db,
+        "GET /agent-audit?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(agent_audit.contains("\"agent_audit\""));
+    assert!(agent_audit.contains("\"brief_reads\""));
+    assert!(agent_audit.contains("\"durable_writes\""));
+
+    let remote = http_once(
+        &db,
+        "GET /remote-status?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(remote.contains("\"remote\""));
+    assert!(remote.contains("\"local_first\""));
+    assert!(remote.contains("\"estimated_vds_latency_ms\""));
 
     let contract = http_once(
         &db,
@@ -10412,6 +10443,49 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(ops_text.contains("gap_inbox: pending="));
     assert!(ops_text.contains("stale_pending="));
     assert!(ops_text.contains("oldest_pending_age_secs="));
+
+    let roi = stdout(
+        cmd(&db)
+            .arg("roi-report")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let roi_json: Value = serde_json::from_str(&roi).unwrap();
+    assert_eq!(roi_json["version"], 1);
+    assert!(roi_json["score"].as_f64().unwrap() >= 0.0);
+    assert!(roi_json["write_pressure"].as_f64().unwrap() >= 0.0);
+    assert!(roi_json["top_memories"].as_array().is_some());
+    assert!(roi_json["recommendations"].as_array().is_some());
+
+    let agent_audit = stdout(
+        cmd(&db)
+            .arg("agent-audit")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let agent_audit_json: Value = serde_json::from_str(&agent_audit).unwrap();
+    assert_eq!(agent_audit_json["version"], 1);
+    assert!(agent_audit_json["brief_reads"].as_u64().unwrap() >= 1);
+    assert!(agent_audit_json["commands"].as_object().is_some());
+    assert!(agent_audit_json["issues"].as_array().is_some());
+
+    let remote = stdout(
+        cmd(&db)
+            .arg("remote-status")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let remote_json: Value = serde_json::from_str(&remote).unwrap();
+    assert_eq!(remote_json["version"], 1);
+    assert_eq!(remote_json["local_first"], true);
+    assert!(remote_json["estimated_local_latency_ms"].as_u64().unwrap() > 0);
+    assert!(remote_json["estimated_vds_latency_ms"].as_u64().unwrap() >= 20);
+    assert!(remote_json["recommendations"].as_array().is_some());
 
     let gap_run = stdout(
         cmd(&db)

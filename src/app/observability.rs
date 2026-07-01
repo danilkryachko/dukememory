@@ -120,6 +120,61 @@ pub(crate) struct QualityReport {
     pub(crate) suggestions: Vec<UsefulnessSuggestion>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemoryRoiReport {
+    pub(crate) version: u32,
+    pub(crate) since_days: i64,
+    pub(crate) score: f64,
+    pub(crate) read_count: usize,
+    pub(crate) write_count: usize,
+    pub(crate) write_pressure: f64,
+    pub(crate) unique_memory_ids: usize,
+    pub(crate) reused_card_rate: f64,
+    pub(crate) useful_rate: f64,
+    pub(crate) token_saving_estimate: usize,
+    pub(crate) top_memories: Vec<UsageMemoryItem>,
+    pub(crate) noisy_memory_ids: Vec<String>,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AgentAuditReport {
+    pub(crate) version: u32,
+    pub(crate) since_days: i64,
+    pub(crate) score: f64,
+    pub(crate) read_count: usize,
+    pub(crate) brief_reads: usize,
+    pub(crate) impact_reads: usize,
+    pub(crate) evidence_reads: usize,
+    pub(crate) feedback_events: usize,
+    pub(crate) durable_writes: usize,
+    pub(crate) semantic_eligible_result_rate: f64,
+    pub(crate) inferred_missing: usize,
+    pub(crate) commands: BTreeMap<String, usize>,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RemoteStatusReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) local_first: bool,
+    pub(crate) ready: bool,
+    pub(crate) export_command: String,
+    pub(crate) import_command: String,
+    pub(crate) write_pressure: f64,
+    pub(crate) embedding_current: bool,
+    pub(crate) provider_reachable: bool,
+    pub(crate) backup_ready: bool,
+    pub(crate) estimated_local_latency_ms: u32,
+    pub(crate) estimated_vds_latency_ms: u32,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct FeedbackSummary {
     pub(crate) since_days: i64,
@@ -1121,6 +1176,210 @@ pub(crate) fn print_quality_report(
         );
     }
     Ok(())
+}
+
+pub(crate) fn print_roi_report(conn: &Connection, since_days: i64, json_out: bool) -> Result<()> {
+    let report = roi_report(conn, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory ROI Report");
+    println!("score: {:.1}", report.score);
+    println!("reads: {}", report.read_count);
+    println!("writes: {}", report.write_count);
+    println!("write_pressure: {:.2}", report.write_pressure);
+    println!("unique_memory_ids: {}", report.unique_memory_ids);
+    println!("reused_card_rate: {:.1}%", report.reused_card_rate * 100.0);
+    println!("useful_rate: {:.1}%", report.useful_rate * 100.0);
+    println!("token_saving_estimate: {}", report.token_saving_estimate);
+    if !report.top_memories.is_empty() {
+        println!("top_memories:");
+        for item in report.top_memories.iter().take(8) {
+            println!(
+                "- {} requests={} {}",
+                item.id, item.request_count, item.title
+            );
+        }
+    }
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn roi_report(conn: &Connection, since_days: i64) -> Result<MemoryRoiReport> {
+    let usage = usage_report(conn, since_days, 20)?;
+    let quality = quality_report(conn, since_days, 20)?;
+    let live = live_eval_report(conn, since_days)?;
+    let reused = usage
+        .top_memories
+        .iter()
+        .filter(|item| item.request_count >= 2)
+        .count();
+    let reused_card_rate = ratio(reused, usage.unique_memory_ids.max(1));
+    let token_saving_estimate = quality
+        .items
+        .iter()
+        .map(|item| {
+            item.request_count
+                .saturating_mul(item.body_chars.saturating_sub(240))
+                / 4
+        })
+        .sum::<usize>();
+    let mut issues = Vec::new();
+    let mut recommendations = Vec::new();
+    if usage.read_count == 0 {
+        issues.push("no recent memory reads".to_string());
+        recommendations.push("start agent turns with dukememory brief or memory_brief".to_string());
+    }
+    if usage.write_pressure > 2.0 && usage.read_count >= 20 {
+        issues.push(format!(
+            "write pressure is high: {:.2}",
+            usage.write_pressure
+        ));
+        recommendations.push("let autonomous throttling reduce low-value writes".to_string());
+    }
+    if live.useful_rate < 0.80 && live.feedback_events >= 5 {
+        issues.push(format!(
+            "useful rate is low: {:.0}%",
+            live.useful_rate * 100.0
+        ));
+        recommendations.push("review noisy memories and missing feedback".to_string());
+    }
+    if reused == 0 && usage.read_count >= 5 {
+        recommendations.push("promote reusable decisions/commands into durable cards".to_string());
+    }
+    let mut score = 100.0;
+    if usage.read_count == 0 {
+        score -= 25.0;
+    }
+    score -= (usage.write_pressure - 1.5).max(0.0).min(2.0) * 10.0;
+    score -= live.inferred_missing.min(5) as f64 * 4.0;
+    if live.feedback_events >= 5 {
+        score -= ((0.90 - live.useful_rate).max(0.0) * 50.0).min(15.0);
+    }
+    score += (reused_card_rate.min(0.50) * 10.0).min(5.0);
+    score = score.clamp(0.0, 100.0);
+    Ok(MemoryRoiReport {
+        version: 1,
+        since_days,
+        score,
+        read_count: usage.read_count,
+        write_count: usage.write_count,
+        write_pressure: usage.write_pressure,
+        unique_memory_ids: usage.unique_memory_ids,
+        reused_card_rate,
+        useful_rate: live.useful_rate,
+        token_saving_estimate,
+        top_memories: usage.top_memories,
+        noisy_memory_ids: live.noisy_memory_ids,
+        issues,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_agent_audit(conn: &Connection, since_days: i64, json_out: bool) -> Result<()> {
+    let report = agent_audit_report(conn, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Agent Behavior Audit");
+    println!("score: {:.1}", report.score);
+    println!("reads: {}", report.read_count);
+    println!("brief_reads: {}", report.brief_reads);
+    println!("impact_reads: {}", report.impact_reads);
+    println!("feedback_events: {}", report.feedback_events);
+    println!("durable_writes: {}", report.durable_writes);
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn agent_audit_report(conn: &Connection, since_days: i64) -> Result<AgentAuditReport> {
+    let usage = usage_report(conn, since_days, 50)?;
+    let live = live_eval_report(conn, since_days)?;
+    let commands = usage.reads_by_command.clone();
+    let brief_reads =
+        *commands.get("brief").unwrap_or(&0) + *commands.get("memory_brief").unwrap_or(&0);
+    let impact_reads =
+        *commands.get("impact").unwrap_or(&0) + *commands.get("memory_impact").unwrap_or(&0);
+    let evidence_reads =
+        *commands.get("evidence").unwrap_or(&0) + *commands.get("memory_evidence").unwrap_or(&0);
+    let feedback_events = *usage.writes_by_type.get("memory_feedback").unwrap_or(&0);
+    let durable_writes = ["memory_added", "memory_updated", "memory_merged"]
+        .iter()
+        .map(|key| usage.writes_by_type.get(*key).copied().unwrap_or(0))
+        .sum::<usize>();
+    let mut issues = Vec::new();
+    let mut recommendations = Vec::new();
+    if usage.read_count == 0 {
+        issues.push("no memory reads were recorded".to_string());
+        recommendations.push("ensure the agent skill starts with memory_brief".to_string());
+    }
+    if brief_reads == 0 && usage.read_count >= 3 {
+        issues.push("no brief/memory_brief reads recorded".to_string());
+        recommendations.push("start each new task with brief before broad exploration".to_string());
+    }
+    if impact_reads == 0 && usage.read_count >= 10 {
+        recommendations
+            .push("use impact when touching a known file, symbol, or subsystem".to_string());
+    }
+    if usage.semantic_eligible_read_count >= 3 && usage.semantic_eligible_result_rate < 0.75 {
+        issues.push("semantic eligible reads often return no results".to_string());
+        recommendations.push("refresh embeddings or tune retrieval".to_string());
+    }
+    if live.inferred_missing > 0 {
+        issues.push(format!("{} inferred memory gap(s)", live.inferred_missing));
+        recommendations.push("add durable cards for repeated missing context".to_string());
+    }
+    if feedback_events == 0 && usage.read_count >= 20 {
+        recommendations
+            .push("record lightweight feedback for useful/useless/missing memory".to_string());
+    }
+    let mut score = 100.0;
+    if usage.read_count == 0 {
+        score -= 35.0;
+    }
+    if brief_reads == 0 && usage.read_count >= 3 {
+        score -= 20.0;
+    }
+    if impact_reads == 0 && usage.read_count >= 10 {
+        score -= 8.0;
+    }
+    if usage.semantic_eligible_read_count >= 3 {
+        score -= ((1.0 - usage.semantic_eligible_result_rate) * 20.0).min(20.0);
+    }
+    score -= live.inferred_missing.min(5) as f64 * 4.0;
+    score = score.clamp(0.0, 100.0);
+    recommendations.sort();
+    recommendations.dedup();
+    issues.sort();
+    issues.dedup();
+    Ok(AgentAuditReport {
+        version: 1,
+        since_days,
+        score,
+        read_count: usage.read_count,
+        brief_reads,
+        impact_reads,
+        evidence_reads,
+        feedback_events,
+        durable_writes,
+        semantic_eligible_result_rate: usage.semantic_eligible_result_rate,
+        inferred_missing: live.inferred_missing,
+        commands,
+        issues,
+        recommendations,
+    })
 }
 
 pub(crate) fn quality_report(
@@ -3266,6 +3525,77 @@ pub(crate) fn print_ops_status(
         }
     }
     Ok(())
+}
+
+pub(crate) fn print_remote_status(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = remote_status_report(conn, db, root, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Remote/VDS Readiness");
+    println!("status: {}", report.status);
+    println!("local_first: {}", report.local_first);
+    println!("ready: {}", report.ready);
+    println!("write_pressure: {:.2}", report.write_pressure);
+    println!("embedding_current: {}", report.embedding_current);
+    println!("provider_reachable: {}", report.provider_reachable);
+    println!("backup_ready: {}", report.backup_ready);
+    println!("export: {}", report.export_command);
+    println!("import: {}", report.import_command);
+    for blocker in &report.blockers {
+        println!("blocker: {blocker}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn remote_status_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+) -> Result<RemoteStatusReport> {
+    let ops = ops_status_report(conn, db, root, since_days)?;
+    let backup_ready = ops.storage.backups_count > 0 || ops.autonomous.rollback_ready;
+    let mut blockers = ops.multi_device.blockers.clone();
+    if !backup_ready {
+        blockers.push("no backup or rollback metadata available".to_string());
+    }
+    let mut recommendations = ops.recommendations.clone();
+    recommendations
+        .push("keep memory local-first; use remote/VDS only as optional sync target".to_string());
+    recommendations.push("measure VDS latency before enabling remote-first reads".to_string());
+    recommendations.sort();
+    recommendations.dedup();
+    blockers.sort();
+    blockers.dedup();
+    let ready = blockers.is_empty();
+    Ok(RemoteStatusReport {
+        version: 1,
+        ok: ready,
+        status: if ready { "ready" } else { "blocked" }.to_string(),
+        local_first: true,
+        ready,
+        export_command: ops.multi_device.export_command,
+        import_command: ops.multi_device.import_command,
+        write_pressure: ops.effectiveness.writes as f64 / ops.effectiveness.reads.max(1) as f64,
+        embedding_current: ops.embeddings.current,
+        provider_reachable: ops.embeddings.provider_reachable,
+        backup_ready,
+        estimated_local_latency_ms: 2,
+        estimated_vds_latency_ms: 50,
+        blockers,
+        recommendations,
+    })
 }
 
 pub(crate) fn ops_status_report(

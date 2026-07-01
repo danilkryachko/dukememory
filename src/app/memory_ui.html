@@ -552,7 +552,7 @@
       selected: null, evidence: null, memories: [], project: saved.project || null,
       projects: [], selectedIds: new Set(), tab: saved.tab || "detail",
       lang: savedLang === "en" ? "en" : "ru", activity: [], usefulness: null, embedding: null, autonomous: null,
-      quality: null, profile: null, budget: null, dashboard: null, dashboardRepair: null, dashboardRepairHistory: null, qa: null, contract: null, ops: null
+      quality: null, profile: null, budget: null, dashboard: null, dashboardRepair: null, dashboardRepairHistory: null, qa: null, contract: null, ops: null, roi: null, agentAudit: null, remote: null
     };
     const $ = (id) => document.getElementById(id);
     const t = (key) => i18n[state.lang][key] || i18n.en[key] || key;
@@ -846,6 +846,20 @@
       renderProjectsPanel();
     }
 
+    async function loadIntelligence() {
+      const params = new URLSearchParams({ since_days: "7" });
+      if (state.project) params.set("project", state.project);
+      const [roi, audit, remote] = await Promise.all([
+        api(`/roi-report?${params.toString()}`),
+        api(`/agent-audit?${params.toString()}`),
+        api(`/remote-status?${params.toString()}`)
+      ]);
+      state.roi = roi.roi;
+      state.agentAudit = audit.agent_audit;
+      state.remote = remote.remote;
+      renderSettings();
+    }
+
     async function loadMemoryContract() {
       const params = new URLSearchParams();
       if (state.project) params.set("project", state.project);
@@ -867,7 +881,7 @@
       state.activity.unshift(...(data.upgrade?.actions || []).slice(0, 5));
       state.activity = state.activity.slice(0, 20);
       renderActivity();
-      await Promise.all([loadMemoryQa(), loadOpsStatus(), loadMemoryContract(), loadDashboard(), loadDashboardRepairHistory()]);
+      await Promise.all([loadMemoryQa(), loadOpsStatus(), loadMemoryContract(), loadIntelligence(), loadDashboard(), loadDashboardRepairHistory()]);
     }
 
     async function runDashboardRepair() {
@@ -877,7 +891,7 @@
       });
       state.dashboardRepair = data.repair;
       setToast(`safe repair: ${Number(data.repair?.applied_actions || 0)} applied, ${Number(data.repair?.skipped_actions || 0)} skipped`);
-      await Promise.all([loadProjects(), loadDashboard(), loadDashboardRepairHistory(), loadOpsStatus(), loadAutonomous(), loadMemoryQa()]);
+      await Promise.all([loadProjects(), loadDashboard(), loadDashboardRepairHistory(), loadOpsStatus(), loadIntelligence(), loadAutonomous(), loadMemoryQa()]);
     }
 
     async function loadEvidence(id) {
@@ -1119,6 +1133,9 @@
       const profile = state.profile || {};
       const budget = state.budget || {};
       const qa = state.qa || {};
+      const roi = state.roi || {};
+      const agentAudit = state.agentAudit || {};
+      const remote = state.remote || {};
       const contract = state.contract || {};
       const ops = state.ops || {};
       const effectiveness = ops.effectiveness || {};
@@ -1154,6 +1171,9 @@
       <div class="card"><div class="title">gap inbox</div><div class="body">pending ${Number(opsGapInbox.pending || 0)}<br>stale ${Number(opsGapInbox.stale_pending || 0)}<br>oldest ${formatSeconds(opsGapInbox.oldest_pending_age_secs)}<br>total ${Number(opsGapInbox.total || 0)}<br>approved ${Number(opsGapInbox.approved || 0)} / rejected ${Number(opsGapInbox.rejected || 0)}</div></div>
       <div class="card"><div class="title">${escapeHtml(t("storage"))}</div><div class="body">.agent ${escapeHtml(formatBytes(storage.agent_bytes))}<br>db ${escapeHtml(formatBytes(storage.db_bytes))}<br>sqlite pages ${Number(storage.page_count || 0)} / free ${Number(storage.freelist_count || 0)} (${Number((storage.freelist_ratio || 0) * 100).toFixed(0)}%)<br>vacuum ${storage.vacuum_recommended ? "recommended" : "not needed"}<br>backups ${Number(storage.backups_count || 0)} / ${escapeHtml(formatBytes(storage.backups_bytes))}<br>rollbacks ${Number(storage.rollback_count || 0)} / ${escapeHtml(formatBytes(storage.rollback_bytes))}<br>install ${Number(storage.install_backups_count || 0)} / ${escapeHtml(formatBytes(storage.install_backups_bytes))}</div></div>
       <div class="card"><div class="title">${escapeHtml(t("multiDevice"))}</div><div class="body">${escapeHtml(t("readyForSync"))}: ${multiDevice.ready ? "yes" : "no"}<br>${multiDevice.blockers?.length ? multiDevice.blockers.map(escapeHtml).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">memory ROI</div><div class="body">score ${Number(roi.score || 0).toFixed(1)}<br>reuse ${formatPercent(roi.reused_card_rate)}<br>useful ${formatPercent(roi.useful_rate)}<br>write pressure ${roi.write_pressure == null ? "-" : Number(roi.write_pressure).toFixed(2)}<br>tokens saved ${Number(roi.token_saving_estimate || 0)}<br>${roi.top_memories?.length ? roi.top_memories.slice(0, 5).map((item) => `${escapeHtml(item.title || item.id)} (${Number(item.request_count || 0)})`).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">agent audit</div><div class="body">score ${Number(agentAudit.score || 0).toFixed(1)}<br>brief ${Number(agentAudit.brief_reads || 0)} / impact ${Number(agentAudit.impact_reads || 0)} / evidence ${Number(agentAudit.evidence_reads || 0)}<br>feedback ${Number(agentAudit.feedback_events || 0)} / durable writes ${Number(agentAudit.durable_writes || 0)}<br>${agentAudit.issues?.length ? agentAudit.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
+      <div class="card"><div class="title">remote readiness</div><div class="body">status ${escapeHtml(remote.status || "-")}<br>local first ${remote.local_first ? "yes" : "no"}<br>backup ${remote.backup_ready ? "ok" : "missing"}<br>local ${Number(remote.estimated_local_latency_ms || 0)}ms / VDS ${Number(remote.estimated_vds_latency_ms || 0)}ms<br>${remote.blockers?.length ? remote.blockers.map(escapeHtml).join("<br>") : "blockers -"}</div></div>
       <div class="card"><div class="title">semantic empty queries</div><div class="body">${effectiveness.semantic_empty_queries?.length ? effectiveness.semantic_empty_queries.slice(0, 5).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">memory gaps</div><div class="body">${effectiveness.inferred_missing_queries?.length ? effectiveness.inferred_missing_queries.slice(0, 6).map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">recommendations</div><div class="body">${ops.recommendations?.length ? ops.recommendations.slice(0, 6).map(escapeHtml).join("<br>") : "-"}</div></div>
@@ -1307,7 +1327,7 @@
         await loadProjects();
         restoreFilters();
         clearDetail();
-        await Promise.all([loadMemories(), loadInbox(), loadAutopilot(), loadAutonomous(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadDashboardRepairHistory(), loadEmbeddingStatus(), loadMemoryQa(), loadOpsStatus(), loadMemoryContract()]);
+        await Promise.all([loadMemories(), loadInbox(), loadAutopilot(), loadAutonomous(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadDashboardRepairHistory(), loadEmbeddingStatus(), loadMemoryQa(), loadOpsStatus(), loadMemoryContract(), loadIntelligence()]);
         setToast(t("ready"));
       } catch (error) {
         setToast(error.message);
@@ -1320,14 +1340,14 @@
       localStorage.setItem("dukememory_lang", state.lang);
       applyLanguage();
       persistUi();
-      await Promise.all([loadMemories(), loadInbox(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadDashboardRepairHistory(), loadEmbeddingStatus(), loadMemoryQa(), loadOpsStatus(), loadMemoryContract(), loadAutonomous()]);
+      await Promise.all([loadMemories(), loadInbox(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadDashboardRepairHistory(), loadEmbeddingStatus(), loadMemoryQa(), loadOpsStatus(), loadMemoryContract(), loadIntelligence(), loadAutonomous()]);
     });
     $("project").addEventListener("change", async () => {
       state.project = $("project").value;
       state.selectedIds.clear();
       clearDetail();
       persistUi();
-      await Promise.all([loadMemories(), loadInbox(), loadAutopilot(), loadAutonomous(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadDashboardRepairHistory(), loadEmbeddingStatus(), loadMemoryQa(), loadOpsStatus(), loadMemoryContract()]);
+      await Promise.all([loadMemories(), loadInbox(), loadAutopilot(), loadAutonomous(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadDashboardRepairHistory(), loadEmbeddingStatus(), loadMemoryQa(), loadOpsStatus(), loadMemoryContract(), loadIntelligence()]);
     });
     $("search").addEventListener("click", () => { persistUi(); loadMemories(); });
     $("q").addEventListener("keydown", (event) => { if (event.key === "Enter") { persistUi(); loadMemories(); } });
@@ -1382,7 +1402,7 @@
       $("project").value = state.project;
       clearDetail();
       persistUi();
-      await Promise.all([loadMemories(), loadInbox(), loadAutopilot(), loadAutonomous(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadDashboardRepairHistory(), loadEmbeddingStatus(), loadMemoryQa(), loadOpsStatus(), loadMemoryContract()]);
+      await Promise.all([loadMemories(), loadInbox(), loadAutopilot(), loadAutonomous(), loadUsefulness(), loadQuality(), loadProjectProfile(), loadBudgetPlan(), loadDashboard(), loadDashboardRepairHistory(), loadEmbeddingStatus(), loadMemoryQa(), loadOpsStatus(), loadMemoryContract(), loadIntelligence()]);
       setTab("detail");
     });
 

@@ -749,6 +749,8 @@ pub(crate) fn run() -> Result<()> {
             limit,
             json,
         } => print_quality_report(&conn, since_days, limit, json)?,
+        Command::RoiReport { since_days, json } => print_roi_report(&conn, since_days, json)?,
+        Command::AgentAudit { since_days, json } => print_agent_audit(&conn, since_days, json)?,
         Command::Feedback {
             ids,
             rating,
@@ -862,6 +864,11 @@ pub(crate) fn run() -> Result<()> {
             since_days,
             json,
         } => print_ops_status(&conn, &cli.db, &root, since_days, json)?,
+        Command::RemoteStatus {
+            root,
+            since_days,
+            json,
+        } => print_remote_status(&conn, &cli.db, &root, since_days, json)?,
         Command::InboxV2 { command } => handle_inbox_v2(&conn, command)?,
         Command::PolicyTune {
             output,
