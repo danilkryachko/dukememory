@@ -1678,6 +1678,48 @@ pub(crate) struct WebControlCenterV9Report {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub(crate) struct FleetSupervisorProject {
+    pub(crate) root: String,
+    pub(crate) db: String,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) planned_actions: usize,
+    pub(crate) executed_actions: usize,
+    pub(crate) doctor_status: String,
+    pub(crate) issues: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct FleetSupervisorReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) applied: bool,
+    pub(crate) since_days: i64,
+    pub(crate) total_projects: usize,
+    pub(crate) ready_projects: usize,
+    pub(crate) attention_projects: usize,
+    pub(crate) planned_actions: usize,
+    pub(crate) executed_actions: usize,
+    pub(crate) projects: Vec<FleetSupervisorProject>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WebControlCenterV10Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) target: Option<String>,
+    pub(crate) v9: WebControlCenterV9Report,
+    pub(crate) fleet: FleetSupervisorReport,
+    pub(crate) panels: Vec<WebControlPanel>,
+    pub(crate) controls: Vec<WebControlAction>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct WebControlPanel {
     pub(crate) name: String,
     pub(crate) status: String,
@@ -10053,6 +10095,209 @@ pub(crate) fn web_control_center_v9_report(
     })
 }
 
+pub(crate) fn print_fleet_supervisor(
+    default_db: &Path,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = fleet_supervisor_report(default_db, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Fleet Supervisor");
+    println!("status: {}", report.status);
+    println!("projects: {}", report.total_projects);
+    println!("attention: {}", report.attention_projects);
+    for project in &report.projects {
+        println!(
+            "{} {} planned={} executed={}",
+            project.status, project.root, project.planned_actions, project.executed_actions
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn fleet_supervisor_report(
+    default_db: &Path,
+    since_days: i64,
+    apply: bool,
+) -> Result<FleetSupervisorReport> {
+    let mut projects = Vec::new();
+    for db in discover_project_dbs(default_db)? {
+        let db = db.canonicalize().unwrap_or(db);
+        let root = app_project_root_for_db(&db).unwrap_or_else(|| {
+            db.parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."))
+        });
+        let conn = open_db(&db)?;
+        let report = autonomous_supervisor_report(&conn, &db, &root, since_days, apply)?;
+        let mut issues = report.doctor_after.issues.clone();
+        if !report.autonomous_loop.ok {
+            issues.push("autonomous loop needs attention".to_string());
+        }
+        if !report.agent_enforce.ok {
+            issues.push("agent enforce needs attention".to_string());
+        }
+        if !report.contract_v2.ok {
+            issues.push("memory contract v2 needs attention".to_string());
+        }
+        issues.sort();
+        issues.dedup();
+        projects.push(FleetSupervisorProject {
+            root: root.display().to_string(),
+            db: db.display().to_string(),
+            ok: report.ok,
+            status: report.status,
+            planned_actions: report.planned_actions.len(),
+            executed_actions: report.executed_actions.len(),
+            doctor_status: report.doctor_after.status,
+            issues,
+        });
+    }
+    projects.sort_by(|left, right| left.root.cmp(&right.root));
+    let total_projects = projects.len();
+    let ready_projects = projects.iter().filter(|project| project.ok).count();
+    let attention_projects = total_projects.saturating_sub(ready_projects);
+    let planned_actions = projects.iter().map(|project| project.planned_actions).sum();
+    let executed_actions = projects
+        .iter()
+        .map(|project| project.executed_actions)
+        .sum();
+    let mut recommendations = if attention_projects == 0 {
+        vec!["all discovered project memories are supervisor-ready".to_string()]
+    } else if apply {
+        vec!["inspect project issues before another fleet-supervisor apply".to_string()]
+    } else {
+        vec!["rerun fleet-supervisor --apply --json to execute safe repairs".to_string()]
+    };
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = attention_projects == 0;
+    Ok(FleetSupervisorReport {
+        version: 1,
+        ok,
+        status: if ok {
+            "ready"
+        } else if apply {
+            "attention"
+        } else {
+            "planned"
+        }
+        .to_string(),
+        applied: apply,
+        since_days,
+        total_projects,
+        ready_projects,
+        attention_projects,
+        planned_actions,
+        executed_actions,
+        projects,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_web_control_center_v10(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    task: &str,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = web_control_center_v10_report(conn, db, root, target, task, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Web Control Center v10");
+    println!("status: {}", report.status);
+    for panel in &report.panels {
+        println!("{}: {}", panel.name, panel.headline);
+    }
+    Ok(())
+}
+
+pub(crate) fn web_control_center_v10_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    task: &str,
+    since_days: i64,
+) -> Result<WebControlCenterV10Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let v9 = web_control_center_v9_report(conn, db, &root, target, task, since_days)?;
+    let fleet = fleet_supervisor_report(db, since_days, false)?;
+    let mut panels = v9.panels.clone();
+    panels.push(WebControlPanel {
+        name: "fleet_supervisor".to_string(),
+        status: fleet.status.clone(),
+        headline: format!(
+            "{} project(s), {} attention",
+            fleet.total_projects, fleet.attention_projects
+        ),
+        metrics: vec![
+            MemoryEvalProofPoint {
+                name: "ready_projects".to_string(),
+                value: fleet.ready_projects.to_string(),
+                status: if fleet.attention_projects == 0 {
+                    "ready"
+                } else {
+                    "attention"
+                }
+                .to_string(),
+            },
+            MemoryEvalProofPoint {
+                name: "planned_actions".to_string(),
+                value: fleet.planned_actions.to_string(),
+                status: if fleet.planned_actions == 0 {
+                    "ready"
+                } else {
+                    "planned"
+                }
+                .to_string(),
+            },
+        ],
+        actions: vec![
+            "dukememory fleet-supervisor --json".to_string(),
+            "dukememory fleet-supervisor --apply --json".to_string(),
+        ],
+    });
+    let mut controls = v9.controls.clone();
+    controls.push(WebControlAction {
+        name: "fleet_supervisor".to_string(),
+        label: "Fleet supervisor".to_string(),
+        method: "POST".to_string(),
+        endpoint: "/fleet-supervisor/apply".to_string(),
+        cli: "dukememory fleet-supervisor --apply --json".to_string(),
+        safe_auto: true,
+        requires_apply: true,
+        status: fleet.status.clone(),
+    });
+    let mut recommendations = v9.recommendations.clone();
+    recommendations.extend(fleet.recommendations.clone());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = v9.ok && fleet.ok;
+    Ok(WebControlCenterV10Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        target: target.map(|path| path.display().to_string()),
+        v9,
+        fleet,
+        panels,
+        controls,
+        recommendations,
+    })
+}
+
 fn auto_supersede_confidence(candidate: &MergeCandidate) -> f64 {
     let reason = candidate.reason.to_lowercase();
     let title_bonus: f64 = if reason.contains("same title") || reason.contains("duplicate") {
@@ -11152,6 +11397,8 @@ fn agent_required_commands() -> &'static [&'static str] {
         "web-control-center-v8",
         "autonomous-supervisor",
         "web-control-center-v9",
+        "fleet-supervisor",
+        "web-control-center-v10",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",

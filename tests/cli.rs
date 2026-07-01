@@ -8738,6 +8738,8 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "web-control-center-v8",
         "autonomous-supervisor",
         "web-control-center-v9",
+        "fleet-supervisor",
+        "web-control-center-v10",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -8838,6 +8840,8 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "web-control-center-v8",
         "autonomous-supervisor",
         "web-control-center-v9",
+        "fleet-supervisor",
+        "web-control-center-v10",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -9804,6 +9808,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/web-control-center-v8"));
     assert!(html.contains("/autonomous-supervisor"));
     assert!(html.contains("/web-control-center-v9"));
+    assert!(html.contains("/fleet-supervisor"));
+    assert!(html.contains("/web-control-center-v10"));
     assert!(html.contains("/project-diff"));
     assert!(html.contains("/intelligence-dashboard"));
     assert!(html.contains("/remote-sync-dry-run"));
@@ -10723,6 +10729,20 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(web_control_v9.contains("\"control_v9\""));
     assert!(web_control_v9.contains("\"supervisor\""));
+
+    let fleet_supervisor = http_once(
+        &db,
+        "GET /fleet-supervisor?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(fleet_supervisor.contains("\"fleet\""));
+    assert!(fleet_supervisor.contains("\"total_projects\""));
+
+    let web_control_v10 = http_once(
+        &db,
+        "GET /web-control-center-v10?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(web_control_v10.contains("\"control_v10\""));
+    assert!(web_control_v10.contains("\"fleet\""));
 
     let project_template = http_once(
         &db,
@@ -12886,6 +12906,34 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(web_control_v9_json["version"], 1);
     assert!(web_control_v9_json["supervisor"].is_object());
 
+    let fleet_supervisor = stdout(
+        cmd(&db)
+            .arg("fleet-supervisor")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let fleet_supervisor_json: Value = serde_json::from_str(&fleet_supervisor).unwrap();
+    assert_eq!(fleet_supervisor_json["version"], 1);
+    assert!(fleet_supervisor_json["projects"].as_array().is_some());
+
+    let web_control_v10 = stdout(
+        cmd(&db)
+            .arg("web-control-center-v10")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(dir.path().join("remote-sync-target"))
+            .arg("--task")
+            .arg("project memory")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let web_control_v10_json: Value = serde_json::from_str(&web_control_v10).unwrap();
+    assert_eq!(web_control_v10_json["version"], 1);
+    assert!(web_control_v10_json["fleet"].is_object());
+
     let project_template = stdout(
         cmd(&db)
             .arg("project-template")
@@ -13133,6 +13181,8 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         "web-control-center-v8",
         "autonomous-supervisor",
         "web-control-center-v9",
+        "fleet-supervisor",
+        "web-control-center-v10",
     ] {
         assert!(
             agent_enforce_json["required_commands"]

@@ -1388,6 +1388,26 @@ pub(crate) fn run() -> Result<()> {
             since_days,
             json,
         )?,
+        Command::FleetSupervisor {
+            since_days,
+            apply,
+            json,
+        } => print_fleet_supervisor(&cli.db, since_days, apply, json)?,
+        Command::WebControlCenterV10 {
+            root,
+            target,
+            task,
+            since_days,
+            json,
+        } => print_web_control_center_v10(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            &task,
+            since_days,
+            json,
+        )?,
         Command::ProjectTemplate {
             root,
             kind,
@@ -3810,6 +3830,10 @@ Use `dukememory autonomous-supervisor --json` to plan safe autonomous repair; us
 
 Use `dukememory web-control-center-v9 --json` to inspect the 0.28 web control model with autonomous supervisor panels.
 
+Use `dukememory fleet-supervisor --json` to plan safe autonomous supervisor repairs across every discovered project memory; use `--apply` for reversible fleet maintenance.
+
+Use `dukememory web-control-center-v10 --json` to inspect the 0.29 web control model with fleet supervisor panels.
+
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
 Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens.
@@ -3956,6 +3980,8 @@ dukememory benchmark-polish --json
 dukememory web-control-center-v8 --json
 dukememory autonomous-supervisor --json
 dukememory web-control-center-v9 --json
+dukememory fleet-supervisor --json
+dukememory web-control-center-v10 --json
 dukememory doctor-project --json
 dukememory release-gate --json
 dukememory project-watch --json
@@ -4448,6 +4474,8 @@ fn print_completions(shell: CompletionShell) {
         "web-control-center-v8",
         "autonomous-supervisor",
         "web-control-center-v9",
+        "fleet-supervisor",
+        "web-control-center-v10",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -4633,6 +4661,8 @@ fn print_manpage() {
     println!("  web-control-center-v8         0.27 answer/usefulness/benchmark control model");
     println!("  autonomous-supervisor --json  safe autonomous repair sequence");
     println!("  web-control-center-v9         0.28 supervisor control model");
+    println!("  fleet-supervisor --json       safe autonomous repair across projects");
+    println!("  web-control-center-v10        0.29 fleet supervisor control model");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");
