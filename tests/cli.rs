@@ -8719,6 +8719,14 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-router-v2",
         "benchmark-profiles",
         "install-polish",
+        "memory-effectiveness-lab",
+        "auto-context-budgeter-v2",
+        "memory-contract-v2",
+        "cross-project-learning",
+        "agent-trace",
+        "vds-sync-hardening",
+        "install-quality",
+        "web-control-center-v6",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -8800,6 +8808,14 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-router-v2",
         "benchmark-profiles",
         "install-polish",
+        "memory-effectiveness-lab",
+        "auto-context-budgeter-v2",
+        "memory-contract-v2",
+        "cross-project-learning",
+        "agent-trace",
+        "vds-sync-hardening",
+        "install-quality",
+        "web-control-center-v6",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -9747,6 +9763,14 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/memory-router-v2"));
     assert!(html.contains("/benchmark-profiles"));
     assert!(html.contains("/install-polish"));
+    assert!(html.contains("/memory-effectiveness-lab"));
+    assert!(html.contains("/auto-context-budgeter-v2"));
+    assert!(html.contains("/memory-contract-v2"));
+    assert!(html.contains("/cross-project-learning"));
+    assert!(html.contains("/agent-trace"));
+    assert!(html.contains("/vds-sync-hardening"));
+    assert!(html.contains("/install-quality"));
+    assert!(html.contains("/web-control-center-v6"));
     assert!(html.contains("/project-diff"));
     assert!(html.contains("/intelligence-dashboard"));
     assert!(html.contains("/remote-sync-dry-run"));
@@ -10521,6 +10545,62 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(install_polish.contains("\"install_polish\""));
     assert!(install_polish.contains("\"checks\""));
+
+    let effectiveness_lab = http_once(
+        &db,
+        "GET /memory-effectiveness-lab?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(effectiveness_lab.contains("\"effectiveness\""));
+    assert!(effectiveness_lab.contains("\"score\""));
+
+    let context_budgeter_v2 = http_once(
+        &db,
+        "GET /auto-context-budgeter-v2?task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(context_budgeter_v2.contains("\"budgeter\""));
+    assert!(context_budgeter_v2.contains("\"selected_commands\""));
+
+    let contract_v2 = http_once(
+        &db,
+        "GET /memory-contract-v2 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(contract_v2.contains("\"contract_v2\""));
+    assert!(contract_v2.contains("\"sections\""));
+
+    let cross_project = http_once(
+        &db,
+        "GET /cross-project-learning?q=memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(cross_project.contains("\"cross_project\""));
+    assert!(cross_project.contains("\"guardrails\""));
+
+    let agent_trace = http_once(
+        &db,
+        "GET /agent-trace?since_days=7&limit=8 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(agent_trace.contains("\"agent_trace\""));
+    assert!(agent_trace.contains("\"timeline\""));
+
+    let vds_hardening = http_once(
+        &db,
+        "GET /vds-sync-hardening?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(vds_hardening.contains("\"vds_hardening\""));
+    assert!(vds_hardening.contains("\"checks\""));
+
+    let install_quality = http_once(
+        &db,
+        "GET /install-quality?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(install_quality.contains("\"install_quality\""));
+    assert!(install_quality.contains("\"future_chats\""));
+
+    let web_control_v6 = http_once(
+        &db,
+        "GET /web-control-center-v6?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(web_control_v6.contains("\"control_v6\""));
+    assert!(web_control_v6.contains("\"agent_trace\""));
 
     let project_template = http_once(
         &db,
@@ -12405,6 +12485,122 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(install_polish_json["version"], 1);
     assert!(install_polish_json["checks"].as_array().is_some());
 
+    let effectiveness_lab = stdout(
+        cmd(&db)
+            .arg("memory-effectiveness-lab")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let effectiveness_lab_json: Value = serde_json::from_str(&effectiveness_lab).unwrap();
+    assert_eq!(effectiveness_lab_json["version"], 1);
+    assert!(effectiveness_lab_json["score"].as_f64().is_some());
+
+    let context_budgeter_v2 = stdout(
+        cmd(&db)
+            .arg("auto-context-budgeter-v2")
+            .arg("project memory")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    );
+    let context_budgeter_v2_json: Value = serde_json::from_str(&context_budgeter_v2).unwrap();
+    assert_eq!(context_budgeter_v2_json["version"], 1);
+    assert!(
+        context_budgeter_v2_json["selected_commands"]
+            .as_array()
+            .is_some()
+    );
+
+    let contract_v2 = stdout(
+        cmd(&db)
+            .arg("memory-contract-v2")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    );
+    let contract_v2_json: Value = serde_json::from_str(&contract_v2).unwrap();
+    assert_eq!(contract_v2_json["version"], 1);
+    assert!(contract_v2_json["sections"].as_array().is_some());
+
+    let cross_project_learning = stdout(
+        cmd(&db)
+            .arg("cross-project-learning")
+            .arg("project memory")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    );
+    let cross_project_learning_json: Value = serde_json::from_str(&cross_project_learning).unwrap();
+    assert_eq!(cross_project_learning_json["version"], 1);
+    assert!(
+        cross_project_learning_json["guardrails"]
+            .as_array()
+            .is_some()
+    );
+
+    let agent_trace = stdout(
+        cmd(&db)
+            .arg("agent-trace")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--limit")
+            .arg("8")
+            .arg("--json"),
+    );
+    let agent_trace_json: Value = serde_json::from_str(&agent_trace).unwrap();
+    assert_eq!(agent_trace_json["version"], 1);
+    assert!(agent_trace_json["timeline"].as_array().is_some());
+
+    let vds_hardening = stdout(
+        cmd(&db)
+            .arg("vds-sync-hardening")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(dir.path().join("remote-sync-target"))
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let vds_hardening_json: Value = serde_json::from_str(&vds_hardening).unwrap();
+    assert_eq!(vds_hardening_json["version"], 1);
+    assert!(vds_hardening_json["checks"].as_array().is_some());
+
+    let install_quality = stdout(
+        cmd(&db)
+            .arg("install-quality")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let install_quality_json: Value = serde_json::from_str(&install_quality).unwrap();
+    assert_eq!(install_quality_json["version"], 1);
+    assert!(install_quality_json["checks"].as_array().is_some());
+
+    let web_control_v6 = stdout(
+        cmd(&db)
+            .arg("web-control-center-v6")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(dir.path().join("remote-sync-target"))
+            .arg("--task")
+            .arg("project memory")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let web_control_v6_json: Value = serde_json::from_str(&web_control_v6).unwrap();
+    assert_eq!(web_control_v6_json["version"], 1);
+    assert!(web_control_v6_json["controls"].as_array().is_some());
+
     let project_template = stdout(
         cmd(&db)
             .arg("project-template")
@@ -12633,6 +12829,14 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         "memory-router-v2",
         "benchmark-profiles",
         "install-polish",
+        "memory-effectiveness-lab",
+        "auto-context-budgeter-v2",
+        "memory-contract-v2",
+        "cross-project-learning",
+        "agent-trace",
+        "vds-sync-hardening",
+        "install-quality",
+        "web-control-center-v6",
     ] {
         assert!(
             agent_enforce_json["required_commands"]

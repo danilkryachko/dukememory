@@ -1334,6 +1334,94 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Measure whether recent memory reads actually helped agent work.
+    MemoryEffectivenessLab {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Select the smallest useful memory context plan for a task.
+    AutoContextBudgeterV2 {
+        task: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render or write the second-generation compact project memory contract.
+    MemoryContractV2 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        write: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Learn from sibling projects as advisory hints while keeping writes local.
+    CrossProjectLearning {
+        query: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show recent agent memory reads, influence, feedback, and writes.
+    AgentTrace {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long, default_value_t = 12)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Harden local-first VDS sync with target, latency, dry-run, and rollback checks.
+    VdsSyncHardening {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify install, skill, AGENTS, doctor, and future-chat memory readiness.
+    InstallQuality {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render the V6 web control model with 0.25 memory effectiveness surfaces.
+    WebControlCenterV6 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value = "project memory")]
+        task: String,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Write starter memory configuration for a project type.
     ProjectTemplate {
         #[arg(long, default_value = ".")]

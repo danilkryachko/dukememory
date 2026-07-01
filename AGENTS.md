@@ -81,6 +81,14 @@ For every new chat or coding task in this repository:
 - To route cross-project memory without writing outside the current project, run `dukememory memory-router-v2 "<query>" --include-siblings --json`.
 - To select project-aware retrieval benchmark profiles, run `dukememory benchmark-profiles --json`.
 - To inspect README, screenshot, license, package metadata, and GitHub install readiness, run `dukememory install-polish --json`.
+- To measure whether recent memory reads actually helped agent work, run `dukememory memory-effectiveness-lab --json`.
+- To choose the smallest useful memory flow for a task, run `dukememory auto-context-budgeter-v2 "<task>" --json`.
+- To inspect or write the compact project contract v2, run `dukememory memory-contract-v2 --json`; use `--write` after releases or architecture changes.
+- To surface sibling-project hints without writing outside the current project, run `dukememory cross-project-learning "<query>" --json`.
+- To inspect recent agent reads, influence, feedback, and durable writes, run `dukememory agent-trace --json`.
+- To verify local-first VDS sync target, latency, dry-runs, and rollback readiness, run `dukememory vds-sync-hardening --json`.
+- To verify install, skill, AGENTS, doctor, and future-chat memory readiness, run `dukememory install-quality --json`.
+- To inspect the 0.25 web control model, run `dukememory web-control-center-v6 --json`.
 - To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`.
 - To inspect live memory usefulness from reads and feedback, run `dukememory eval live --json`.
 - To inspect all local projects, run `dukememory dashboard --json`.

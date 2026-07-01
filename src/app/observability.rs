@@ -1262,6 +1262,179 @@ pub(crate) struct InstallPolishCheck {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct MemoryEffectivenessLabReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) score: f64,
+    pub(crate) read_count: usize,
+    pub(crate) influenced_reads: usize,
+    pub(crate) confirmed_reads: usize,
+    pub(crate) questioned_reads: usize,
+    pub(crate) empty_reads: usize,
+    pub(crate) semantic_result_rate: f64,
+    pub(crate) unique_memory_ids: usize,
+    pub(crate) trace: DecisionTraceReport,
+    pub(crate) usage: UsageReport,
+    pub(crate) roi: MemoryRoiReport,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AutoContextBudgeterV2Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) task: String,
+    pub(crate) target: Option<String>,
+    pub(crate) applied: bool,
+    pub(crate) policy_path: String,
+    pub(crate) selected_profile: String,
+    pub(crate) max_chars: usize,
+    pub(crate) selected_commands: Vec<String>,
+    pub(crate) avoided_commands: Vec<String>,
+    pub(crate) governor: ContextGovernorReport,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryContractV2Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) written: bool,
+    pub(crate) path: String,
+    pub(crate) memory_id: Option<String>,
+    pub(crate) max_chars: usize,
+    pub(crate) freshness_score: f64,
+    pub(crate) sections: Vec<MemoryContractV2Section>,
+    pub(crate) base: MemoryContractReport,
+    pub(crate) commands: Vec<String>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryContractV2Section {
+    pub(crate) name: String,
+    pub(crate) status: String,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct CrossProjectLearningReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) query: String,
+    pub(crate) applied: bool,
+    pub(crate) policy_path: String,
+    pub(crate) advisory_projects: usize,
+    pub(crate) candidates: Vec<CrossProjectLearningCandidate>,
+    pub(crate) router: MemoryRouterV2Report,
+    pub(crate) guardrails: Vec<String>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct CrossProjectLearningCandidate {
+    pub(crate) project_root: String,
+    pub(crate) matches: usize,
+    pub(crate) titles: Vec<String>,
+    pub(crate) use_as: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AgentTraceReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) since_days: i64,
+    pub(crate) traced_reads: usize,
+    pub(crate) influenced_reads: usize,
+    pub(crate) saved_writes: usize,
+    pub(crate) timeline: Vec<AgentTraceItem>,
+    pub(crate) trace: DecisionTraceReport,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AgentTraceItem {
+    pub(crate) read_id: i64,
+    pub(crate) command: String,
+    pub(crate) query: String,
+    pub(crate) influence: String,
+    pub(crate) memory_count: usize,
+    pub(crate) semantic_used: bool,
+    pub(crate) feedback_positive: usize,
+    pub(crate) feedback_negative: usize,
+    pub(crate) feedback_missing: usize,
+    pub(crate) explanation: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct VdsSyncHardeningReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) target: Option<String>,
+    pub(crate) applied: bool,
+    pub(crate) policy_path: String,
+    pub(crate) pack: VdsSyncPackReport,
+    pub(crate) latency: SyncLatencyReport,
+    pub(crate) remote_sync: RemoteSyncV2Report,
+    pub(crate) apply_flow: RemoteSyncApplyFlowReport,
+    pub(crate) checks: Vec<InstallPolishCheck>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct InstallQualityReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) applied: bool,
+    pub(crate) policy_path: String,
+    pub(crate) install_polish: InstallPolishReport,
+    pub(crate) doctor: ProjectDoctorReport,
+    pub(crate) agent_enforce: AgentEnforceReport,
+    pub(crate) checks: Vec<InstallPolishCheck>,
+    pub(crate) actions: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WebControlCenterV6Report {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) target: Option<String>,
+    pub(crate) v5: WebControlCenterV5Report,
+    pub(crate) effectiveness: MemoryEffectivenessLabReport,
+    pub(crate) budgeter: AutoContextBudgeterV2Report,
+    pub(crate) contract_v2: MemoryContractV2Report,
+    pub(crate) cross_project: CrossProjectLearningReport,
+    pub(crate) agent_trace: AgentTraceReport,
+    pub(crate) vds_hardening: VdsSyncHardeningReport,
+    pub(crate) install_quality: InstallQualityReport,
+    pub(crate) controls: Vec<WebControlAction>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct ProjectTemplateReport {
     pub(crate) version: u32,
     pub(crate) ok: bool,
@@ -7094,9 +7267,12 @@ pub(crate) fn install_polish_report(root: &Path, apply: bool) -> Result<InstallP
             detail: "Cargo package should be lowercase dukememory".to_string(),
         },
         InstallPolishCheck {
-            name: "version_0_24".to_string(),
-            ok: cargo_toml.contains("version = \"0.24.0\""),
-            detail: "Cargo version should match release 0.24.0".to_string(),
+            name: "package_version".to_string(),
+            ok: cargo_toml.contains(&format!("version = \"{}\"", env!("CARGO_PKG_VERSION"))),
+            detail: format!(
+                "Cargo version should match release {}",
+                env!("CARGO_PKG_VERSION")
+            ),
         },
         InstallPolishCheck {
             name: "apache_2_license".to_string(),
@@ -7272,6 +7448,822 @@ pub(crate) fn web_control_center_v5_report(
         router,
         benchmark_profiles,
         install_polish,
+        controls,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_memory_effectiveness_lab(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_effectiveness_lab_report(conn, root, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Effectiveness Lab");
+    println!("status: {}", report.status);
+    println!("score: {:.1}", report.score);
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_effectiveness_lab_report(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+) -> Result<MemoryEffectivenessLabReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let usage = usage_report(conn, since_days, 30)?;
+    let trace = decision_trace_report(conn, since_days, 30)?;
+    let roi = roi_report(conn, since_days)?;
+    let read_count = usage.read_count.max(trace.traced_reads);
+    let empty_rate = ratio(trace.empty_reads, read_count.max(1));
+    let questioned_rate = ratio(trace.questioned_reads, trace.influenced_reads.max(1));
+    let confirmed_rate = ratio(trace.confirmed_reads, trace.influenced_reads.max(1));
+    let semantic_penalty = if usage.semantic_eligible_total > 0 {
+        (1.0 - usage.semantic_eligible_result_rate).max(0.0) * 15.0
+    } else {
+        0.0
+    };
+    let score = (70.0 + roi.score * 0.20 + confirmed_rate * 20.0
+        - empty_rate * 25.0
+        - questioned_rate * 20.0
+        - semantic_penalty)
+        .clamp(0.0, 100.0);
+    let mut issues = trace.issues.clone();
+    if empty_rate > 0.35 && read_count > 3 {
+        issues.push("too many memory reads returned no useful cards".to_string());
+    }
+    if questioned_rate > 0.25 && trace.influenced_reads > 3 {
+        issues.push("questioned memory influence is high".to_string());
+    }
+    if usage.semantic_eligible_total > 0 && usage.semantic_eligible_result_rate < 0.70 {
+        issues.push("semantic eligible reads often return empty results".to_string());
+    }
+    issues.sort();
+    issues.dedup();
+    let mut recommendations = trace.recommendations.clone();
+    recommendations.extend(roi.recommendations.clone());
+    recommendations
+        .push("use agent-trace to inspect which cards actually influenced recent work".to_string());
+    recommendations
+        .push("feed missing/useless signals back before increasing retrieval budget".to_string());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = issues.is_empty() && score >= 75.0;
+    Ok(MemoryEffectivenessLabReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        since_days,
+        score,
+        read_count,
+        influenced_reads: trace.influenced_reads,
+        confirmed_reads: trace.confirmed_reads,
+        questioned_reads: trace.questioned_reads,
+        empty_reads: trace.empty_reads,
+        semantic_result_rate: usage.semantic_eligible_result_rate,
+        unique_memory_ids: usage.unique_memory_ids,
+        trace,
+        usage,
+        roi,
+        issues,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_auto_context_budgeter_v2(
+    conn: &Connection,
+    root: &Path,
+    task: &str,
+    target: Option<&str>,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = auto_context_budgeter_v2_report(conn, root, task, target, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Auto Context Budgeter v2");
+    println!("status: {}", report.status);
+    println!("profile: {}", report.selected_profile);
+    for command in &report.selected_commands {
+        println!("command: {command}");
+    }
+    Ok(())
+}
+
+pub(crate) fn auto_context_budgeter_v2_report(
+    conn: &Connection,
+    root: &Path,
+    task: &str,
+    target: Option<&str>,
+    apply: bool,
+) -> Result<AutoContextBudgeterV2Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let governor = context_governor_report(conn, &root, task, target)?;
+    let policy_path = root.join(".agent/auto-context-budgeter-v2.json");
+    let mut selected_commands = governor.commands.clone();
+    if !selected_commands
+        .iter()
+        .any(|command| command.contains("brief"))
+    {
+        selected_commands.insert(
+            0,
+            format!(
+                "dukememory brief \"{}\" --budget-profile tiny",
+                shell_safe_inline(task)
+            ),
+        );
+    }
+    let avoided_commands = vec![
+        "full chat transcript dump".to_string(),
+        "broad context-pack before brief/impact".to_string(),
+        "deep recall unless tiny/normal budget misses".to_string(),
+    ];
+    let mut actions = Vec::new();
+    if apply {
+        write_file(
+            &policy_path,
+            serde_json::to_string_pretty(&json!({
+                "version": 1,
+                "task": task,
+                "target": target,
+                "selected_profile": governor.budget.profile,
+                "max_chars": governor.max_context_chars,
+                "selected_commands": &selected_commands,
+                "updated_at": now_ms(),
+            }))?
+            .as_bytes(),
+        )?;
+        actions.push(format!(
+            "auto_context_budgeter_v2_written:{}",
+            policy_path.display()
+        ));
+    } else {
+        actions.push("dry_run:auto_context_budgeter_v2_not_written".to_string());
+    }
+    let mut recommendations = governor.reasons.clone();
+    recommendations.push(
+        "start with the smallest selected command and escalate only on missing evidence"
+            .to_string(),
+    );
+    recommendations.sort();
+    recommendations.dedup();
+    Ok(AutoContextBudgeterV2Report {
+        version: 1,
+        ok: true,
+        status: "ready".to_string(),
+        root: root.display().to_string(),
+        task: task.to_string(),
+        target: target.map(str::to_string),
+        applied: apply,
+        policy_path: policy_path.display().to_string(),
+        selected_profile: governor.budget.profile.clone(),
+        max_chars: governor.max_context_chars,
+        selected_commands,
+        avoided_commands,
+        governor,
+        actions,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_memory_contract_v2(
+    conn: &Connection,
+    root: &Path,
+    write: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_contract_v2_report(conn, root, write)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Contract v2");
+    println!("status: {}", report.status);
+    println!("path: {}", report.path);
+    Ok(())
+}
+
+pub(crate) fn memory_contract_v2_report(
+    conn: &Connection,
+    root: &Path,
+    write: bool,
+) -> Result<MemoryContractV2Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let base = memory_contract_report(conn, &root, write)?;
+    let profile = project_profile_snapshot(conn, &root, "project")?;
+    let qa = memory_qa_report(conn, &root, 7)?;
+    let root_db = root.join(".agent/memory.db");
+    let health_db = if root_db.exists() {
+        root_db.as_path()
+    } else {
+        Path::new(DEFAULT_DB)
+    };
+    let health = memory_health_score_report(conn, health_db, &root, 7).ok();
+    let freshness_score = health.as_ref().map(|item| item.score).unwrap_or(qa.score);
+    let sections = vec![
+        MemoryContractV2Section {
+            name: "identity".to_string(),
+            status: "ready".to_string(),
+            detail: format!(
+                "{} cards, budget {}",
+                profile.memory_count, profile.recommended_budget
+            ),
+        },
+        MemoryContractV2Section {
+            name: "decisions".to_string(),
+            status: if profile.decisions > 0 {
+                "ready"
+            } else {
+                "thin"
+            }
+            .to_string(),
+            detail: format!(
+                "{} decisions, {} constraints",
+                profile.decisions, profile.constraints
+            ),
+        },
+        MemoryContractV2Section {
+            name: "operations".to_string(),
+            status: if profile.commands > 0 {
+                "ready"
+            } else {
+                "thin"
+            }
+            .to_string(),
+            detail: format!(
+                "{} commands, {} known issues",
+                profile.commands, profile.known_issues
+            ),
+        },
+        MemoryContractV2Section {
+            name: "health".to_string(),
+            status: score_status(freshness_score),
+            detail: format!("freshness score {:.1}", freshness_score),
+        },
+    ];
+    let path = root.join(".agent/MEMORY_CONTRACT_V2.md");
+    let mut actions = Vec::new();
+    if write {
+        let mut content = base.content.clone();
+        content.push_str("\n\n## Contract v2 Signals\n");
+        for section in &sections {
+            content.push_str(&format!(
+                "- {}: {} - {}\n",
+                section.name, section.status, section.detail
+            ));
+        }
+        write_file(&path, content.as_bytes())?;
+        actions.push(format!("memory_contract_v2_written:{}", path.display()));
+        if let Some(id) = &base.memory_id {
+            actions.push(format!("memory_contract_card_updated:{id}"));
+        }
+    } else {
+        actions.push("dry_run:memory_contract_v2_not_written".to_string());
+    }
+    let commands = vec![
+        "dukememory memory-contract --write".to_string(),
+        "dukememory memory-contract-v2 --write --json".to_string(),
+        "dukememory project-intent-map --json".to_string(),
+    ];
+    let recommendations = vec![
+        "keep the contract compact; use it as project-wide context, not as a transcript"
+            .to_string(),
+        "refresh contract v2 after releases, architecture changes, or large memory cleanup"
+            .to_string(),
+    ];
+    let ok = freshness_score >= 75.0 && sections.iter().all(|section| section.status != "thin");
+    Ok(MemoryContractV2Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        written: write,
+        path: path.display().to_string(),
+        memory_id: base.memory_id.clone(),
+        max_chars: base.max_chars,
+        freshness_score,
+        sections,
+        base,
+        commands,
+        actions,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_cross_project_learning(
+    default_db: &Path,
+    root: &Path,
+    query: &str,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = cross_project_learning_report(default_db, root, query, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Cross-Project Learning");
+    println!("status: {}", report.status);
+    println!("advisory_projects: {}", report.advisory_projects);
+    Ok(())
+}
+
+pub(crate) fn cross_project_learning_report(
+    default_db: &Path,
+    root: &Path,
+    query: &str,
+    apply: bool,
+) -> Result<CrossProjectLearningReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let router = memory_router_v2_report(default_db, &root, query, true)?;
+    let candidates = router
+        .routes
+        .iter()
+        .filter(|route| !route.selected_for_write && route.matches > 0)
+        .map(|route| CrossProjectLearningCandidate {
+            project_root: route.root.clone(),
+            matches: route.matches,
+            titles: route.top_titles.iter().take(5).cloned().collect(),
+            use_as: "advisory pattern only; do not write into this project".to_string(),
+        })
+        .collect::<Vec<_>>();
+    let policy_path = root.join(".agent/cross-project-learning.json");
+    let mut actions = Vec::new();
+    if apply {
+        write_file(
+            &policy_path,
+            serde_json::to_string_pretty(&json!({
+                "version": 1,
+                "query": query,
+                "candidate_count": candidates.len(),
+                "guardrails": &router.guardrails,
+                "updated_at": now_ms(),
+            }))?
+            .as_bytes(),
+        )?;
+        actions.push(format!(
+            "cross_project_learning_written:{}",
+            policy_path.display()
+        ));
+    } else {
+        actions.push("dry_run:cross_project_learning_not_written".to_string());
+    }
+    let guardrails = vec![
+        "never auto-copy sibling cards into the current project".to_string(),
+        "use sibling matches as examples, then write a current-project decision only if validated"
+            .to_string(),
+        "current project remains the only authoritative write target".to_string(),
+    ];
+    let mut recommendations = router.recommendations.clone();
+    recommendations.push(
+        "show sibling matches as hints in Web UI agent trace, not as durable facts".to_string(),
+    );
+    recommendations.sort();
+    recommendations.dedup();
+    Ok(CrossProjectLearningReport {
+        version: 1,
+        ok: router.ok,
+        status: if router.ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        query: query.to_string(),
+        applied: apply,
+        policy_path: policy_path.display().to_string(),
+        advisory_projects: candidates.len(),
+        candidates,
+        router,
+        guardrails,
+        actions,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_agent_trace(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    limit: usize,
+    json_out: bool,
+) -> Result<()> {
+    let report = agent_trace_report(conn, root, since_days, limit)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Agent Trace");
+    println!("status: {}", report.status);
+    println!("traced_reads: {}", report.traced_reads);
+    Ok(())
+}
+
+pub(crate) fn agent_trace_report(
+    conn: &Connection,
+    root: &Path,
+    since_days: i64,
+    limit: usize,
+) -> Result<AgentTraceReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let trace = decision_trace_report(conn, since_days, limit)?;
+    let usage = usage_report(conn, since_days, limit)?;
+    let timeline = trace
+        .items
+        .iter()
+        .map(|item| AgentTraceItem {
+            read_id: item.read_id,
+            command: item.command.clone(),
+            query: truncate_chars(&item.query, 180),
+            influence: item.influence.clone(),
+            memory_count: item.memory_ids.len(),
+            semantic_used: item.semantic_used,
+            feedback_positive: item.feedback_positive,
+            feedback_negative: item.feedback_negative,
+            feedback_missing: item.feedback_missing,
+            explanation: item.explanation.clone(),
+        })
+        .collect::<Vec<_>>();
+    let mut recommendations = trace.recommendations.clone();
+    recommendations.push("use this trace to verify that agents read memory before deciding and write only durable outcomes".to_string());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = trace.issues.is_empty();
+    Ok(AgentTraceReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        since_days,
+        traced_reads: trace.traced_reads,
+        influenced_reads: trace.influenced_reads,
+        saved_writes: usage.write_count,
+        timeline,
+        trace,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_vds_sync_hardening(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = vds_sync_hardening_report(conn, db, root, target, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("VDS Sync Hardening");
+    println!("status: {}", report.status);
+    for check in &report.checks {
+        println!("{} {}", if check.ok { "ok" } else { "warn" }, check.name);
+    }
+    Ok(())
+}
+
+pub(crate) fn vds_sync_hardening_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    since_days: i64,
+    apply: bool,
+) -> Result<VdsSyncHardeningReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let pack = vds_sync_pack_report(conn, db, &root, target, since_days, false)?;
+    let latency = sync_latency_report(conn, db, &root, target, 3)?;
+    let remote_sync = remote_sync_v2_report(conn, db, &root, target, since_days, false)?;
+    let apply_flow = remote_sync_apply_flow_report(conn, db, &root, target, since_days, false)?;
+    let checks = vec![
+        InstallPolishCheck {
+            name: "target".to_string(),
+            ok: target.is_some(),
+            detail: target
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "pass --target PATH before apply".to_string()),
+        },
+        InstallPolishCheck {
+            name: "local_first".to_string(),
+            ok: pack.local_first && remote_sync.local_first,
+            detail: "agent reads remain local; VDS is sync/backup only".to_string(),
+        },
+        InstallPolishCheck {
+            name: "latency".to_string(),
+            ok: latency.ok,
+            detail: format!("estimated roundtrip {}ms", latency.estimated_roundtrip_ms),
+        },
+        InstallPolishCheck {
+            name: "dry_run_commands".to_string(),
+            ok: !pack.dry_run_commands.is_empty() && !apply_flow.dry_run_commands.is_empty(),
+            detail: "push/pull/status dry-run commands are available".to_string(),
+        },
+        InstallPolishCheck {
+            name: "rollback_hint".to_string(),
+            ok: !pack.control.rollback_hint.is_empty(),
+            detail: pack.control.rollback_hint.clone(),
+        },
+    ];
+    let ok =
+        checks.iter().all(|check| check.ok) && pack.ok && latency.ok && remote_sync.local_first;
+    let policy_path = root.join(".agent/vds-sync-hardening.json");
+    let mut actions = Vec::new();
+    if apply && ok {
+        write_file(
+            &policy_path,
+            serde_json::to_string_pretty(&json!({
+                "version": 1,
+                "target": target.map(|path| path.display().to_string()),
+                "local_first": true,
+                "estimated_roundtrip_ms": latency.estimated_roundtrip_ms,
+                "updated_at": now_ms(),
+            }))?
+            .as_bytes(),
+        )?;
+        actions.push(format!(
+            "vds_sync_hardening_written:{}",
+            policy_path.display()
+        ));
+    } else if apply {
+        actions.push("vds_sync_hardening_not_written:blockers_present".to_string());
+    } else {
+        actions.push("dry_run:vds_sync_hardening_not_written".to_string());
+    }
+    let mut recommendations = pack.recommendations.clone();
+    recommendations.extend(latency.recommendations.clone());
+    recommendations.extend(remote_sync.recommendations.clone());
+    recommendations.push(
+        "keep VDS sync opt-in and measurable; never make remote reads the default".to_string(),
+    );
+    recommendations.sort();
+    recommendations.dedup();
+    Ok(VdsSyncHardeningReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        target: target.map(|path| path.display().to_string()),
+        applied: apply && ok,
+        policy_path: policy_path.display().to_string(),
+        pack,
+        latency,
+        remote_sync,
+        apply_flow,
+        checks,
+        actions,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_install_quality(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = install_quality_report(conn, db, root, since_days, apply)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Install Quality");
+    println!("status: {}", report.status);
+    for check in &report.checks {
+        println!("{} {}", if check.ok { "ok" } else { "warn" }, check.name);
+    }
+    Ok(())
+}
+
+pub(crate) fn install_quality_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    apply: bool,
+) -> Result<InstallQualityReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let install_polish = install_polish_report(&root, false)?;
+    let doctor = project_doctor_report(conn, db, &root, since_days, false)?;
+    let agent_enforce = agent_enforce_report(conn, db, &root, since_days, apply)?;
+    let checks = vec![
+        InstallPolishCheck {
+            name: "install_polish".to_string(),
+            ok: install_polish.ok,
+            detail: install_polish.status.clone(),
+        },
+        InstallPolishCheck {
+            name: "doctor_project".to_string(),
+            ok: doctor.ok,
+            detail: doctor.status.clone(),
+        },
+        InstallPolishCheck {
+            name: "agent_enforce".to_string(),
+            ok: agent_enforce.ok,
+            detail: agent_enforce.status.clone(),
+        },
+        InstallPolishCheck {
+            name: "future_chats".to_string(),
+            ok: agent_enforce.missing_commands.is_empty(),
+            detail: "AGENTS and skill include required memory commands".to_string(),
+        },
+    ];
+    let ok = checks.iter().all(|check| check.ok);
+    let policy_path = root.join(".agent/install-quality.json");
+    let mut actions = agent_enforce
+        .missing_commands
+        .iter()
+        .map(|command| format!("missing_command:{command}"))
+        .collect::<Vec<_>>();
+    if apply && ok {
+        write_file(
+            &policy_path,
+            serde_json::to_string_pretty(&json!({
+                "version": 1,
+                "status": "ready",
+                "updated_at": now_ms(),
+            }))?
+            .as_bytes(),
+        )?;
+        actions.push(format!("install_quality_written:{}", policy_path.display()));
+    } else if apply {
+        actions.push("install_quality_not_written:blockers_present".to_string());
+    } else {
+        actions.push("dry_run:install_quality_not_written".to_string());
+    }
+    let mut recommendations = install_polish.recommendations.clone();
+    recommendations.extend(doctor.recommendations.clone());
+    recommendations.extend(agent_enforce.recommendations.clone());
+    recommendations
+        .push("run install-quality after update-install and upgrade-all-projects-v2".to_string());
+    recommendations.sort();
+    recommendations.dedup();
+    Ok(InstallQualityReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        applied: apply && ok,
+        policy_path: policy_path.display().to_string(),
+        install_polish,
+        doctor,
+        agent_enforce,
+        checks,
+        actions,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_web_control_center_v6(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    task: &str,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = web_control_center_v6_report(conn, db, root, target, task, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Web Control Center v6");
+    println!("status: {}", report.status);
+    for control in &report.controls {
+        println!("{} {} {}", control.name, control.method, control.endpoint);
+    }
+    Ok(())
+}
+
+pub(crate) fn web_control_center_v6_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    target: Option<&Path>,
+    task: &str,
+    since_days: i64,
+) -> Result<WebControlCenterV6Report> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let v5 = web_control_center_v5_report(conn, db, &root, target, since_days)?;
+    let effectiveness = memory_effectiveness_lab_report(conn, &root, since_days)?;
+    let budgeter = auto_context_budgeter_v2_report(
+        conn,
+        &root,
+        task,
+        target.map(|path| path.to_string_lossy()).as_deref(),
+        false,
+    )?;
+    let contract_v2 = memory_contract_v2_report(conn, &root, false)?;
+    let cross_project = cross_project_learning_report(db, &root, task, false)?;
+    let agent_trace = agent_trace_report(conn, &root, since_days, 12)?;
+    let vds_hardening = vds_sync_hardening_report(conn, db, &root, target, since_days, false)?;
+    let install_quality = install_quality_report(conn, db, &root, since_days, false)?;
+    let target_arg = target
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "TARGET".to_string());
+    let mut controls = v5.controls.clone();
+    controls.extend(vec![
+        WebControlAction {
+            name: "auto_context_budgeter_v2".to_string(),
+            label: "Context budget".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/auto-context-budgeter-v2/apply".to_string(),
+            cli: format!(
+                "dukememory auto-context-budgeter-v2 \"{}\" --apply --json",
+                shell_safe_inline(task)
+            ),
+            safe_auto: true,
+            requires_apply: true,
+            status: budgeter.status.clone(),
+        },
+        WebControlAction {
+            name: "memory_contract_v2".to_string(),
+            label: "Contract v2".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/memory-contract-v2/write".to_string(),
+            cli: "dukememory memory-contract-v2 --write --json".to_string(),
+            safe_auto: true,
+            requires_apply: true,
+            status: contract_v2.status.clone(),
+        },
+        WebControlAction {
+            name: "cross_project_learning".to_string(),
+            label: "Cross-project learning".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/cross-project-learning/apply".to_string(),
+            cli: format!(
+                "dukememory cross-project-learning \"{}\" --apply --json",
+                shell_safe_inline(task)
+            ),
+            safe_auto: true,
+            requires_apply: true,
+            status: cross_project.status.clone(),
+        },
+        WebControlAction {
+            name: "vds_sync_hardening".to_string(),
+            label: "VDS hardening".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/vds-sync-hardening/apply".to_string(),
+            cli: format!("dukememory vds-sync-hardening --target {target_arg} --apply --json"),
+            safe_auto: true,
+            requires_apply: true,
+            status: vds_hardening.status.clone(),
+        },
+        WebControlAction {
+            name: "install_quality".to_string(),
+            label: "Install quality".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/install-quality/apply".to_string(),
+            cli: "dukememory install-quality --apply --json".to_string(),
+            safe_auto: true,
+            requires_apply: true,
+            status: install_quality.status.clone(),
+        },
+    ]);
+    let mut recommendations = v5.recommendations.clone();
+    recommendations.extend(effectiveness.recommendations.clone());
+    recommendations.extend(budgeter.recommendations.clone());
+    recommendations.extend(contract_v2.recommendations.clone());
+    recommendations.extend(cross_project.recommendations.clone());
+    recommendations.extend(agent_trace.recommendations.clone());
+    recommendations.extend(vds_hardening.recommendations.clone());
+    recommendations.extend(install_quality.recommendations.clone());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = effectiveness.ok
+        && budgeter.ok
+        && contract_v2.ok
+        && cross_project.ok
+        && agent_trace.ok
+        && vds_hardening.ok
+        && install_quality.ok;
+    Ok(WebControlCenterV6Report {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        target: target.map(|path| path.display().to_string()),
+        v5,
+        effectiveness,
+        budgeter,
+        contract_v2,
+        cross_project,
+        agent_trace,
+        vds_hardening,
+        install_quality,
         controls,
         recommendations,
     })
@@ -8357,6 +9349,14 @@ fn agent_required_commands() -> &'static [&'static str] {
         "memory-router-v2",
         "benchmark-profiles",
         "install-polish",
+        "memory-effectiveness-lab",
+        "auto-context-budgeter-v2",
+        "memory-contract-v2",
+        "cross-project-learning",
+        "agent-trace",
+        "vds-sync-hardening",
+        "install-quality",
+        "web-control-center-v6",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",

@@ -1235,6 +1235,69 @@ pub(crate) fn run() -> Result<()> {
             json,
         } => print_benchmark_profiles(&conn, &root, kind, since_days, write_baseline, apply, json)?,
         Command::InstallPolish { root, apply, json } => print_install_polish(&root, apply, json)?,
+        Command::MemoryEffectivenessLab {
+            root,
+            since_days,
+            json,
+        } => print_memory_effectiveness_lab(&conn, &root, since_days, json)?,
+        Command::AutoContextBudgeterV2 {
+            task,
+            root,
+            target,
+            apply,
+            json,
+        } => print_auto_context_budgeter_v2(&conn, &root, &task, target.as_deref(), apply, json)?,
+        Command::MemoryContractV2 { root, write, json } => {
+            print_memory_contract_v2(&conn, &root, write, json)?
+        }
+        Command::CrossProjectLearning {
+            query,
+            root,
+            apply,
+            json,
+        } => print_cross_project_learning(&cli.db, &root, &query, apply, json)?,
+        Command::AgentTrace {
+            root,
+            since_days,
+            limit,
+            json,
+        } => print_agent_trace(&conn, &root, since_days, limit, json)?,
+        Command::VdsSyncHardening {
+            root,
+            target,
+            since_days,
+            apply,
+            json,
+        } => print_vds_sync_hardening(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            since_days,
+            apply,
+            json,
+        )?,
+        Command::InstallQuality {
+            root,
+            since_days,
+            apply,
+            json,
+        } => print_install_quality(&conn, &cli.db, &root, since_days, apply, json)?,
+        Command::WebControlCenterV6 {
+            root,
+            target,
+            task,
+            since_days,
+            json,
+        } => print_web_control_center_v6(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            &task,
+            since_days,
+            json,
+        )?,
         Command::ProjectTemplate {
             root,
             kind,
@@ -3619,6 +3682,22 @@ Use `dukememory benchmark-profiles --json` to select project-aware retrieval ben
 
 Use `dukememory install-polish --json` to inspect README, screenshot, license, package metadata, and GitHub install readiness before release.
 
+Use `dukememory memory-effectiveness-lab --json` to measure whether recent memory reads actually helped agent work.
+
+Use `dukememory auto-context-budgeter-v2 "<task>" --json` to choose the smallest useful memory flow for the task; use `--apply` to write the selected policy.
+
+Use `dukememory memory-contract-v2 --json` to inspect the compact project contract v2; use `--write` after releases or architecture changes.
+
+Use `dukememory cross-project-learning "<query>" --json` to surface sibling-project hints without writing outside the current project.
+
+Use `dukememory agent-trace --json` to inspect recent agent reads, influence, feedback, and durable writes.
+
+Use `dukememory vds-sync-hardening --json` to verify local-first VDS sync target, latency, dry-runs, and rollback readiness.
+
+Use `dukememory install-quality --json` to verify install, skill, AGENTS, doctor, and future-chat memory readiness.
+
+Use `dukememory web-control-center-v6 --json` to inspect the 0.25 web control model with effectiveness, budgeter, contract v2, cross-project learning, trace, VDS hardening, and install quality.
+
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
 Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens.
@@ -3746,6 +3825,14 @@ dukememory quality-autopilot-v31 --json
 dukememory memory-router-v2 "project memory" --include-siblings --json
 dukememory benchmark-profiles --json
 dukememory install-polish --json
+dukememory memory-effectiveness-lab --json
+dukememory auto-context-budgeter-v2 "project memory" --json
+dukememory memory-contract-v2 --json
+dukememory cross-project-learning "project memory" --json
+dukememory agent-trace --json
+dukememory vds-sync-hardening --json
+dukememory install-quality --json
+dukememory web-control-center-v6 --json
 dukememory doctor-project --json
 dukememory release-gate --json
 dukememory project-watch --json
@@ -4213,6 +4300,20 @@ fn print_completions(shell: CompletionShell) {
         "mcp-discipline-v2",
         "feedback-loop-v2",
         "upgrade-all-projects-v2",
+        "vds-sync-pack",
+        "web-control-center-v5",
+        "quality-autopilot-v31",
+        "memory-router-v2",
+        "benchmark-profiles",
+        "install-polish",
+        "memory-effectiveness-lab",
+        "auto-context-budgeter-v2",
+        "memory-contract-v2",
+        "cross-project-learning",
+        "agent-trace",
+        "vds-sync-hardening",
+        "install-quality",
+        "web-control-center-v6",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -4379,6 +4480,14 @@ fn print_manpage() {
     println!("  memory-router-v2 QUERY        cross-project router with current-write guardrails");
     println!("  benchmark-profiles --json     project-aware retrieval benchmark profile");
     println!("  install-polish --json         README/license/screenshot/install release checks");
+    println!("  memory-effectiveness-lab      measure whether memory reads helped agents");
+    println!("  auto-context-budgeter-v2 TASK smallest useful memory context flow");
+    println!("  memory-contract-v2 --write    compact project contract v2");
+    println!("  cross-project-learning QUERY  sibling-project hints without cross writes");
+    println!("  agent-trace --json            recent memory influence and writes");
+    println!("  vds-sync-hardening --json     VDS target/latency/dry-run/rollback checks");
+    println!("  install-quality --json        install, skill, AGENTS, doctor readiness");
+    println!("  web-control-center-v6         0.25 effectiveness and trace control model");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");

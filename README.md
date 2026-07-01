@@ -228,6 +228,14 @@ dukememory quality-autopilot-v31 --json
 dukememory memory-router-v2 "project memory" --include-siblings --json
 dukememory benchmark-profiles --json
 dukememory install-polish --json
+dukememory memory-effectiveness-lab --json
+dukememory auto-context-budgeter-v2 "project memory" --json
+dukememory memory-contract-v2 --json
+dukememory cross-project-learning "project memory" --json
+dukememory agent-trace --json
+dukememory vds-sync-hardening --target /mnt/vds/dukememory --json
+dukememory install-quality --json
+dukememory web-control-center-v6 --json
 dukememory auto-ranking-tune --apply --json
 dukememory ranking-profile --profile balanced --apply --json
 dukememory project-template --kind rust-cli --apply --json
