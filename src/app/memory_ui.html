@@ -553,7 +553,8 @@
       projects: [], selectedIds: new Set(), tab: saved.tab || "detail",
       lang: savedLang === "en" ? "en" : "ru", activity: [], usefulness: null, embedding: null, autonomous: null,
       quality: null, profile: null, budget: null, dashboard: null, dashboardRepair: null, dashboardRepairHistory: null, qa: null, contract: null, ops: null, roi: null, agentAudit: null, remote: null,
-      trace: null, autoFeedback: null, costGuard: null, projectDiff: null, intelligence: null, remoteSync: null
+      trace: null, autoFeedback: null, costGuard: null, projectDiff: null, intelligence: null, remoteSync: null,
+      doctor: null, releaseGate: null
     };
     const $ = (id) => document.getElementById(id);
     const t = (key) => i18n[state.lang][key] || i18n.en[key] || key;
@@ -850,7 +851,7 @@
     async function loadIntelligence() {
       const params = new URLSearchParams({ since_days: "7" });
       if (state.project) params.set("project", state.project);
-      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync] = await Promise.all([
+      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate] = await Promise.all([
         api(`/roi-report?${params.toString()}`),
         api(`/agent-audit?${params.toString()}`),
         api(`/remote-status?${params.toString()}`),
@@ -859,7 +860,9 @@
         api(`/cost-guard?${params.toString()}`),
         api(`/project-diff?${params.toString()}&changed_only=true`),
         api(`/intelligence-dashboard?${params.toString()}`),
-        api(`/remote-sync-dry-run?${params.toString()}`)
+        api(`/remote-sync-dry-run?${params.toString()}`),
+        api(`/doctor-project?${params.toString()}`),
+        api(`/release-gate?${params.toString()}`)
       ]);
       state.roi = roi.roi;
       state.agentAudit = audit.agent_audit;
@@ -870,6 +873,8 @@
       state.projectDiff = projectDiff.project_diff;
       state.intelligence = intelligence.intelligence;
       state.remoteSync = remoteSync.remote_sync;
+      state.doctor = doctor.doctor;
+      state.releaseGate = releaseGate.release_gate;
       renderSettings();
     }
 
@@ -1155,6 +1160,8 @@
       const projectDiff = state.projectDiff || {};
       const intelligence = state.intelligence || {};
       const remoteSync = state.remoteSync || {};
+      const doctor = state.doctor || {};
+      const releaseGate = state.releaseGate || {};
       const contract = state.contract || {};
       const ops = state.ops || {};
       const effectiveness = ops.effectiveness || {};
@@ -1201,7 +1208,11 @@
         <div class="stat"><strong>${Number(autoFeedback.written || 0)}</strong><span>auto feedback ready</span></div>
         <div class="stat"><strong>${projectDiff.ok == null ? "-" : projectDiff.ok ? "ok" : "warn"}</strong><span>project diff</span></div>
         <div class="stat"><strong>${escapeHtml(remoteSync.status || "-")}</strong><span>sync dry-run</span></div>
+        <div class="stat"><strong>${escapeHtml(doctor.status || "-")}</strong><span>doctor project</span></div>
+        <div class="stat"><strong>${escapeHtml(releaseGate.status || "-")}</strong><span>release gate</span></div>
       </div>
+      <div class="card"><div class="title">doctor project</div><div class="body">status ${escapeHtml(doctor.status || "-")}<br>qa ${Number(doctor.memory_qa?.score || 0).toFixed(1)}<br>embedding ${doctor.embedding ? `${Number(doctor.embedding.missing || 0)} missing / ${Number(doctor.embedding.stale || 0)} stale` : "-"}<br>${doctor.checks?.length ? doctor.checks.slice(0, 6).map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">release gate</div><div class="body">status ${escapeHtml(releaseGate.status || "-")}<br>strict ${releaseGate.strict ? "yes" : "no"}<br>${releaseGate.checks?.length ? releaseGate.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}<br>${releaseGate.issues?.length ? releaseGate.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
       <div class="card"><div class="title">decision trace</div><div class="body">traced ${Number(trace.traced_reads || 0)}<br>empty ${Number(trace.empty_reads || 0)}<br>positive ${Number(trace.positive_feedback || 0)} / negative ${Number(trace.negative_feedback || 0)} / missing ${Number(trace.missing_feedback || 0)}<br>${trace.items?.length ? trace.items.slice(0, 4).map((item) => `${escapeHtml(item.command)}: ${escapeHtml(item.influence)} (${Number(item.result_count || 0)})`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">auto feedback v2</div><div class="body">applied ${autoFeedback.applied ? "yes" : "no"}<br>scanned ${Number(autoFeedback.scanned || 0)}<br>written ${Number(autoFeedback.written || 0)} / skipped ${Number(autoFeedback.skipped || 0)}<br>missing ${Number(autoFeedback.inferred_missing_after || autoFeedback.inferred_missing_before || 0)}</div></div>
       <div class="card"><div class="title">cost guard</div><div class="body">profile ${escapeHtml(costGuard.recommended_profile || "-")} / ${Number(costGuard.recommended_max_chars || 0)} chars<br>avg budget ${Number(costGuard.average_read_budget || 0).toFixed(0)}<br>max budget ${Number(costGuard.max_read_budget || 0)}<br>large cards ${Number(costGuard.large_memory_count || 0)}<br>${costGuard.actions?.length ? costGuard.actions.slice(0, 4).map(escapeHtml).join("<br>") : "actions -"}</div></div>

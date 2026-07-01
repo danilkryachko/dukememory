@@ -472,6 +472,42 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 since_days,
             )?}))
         }
+        ("GET", "/doctor-project") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"doctor": project_doctor_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+            )?}))
+        }
+        ("GET", "/release-gate") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let strict = params
+                .get("strict")
+                .is_some_and(|value| value == "1" || value == "true");
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"release_gate": release_gate_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                strict,
+            )?}))
+        }
         ("GET", "/eval-live") => {
             let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);

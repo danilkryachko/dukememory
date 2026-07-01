@@ -1417,6 +1417,31 @@ pub(crate) fn autonomous_run_once(
                 .unwrap_or_else(|| "unavailable".to_string()),
             memory_id: None,
         });
+        let project_root = autonomous_project_root_for_db(request.db);
+        let cost_guard = cost_guard_report(conn, 7)?;
+        report.actions.push(AutonomousAction {
+            kind: "cost_guard".to_string(),
+            status: if cost_guard.issues.is_empty() {
+                "ok"
+            } else {
+                "warn"
+            }
+            .to_string(),
+            detail: format!(
+                "score={:.1} profile={} issues={}",
+                cost_guard.score,
+                cost_guard.recommended_profile,
+                cost_guard.issues.len()
+            ),
+            memory_id: None,
+        });
+        let doctor = project_doctor_report(conn, request.db, &project_root, 7)?;
+        report.actions.push(AutonomousAction {
+            kind: "project_doctor".to_string(),
+            status: if doctor.ok { "ok" } else { "warn" }.to_string(),
+            detail: format!("status={} issues={}", doctor.status, doctor.issues.len()),
+            memory_id: None,
+        });
         report.actions.push(AutonomousAction {
             kind: "policy_tune".to_string(),
             status: "ok".to_string(),
@@ -1438,7 +1463,7 @@ pub(crate) fn autonomous_run_once(
             autonomous_repair_explicit_file_links(
                 conn,
                 effective_level,
-                autonomous_project_root_for_db(request.db),
+                &project_root,
                 request.scope,
                 &mut report,
             )?;

@@ -182,6 +182,9 @@ pub(crate) struct DecisionTraceReport {
     pub(crate) traced_reads: usize,
     pub(crate) influenced_reads: usize,
     pub(crate) empty_reads: usize,
+    pub(crate) confirmed_reads: usize,
+    pub(crate) questioned_reads: usize,
+    pub(crate) semantic_influenced_reads: usize,
     pub(crate) positive_feedback: usize,
     pub(crate) negative_feedback: usize,
     pub(crate) missing_feedback: usize,
@@ -200,6 +203,8 @@ pub(crate) struct DecisionTraceItem {
     pub(crate) memory_ids: Vec<String>,
     pub(crate) memory_titles: Vec<String>,
     pub(crate) influence: String,
+    pub(crate) explanation: String,
+    pub(crate) without_memory: String,
     pub(crate) feedback_positive: usize,
     pub(crate) feedback_negative: usize,
     pub(crate) feedback_missing: usize,
@@ -219,6 +224,8 @@ pub(crate) struct AutoFeedbackV2Report {
     pub(crate) useful_rate_after: f64,
     pub(crate) inferred_missing_before: usize,
     pub(crate) inferred_missing_after: usize,
+    pub(crate) closed_missing: usize,
+    pub(crate) unresolved_missing_queries: Vec<String>,
     pub(crate) recommendations: Vec<String>,
 }
 
@@ -287,6 +294,61 @@ pub(crate) struct IntelligenceDashboardReport {
     pub(crate) remote_sync: RemoteSyncDryRunReport,
     pub(crate) issues: Vec<String>,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ProjectDoctorReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) db: String,
+    pub(crate) checks: Vec<ProjectDoctorCheck>,
+    pub(crate) memory_qa: MemoryQaReport,
+    pub(crate) embedding: Option<DoctorEmbeddingStatus>,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ProjectDoctorCheck {
+    pub(crate) name: String,
+    pub(crate) ok: bool,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DoctorEmbeddingStatus {
+    pub(crate) provider: String,
+    pub(crate) endpoint: String,
+    pub(crate) model: String,
+    pub(crate) eligible: usize,
+    pub(crate) indexed: usize,
+    pub(crate) missing: usize,
+    pub(crate) stale: usize,
+    pub(crate) provider_reachable: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ReleaseGateReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) root: String,
+    pub(crate) strict: bool,
+    pub(crate) checks: Vec<ReleaseGateCheck>,
+    pub(crate) doctor: ProjectDoctorReport,
+    pub(crate) intelligence: IntelligenceDashboardReport,
+    pub(crate) issues: Vec<String>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ReleaseGateCheck {
+    pub(crate) name: String,
+    pub(crate) ok: bool,
+    pub(crate) required: bool,
+    pub(crate) detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1548,6 +1610,9 @@ pub(crate) fn decision_trace_report(
     let mut items = Vec::new();
     let mut influenced_reads = 0;
     let mut empty_reads = 0;
+    let mut confirmed_reads = 0;
+    let mut questioned_reads = 0;
+    let mut semantic_influenced_reads = 0;
     let mut positive_feedback = 0;
     let mut negative_feedback = 0;
     let mut missing_feedback = 0;
@@ -1581,11 +1646,43 @@ pub(crate) fn decision_trace_report(
             "candidate"
         }
         .to_string();
+        if influence == "confirmed" {
+            confirmed_reads += 1;
+        }
+        if influence == "questioned" {
+            questioned_reads += 1;
+        }
+        if read.semantic_used && !read.memory_ids.is_empty() && read.result_count > 0 {
+            semantic_influenced_reads += 1;
+        }
         let titles = read
             .memory_ids
             .iter()
             .filter_map(|id| memory_titles.get(id).cloned())
             .collect::<Vec<_>>();
+        let explanation = if titles.is_empty() {
+            "no memory card was available for this read".to_string()
+        } else {
+            format!(
+                "used {} card(s): {}",
+                read.memory_ids.len(),
+                titles
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+        };
+        let without_memory = if titles.is_empty() {
+            "agent would continue without durable project context".to_string()
+        } else if item_positive > 0 {
+            "agent likely avoided rediscovering confirmed project context".to_string()
+        } else if read.semantic_used {
+            "agent likely avoided a broader manual search by using semantic recall".to_string()
+        } else {
+            "agent received candidate project context before reading more files".to_string()
+        };
         items.push(DecisionTraceItem {
             read_id: read.id,
             command: read.command,
@@ -1595,6 +1692,8 @@ pub(crate) fn decision_trace_report(
             memory_ids: read.memory_ids,
             memory_titles: titles,
             influence,
+            explanation,
+            without_memory: without_memory.to_string(),
             feedback_positive: item_positive,
             feedback_negative: item_negative,
             feedback_missing: item_missing,
@@ -1616,6 +1715,9 @@ pub(crate) fn decision_trace_report(
         traced_reads: items.len(),
         influenced_reads,
         empty_reads,
+        confirmed_reads,
+        questioned_reads,
+        semantic_influenced_reads,
         positive_feedback,
         negative_feedback,
         missing_feedback,
@@ -1682,6 +1784,9 @@ pub(crate) fn auto_feedback_v2_report(
     } else {
         before.clone()
     };
+    let closed_missing = before
+        .inferred_missing
+        .saturating_sub(after.inferred_missing);
     if materialized.written == 0 {
         recommendations.push("no new feedback was needed for recent memory reads".to_string());
     }
@@ -1702,6 +1807,8 @@ pub(crate) fn auto_feedback_v2_report(
         useful_rate_after: after.useful_rate,
         inferred_missing_before: before.inferred_missing,
         inferred_missing_after: after.inferred_missing,
+        closed_missing,
+        unresolved_missing_queries: after.inferred_missing_queries,
         recommendations,
     })
 }
@@ -1962,6 +2069,326 @@ pub(crate) fn intelligence_dashboard_report(
         auto_feedback,
         project_diff,
         remote_sync,
+        issues,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_project_doctor(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    json_out: bool,
+) -> Result<()> {
+    let report = project_doctor_report(conn, db, root, since_days)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Project Memory Doctor");
+    println!("status: {}", report.status);
+    for check in &report.checks {
+        println!(
+            "{} {} {}",
+            if check.ok { "ok" } else { "warn" },
+            check.name,
+            check.detail
+        );
+    }
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn project_doctor_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+) -> Result<ProjectDoctorReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let qa = memory_qa_report(conn, &root, since_days)?;
+    let integration = ops_agent_integration_status(db, &root);
+    let (provider, endpoint, model) = read_project_embedding_config(&root);
+    let embedding = embeddings::embed_status(conn, &provider, &endpoint, &model).ok();
+    let embedding_status = embedding.as_ref().map(|report| DoctorEmbeddingStatus {
+        provider: report.provider.clone(),
+        endpoint: report.endpoint.clone(),
+        model: report.model.clone(),
+        eligible: report.eligible,
+        indexed: report.indexed,
+        missing: report.missing,
+        stale: report.stale,
+        provider_reachable: report.provider_reachable,
+    });
+    let agents_content = fs::read_to_string(root.join("AGENTS.md")).unwrap_or_default();
+    let skill_content = fs::read_to_string(expand_tilde("~/.codex/skills/dukememory-use/SKILL.md"))
+        .unwrap_or_default();
+    let required_commands = [
+        "brief",
+        "impact",
+        "memory-qa",
+        "usage-report",
+        "decision-trace",
+        "auto-feedback",
+        "cost-guard",
+        "intelligence-dashboard",
+        "project-diff",
+        "remote-sync-dry-run",
+        "upgrade-project",
+    ];
+    let agents_commands_ok = required_commands
+        .iter()
+        .all(|command| agents_content.contains(command));
+    let skill_commands_ok = required_commands
+        .iter()
+        .all(|command| skill_content.contains(command));
+    let embedding_current = embedding
+        .as_ref()
+        .is_some_and(|report| report.missing == 0 && report.stale == 0);
+    let embedding_reachable = embedding
+        .as_ref()
+        .is_some_and(|report| report.provider_reachable);
+    let autonomous_status =
+        read_autonomous_status(&root.join(".agent/autonomous-status.json")).ok();
+    let autonomous_ok = autonomous_status
+        .as_ref()
+        .map(|report| report.ok)
+        .unwrap_or(true);
+    let checks = vec![
+        ProjectDoctorCheck {
+            name: "project_memory_db".to_string(),
+            ok: integration.project_memory_installed,
+            detail: db.display().to_string(),
+        },
+        ProjectDoctorCheck {
+            name: "project_config".to_string(),
+            ok: integration.project_config_present,
+            detail: root.join(".agent/config.toml").display().to_string(),
+        },
+        ProjectDoctorCheck {
+            name: "agents_block".to_string(),
+            ok: integration.agents_block_present && agents_commands_ok,
+            detail: "AGENTS.md contains dukememory. block and required commands".to_string(),
+        },
+        ProjectDoctorCheck {
+            name: "codex_skill".to_string(),
+            ok: integration.skill_installed && skill_commands_ok,
+            detail: integration.skill_path.clone(),
+        },
+        ProjectDoctorCheck {
+            name: "mcp_config".to_string(),
+            ok: integration.codex_mcp_configured,
+            detail: integration.codex_config.clone(),
+        },
+        ProjectDoctorCheck {
+            name: "memory_qa".to_string(),
+            ok: qa.ok,
+            detail: format!("score={:.1}", qa.score),
+        },
+        ProjectDoctorCheck {
+            name: "embeddings".to_string(),
+            ok: embedding_current && embedding_reachable,
+            detail: embedding
+                .as_ref()
+                .map(|report| {
+                    format!(
+                        "provider={} model={} missing={} stale={} reachable={}",
+                        report.provider,
+                        report.model,
+                        report.missing,
+                        report.stale,
+                        report.provider_reachable
+                    )
+                })
+                .unwrap_or_else(|| "embedding status unavailable".to_string()),
+        },
+        ProjectDoctorCheck {
+            name: "autonomous_status".to_string(),
+            ok: autonomous_ok,
+            detail: autonomous_status
+                .as_ref()
+                .map(|report| format!("ok={} updated_at={}", report.ok, report.updated_at))
+                .unwrap_or_else(|| {
+                    "no status yet; run autonomous run-once for telemetry".to_string()
+                }),
+        },
+    ];
+    let mut issues = qa.issues.clone();
+    let mut recommendations = qa.recommendations.clone();
+    for check in &checks {
+        if !check.ok && check.name != "mcp_config" {
+            issues.push(format!("{} is not ready", check.name));
+        }
+        if !check.ok {
+            match check.name.as_str() {
+                "agents_block" | "project_config" => {
+                    recommendations.push("run dukememory upgrade-project --json".to_string())
+                }
+                "codex_skill" => recommendations.push("run dukememory install-skill".to_string()),
+                "embeddings" => recommendations.push("run dukememory embed-index".to_string()),
+                "autonomous_status" => recommendations
+                    .push("run dukememory autonomous run-once --level normal --json".to_string()),
+                _ => {}
+            }
+        }
+    }
+    issues.sort();
+    issues.dedup();
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = issues.is_empty();
+    Ok(ProjectDoctorReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "attention" }.to_string(),
+        root: root.display().to_string(),
+        db: db.display().to_string(),
+        checks,
+        memory_qa: qa,
+        embedding: embedding_status,
+        issues,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_release_gate(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    strict: bool,
+    json_out: bool,
+) -> Result<()> {
+    let report = release_gate_report(conn, db, root, since_days, strict)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Release Gate");
+    println!("status: {}", report.status);
+    for check in &report.checks {
+        println!(
+            "{} {} {}",
+            if check.ok { "ok" } else { "warn" },
+            check.name,
+            check.detail
+        );
+    }
+    for issue in &report.issues {
+        println!("issue: {issue}");
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn release_gate_report(
+    conn: &Connection,
+    db: &Path,
+    root: &Path,
+    since_days: i64,
+    strict: bool,
+) -> Result<ReleaseGateReport> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let doctor = project_doctor_report(conn, db, &root, since_days)?;
+    let intelligence = intelligence_dashboard_report(conn, db, &root, since_days)?;
+    let project_diff = project_diff_report(conn, &root, true)?;
+    let cargo_toml = root.join("Cargo.toml");
+    let cargo_version_ok = fs::read_to_string(&cargo_toml)
+        .map(|content| content.contains(&format!("version = \"{}\"", env!("CARGO_PKG_VERSION"))))
+        .unwrap_or(false);
+    let git_status = ProcessCommand::new("git")
+        .arg("status")
+        .arg("--porcelain")
+        .current_dir(&root)
+        .output()
+        .ok();
+    let git_clean = git_status
+        .as_ref()
+        .filter(|output| output.status.success())
+        .map(|output| output.stdout.is_empty())
+        .unwrap_or(true);
+    let checks = vec![
+        ReleaseGateCheck {
+            name: "doctor_project".to_string(),
+            ok: doctor.ok,
+            required: true,
+            detail: doctor.status.clone(),
+        },
+        ReleaseGateCheck {
+            name: "intelligence_dashboard".to_string(),
+            ok: intelligence.ok,
+            required: true,
+            detail: intelligence.status.clone(),
+        },
+        ReleaseGateCheck {
+            name: "project_diff".to_string(),
+            ok: project_diff.ok,
+            required: true,
+            detail: format!(
+                "changed={} missing_links={} conflicts={} stale={}",
+                project_diff.changed_files.len(),
+                project_diff.missing_links,
+                project_diff.conflicts,
+                project_diff.stale_active
+            ),
+        },
+        ReleaseGateCheck {
+            name: "cargo_version".to_string(),
+            ok: cargo_version_ok,
+            required: true,
+            detail: cargo_toml.display().to_string(),
+        },
+        ReleaseGateCheck {
+            name: "git_clean".to_string(),
+            ok: git_clean,
+            required: strict,
+            detail: if git_clean {
+                "working tree clean".to_string()
+            } else {
+                "working tree has local changes".to_string()
+            },
+        },
+        ReleaseGateCheck {
+            name: "required_commands".to_string(),
+            ok: true,
+            required: false,
+            detail:
+                "run: cargo fmt --check; cargo check; cargo test --test cli; cargo build --release"
+                    .to_string(),
+        },
+    ];
+    let mut issues = Vec::new();
+    let mut recommendations = Vec::new();
+    for check in &checks {
+        if check.required && !check.ok {
+            issues.push(format!("release gate failed: {}", check.name));
+        }
+    }
+    if !git_clean && !strict {
+        recommendations.push("commit or stash local changes before publishing".to_string());
+    }
+    recommendations.extend(doctor.recommendations.iter().cloned());
+    recommendations.extend(intelligence.recommendations.iter().cloned());
+    recommendations.sort();
+    recommendations.dedup();
+    let ok = issues.is_empty();
+    Ok(ReleaseGateReport {
+        version: 1,
+        ok,
+        status: if ok { "ready" } else { "blocked" }.to_string(),
+        root: root.display().to_string(),
+        strict,
+        checks,
+        doctor,
+        intelligence,
         issues,
         recommendations,
     })

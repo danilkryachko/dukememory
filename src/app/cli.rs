@@ -816,6 +816,26 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Verify project memory installation, skill wiring, embeddings, and autonomy.
+    DoctorProject {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run a local release readiness gate before committing or publishing.
+    ReleaseGate {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        strict: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Group and safely process inbox suggestions.
     InboxV2 {
         #[command(subcommand)]
@@ -1147,11 +1167,19 @@ pub(crate) enum SyncCommand {
         output: PathBuf,
         #[arg(long)]
         redact: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
     },
     Import {
         input: PathBuf,
         #[arg(long)]
         replace: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
     },
 }
 

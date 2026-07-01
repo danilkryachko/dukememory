@@ -711,7 +711,9 @@ fn export_import_backup_and_restore() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
     let export_path = dir.path().join("export.json");
+    let sync_bundle = dir.path().join("sync-bundle.json");
     let imported_db = dir.path().join("imported.db");
+    let synced_db = dir.path().join(".agent/memory.db");
     let backup_db = dir.path().join("backup.db");
     let restored_db = dir.path().join("restored.db");
 
@@ -743,6 +745,65 @@ fn export_import_backup_and_restore() {
         .success()
         .stdout(contains("imported: 1"));
     cmd(&imported_db)
+        .arg("get")
+        .arg(&id)
+        .assert()
+        .success()
+        .stdout(contains("Exported decision"));
+
+    let sync_dry_run = stdout(
+        cmd(&db)
+            .arg("sync")
+            .arg("export")
+            .arg(&sync_bundle)
+            .arg("--dry-run")
+            .arg("--json"),
+    );
+    let sync_dry_run_json: Value = serde_json::from_str(&sync_dry_run).unwrap();
+    assert_eq!(sync_dry_run_json["dry_run"], true);
+    assert_eq!(sync_dry_run_json["wrote"], false);
+    assert!(!sync_bundle.exists());
+
+    let sync_export = stdout(
+        cmd(&db)
+            .arg("sync")
+            .arg("export")
+            .arg(&sync_bundle)
+            .arg("--json"),
+    );
+    let sync_export_json: Value = serde_json::from_str(&sync_export).unwrap();
+    assert_eq!(sync_export_json["ok"], true);
+    assert_eq!(sync_export_json["wrote"], true);
+    assert!(sync_export_json["export_sha256"].as_str().unwrap().len() >= 32);
+    let sync_raw = fs::read_to_string(&sync_bundle).unwrap();
+    assert!(sync_raw.contains("dukememory.sync.bundle"));
+    assert!(sync_raw.contains("export_sha256"));
+
+    let sync_import_dry_run = stdout(
+        cmd(&synced_db)
+            .arg("sync")
+            .arg("import")
+            .arg(&sync_bundle)
+            .arg("--dry-run")
+            .arg("--json"),
+    );
+    let sync_import_dry_run_json: Value = serde_json::from_str(&sync_import_dry_run).unwrap();
+    assert_eq!(sync_import_dry_run_json["dry_run"], true);
+    assert_eq!(sync_import_dry_run_json["imported"], 0);
+    assert_eq!(sync_import_dry_run_json["checksum_ok"], true);
+
+    let sync_import = stdout(
+        cmd(&synced_db)
+            .arg("sync")
+            .arg("import")
+            .arg(&sync_bundle)
+            .arg("--json"),
+    );
+    let sync_import_json: Value = serde_json::from_str(&sync_import).unwrap();
+    assert_eq!(sync_import_json["ok"], true);
+    assert_eq!(sync_import_json["imported"], 1);
+    assert!(sync_import_json["rollback"].as_str().is_some());
+    cmd(&synced_db)
         .arg("get")
         .arg(&id)
         .assert()
@@ -8459,6 +8520,10 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
+        "doctor-project",
+        "release-gate",
+        "sync export",
+        "sync import",
     ] {
         assert!(agents_md.contains(command), "AGENTS.md missing {command}");
     }
@@ -8478,6 +8543,10 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
+        "doctor-project",
+        "release-gate",
+        "sync export",
+        "sync import",
     ] {
         assert!(skill_md.contains(command), "SKILL.md missing {command}");
     }
@@ -9363,6 +9432,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/project-diff"));
     assert!(html.contains("/intelligence-dashboard"));
     assert!(html.contains("/remote-sync-dry-run"));
+    assert!(html.contains("/doctor-project"));
+    assert!(html.contains("/release-gate"));
     assert!(html.contains("memory ROI"));
     assert!(html.contains("agent audit"));
     assert!(html.contains("remote readiness"));
@@ -9372,6 +9443,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("cost guard"));
     assert!(html.contains("project intelligence diff"));
     assert!(html.contains("remote sync dry-run"));
+    assert!(html.contains("doctor project"));
+    assert!(html.contains("release gate"));
     assert!(html.contains("/upgrade-project"));
 
     let memory = http_once(
@@ -9616,7 +9689,10 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(trace.contains("\"trace\""));
     assert!(trace.contains("\"influenced_reads\""));
+    assert!(trace.contains("\"confirmed_reads\""));
+    assert!(trace.contains("\"semantic_influenced_reads\""));
     assert!(trace.contains("\"memory_titles\""));
+    assert!(trace.contains("\"without_memory\""));
 
     let auto_feedback = http_once(
         &db,
@@ -9625,6 +9701,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(auto_feedback.contains("\"auto_feedback\""));
     assert!(auto_feedback.contains("\"applied\":false"));
     assert!(auto_feedback.contains("\"scanned\""));
+    assert!(auto_feedback.contains("\"closed_missing\""));
+    assert!(auto_feedback.contains("\"unresolved_missing_queries\""));
 
     let cost_guard = http_once(
         &db,
@@ -9658,6 +9736,24 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(remote_sync.contains("\"remote_sync\""));
     assert!(remote_sync.contains("\"estimated_roundtrip_ms\""));
     assert!(remote_sync.contains("\"local_first\":true"));
+
+    let doctor = http_once(
+        &db,
+        "GET /doctor-project?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(doctor.contains("\"doctor\""));
+    assert!(doctor.contains("\"checks\""));
+    assert!(doctor.contains("\"memory_qa\""));
+    assert!(doctor.contains("\"embedding\""));
+
+    let release_gate = http_once(
+        &db,
+        "GET /release-gate?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(release_gate.contains("\"release_gate\""));
+    assert!(release_gate.contains("\"checks\""));
+    assert!(release_gate.contains("\"doctor_project\""));
+    assert!(release_gate.contains("\"required_commands\""));
 
     let contract = http_once(
         &db,
@@ -10582,8 +10678,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let trace_json: Value = serde_json::from_str(&trace).unwrap();
     assert_eq!(trace_json["version"], 1);
     assert!(trace_json["traced_reads"].as_u64().unwrap() >= 1);
+    assert!(trace_json["confirmed_reads"].as_u64().is_some());
+    assert!(trace_json["questioned_reads"].as_u64().is_some());
+    assert!(trace_json["semantic_influenced_reads"].as_u64().is_some());
     assert!(trace_json["items"].as_array().is_some());
     assert!(trace_json["items"][0]["influence"].as_str().is_some());
+    assert!(trace_json["items"][0]["explanation"].as_str().is_some());
+    assert!(trace_json["items"][0]["without_memory"].as_str().is_some());
 
     let auto_feedback = stdout(
         cmd(&db)
@@ -10599,6 +10700,12 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(auto_feedback_json["version"], 1);
     assert_eq!(auto_feedback_json["applied"], false);
     assert!(auto_feedback_json["scanned"].as_u64().is_some());
+    assert!(auto_feedback_json["closed_missing"].as_u64().is_some());
+    assert!(
+        auto_feedback_json["unresolved_missing_queries"]
+            .as_array()
+            .is_some()
+    );
     assert!(auto_feedback_json["recommendations"].as_array().is_some());
 
     let cost_guard = stdout(
@@ -10666,6 +10773,40 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .is_some()
     );
 
+    let doctor = stdout(
+        cmd(&db)
+            .arg("doctor-project")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let doctor_json: Value = serde_json::from_str(&doctor).unwrap();
+    assert_eq!(doctor_json["version"], 1);
+    assert!(doctor_json["checks"].as_array().unwrap().len() >= 5);
+    assert!(doctor_json["memory_qa"]["score"].as_f64().is_some());
+    assert!(doctor_json["issues"].as_array().is_some());
+
+    let release_gate = stdout(
+        cmd(&db)
+            .arg("release-gate")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let release_gate_json: Value = serde_json::from_str(&release_gate).unwrap();
+    assert_eq!(release_gate_json["version"], 1);
+    assert!(release_gate_json["checks"].as_array().unwrap().len() >= 4);
+    assert!(release_gate_json["doctor"]["checks"].as_array().is_some());
+    assert!(
+        release_gate_json["intelligence"]["cost_guard"]["score"]
+            .as_f64()
+            .is_some()
+    );
+
     let gap_run = stdout(
         cmd(&db)
             .arg("autonomous")
@@ -10698,6 +10839,17 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_u64()
             .unwrap()
             >= 1
+    );
+    let autonomous_actions = gap_run_json["actions"].as_array().unwrap();
+    assert!(
+        autonomous_actions
+            .iter()
+            .any(|item| item["kind"] == "cost_guard")
+    );
+    assert!(
+        autonomous_actions
+            .iter()
+            .any(|item| item["kind"] == "project_doctor")
     );
     assert!(gap_run_json["feedback"]["missing"].as_u64().unwrap() >= 1);
     assert!(

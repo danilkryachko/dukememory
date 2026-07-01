@@ -619,6 +619,9 @@ For every new chat or coding task in this repository:
 - To inspect the full memory intelligence surface, run `dukememory intelligence-dashboard --json`.
 - To diff changed files against memory links and stale facts, run `dukememory project-diff --changed-only --json`.
 - To preview local-first VDS/remote sync readiness, run `dukememory remote-sync-dry-run --json`.
+- To verify installed project memory wiring, run `dukememory doctor-project --json`.
+- To run a local release readiness gate, run `dukememory release-gate --json`.
+- To sync memory safely, preview first with `dukememory sync export bundle.json --dry-run --json` and `dukememory sync import bundle.json --dry-run --json`.
 - To safely group and process inbox suggestions, run `dukememory inbox-v2 report --json`.
 - To check whether memory is useful or noisy, run `dukememory memory-qa --json`.
 - To refresh project-wide memory instructions and the compact contract, run `dukememory upgrade-project --json`.

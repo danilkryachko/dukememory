@@ -896,6 +896,17 @@ pub(crate) fn run() -> Result<()> {
             since_days,
             json,
         } => print_remote_sync_dry_run(&conn, &cli.db, &root, since_days, json)?,
+        Command::DoctorProject {
+            root,
+            since_days,
+            json,
+        } => print_project_doctor(&conn, &cli.db, &root, since_days, json)?,
+        Command::ReleaseGate {
+            root,
+            since_days,
+            strict,
+            json,
+        } => print_release_gate(&conn, &cli.db, &root, since_days, strict, json)?,
         Command::InboxV2 { command } => handle_inbox_v2(&conn, command)?,
         Command::PolicyTune {
             output,
@@ -1156,10 +1167,107 @@ fn export_memories(
     })
 }
 
-fn import_memories(conn: &Connection, input: &Path, replace: bool) -> Result<()> {
+#[derive(Debug, Serialize, Deserialize)]
+struct SyncBundle {
+    version: u32,
+    kind: String,
+    created_at: i64,
+    dukememory_version: String,
+    manifest: SyncBundleManifest,
+    export: MemoryExport,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SyncBundleManifest {
+    memory_count: usize,
+    redacted: bool,
+    checksum_algorithm: String,
+    export_sha256: String,
+    local_first: bool,
+    source_schema: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct SyncExportReport {
+    version: u32,
+    ok: bool,
+    dry_run: bool,
+    output: String,
+    memory_count: usize,
+    redacted: bool,
+    export_sha256: String,
+    bytes: usize,
+    wrote: bool,
+    recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SyncImportReport {
+    version: u32,
+    ok: bool,
+    dry_run: bool,
+    input: String,
+    replace: bool,
+    memory_count: usize,
+    export_sha256: Option<String>,
+    checksum_ok: Option<bool>,
+    rollback: Option<String>,
+    imported: usize,
+    recommendations: Vec<String>,
+}
+
+fn sync_bundle(conn: &Connection, redact: bool) -> Result<SyncBundle> {
+    let mut export = export_memories(conn, &[], &[], None)?;
+    if redact {
+        redact_export(&mut export)?;
+    }
+    let export_json = serde_json::to_vec(&export)?;
+    let export_sha256 = sha256_bytes(&export_json);
+    Ok(SyncBundle {
+        version: 1,
+        kind: "dukememory.sync.bundle".to_string(),
+        created_at: now_ms(),
+        dukememory_version: env!("CARGO_PKG_VERSION").to_string(),
+        manifest: SyncBundleManifest {
+            memory_count: export.memories.len(),
+            redacted: redact,
+            checksum_algorithm: "sha256".to_string(),
+            export_sha256,
+            local_first: true,
+            source_schema: schema_version(conn).unwrap_or(CURRENT_SCHEMA_VERSION),
+        },
+        export,
+    })
+}
+
+fn parse_sync_input(input: &Path) -> Result<(MemoryExport, Option<SyncBundleManifest>)> {
     let raw =
         fs::read_to_string(input).with_context(|| format!("failed to read {}", input.display()))?;
-    let export: MemoryExport = serde_json::from_str(&raw)?;
+    let value: Value = serde_json::from_str(&raw)?;
+    if value.get("kind").and_then(Value::as_str) == Some("dukememory.sync.bundle") {
+        let bundle: SyncBundle = serde_json::from_value(value)?;
+        if bundle.version != 1 {
+            bail!("unsupported sync bundle version: {}", bundle.version);
+        }
+        let export_json = serde_json::to_vec(&bundle.export)?;
+        let actual = sha256_bytes(&export_json);
+        if actual != bundle.manifest.export_sha256 {
+            bail!("sync bundle checksum mismatch");
+        }
+        return Ok((bundle.export, Some(bundle.manifest)));
+    }
+    let export: MemoryExport = serde_json::from_value(value)?;
+    Ok((export, None))
+}
+
+fn import_memories(conn: &Connection, input: &Path, replace: bool) -> Result<()> {
+    let (export, _) = parse_sync_input(input)?;
+    import_memory_export(conn, export, replace).map(|count| {
+        println!("imported: {count}");
+    })
+}
+
+fn import_memory_export(conn: &Connection, export: MemoryExport, replace: bool) -> Result<usize> {
     if export.version != EXPORT_VERSION {
         bail!("unsupported export version: {}", export.version);
     }
@@ -1197,8 +1305,7 @@ fn import_memories(conn: &Connection, input: &Path, replace: bool) -> Result<()>
         insert_links(conn, &item.memory.id, &item.links)?;
         count += 1;
     }
-    println!("imported: {count}");
-    Ok(())
+    Ok(count)
 }
 
 struct RestoreDbRequest<'a> {
@@ -1746,16 +1853,106 @@ fn maintain_memory(conn: &Connection, llm: bool, endpoint: &str, model: &str) ->
 
 fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
     match command {
-        SyncCommand::Export { output, redact } => {
-            let mut export = export_memories(conn, &[], &[], None)?;
-            if redact {
-                redact_export(&mut export)?;
+        SyncCommand::Export {
+            output,
+            redact,
+            dry_run,
+            json,
+        } => {
+            let bundle = sync_bundle(conn, redact)?;
+            let payload = serde_json::to_vec_pretty(&bundle)?;
+            let report = SyncExportReport {
+                version: 1,
+                ok: true,
+                dry_run,
+                output: output.display().to_string(),
+                memory_count: bundle.manifest.memory_count,
+                redacted: redact,
+                export_sha256: bundle.manifest.export_sha256.clone(),
+                bytes: payload.len(),
+                wrote: !dry_run,
+                recommendations: vec![
+                    "import with dukememory sync import --dry-run before applying".to_string(),
+                    "keep agent reads local-first; use this bundle for backup/sync only"
+                        .to_string(),
+                ],
+            };
+            if !dry_run {
+                write_file(&output, &payload)?;
             }
-            write_file(&output, serde_json::to_string_pretty(&export)?.as_bytes())?;
-            println!("{}", output.display());
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else if dry_run {
+                println!("sync export dry-run: {}", output.display());
+                println!("memories: {}", report.memory_count);
+                println!("bytes: {}", report.bytes);
+            } else {
+                println!("{}", output.display());
+            }
             Ok(())
         }
-        SyncCommand::Import { input, replace } => import_memories(conn, &input, replace),
+        SyncCommand::Import {
+            input,
+            replace,
+            dry_run,
+            json,
+        } => {
+            let (export, manifest) = parse_sync_input(&input)?;
+            let memory_count = export.memories.len();
+            let export_sha256 = manifest
+                .as_ref()
+                .map(|manifest| manifest.export_sha256.clone());
+            let rollback = if dry_run {
+                None
+            } else {
+                let rollback_dir = PathBuf::from(".agent/sync-rollbacks");
+                fs::create_dir_all(&rollback_dir)?;
+                let rollback_path = rollback_dir.join(format!("sync-{}.json", now_ms()));
+                let rollback_export = export_memories(conn, &[], &[], None)?;
+                write_file(
+                    &rollback_path,
+                    serde_json::to_string_pretty(&rollback_export)?.as_bytes(),
+                )?;
+                Some(rollback_path.display().to_string())
+            };
+            let imported = if dry_run {
+                0
+            } else {
+                import_memory_export(conn, export, replace)?
+            };
+            let report = SyncImportReport {
+                version: 1,
+                ok: true,
+                dry_run,
+                input: input.display().to_string(),
+                replace,
+                memory_count,
+                export_sha256,
+                checksum_ok: manifest.as_ref().map(|_| true),
+                rollback,
+                imported,
+                recommendations: if dry_run {
+                    vec![
+                        "rerun without --dry-run only after reviewing memory_count and checksum"
+                            .to_string(),
+                    ]
+                } else {
+                    vec!["run dukememory embed-index after importing synced memory".to_string()]
+                },
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else if dry_run {
+                println!("sync import dry-run: {}", input.display());
+                println!("memories: {memory_count}");
+            } else {
+                println!("imported: {imported}");
+                if let Some(rollback) = report.rollback {
+                    println!("rollback: {rollback}");
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -2688,6 +2885,12 @@ Use `dukememory project-diff --changed-only --json` to compare current project c
 
 Use `dukememory remote-sync-dry-run --json` before using VDS/remote memory sync. Keep reads local-first unless measured latency is acceptable.
 
+Use `dukememory doctor-project --json` to verify project memory DB, AGENTS block, Codex skill, embeddings, QA, and autonomous status.
+
+Use `dukememory release-gate --json` before committing or publishing a release. In strict mode it also requires a clean worktree.
+
+Use `dukememory sync export bundle.json --dry-run --json` before writing a local-first sync bundle; use `dukememory sync import bundle.json --dry-run --json` before applying it.
+
 Use `dukememory inbox-v2 report --json` before processing pending inbox items; use `dukememory inbox-v2 auto-apply --dry-run --json` before allowing changes.
 
 Use `dukememory policy-tune --json` to adapt autonomous policy thresholds from feedback, quality, and rollback history.
@@ -2715,6 +2918,8 @@ dukememory embed-status --json
 dukememory memory-qa --json
 dukememory intelligence-dashboard --json
 dukememory cost-guard --json
+dukememory doctor-project --json
+dukememory release-gate --json
 dukememory autonomous run-once --level normal --json
 dukememory autonomous status --json
 dukememory drift --root . --json
@@ -3035,6 +3240,12 @@ fn sha256_path(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
 fn set_executable(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -3139,6 +3350,8 @@ fn print_completions(shell: CompletionShell) {
         "project-diff",
         "intelligence-dashboard",
         "remote-sync-dry-run",
+        "doctor-project",
+        "release-gate",
         "inbox-v2",
         "policy-tune",
         "memory-qa",
@@ -3245,6 +3458,8 @@ fn print_manpage() {
     println!("  project-diff --changed-only   diff project changes against memory");
     println!("  intelligence-dashboard --json aggregate memory intelligence");
     println!("  remote-sync-dry-run --json    simulate VDS sync without moving data");
+    println!("  doctor-project --json         verify project memory installation");
+    println!("  release-gate --json           aggregate local release readiness");
     println!("  onboard --root DIR            initialize memory/profile/embeddings");
     println!("  inbox-v2 report|auto-apply    group and process pending suggestions");
     println!("  policy-tune --json            tune autonomous policy from feedback");
