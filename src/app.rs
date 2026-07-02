@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 const DEFAULT_DB: &str = ".agent/memory.db";
 const DEFAULT_CONFIG: &str = ".agent/config.toml";
-const DEFAULT_EMBED_ENDPOINT: &str = "http://192.168.0.13:11434";
+const DEFAULT_EMBED_ENDPOINT: &str = "local";
 const DEFAULT_EMBED_MODEL: &str = "paraphrase-multilingual-MiniLM-L12-v2";
 const DEFAULT_EMBED_PROVIDER: &str = "local";
 const DEFAULT_INSTALL_BACKUP_KEEP: usize = 3;
@@ -42,8 +42,8 @@ mod embeddings;
 mod explain;
 mod generation;
 mod graph_rag;
-mod local_embed;
 mod http_server;
+mod local_embed;
 mod maintenance;
 mod mcp_server;
 mod memory;
