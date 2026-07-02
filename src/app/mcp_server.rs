@@ -118,6 +118,11 @@ fn mcp_tools() -> Value {
         {"name":"memory_remember","description":"Remember plain text as local memory","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"type":{"type":"string"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["text"]}},
         {"name":"memory_search","description":"Search local memory with compact query-focused summaries","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
         {"name":"memory_context_pack","description":"Return a compact relevant memory pack","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
+        {"name":"memory_rag_answer","description":"Answer a question using grounded project memory via LLM generation","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"scope":{"type":"string"},"gen_provider":{"type":"string"},"gen_endpoint":{"type":"string"},"gen_model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
+        {"name":"memory_graph_rag_answer","description":"Answer a question using 1-hop graph-expanded RAG via LLM generation","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"scope":{"type":"string"},"gen_provider":{"type":"string"},"gen_endpoint":{"type":"string"},"gen_model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
+        {"name":"memory_guided_tour","description":"Generate a pedagogical guided tour of the project memory via LLM generation","inputSchema":{"type":"object","properties":{"gen_provider":{"type":"string"},"gen_endpoint":{"type":"string"},"gen_model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":[]}},
+        {"name":"memory_explain_component","description":"Perform a Deep Dive explanation of a specific memory component using its neighbors","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"gen_provider":{"type":"string"},"gen_endpoint":{"type":"string"},"gen_model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
+        {"name":"memory_onboard_guide","description":"Generate a comprehensive Onboarding Guide from the knowledge graph","inputSchema":{"type":"object","properties":{"gen_provider":{"type":"string"},"gen_endpoint":{"type":"string"},"gen_model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":[]}},
         {"name":"memory_agent_context","description":"Return agent-native context with planner defaults","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_snapshot","description":"Return compact bounded project snapshot","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_doctrine","description":"Return compact active decision doctrine by default","inputSchema":{"type":"object","properties":{"scope":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
@@ -146,6 +151,13 @@ fn mcp_tools() -> Value {
             json!({"name":"memory_memanto_gap","description":"Report Memanto-style capability coverage for dukememory","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_timeline","description":"Show one memory card timeline with audit events and real agent reads","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}}),
             json!({"name":"memory_conflict_review","description":"Review duplicate, stale, superseded, and contradiction-prone memory groups","inputSchema":{"type":"object","properties":{"stale_days":{"type":"number"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_effectiveness_v2","description":"Measure memory usefulness with influence, waste, and semantic-read signals","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_recall_baselines","description":"Inspect or write guarded recall benchmark baselines","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_conflict_apply","description":"Dry-run or apply guarded reversible memory conflict-review actions","inputSchema":{"type":"object","properties":{"stale_days":{"type":"number"},"limit":{"type":"number"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_mcp_surface_v3","description":"Inspect the MCP V3 memory tool surface","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"}}}}),
+            json!({"name":"memory_mcp_discipline_v3","description":"Verify or record MCP V3 memory discipline","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_fleet_quality","description":"Inspect V3 quality across discovered project memories","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_release_gate_v3","description":"Gate releases with effectiveness, baselines, conflicts, MCP V3, and fleet visibility","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"strict":{"type":"boolean"},"run":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
         ]);
     }
     tools
@@ -258,6 +270,173 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             )
             .map_err(|err| err.to_string())?;
             rendered
+        }
+        "memory_rag_answer" => {
+            let started = Instant::now();
+            let query = json_string(&args, "query").ok_or_else(|| "missing query".to_string())?;
+            let limit = json_usize(&args, "limit").unwrap_or(12);
+            let scope = json_string(&args, "scope");
+
+            let gen_provider = json_string(&args, "gen_provider").unwrap_or_else(|| {
+                std::env::var("DUKEMEMORY_GEN_PROVIDER").unwrap_or_else(|_| "ollama".to_string())
+            });
+            let gen_endpoint = json_string(&args, "gen_endpoint").unwrap_or_else(|| {
+                std::env::var("DUKEMEMORY_GEN_ENDPOINT")
+                    .unwrap_or_else(|_| "http://localhost:11434".to_string())
+            });
+            let gen_model = json_string(&args, "gen_model").unwrap_or_else(|| {
+                std::env::var("DUKEMEMORY_GEN_MODEL").unwrap_or_else(|_| "llama3".to_string())
+            });
+
+            let report = memory_rag_report(
+                &conn,
+                &query,
+                scope.as_deref(),
+                limit,
+                &gen_provider,
+                &gen_endpoint,
+                &gen_model,
+            )
+            .map_err(|err| err.to_string())?;
+
+            log_read_event(
+                &conn,
+                ReadEventInput {
+                    command: "memory_rag_answer",
+                    query: &query,
+                    ids: &report.citations,
+                    semantic_used: true,
+                    result_count: report.citations.len(),
+                    budget: 1600,
+                    elapsed_ms: started.elapsed().as_millis(),
+                },
+            )
+            .map_err(|err| err.to_string())?;
+
+            serde_json::to_string(&report).map_err(|err| err.to_string())?
+        }
+        "memory_graph_rag_answer" => {
+            let started = Instant::now();
+            let query = json_string(&args, "query").ok_or_else(|| "missing query".to_string())?;
+            let limit = json_usize(&args, "limit").unwrap_or(12);
+            let scope = json_string(&args, "scope");
+
+            let gen_provider = json_string(&args, "gen_provider").unwrap_or_else(|| {
+                std::env::var("DUKEMEMORY_GEN_PROVIDER").unwrap_or_else(|_| "ollama".to_string())
+            });
+            let gen_endpoint = json_string(&args, "gen_endpoint").unwrap_or_else(|| {
+                std::env::var("DUKEMEMORY_GEN_ENDPOINT")
+                    .unwrap_or_else(|_| "http://localhost:11434".to_string())
+            });
+            let gen_model = json_string(&args, "gen_model").unwrap_or_else(|| {
+                std::env::var("DUKEMEMORY_GEN_MODEL").unwrap_or_else(|_| "llama3".to_string())
+            });
+
+            let config = crate::runtime_config::GenerationConfig {
+                provider: gen_provider,
+                endpoint: gen_endpoint,
+                model: gen_model,
+            };
+
+            let report = crate::app::graph_rag::compute_graph_rag(
+                &conn,
+                &query,
+                scope.as_deref(),
+                limit,
+                &config,
+            )
+            .map_err(|err| err.to_string())?;
+
+            log_read_event(
+                &conn,
+                ReadEventInput {
+                    command: "memory_graph_rag_answer",
+                    query: &query,
+                    ids: &report.citations,
+                    semantic_used: true,
+                    result_count: report.citations.len(),
+                    budget: 1600,
+                    elapsed_ms: started.elapsed().as_millis(),
+                },
+            )
+            .map_err(|err| err.to_string())?;
+
+            serde_json::to_string(&report).map_err(|err| err.to_string())?
+        }
+        "memory_guided_tour" => {
+            let gen_provider = json_string(&args, "gen_provider").unwrap_or_else(|| {
+                std::env::var("DUKEMEMORY_GEN_PROVIDER").unwrap_or_else(|_| "ollama".to_string())
+            });
+            let gen_endpoint = json_string(&args, "gen_endpoint").unwrap_or_else(|| {
+                std::env::var("DUKEMEMORY_GEN_ENDPOINT")
+                    .unwrap_or_else(|_| "http://localhost:11434".to_string())
+            });
+            let gen_model = json_string(&args, "gen_model").unwrap_or_else(|| {
+                std::env::var("DUKEMEMORY_GEN_MODEL").unwrap_or_else(|_| "llama3".to_string())
+            });
+
+            let topology_result =
+                crate::app::topology::compute_topology(&conn).map_err(|err| err.to_string())?;
+            let config = crate::runtime_config::GenerationConfig {
+                provider: gen_provider,
+                endpoint: gen_endpoint,
+                model: gen_model,
+            };
+            let narrative =
+                crate::app::generation::generate_tour_narrative(&config, &topology_result)
+                    .map_err(|err| err.to_string())?;
+
+            serde_json::to_string(&serde_json::json!({ "tour": narrative }))
+                .map_err(|err| err.to_string())?
+        }
+        "memory_explain_component" => {
+            let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            let gen_provider = json_string(&args, "gen_provider").unwrap_or_else(|| {
+                std::env::var("DUKEMEMORY_GEN_PROVIDER").unwrap_or_else(|_| "ollama".to_string())
+            });
+            let gen_endpoint = json_string(&args, "gen_endpoint").unwrap_or_else(|| {
+                std::env::var("DUKEMEMORY_GEN_ENDPOINT")
+                    .unwrap_or_else(|_| "http://localhost:11434".to_string())
+            });
+            let gen_model = json_string(&args, "gen_model").unwrap_or_else(|| {
+                std::env::var("DUKEMEMORY_GEN_MODEL").unwrap_or_else(|_| "llama3".to_string())
+            });
+
+            let config = crate::runtime_config::GenerationConfig {
+                provider: gen_provider,
+                endpoint: gen_endpoint,
+                model: gen_model,
+            };
+
+            let explanation = crate::app::explain::explain_component(&conn, &id, &config)
+                .map_err(|err| err.to_string())?;
+
+            serde_json::to_string(&serde_json::json!({ "explanation": explanation }))
+                .map_err(|err| err.to_string())?
+        }
+        "memory_onboard_guide" => {
+            let gen_provider = json_string(&args, "gen_provider").unwrap_or_else(|| {
+                std::env::var("DUKEMEMORY_GEN_PROVIDER").unwrap_or_else(|_| "ollama".to_string())
+            });
+            let gen_endpoint = json_string(&args, "gen_endpoint").unwrap_or_else(|| {
+                std::env::var("DUKEMEMORY_GEN_ENDPOINT")
+                    .unwrap_or_else(|_| "http://localhost:11434".to_string())
+            });
+            let gen_model = json_string(&args, "gen_model").unwrap_or_else(|| {
+                std::env::var("DUKEMEMORY_GEN_MODEL").unwrap_or_else(|_| "llama3".to_string())
+            });
+
+            let config = crate::runtime_config::GenerationConfig {
+                provider: gen_provider,
+                endpoint: gen_endpoint,
+                model: gen_model,
+            };
+
+            let guide = crate::app::onboard::generate_onboarding_guide(&conn, &config)
+                .map_err(|err| err.to_string())?;
+
+            serde_json::to_string(&serde_json::json!({ "onboard": guide }))
+                .map_err(|err| err.to_string())?
         }
         "memory_context_pack" => {
             let started = Instant::now();
@@ -797,6 +976,103 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 .map_err(|err| err.to_string())?;
             budgeted_mcp_json_response(&report, max_chars, &["groups"])
                 .map_err(|err| err.to_string())?
+        }
+        "memory_effectiveness_v2" => {
+            let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1600);
+            let report = memory_effectiveness_v2_report(&conn, &selected_root, since_days)
+                .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(
+                &report,
+                max_chars,
+                &["base", "top_useful_cards", "weak_reads", "recommendations"],
+            )
+            .map_err(|err| err.to_string())?
+        }
+        "memory_recall_baselines" => {
+            let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
+            let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1600);
+            let report =
+                recall_benchmark_baselines_report(&conn, &selected_root, since_days, apply)
+                    .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&report, max_chars, &["benchmark", "recommendations"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_conflict_apply" => {
+            let stale_days = json_i64(&args, "stale_days").unwrap_or(30);
+            let limit = json_usize(&args, "limit").unwrap_or(20);
+            let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1600);
+            let report = memory_conflict_apply_report(&conn, stale_days, limit, apply)
+                .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(
+                &report,
+                max_chars,
+                &[
+                    "review",
+                    "safe_actions",
+                    "applied_actions",
+                    "recommendations",
+                ],
+            )
+            .map_err(|err| err.to_string())?
+        }
+        "memory_mcp_surface_v3" => {
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let report = mcp_tool_surface_v3_report();
+            budgeted_mcp_json_response(&report, max_chars, &["expected_tools", "exposed_tools"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_mcp_discipline_v3" => {
+            let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
+            let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1600);
+            let report =
+                mcp_discipline_v3_report(&conn, &selected_db, &selected_root, since_days, apply)
+                    .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(
+                &report,
+                max_chars,
+                &["discipline_v2", "surface", "recommendations"],
+            )
+            .map_err(|err| err.to_string())?
+        }
+        "memory_fleet_quality" => {
+            let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(2200);
+            let report =
+                fleet_quality_report(&selected_db, since_days).map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&report, max_chars, &["projects", "recommendations"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_release_gate_v3" => {
+            let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
+            let strict = args.get("strict").and_then(Value::as_bool).unwrap_or(false);
+            let run = args.get("run").and_then(Value::as_bool).unwrap_or(false);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(2200);
+            let report = release_gate_v3_report(
+                &conn,
+                &selected_db,
+                &selected_root,
+                since_days,
+                strict,
+                run,
+            )
+            .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(
+                &report,
+                max_chars,
+                &[
+                    "release_gate_v2",
+                    "effectiveness_v2",
+                    "baselines",
+                    "conflict_apply",
+                    "fleet_quality",
+                    "recommendations",
+                ],
+            )
+            .map_err(|err| err.to_string())?
         }
         "memory_control_center_v2" => {
             let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;

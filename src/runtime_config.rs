@@ -10,11 +10,19 @@ pub struct AgentConfig {
     pub default_context_max_chars: usize,
     pub default_statuses: Vec<String>,
     pub embeddings: EmbeddingConfig,
+    pub generation: GenerationConfig,
     pub codegraph: CodeGraphConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingConfig {
+    pub provider: String,
+    pub endpoint: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationConfig {
     pub provider: String,
     pub endpoint: String,
     pub model: String,
@@ -39,6 +47,11 @@ impl AgentConfig {
             default_context_max_chars: 4000,
             default_statuses: vec!["active".to_string(), "uncertain".to_string()],
             embeddings: EmbeddingConfig {
+                provider: provider.to_string(),
+                endpoint: endpoint.to_string(),
+                model: model.to_string(),
+            },
+            generation: GenerationConfig {
                 provider: provider.to_string(),
                 endpoint: endpoint.to_string(),
                 model: model.to_string(),
@@ -72,7 +85,7 @@ pub fn load_runtime_config(
     let mut config = if path.exists() {
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        toml::from_str::<AgentConfig>(&raw)
+        parse_agent_config_with_compat_defaults(&raw, provider, endpoint, model)
             .with_context(|| format!("failed to parse {}", path.display()))?
     } else {
         AgentConfig::production_defaults(db_path, provider, endpoint, model)
@@ -86,8 +99,59 @@ pub fn load_runtime_config(
     if let Ok(value) = std::env::var("DUKEMEMORY_EMBED_MODEL") {
         config.embeddings.model = value;
     }
+    if let Ok(value) = std::env::var("DUKEMEMORY_GEN_PROVIDER") {
+        config.generation.provider = value;
+    }
+    if let Ok(value) = std::env::var("DUKEMEMORY_GEN_ENDPOINT") {
+        config.generation.endpoint = value;
+    }
+    if let Ok(value) = std::env::var("DUKEMEMORY_GEN_MODEL") {
+        config.generation.model = value;
+    }
     Ok(RuntimeConfig {
         config_path: path,
         config,
     })
+}
+
+pub(crate) fn parse_agent_config_with_compat_defaults(
+    raw: &str,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> Result<AgentConfig> {
+    let mut value = toml::from_str::<toml::Value>(raw)?;
+    if let Some(table) = value.as_table_mut() {
+        if !table.contains_key("generation") {
+            let generation = table
+                .get("embeddings")
+                .cloned()
+                .unwrap_or_else(|| default_provider_table(provider, endpoint, model));
+            table.insert("generation".to_string(), generation);
+        }
+        if !table.contains_key("codegraph") {
+            let mut codegraph = toml::map::Map::new();
+            codegraph.insert("enabled".to_string(), toml::Value::Boolean(true));
+            codegraph.insert(
+                "command".to_string(),
+                toml::Value::String("codegraph".to_string()),
+            );
+            table.insert("codegraph".to_string(), toml::Value::Table(codegraph));
+        }
+    }
+    value.try_into().map_err(Into::into)
+}
+
+fn default_provider_table(provider: &str, endpoint: &str, model: &str) -> toml::Value {
+    let mut table = toml::map::Map::new();
+    table.insert(
+        "provider".to_string(),
+        toml::Value::String(provider.to_string()),
+    );
+    table.insert(
+        "endpoint".to_string(),
+        toml::Value::String(endpoint.to_string()),
+    );
+    table.insert("model".to_string(), toml::Value::String(model.to_string()));
+    toml::Value::Table(table)
 }

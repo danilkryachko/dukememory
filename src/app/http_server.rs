@@ -1796,6 +1796,195 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 since_days,
             )?}))
         }
+        ("GET", "/memory-effectiveness-v2") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"effectiveness_v2": memory_effectiveness_v2_report(
+                &conn,
+                &ctx.root,
+                since_days,
+            )?}))
+        }
+        ("GET", "/recall-benchmark-baselines") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(
+                json!({"recall_baselines": recall_benchmark_baselines_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                false,
+            )?}),
+            )
+        }
+        ("POST", "/recall-benchmark-baselines/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(
+                json!({"recall_baselines": recall_benchmark_baselines_report(
+                &conn,
+                &ctx.root,
+                since_days,
+                true,
+            )?}),
+            )
+        }
+        ("GET", "/memory-conflict-apply") => {
+            let conn = open_selected_db(db, query, None)?;
+            let params = parse_query(query);
+            let stale_days = params
+                .get("stale_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(30);
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(20);
+            HttpResponse::ok(json!({"conflict_apply": memory_conflict_apply_report(
+                &conn,
+                stale_days,
+                limit,
+                false,
+            )?}))
+        }
+        ("POST", "/memory-conflict-apply/apply") | ("POST", "/memory-conflict-apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let stale_days = value
+                .get("stale_days")
+                .and_then(Value::as_i64)
+                .unwrap_or(30);
+            let limit = value
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map(|value| value as usize)
+                .unwrap_or(20);
+            let apply = value.get("apply").and_then(Value::as_bool).unwrap_or(true);
+            HttpResponse::ok(json!({"conflict_apply": memory_conflict_apply_report(
+                &conn,
+                stale_days,
+                limit,
+                apply,
+            )?}))
+        }
+        ("GET", "/mcp-tool-surface-v3") => {
+            HttpResponse::ok(json!({"surface": mcp_tool_surface_v3_report()}))
+        }
+        ("GET", "/mcp-discipline-v3") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"discipline_v3": mcp_discipline_v3_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                false,
+            )?}))
+        }
+        ("POST", "/mcp-discipline-v3/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            HttpResponse::ok(json!({"discipline_v3": mcp_discipline_v3_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                true,
+            )?}))
+        }
+        ("GET", "/fleet-quality") => {
+            let params = parse_query(query);
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"fleet_quality": fleet_quality_report(db, since_days)?}))
+        }
+        ("GET", "/release-gate-v3") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            let strict = params
+                .get("strict")
+                .is_some_and(|value| value == "true" || value == "1");
+            HttpResponse::ok(json!({"release_gate_v3": release_gate_v3_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                strict,
+                false,
+            )?}))
+        }
+        ("POST", "/release-gate-v3/run") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
+            let strict = value
+                .get("strict")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            HttpResponse::ok(json!({"release_gate_v3": release_gate_v3_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                since_days,
+                strict,
+                true,
+            )?}))
+        }
+        ("GET", "/web-control-center-v12") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let target = params.get("target").map(PathBuf::from);
+            let task = params
+                .get("task")
+                .map(String::as_str)
+                .unwrap_or("project memory");
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            HttpResponse::ok(json!({"control_v12": web_control_center_v12_report(
+                &conn,
+                &ctx.db,
+                &ctx.root,
+                target.as_deref(),
+                task,
+                since_days,
+            )?}))
+        }
         ("GET", "/mcp-discipline-v2") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);

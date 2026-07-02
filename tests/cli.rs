@@ -1250,6 +1250,12 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
             serde_json::json!({"jsonrpc":"2.0","id":29,"method":"tools/call","params":{"name":"memory_project_health","arguments":{"since_days":7,"max_chars":4000}}})
         )
         .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":35,"method":"tools/call","params":{"name":"memory_mcp_surface_v3","arguments":{"max_chars":4000}}})
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
 
@@ -1275,6 +1281,8 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
     assert!(stdout.contains("memory_memanto_gap"));
     assert!(stdout.contains("memory_timeline"));
     assert!(stdout.contains("memory_conflict_review"));
+    assert!(stdout.contains("memory_release_gate_v3"));
+    assert!(stdout.contains("memory_mcp_surface_v3"));
     assert!(stdout.find("memory_brief") < stdout.find("memory_context_pack"));
     assert!(stdout.contains("MCP decision"));
     assert!(stdout.contains("needle mcp exact detail"));
@@ -1357,6 +1365,12 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         .find(|line| line.contains("\"id\":34"))
         .unwrap();
     assert!(mcp_upload.contains("memory_upload"));
+    let mcp_release_gate_v3 = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":35"))
+        .unwrap();
+    assert!(mcp_release_gate_v3.contains("memory_release_gate_v3"));
+    assert!(mcp_release_gate_v3.contains("required_startup_tools"));
     let review = stdout
         .lines()
         .find(|line| line.contains("\"id\":7"))
@@ -2680,6 +2694,32 @@ fn v10_runtime_config_and_http_error_statuses() {
     );
     raw = raw.replace("model = \"bge-m3:latest\"", "model = \"mock-small\"");
     fs::write(&config, raw).unwrap();
+
+    let legacy_config = dir.path().join("legacy-config.toml");
+    let mut legacy_lines = Vec::new();
+    let mut skipping_generation = false;
+    for line in fs::read_to_string(&config).unwrap().lines() {
+        if line.trim() == "[generation]" {
+            skipping_generation = true;
+            continue;
+        }
+        if skipping_generation && line.starts_with('[') {
+            skipping_generation = false;
+        }
+        if !skipping_generation {
+            legacy_lines.push(line.to_string());
+        }
+    }
+    fs::write(&legacy_config, legacy_lines.join("\n")).unwrap();
+    cmd(&db)
+        .arg("--config")
+        .arg(&legacy_config)
+        .arg("build-info")
+        .assert()
+        .success()
+        .stdout(contains("generation_provider: mock"))
+        .stdout(contains("generation_endpoint: local"))
+        .stdout(contains("generation_model: mock-small"));
 
     cmd(&db)
         .arg("--config")
@@ -8753,6 +8793,9 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-diff-apply",
         "recall-benchmark-suite",
         "release-gate-v2",
+        "memory-effectiveness-v2",
+        "recall-benchmark-baselines",
+        "memory-conflict-apply",
         "remote-sync-wizard",
         "memory-governance-policy",
         "autonomous-loop-v2",
@@ -8761,6 +8804,7 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "fleet-dashboard-v2",
         "remote-sync-apply-flow",
         "mcp-tool-surface-v2",
+        "mcp-tool-surface-v3",
         "autopilot-v3",
         "self-learning-retrieval",
         "project-role-profile",
@@ -8771,8 +8815,10 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "remote-sync-control",
         "web-control-center-v4",
         "mcp-discipline-v2",
+        "mcp-discipline-v3",
         "feedback-loop-v2",
         "upgrade-all-projects-v2",
+        "fleet-quality",
         "vds-sync-pack",
         "web-control-center-v5",
         "quality-autopilot-v31",
@@ -8804,6 +8850,7 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "web-control-center-v10",
         "fleet-supervisor-watch-install",
         "web-control-center-v11",
+        "web-control-center-v12",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -8859,6 +8906,9 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-diff-apply",
         "recall-benchmark-suite",
         "release-gate-v2",
+        "memory-effectiveness-v2",
+        "recall-benchmark-baselines",
+        "memory-conflict-apply",
         "remote-sync-wizard",
         "memory-governance-policy",
         "autonomous-loop-v2",
@@ -8867,6 +8917,7 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "fleet-dashboard-v2",
         "remote-sync-apply-flow",
         "mcp-tool-surface-v2",
+        "mcp-tool-surface-v3",
         "autopilot-v3",
         "self-learning-retrieval",
         "project-role-profile",
@@ -8877,8 +8928,10 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "remote-sync-control",
         "web-control-center-v4",
         "mcp-discipline-v2",
+        "mcp-discipline-v3",
         "feedback-loop-v2",
         "upgrade-all-projects-v2",
+        "fleet-quality",
         "vds-sync-pack",
         "web-control-center-v5",
         "quality-autopilot-v31",
@@ -8910,6 +8963,7 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "web-control-center-v10",
         "fleet-supervisor-watch-install",
         "web-control-center-v11",
+        "web-control-center-v12",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -9831,6 +9885,9 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/memory-diff-apply"));
     assert!(html.contains("/recall-benchmark-suite"));
     assert!(html.contains("/release-gate-v2"));
+    assert!(html.contains("/memory-effectiveness-v2"));
+    assert!(html.contains("/recall-benchmark-baselines"));
+    assert!(html.contains("/memory-conflict-apply"));
     assert!(html.contains("/remote-sync-wizard"));
     assert!(html.contains("/memory-governance-policy"));
     assert!(html.contains("/autonomous-loop-v2"));
@@ -9839,6 +9896,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/fleet-dashboard-v2"));
     assert!(html.contains("/remote-sync-apply-flow"));
     assert!(html.contains("/mcp-tool-surface-v2"));
+    assert!(html.contains("/mcp-tool-surface-v3"));
     assert!(html.contains("/autopilot-v3"));
     assert!(html.contains("/self-learning-retrieval"));
     assert!(html.contains("/project-role-profile"));
@@ -9849,8 +9907,10 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/remote-sync-control"));
     assert!(html.contains("/web-control-center-v4"));
     assert!(html.contains("/mcp-discipline-v2"));
+    assert!(html.contains("/mcp-discipline-v3"));
     assert!(html.contains("/feedback-loop-v2"));
     assert!(html.contains("/upgrade-all-projects-v2"));
+    assert!(html.contains("/fleet-quality"));
     assert!(html.contains("/vds-sync-pack"));
     assert!(html.contains("/web-control-center-v5"));
     assert!(html.contains("/quality-autopilot-v31"));
@@ -9882,6 +9942,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/web-control-center-v10"));
     assert!(html.contains("/fleet-supervisor-watch-install"));
     assert!(html.contains("/web-control-center-v11"));
+    assert!(html.contains("/release-gate-v3"));
+    assert!(html.contains("/web-control-center-v12"));
     assert!(html.contains("/project-diff"));
     assert!(html.contains("/intelligence-dashboard"));
     assert!(html.contains("/remote-sync-dry-run"));
@@ -10455,6 +10517,30 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(release_gate_v2.contains("\"memory_health_score\""));
     assert!(release_gate_v2.contains("\"recall_benchmark\""));
 
+    let effectiveness_v2 = http_once(
+        &db,
+        "GET /memory-effectiveness-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(effectiveness_v2.contains("\"effectiveness_v2\""));
+    assert!(effectiveness_v2.contains("\"wasted_read_rate\""));
+    assert!(effectiveness_v2.contains("\"top_useful_cards\""));
+
+    let recall_baselines = http_once(
+        &db,
+        "GET /recall-benchmark-baselines?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(recall_baselines.contains("\"recall_baselines\""));
+    assert!(recall_baselines.contains("\"baseline_present\""));
+    assert!(recall_baselines.contains("\"current_score\""));
+
+    let conflict_apply = http_once(
+        &db,
+        "GET /memory-conflict-apply?limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(conflict_apply.contains("\"conflict_apply\""));
+    assert!(conflict_apply.contains("\"safe_actions\""));
+    assert!(conflict_apply.contains("\"rollback_hint\""));
+
     let remote_sync_wizard = http_once(
         &db,
         "GET /remote-sync-wizard?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
@@ -10518,6 +10604,14 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(mcp_surface_v2.contains("\"mcp\""));
     assert!(mcp_surface_v2.contains("\"expected_tools\""));
     assert!(mcp_surface_v2.contains("\"missing_tools\""));
+
+    let mcp_surface_v3 = http_once(
+        &db,
+        "GET /mcp-tool-surface-v3 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(mcp_surface_v3.contains("\"surface\""));
+    assert!(mcp_surface_v3.contains("\"memory_release_gate_v3\""));
+    assert!(mcp_surface_v3.contains("\"required_startup_tools\""));
 
     let autopilot_v3 = http_once(
         &db,
@@ -10599,6 +10693,14 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(mcp_discipline_v2.contains("\"startup_flow\""));
     assert!(mcp_discipline_v2.contains("\"after_task_flow\""));
 
+    let mcp_discipline_v3 = http_once(
+        &db,
+        "GET /mcp-discipline-v3?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(mcp_discipline_v3.contains("\"discipline_v3\""));
+    assert!(mcp_discipline_v3.contains("\"before_edit_flow\""));
+    assert!(mcp_discipline_v3.contains("\"memory_effectiveness_v2\""));
+
     let feedback_loop_v2 = http_once(
         &db,
         "GET /feedback-loop-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
@@ -10614,6 +10716,14 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(upgrade_all_v2.contains("\"upgrade_all_v2\""));
     assert!(upgrade_all_v2.contains("\"project_summaries\""));
     assert!(upgrade_all_v2.contains("\"dry_run\":true"));
+
+    let fleet_quality = http_once(
+        &db,
+        "GET /fleet-quality?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(fleet_quality.contains("\"fleet_quality\""));
+    assert!(fleet_quality.contains("\"average_effectiveness_score\""));
+    assert!(fleet_quality.contains("\"ready_projects\""));
 
     let vds_sync_pack = http_once(
         &db,
@@ -10881,6 +10991,22 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(fleet_watch_install.contains("\"install\""));
     assert!(fleet_watch_install.contains("\"fleet-supervisor\""));
+
+    let release_gate_v3 = http_once(
+        &db,
+        "GET /release-gate-v3?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(release_gate_v3.contains("\"release_gate_v3\""));
+    assert!(release_gate_v3.contains("\"memory_effectiveness_v2\""));
+    assert!(release_gate_v3.contains("\"mcp_discipline_v3\""));
+
+    let web_control_v12 = http_once(
+        &db,
+        "GET /web-control-center-v12?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(web_control_v12.contains("\"control_v12\""));
+    assert!(web_control_v12.contains("\"effectiveness_v2\""));
+    assert!(web_control_v12.contains("\"release_gate_v3\""));
 
     let web_control_v11 = http_once(
         &db,
@@ -13204,6 +13330,114 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let web_control_v11_json: Value = serde_json::from_str(&web_control_v11).unwrap();
     assert_eq!(web_control_v11_json["version"], 1);
     assert!(web_control_v11_json["fleet_watch"].is_object());
+
+    let effectiveness_v2 = stdout(
+        cmd(&db)
+            .arg("memory-effectiveness-v2")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let effectiveness_v2_json: Value = serde_json::from_str(&effectiveness_v2).unwrap();
+    assert_eq!(effectiveness_v2_json["version"], 2);
+    assert!(effectiveness_v2_json["wasted_read_rate"].as_f64().is_some());
+
+    let recall_baselines = stdout(
+        cmd(&db)
+            .arg("recall-benchmark-baselines")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let recall_baselines_json: Value = serde_json::from_str(&recall_baselines).unwrap();
+    assert_eq!(recall_baselines_json["version"], 1);
+    assert!(recall_baselines_json["current_score"].as_f64().is_some());
+
+    let conflict_apply = stdout(
+        cmd(&db)
+            .arg("memory-conflict-apply")
+            .arg("--stale-days")
+            .arg("30")
+            .arg("--limit")
+            .arg("10")
+            .arg("--json"),
+    );
+    let conflict_apply_json: Value = serde_json::from_str(&conflict_apply).unwrap();
+    assert_eq!(conflict_apply_json["version"], 1);
+    assert!(conflict_apply_json["safe_actions"].as_array().is_some());
+
+    let mcp_surface_v3 = stdout(cmd(&db).arg("mcp-tool-surface-v3").arg("--json"));
+    let mcp_surface_v3_json: Value = serde_json::from_str(&mcp_surface_v3).unwrap();
+    assert_eq!(mcp_surface_v3_json["version"], 1);
+    assert!(
+        mcp_surface_v3_json["expected_tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("memory_release_gate_v3"))
+    );
+
+    let mcp_discipline_v3 = stdout(
+        cmd(&db)
+            .arg("mcp-discipline-v3")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let mcp_discipline_v3_json: Value = serde_json::from_str(&mcp_discipline_v3).unwrap();
+    assert_eq!(mcp_discipline_v3_json["version"], 1);
+    assert!(
+        mcp_discipline_v3_json["before_edit_flow"]
+            .as_array()
+            .is_some()
+    );
+
+    let fleet_quality = stdout(
+        cmd(&db)
+            .arg("fleet-quality")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let fleet_quality_json: Value = serde_json::from_str(&fleet_quality).unwrap();
+    assert_eq!(fleet_quality_json["version"], 1);
+    assert!(fleet_quality_json["projects"].as_array().is_some());
+
+    let release_gate_v3 = stdout(
+        cmd(&db)
+            .arg("release-gate-v3")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let release_gate_v3_json: Value = serde_json::from_str(&release_gate_v3).unwrap();
+    assert_eq!(release_gate_v3_json["version"], 1);
+    assert!(release_gate_v3_json["mcp_discipline_v3"].is_object());
+
+    let web_control_v12 = stdout(
+        cmd(&db)
+            .arg("web-control-center-v12")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(dir.path().join("remote-sync-target"))
+            .arg("--task")
+            .arg("project memory")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let web_control_v12_json: Value = serde_json::from_str(&web_control_v12).unwrap();
+    assert_eq!(web_control_v12_json["version"], 1);
+    assert!(web_control_v12_json["panels"].as_array().is_some());
 
     let project_template = stdout(
         cmd(&db)

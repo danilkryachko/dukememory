@@ -37,7 +37,7 @@ Transcript-based memory quickly turns into noise.
 - **Autonomous maintenance** for freshness, backups, repair hints, gap review, and safe cleanup.
 - **Grounded answers** from memory with cited card ids and explicit gaps.
 - **One-command Codex wiring** so future chats know memory is installed.
-- **Lightweight control surfaces** for health scoring, explainable recall, intent maps, retrieval probes, safe supersede, diff apply, governance policy, context routing, sync dry-runs, and release gates.
+- **Lightweight control surfaces** for health scoring, explainable recall, effectiveness, baselines, safe conflict cleanup, governance, sync dry-runs, and release gates.
 
 ## What It Remembers
 
@@ -105,11 +105,14 @@ dukememory fleet-supervisor --json
 dukememory fleet-supervisor-watch-install --dry-run --json
 dukememory benchmark-polish --json
 dukememory recall-benchmark-suite --json
+dukememory memory-effectiveness-v2 --json
+dukememory recall-benchmark-baselines --json
 dukememory import-review docs/project-notes.md --json
 dukememory memory-upload docs/project-notes.md --json
 dukememory memanto-gap-report --json
 dukememory memory-timeline <memory-id> --json
 dukememory memory-conflict-review --json
+dukememory memory-conflict-apply --json
 dukememory memory-diff-review --json
 ```
 
@@ -222,6 +225,9 @@ dukememory auto-supersede-v2 --json
 dukememory memory-diff-apply --json
 dukememory recall-benchmark-suite --json
 dukememory release-gate-v2 --json
+dukememory memory-effectiveness-v2 --json
+dukememory recall-benchmark-baselines --json
+dukememory memory-conflict-apply --json
 dukememory memory-governance-policy --json
 dukememory autonomous-loop-v2 --json
 dukememory governance-enforce --json
@@ -229,6 +235,7 @@ dukememory memory-quality-ci --json
 dukememory fleet-dashboard-v2 --json
 dukememory remote-sync-apply-flow --target /mnt/vds/dukememory --json
 dukememory mcp-tool-surface-v2 --json
+dukememory mcp-tool-surface-v3 --json
 dukememory autopilot-v3 --json
 dukememory self-learning-retrieval --json
 dukememory project-role-profile --json
@@ -239,8 +246,10 @@ dukememory mcp-quality-tools --json
 dukememory remote-sync-control --target /mnt/vds/dukememory --json
 dukememory web-control-center-v4 --json
 dukememory mcp-discipline-v2 --json
+dukememory mcp-discipline-v3 --json
 dukememory feedback-loop-v2 --json
 dukememory upgrade-all-projects-v2 --dry-run --json
+dukememory fleet-quality --json
 dukememory vds-sync-pack --target /mnt/vds/dukememory --json
 dukememory web-control-center-v5 --json
 dukememory quality-autopilot-v31 --json
@@ -272,6 +281,8 @@ dukememory fleet-supervisor --json
 dukememory web-control-center-v10 --json
 dukememory fleet-supervisor-watch-install --dry-run --json
 dukememory web-control-center-v11 --json
+dukememory release-gate-v3 --json
+dukememory web-control-center-v12 --json
 dukememory auto-ranking-tune --apply --json
 dukememory ranking-profile --profile balanced --apply --json
 dukememory project-template --kind rust-cli --apply --json

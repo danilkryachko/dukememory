@@ -672,6 +672,9 @@ For every new chat or coding task in this repository:
 - To write high-confidence changed-file memory candidates, run `dukememory memory-diff-apply --json`; use `--apply` only after reviewing write-ready cards.
 - To detect retrieval regressions, run `dukememory recall-benchmark-suite --json`; use `--write-baseline` after reviewing stable probes.
 - To gate releases with health, recall benchmark, audit v2, and control-center checks, run `dukememory release-gate-v2 --json`.
+- To measure memory usefulness with influence, wasted reads, and semantic-read signals, run `dukememory memory-effectiveness-v2 --json`.
+- To inspect or write guarded recall benchmark baselines, run `dukememory recall-benchmark-baselines --json`; use `--apply` only after reviewing stable probes.
+- To apply only guarded reversible conflict-review actions, run `dukememory memory-conflict-apply --json`; use `--apply` after reviewing the dry-run.
 - To configure local-first VDS/remote sync safely, run `dukememory remote-sync-wizard --json`; use `--target` and `DUKEMEMORY_SYNC_PASSPHRASE` before `--apply`.
 - To inspect or write autonomous memory governance policy, run `dukememory memory-governance-policy --json`; use `--apply` to write `.agent/memory-governance.json`.
 - To run the V2 autonomous memory loop with governance and quality gates, run `dukememory autonomous-loop-v2 --json`; use `--apply` only when governance is ready.
@@ -680,6 +683,7 @@ For every new chat or coding task in this repository:
 - To inspect all discovered project memories with V2 quality metrics, run `dukememory fleet-dashboard-v2 --json`.
 - To plan guarded remote sync apply, run `dukememory remote-sync-apply-flow --json`; use `--target` and `DUKEMEMORY_SYNC_PASSPHRASE` before `--apply`.
 - To inspect MCP V2 memory tool exposure, run `dukememory mcp-tool-surface-v2 --json`.
+- To inspect MCP V3 memory tool exposure, run `dukememory mcp-tool-surface-v3 --json`.
 - To run the V3 autonomous memory autopilot, run `dukememory autopilot-v3 --json`; use `--apply` for guarded reversible actions.
 - To tune retrieval from live usefulness, run `dukememory self-learning-retrieval --json`; use `--apply` to write the selected ranking profile.
 - To detect/apply project-specific memory defaults, run `dukememory project-role-profile --json`; use `--apply` after reviewing inferred kind.
@@ -690,8 +694,10 @@ For every new chat or coding task in this repository:
 - To inspect local-first VDS/remote sync readiness and real push/pull dry-runs, run `dukememory remote-sync-control --json`; pass `--target PATH` for target status.
 - To inspect the actionable web control model, run `dukememory web-control-center-v4 --json`.
 - To enforce startup/write/after-task memory discipline, run `dukememory mcp-discipline-v2 --json`; use `--apply` to repair wiring.
+- To enforce V3 startup/before-edit/after-task memory discipline, run `dukememory mcp-discipline-v3 --json`; use `--apply` only to record a clean verified pass.
 - To inspect autonomous usefulness feedback, safe supersede, diff apply, and recall benchmark quality, run `dukememory feedback-loop-v2 --json`.
 - To inspect all installed project memories with richer version/action summaries, run `dukememory upgrade-all-projects-v2 --json`.
+- To inspect V3 quality across discovered project memories, run `dukememory fleet-quality --json`.
 - To inspect a local-first VDS sync pack with dry-run/apply/verify commands, run `dukememory vds-sync-pack --json`; pass `--target PATH` before `--apply`.
 - To inspect the 0.24 web control model, run `dukememory web-control-center-v5 --json`.
 - To inspect safe feedback, quality, cost, health, diff apply, supersede, and benchmark gates, run `dukememory quality-autopilot-v31 --json`.
@@ -723,6 +729,7 @@ For every new chat or coding task in this repository:
 - To inspect the 0.29 web control model, run `dukememory web-control-center-v10 --json`.
 - To preview periodic fleet maintenance, run `dukememory fleet-supervisor-watch-install --dry-run --json`; omit `--dry-run` to write the launchd plist.
 - To inspect the 0.30 web control model, run `dukememory web-control-center-v11 --json`.
+- To inspect the 0.33 web control model, run `dukememory web-control-center-v12 --json`.
 - To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`; use `--recent`, `--as-of YYYY-MM-DD`, `--as-of-days-ago N`, `--changed-since YYYY-MM-DD`, or `--changed-since-days N` for temporal recall.
 - To inspect one memory card's facts, audit events, and real agent read influence, run `dukememory memory-timeline <memory-id> --json`.
 - To review duplicate, stale, active-superseded, and contradiction-prone memory groups without mutating memory, run `dukememory memory-conflict-review --json`.

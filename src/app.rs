@@ -1,6 +1,8 @@
 use crate::build_info::BuildInfo;
 use crate::http_api::HttpResponse;
-use crate::runtime_config::{AgentConfig, load_runtime_config};
+use crate::runtime_config::{
+    AgentConfig, load_runtime_config, parse_agent_config_with_compat_defaults,
+};
 use crate::services;
 use crate::services::{MaintenanceService, MemoryService, RetrievalService};
 use crate::storage::MemoryStore;
@@ -37,17 +39,22 @@ mod cli;
 mod db;
 mod diagnostics;
 mod embeddings;
+mod explain;
+mod generation;
+mod graph_rag;
 mod http_server;
 mod maintenance;
 mod mcp_server;
 mod memory;
 mod model;
 mod observability;
+mod onboard;
 mod ops;
 mod project;
 mod release_ops;
 mod retrieval;
 mod shared;
+mod topology;
 use autonomous::*;
 use cli::*;
 use db::*;
@@ -1315,6 +1322,77 @@ pub(crate) fn run() -> Result<()> {
             limit,
             json,
         } => print_memory_answer(&conn, &root, &question, scope.as_deref(), limit, json)?,
+        Command::RagAnswer {
+            question,
+            root: _,
+            scope,
+            limit,
+            json,
+        } => print_memory_rag_answer(
+            &conn,
+            &question,
+            scope.as_deref(),
+            limit,
+            &runtime.config.generation.provider,
+            &runtime.config.generation.endpoint,
+            &runtime.config.generation.model,
+            json,
+        )?,
+        Command::GraphRag {
+            query,
+            scope,
+            limit,
+            json,
+        } => {
+            let report = crate::app::graph_rag::compute_graph_rag(
+                &conn,
+                &query,
+                scope.as_deref(),
+                limit,
+                &runtime.config.generation,
+            )?;
+            if json {
+                println!("{}", serde_json::to_string(&report)?);
+            } else {
+                println!("{}", report.answer);
+                if !report.relevant_edges.is_empty() {
+                    println!("\ncontext relationships:");
+                    for edge in report.relevant_edges {
+                        println!("- {} --[{}]--> {}", edge.source, edge.kind, edge.target);
+                    }
+                }
+            }
+        }
+        Command::Tour { json } => {
+            let topology_result = crate::app::topology::compute_topology(&conn)?;
+            let narrative = crate::app::generation::generate_tour_narrative(
+                &runtime.config.generation,
+                &topology_result,
+            )?;
+            if json {
+                println!("{}", serde_json::json!({ "tour": narrative }));
+            } else {
+                println!("{}", narrative);
+            }
+        }
+        Command::Explain { id, json } => {
+            let explanation =
+                crate::app::explain::explain_component(&conn, &id, &runtime.config.generation)?;
+            if json {
+                println!("{}", serde_json::json!({ "explanation": explanation }));
+            } else {
+                println!("{}", explanation);
+            }
+        }
+        Command::OnboardingGuide { json } => {
+            let guide =
+                crate::app::onboard::generate_onboarding_guide(&conn, &runtime.config.generation)?;
+            if json {
+                println!("{}", serde_json::json!({ "onboard": guide }));
+            } else {
+                println!("{}", guide);
+            }
+        }
         Command::ConnectCodex {
             root,
             since_days,
@@ -1455,6 +1533,55 @@ pub(crate) fn run() -> Result<()> {
             since_days,
             json,
         } => print_web_control_center_v11(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            &task,
+            since_days,
+            json,
+        )?,
+        Command::MemoryEffectivenessV2 {
+            root,
+            since_days,
+            json,
+        } => print_memory_effectiveness_v2(&conn, &root, since_days, json)?,
+        Command::RecallBenchmarkBaselines {
+            root,
+            since_days,
+            apply,
+            json,
+        } => print_recall_benchmark_baselines(&conn, &root, since_days, apply, json)?,
+        Command::MemoryConflictApply {
+            stale_days,
+            limit,
+            apply,
+            json,
+        } => print_memory_conflict_apply(&conn, stale_days, limit, apply, json)?,
+        Command::McpToolSurfaceV3 { json } => print_mcp_tool_surface_v3(json)?,
+        Command::McpDisciplineV3 {
+            root,
+            since_days,
+            apply,
+            json,
+        } => print_mcp_discipline_v3(&conn, &cli.db, &root, since_days, apply, json)?,
+        Command::FleetQuality { since_days, json } => {
+            print_fleet_quality(&cli.db, since_days, json)?
+        }
+        Command::ReleaseGateV3 {
+            root,
+            since_days,
+            strict,
+            run,
+            json,
+        } => print_release_gate_v3(&conn, &cli.db, &root, since_days, strict, run, json)?,
+        Command::WebControlCenterV12 {
+            root,
+            target,
+            task,
+            since_days,
+            json,
+        } => print_web_control_center_v12(
             &conn,
             &cli.db,
             &root,
@@ -1761,7 +1888,7 @@ fn write_project_config(
     let mut cfg = if config.exists() {
         let raw = fs::read_to_string(config)
             .with_context(|| format!("failed to read {}", config.display()))?;
-        toml::from_str::<AgentConfig>(&raw)
+        parse_agent_config_with_compat_defaults(&raw, provider, endpoint, model)
             .with_context(|| format!("failed to parse {}", config.display()))?
     } else {
         AgentConfig::production_defaults(db, provider, endpoint, model)
@@ -3795,6 +3922,12 @@ Use `dukememory recall-benchmark-suite --json` to detect retrieval regressions; 
 
 Use `dukememory release-gate-v2 --json` to gate releases with health, recall benchmark, audit v2, and control-center checks.
 
+Use `dukememory memory-effectiveness-v2 --json` to measure memory usefulness with influence, wasted reads, and semantic-read signals.
+
+Use `dukememory recall-benchmark-baselines --json` to inspect or write guarded recall benchmark baselines; use `--apply` only after reviewing stable probes.
+
+Use `dukememory memory-conflict-apply --json` to apply only guarded reversible conflict-review actions; use `--apply` after reviewing the dry-run.
+
 Use `dukememory remote-sync-wizard --json` to configure local-first VDS/remote sync safely.
 
 Use `dukememory memory-governance-policy --json` to inspect or write autonomous memory governance policy.
@@ -3810,6 +3943,8 @@ Use `dukememory fleet-dashboard-v2 --json` to inspect all discovered project mem
 Use `dukememory remote-sync-apply-flow --json` to plan guarded remote sync apply; use `--target` and `DUKEMEMORY_SYNC_PASSPHRASE` before `--apply`.
 
 Use `dukememory mcp-tool-surface-v2 --json` to inspect MCP V2 memory tool exposure.
+
+Use `dukememory mcp-tool-surface-v3 --json` to inspect MCP V3 memory tool exposure.
 
 Use `dukememory autopilot-v3 --json` to run the V3 autonomous memory autopilot across learning, role profile, inbox review, sync, web control, and MCP quality.
 
@@ -3831,9 +3966,13 @@ Use `dukememory web-control-center-v4 --json` to inspect actionable Health, Auto
 
 Use `dukememory mcp-discipline-v2 --json` to enforce agent startup, write-decision, and after-task memory discipline; use `--apply` to repair wiring.
 
+Use `dukememory mcp-discipline-v3 --json` to enforce V3 startup, before-edit, and after-task memory discipline; use `--apply` only to record a clean verified pass.
+
 Use `dukememory feedback-loop-v2 --json` to inspect autonomous usefulness feedback, safe supersede, diff apply candidates, and recall benchmark quality; use `--apply` after reviewing dry-run output.
 
 Use `dukememory upgrade-all-projects-v2 --json` to inspect all installed project memories with richer version/action summaries before applying upgrades.
+
+Use `dukememory fleet-quality --json` to inspect V3 quality across discovered project memories.
 
 Use `dukememory vds-sync-pack --json` to inspect a local-first VDS sync pack with dry-run, apply, and verify commands; pass `--target PATH` before `--apply`.
 
@@ -3896,6 +4035,8 @@ Use `dukememory web-control-center-v10 --json` to inspect the 0.29 web control m
 Use `dukememory fleet-supervisor-watch-install --dry-run --json` to preview periodic launchd maintenance across discovered project memories; omit `--dry-run` to write the plist.
 
 Use `dukememory web-control-center-v11 --json` to inspect the 0.30 web control model with fleet watch installation.
+
+Use `dukememory web-control-center-v12 --json` to inspect the 0.33 web control model with effectiveness, baselines, conflict apply, MCP V3, fleet quality, and release gate V3 panels.
 
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
@@ -4002,6 +4143,9 @@ dukememory auto-supersede-v2 --json
 dukememory memory-diff-apply --json
 dukememory recall-benchmark-suite --json
 dukememory release-gate-v2 --json
+dukememory memory-effectiveness-v2 --json
+dukememory recall-benchmark-baselines --json
+dukememory memory-conflict-apply --json
 dukememory remote-sync-wizard --json
 dukememory memory-governance-policy --json
 dukememory autonomous-loop-v2 --json
@@ -4010,6 +4154,7 @@ dukememory memory-quality-ci --json
 dukememory fleet-dashboard-v2 --json
 dukememory remote-sync-apply-flow --json
 dukememory mcp-tool-surface-v2 --json
+dukememory mcp-tool-surface-v3 --json
 dukememory autopilot-v3 --json
 dukememory self-learning-retrieval --json
 dukememory project-role-profile --json
@@ -4020,8 +4165,10 @@ dukememory mcp-quality-tools --json
 dukememory remote-sync-control --json
 dukememory web-control-center-v4 --json
 dukememory mcp-discipline-v2 --json
+dukememory mcp-discipline-v3 --json
 dukememory feedback-loop-v2 --json
 dukememory upgrade-all-projects-v2 --json
+dukememory fleet-quality --json
 dukememory vds-sync-pack --json
 dukememory web-control-center-v5 --json
 dukememory quality-autopilot-v31 --json
@@ -4055,6 +4202,7 @@ dukememory fleet-supervisor --json
 dukememory web-control-center-v10 --json
 dukememory fleet-supervisor-watch-install --dry-run --json
 dukememory web-control-center-v11 --json
+dukememory web-control-center-v12 --json
 dukememory doctor-project --json
 dukememory release-gate --json
 dukememory project-watch --json
@@ -4502,6 +4650,9 @@ fn print_completions(shell: CompletionShell) {
         "memory-diff-apply",
         "recall-benchmark-suite",
         "release-gate-v2",
+        "memory-effectiveness-v2",
+        "recall-benchmark-baselines",
+        "memory-conflict-apply",
         "remote-sync-wizard",
         "memory-governance-policy",
         "autonomous-loop-v2",
@@ -4510,6 +4661,7 @@ fn print_completions(shell: CompletionShell) {
         "fleet-dashboard-v2",
         "remote-sync-apply-flow",
         "mcp-tool-surface-v2",
+        "mcp-tool-surface-v3",
         "autopilot-v3",
         "self-learning-retrieval",
         "project-role-profile",
@@ -4520,8 +4672,10 @@ fn print_completions(shell: CompletionShell) {
         "remote-sync-control",
         "web-control-center-v4",
         "mcp-discipline-v2",
+        "mcp-discipline-v3",
         "feedback-loop-v2",
         "upgrade-all-projects-v2",
+        "fleet-quality",
         "vds-sync-pack",
         "web-control-center-v5",
         "quality-autopilot-v31",
@@ -4555,6 +4709,7 @@ fn print_completions(shell: CompletionShell) {
         "web-control-center-v10",
         "fleet-supervisor-watch-install",
         "web-control-center-v11",
+        "web-control-center-v12",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -4748,6 +4903,14 @@ fn print_manpage() {
     println!("  web-control-center-v10        0.29 fleet supervisor control model");
     println!("  fleet-supervisor-watch-install preview/install periodic fleet repair");
     println!("  web-control-center-v11        0.30 fleet watch control model");
+    println!("  memory-effectiveness-v2       V2 influence, waste, and semantic usefulness");
+    println!("  recall-benchmark-baselines    inspect/write guarded recall baselines");
+    println!("  memory-conflict-apply --json  dry-run guarded reversible conflict actions");
+    println!("  mcp-tool-surface-v3 --json    inspect MCP V3 memory tool exposure");
+    println!("  mcp-discipline-v3 --json      verify V3 memory discipline");
+    println!("  fleet-quality --json          V3 quality across discovered projects");
+    println!("  release-gate-v3 --json        release gate with effectiveness and MCP V3");
+    println!("  web-control-center-v12        0.33 effectiveness/release control model");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");
@@ -4823,4 +4986,13 @@ fn print_build_info(runtime: &crate::runtime_config::RuntimeConfig) {
     println!("embed_provider: {}", runtime.config.embeddings.provider);
     println!("embed_endpoint: {}", runtime.config.embeddings.endpoint);
     println!("embed_model: {}", runtime.config.embeddings.model);
+    println!(
+        "generation_provider: {}",
+        runtime.config.generation.provider
+    );
+    println!(
+        "generation_endpoint: {}",
+        runtime.config.generation.endpoint
+    );
+    println!("generation_model: {}", runtime.config.generation.model);
 }

@@ -1444,6 +1444,44 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Answer a question from grounded project memory using LLM generation (RAG).
+    RagAnswer {
+        question: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Generate a pedagogical guided tour of the project memory.
+    Tour {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run Graph RAG on the project memory.
+    GraphRag {
+        query: String,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long, default_value_t = 12)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Deep Dive into a specific component and generate a detailed explanation.
+    Explain {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Generate a comprehensive onboarding guide from the knowledge graph.
+    OnboardingGuide {
+        #[arg(long)]
+        json: bool,
+    },
     /// Connect Codex to project memory with one checked command.
     ConnectCodex {
         #[arg(long, default_value = ".")]
@@ -1626,6 +1664,86 @@ pub(crate) enum Command {
     },
     /// Render the V11 web control model with fleet watch installation.
     WebControlCenterV11 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value = "project memory")]
+        task: String,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Measure memory usefulness with influence, waste, and semantic-read signals.
+    MemoryEffectivenessV2 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect or write guarded recall benchmark baselines.
+    RecallBenchmarkBaselines {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Apply only guarded reversible memory conflict-review actions.
+    MemoryConflictApply {
+        #[arg(long, default_value_t = 30)]
+        stale_days: i64,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect the MCP V3 memory tool surface.
+    McpToolSurfaceV3 {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify or record MCP V3 memory discipline.
+    McpDisciplineV3 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect V3 quality across discovered project memories.
+    FleetQuality {
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Gate releases with effectiveness, baselines, conflicts, MCP V3, and fleet visibility.
+    ReleaseGateV3 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        strict: bool,
+        #[arg(long)]
+        run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render the V12 web control model with effectiveness and release panels.
+    WebControlCenterV12 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
         #[arg(long)]
