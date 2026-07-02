@@ -13,6 +13,10 @@ use tempfile::tempdir;
 fn cmd(db: &std::path::Path) -> Command {
     let mut command = Command::cargo_bin("dukememory").unwrap();
     command.arg("--db").arg(db);
+    command.env("DUKEMEMORY_EMBED_PROVIDER", "ollama");
+    command.env("DUKEMEMORY_GEN_PROVIDER", "ollama");
+    command.env("DUKEMEMORY_EMBED_ENDPOINT", "http://192.168.0.13:11434");
+    command.env("DUKEMEMORY_GEN_ENDPOINT", "http://192.168.0.13:11434");
     command
 }
 
@@ -973,8 +977,8 @@ fn review_conflicts_links_session_and_vec_status() {
         .assert()
         .success()
         .stdout(contains("sqlite-vec feature:"))
-        .stdout(contains("http://192.168.0.13:11434"))
-        .stdout(contains("bge-m3:latest"));
+        .stdout(contains("local"))
+        .stdout(contains("paraphrase-multilingual-MiniLM-L12-v2"));
 }
 
 #[test]
@@ -2687,12 +2691,12 @@ fn v10_runtime_config_and_http_error_statuses() {
         .assert()
         .success();
     let mut raw = fs::read_to_string(&config).unwrap();
-    raw = raw.replace("provider = \"ollama\"", "provider = \"mock\"");
+    raw = raw.replace("provider = \"local\"", "provider = \"mock\"");
+    raw = raw.replace("endpoint = \"local\"", "endpoint = \"local\"");
     raw = raw.replace(
-        "endpoint = \"http://192.168.0.13:11434\"",
-        "endpoint = \"local\"",
+        "model = \"paraphrase-multilingual-MiniLM-L12-v2\"",
+        "model = \"mock-small\"",
     );
-    raw = raw.replace("model = \"bge-m3:latest\"", "model = \"mock-small\"");
     fs::write(&config, raw).unwrap();
 
     let legacy_config = dir.path().join("legacy-config.toml");
