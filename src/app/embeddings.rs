@@ -301,6 +301,7 @@ fn fetch_mock_embedding(model: &str, text: &str) -> Vec<f32> {
 
 fn fetch_embedding(provider: &str, endpoint: &str, model: &str, text: &str) -> Result<Vec<f32>> {
     match provider.trim().to_lowercase().as_str() {
+        "local" => crate::app::local_embed::embed_local(text),
         "ollama" => fetch_ollama_embedding(endpoint, model, text),
         "openai" | "openai-compatible" | "openai_compatible" => {
             fetch_openai_embedding(endpoint, model, text)
