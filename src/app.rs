@@ -27,7 +27,7 @@ use uuid::Uuid;
 const DEFAULT_DB: &str = ".agent/memory.db";
 const DEFAULT_CONFIG: &str = ".agent/config.toml";
 const DEFAULT_EMBED_ENDPOINT: &str = "http://192.168.0.13:11434";
-const DEFAULT_EMBED_MODEL: &str = "bge-m3:latest";
+const DEFAULT_EMBED_MODEL: &str = "paraphrase-multilingual-MiniLM-L12-v2";
 const DEFAULT_EMBED_PROVIDER: &str = "ollama";
 const DEFAULT_INSTALL_BACKUP_KEEP: usize = 3;
 const CURRENT_SCHEMA_VERSION: i64 = 15;
