@@ -108,7 +108,7 @@ fn handle_mcp_request(db: &Path, request: Value) -> Value {
 }
 
 fn mcp_tools() -> Value {
-    json!([
+    let mut tools = json!([
         {"name":"memory_brief","description":"Return a tiny verified task brief","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"max_chars":{"type":"number"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_impact","description":"Return lightweight impact memory for a file, symbol, or topic","inputSchema":{"type":"object","properties":{"target":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"max_chars":{"type":"number"},"scope":{"type":"string"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["target"]}},
         {"name":"memory_budget_plan","description":"Choose the smallest useful memory budget for a task","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"scope":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
@@ -138,7 +138,17 @@ fn mcp_tools() -> Value {
         {"name":"memory_should_write","description":"Decide whether a durable memory write is warranted","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"memory_type":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["text"]}},
         {"name":"memory_after_task","description":"Return compact after-task memory maintenance guidance","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_project_health","description":"Return compact project memory health and role profile","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}
-    ])
+    ]);
+    if let Some(items) = tools.as_array_mut() {
+        items.extend([
+            json!({"name":"memory_recall","description":"Return compressed recall, including recent/as-of/changed-since temporal modes","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"scope":{"type":"string"},"recent":{"type":"boolean"},"as_of":{"type":"string"},"as_of_days_ago":{"type":"number"},"changed_since":{"type":"string"},"changed_since_days":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}}),
+            json!({"name":"memory_upload","description":"Review a local text/markdown/json/csv file as inbox-first memory candidates","inputSchema":{"type":"object","properties":{"input":{"type":"string"},"scope":{"type":"string"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["input"]}}),
+            json!({"name":"memory_memanto_gap","description":"Report Memanto-style capability coverage for dukememory","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_timeline","description":"Show one memory card timeline with audit events and real agent reads","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}}),
+            json!({"name":"memory_conflict_review","description":"Review duplicate, stale, superseded, and contradiction-prone memory groups","inputSchema":{"type":"object","properties":{"stale_days":{"type":"number"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+        ]);
+    }
+    tools
 }
 
 fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, String> {
@@ -716,6 +726,76 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let report = explain_recall_report(&conn, &selected_root, &query, limit)
                 .map_err(|err| err.to_string())?;
             budgeted_mcp_json_response(&report, max_chars, &["items"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_recall" => {
+            let query = json_string(&args, "query").ok_or_else(|| "missing query".to_string())?;
+            let limit = json_usize(&args, "limit").unwrap_or(8);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let scope = mcp_memory_scope(&args);
+            let provider = json_string(&args, "provider")
+                .unwrap_or_else(|| DEFAULT_EMBED_PROVIDER.to_string());
+            let endpoint = json_string(&args, "endpoint")
+                .unwrap_or_else(|| DEFAULT_EMBED_ENDPOINT.to_string());
+            let model =
+                json_string(&args, "model").unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
+            let as_of = json_string(&args, "as_of");
+            let changed_since = json_string(&args, "changed_since");
+            let report = recall_report(
+                &conn,
+                &RecallRequest {
+                    query: &query,
+                    max_chars,
+                    limit,
+                    scope: scope.as_deref(),
+                    provider: &provider,
+                    endpoint: &endpoint,
+                    model: &model,
+                    recent: args.get("recent").and_then(Value::as_bool).unwrap_or(false),
+                    as_of: as_of.as_deref(),
+                    as_of_days_ago: json_i64(&args, "as_of_days_ago"),
+                    changed_since: changed_since.as_deref(),
+                    changed_since_days: json_i64(&args, "changed_since_days"),
+                    json_out: true,
+                },
+            )
+            .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&report, max_chars, &["items"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_upload" => {
+            let input = json_string(&args, "input").ok_or_else(|| "missing input".to_string())?;
+            let scope = json_string(&args, "scope").unwrap_or_else(|| "project".to_string());
+            let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let report =
+                memory_upload_report(&conn, &selected_root, Path::new(&input), &scope, apply)
+                    .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&report, max_chars, &["candidates", "quality_checks"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_memanto_gap" => {
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let report = memanto_gap_report(&conn).map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&report, max_chars, &["capabilities"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_timeline" => {
+            let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            let limit = json_usize(&args, "limit").unwrap_or(20);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let report =
+                memory_timeline_report(&conn, &id, limit).map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&report, max_chars, &["recent_events", "recent_reads"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_conflict_review" => {
+            let stale_days = json_i64(&args, "stale_days").unwrap_or(30);
+            let limit = json_usize(&args, "limit").unwrap_or(20);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let report = memory_conflict_review_report(&conn, stale_days, limit)
+                .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&report, max_chars, &["groups"])
                 .map_err(|err| err.to_string())?
         }
         "memory_control_center_v2" => {
@@ -1474,6 +1554,10 @@ fn json_string_array(value: &Value, key: &str) -> Vec<String> {
 
 fn json_usize(value: &Value, key: &str) -> Option<usize> {
     value.get(key).and_then(Value::as_u64).map(|v| v as usize)
+}
+
+fn json_i64(value: &Value, key: &str) -> Option<i64> {
+    value.get(key).and_then(Value::as_i64)
 }
 
 #[cfg(test)]

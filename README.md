@@ -90,6 +90,8 @@ dukememory brief "fix checkout validation" --budget-profile tiny
 dukememory impact src/checkout.ts --budget-profile tiny
 dukememory recall "checkout validation" --max-chars 1200
 dukememory recall "checkout validation" --recent --json
+dukememory recall "checkout validation" --as-of 2026-07-01 --json
+dukememory recall "checkout validation" --changed-since 2026-06-25 --json
 dukememory recall "checkout validation" --changed-since-days 7 --json
 dukememory drift --root . --json
 dukememory context-governor "fix checkout validation" --target src/checkout.ts --json
@@ -106,6 +108,8 @@ dukememory recall-benchmark-suite --json
 dukememory import-review docs/project-notes.md --json
 dukememory memory-upload docs/project-notes.md --json
 dukememory memanto-gap-report --json
+dukememory memory-timeline <memory-id> --json
+dukememory memory-conflict-review --json
 dukememory memory-diff-review --json
 ```
 

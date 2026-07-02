@@ -681,7 +681,11 @@ pub(crate) struct RecallReport {
     mode: String,
     max_chars: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
+    as_of: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     as_of_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed_since: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     changed_since_ms: Option<i64>,
     token_saving_estimate: usize,
@@ -717,7 +721,9 @@ pub(crate) struct RecallRequest<'a> {
     pub(crate) endpoint: &'a str,
     pub(crate) model: &'a str,
     pub(crate) recent: bool,
+    pub(crate) as_of: Option<&'a str>,
     pub(crate) as_of_days_ago: Option<i64>,
+    pub(crate) changed_since: Option<&'a str>,
     pub(crate) changed_since_days: Option<i64>,
     pub(crate) json_out: bool,
 }
@@ -737,7 +743,9 @@ pub(crate) fn recall_report(
     request: &RecallRequest<'_>,
 ) -> Result<RecallReport> {
     let mode_count = usize::from(request.recent)
+        + usize::from(request.as_of.is_some())
         + usize::from(request.as_of_days_ago.is_some())
+        + usize::from(request.changed_since.is_some())
         + usize::from(request.changed_since_days.is_some());
     if mode_count > 1 {
         bail!("recall temporal flags are mutually exclusive");
@@ -785,7 +793,9 @@ pub(crate) fn recall_report(
         query: request.query.to_string(),
         mode: "hybrid".to_string(),
         max_chars: request.max_chars,
+        as_of: None,
         as_of_ms: None,
+        changed_since: None,
         changed_since_ms: None,
         token_saving_estimate,
         receipt: memory_receipt_with_semantic("recall", semantic_status, &ids, "none"),
@@ -797,18 +807,38 @@ pub(crate) fn recall_report(
 fn temporal_recall_report(conn: &Connection, request: &RecallRequest<'_>) -> Result<RecallReport> {
     let started = Instant::now();
     let now = now_ms();
-    let (mode, as_of_ms, changed_since_ms) = if request.recent {
-        ("recent".to_string(), None, None)
+    let (mode, as_of, as_of_ms, changed_since, changed_since_ms) = if request.recent {
+        ("recent".to_string(), None, None, None, None)
+    } else if let Some(value) = request.as_of {
+        (
+            "as_of".to_string(),
+            Some(value.to_string()),
+            Some(parse_recall_date_ms(value)?),
+            None,
+            None,
+        )
     } else if let Some(days) = request.as_of_days_ago {
         (
             "as_of".to_string(),
+            Some(format!("{days}d_ago")),
             Some(now.saturating_sub(days.max(0).saturating_mul(86_400_000))),
             None,
+            None,
+        )
+    } else if let Some(value) = request.changed_since {
+        (
+            "changed_since".to_string(),
+            None,
+            None,
+            Some(value.to_string()),
+            Some(parse_recall_date_ms(value)?),
         )
     } else if let Some(days) = request.changed_since_days {
         (
             "changed_since".to_string(),
             None,
+            None,
+            Some(format!("{days}d_ago")),
             Some(now.saturating_sub(days.max(0).saturating_mul(86_400_000))),
         )
     } else {
@@ -880,7 +910,9 @@ fn temporal_recall_report(conn: &Connection, request: &RecallRequest<'_>) -> Res
         query: request.query.to_string(),
         mode,
         max_chars: request.max_chars,
+        as_of,
         as_of_ms,
+        changed_since,
         changed_since_ms,
         token_saving_estimate: raw_chars.saturating_sub(request.max_chars) / 4,
         receipt: memory_receipt_with_semantic("recall", MemorySemanticStatus::None, &ids, "none"),
@@ -903,6 +935,71 @@ fn temporal_recall_keeps(
         return memory.updated_at >= changed_since_ms || memory.created_at >= changed_since_ms;
     }
     true
+}
+
+fn parse_recall_date_ms(value: &str) -> Result<i64> {
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("recall date cannot be empty");
+    }
+    if let Some(days) = value
+        .strip_suffix('d')
+        .and_then(|raw| raw.parse::<i64>().ok())
+    {
+        return Ok(now_ms().saturating_sub(days.max(0).saturating_mul(86_400_000)));
+    }
+    if value.chars().all(|ch| ch.is_ascii_digit()) {
+        return value
+            .parse::<i64>()
+            .with_context(|| format!("invalid recall timestamp: {value}"));
+    }
+    let parts = value.split('-').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        bail!("invalid recall date '{value}': expected YYYY-MM-DD, Nd, or unix milliseconds");
+    }
+    let year = parts[0]
+        .parse::<i32>()
+        .with_context(|| format!("invalid recall date year: {value}"))?;
+    let month = parts[1]
+        .parse::<u32>()
+        .with_context(|| format!("invalid recall date month: {value}"))?;
+    let day = parts[2]
+        .parse::<u32>()
+        .with_context(|| format!("invalid recall date day: {value}"))?;
+    validate_civil_date(year, month, day)
+        .with_context(|| format!("invalid recall date: {value}"))?;
+    Ok(days_from_civil(year, month, day).saturating_mul(86_400_000))
+}
+
+fn validate_civil_date(year: i32, month: u32, day: u32) -> Result<()> {
+    if !(1..=12).contains(&month) {
+        bail!("month must be 1..12");
+    }
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => unreachable!(),
+    };
+    if day == 0 || day > max_day {
+        bail!("day must be valid for the month");
+    }
+    Ok(())
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+    let year = year - i32::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let yoe = year - era * 400;
+    let month = month as i32;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day as i32 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era as i64 * 146_097 + doe as i64 - 719_468
 }
 
 fn temporal_recall_reasons(

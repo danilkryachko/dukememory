@@ -1527,6 +1527,35 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
             let conn = open_selected_db(db, query, None)?;
             HttpResponse::ok(json!({"memanto_gap": memanto_gap_report(&conn)?}))
         }
+        ("GET", "/memory-timeline") => {
+            let conn = open_selected_db(db, query, None)?;
+            let params = parse_query(query);
+            let id = params
+                .get("id")
+                .map(String::as_str)
+                .filter(|value| !value.is_empty())
+                .with_context(|| "memory-timeline requires id")?;
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(20);
+            HttpResponse::ok(json!({"memory_timeline": memory_timeline_report(&conn, id, limit)?}))
+        }
+        ("GET", "/memory-conflict-review") => {
+            let conn = open_selected_db(db, query, None)?;
+            let params = parse_query(query);
+            let stale_days = params
+                .get("stale_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(30);
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(20);
+            HttpResponse::ok(
+                json!({"memory_conflict_review": memory_conflict_review_report(&conn, stale_days, limit)?}),
+            )
+        }
         ("GET", "/web-control-center-v7") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
@@ -2388,9 +2417,11 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
             let as_of_days_ago = params
                 .get("as_of_days_ago")
                 .and_then(|value| value.parse::<i64>().ok());
+            let as_of = params.get("as_of").map(String::as_str);
             let changed_since_days = params
                 .get("changed_since_days")
                 .and_then(|value| value.parse::<i64>().ok());
+            let changed_since = params.get("changed_since").map(String::as_str);
             HttpResponse::ok(json!({"recall": recall_report(&conn, &RecallRequest {
                 query: q,
                 max_chars,
@@ -2400,7 +2431,9 @@ fn handle_http_request(db: &Path, stream: &mut TcpStream) -> Result<HttpResponse
                 endpoint: DEFAULT_EMBED_ENDPOINT,
                 model: DEFAULT_EMBED_MODEL,
                 recent,
+                as_of,
                 as_of_days_ago,
+                changed_since,
                 changed_since_days,
                 json_out: true,
             })?}))

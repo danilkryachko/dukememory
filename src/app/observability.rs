@@ -1584,6 +1584,50 @@ pub(crate) struct MemantoGapCapability {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct MemoryTimelineReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) id: String,
+    pub(crate) memory: MemoryWithLinks,
+    pub(crate) request_count: usize,
+    pub(crate) recent_events: Vec<MemoryEvent>,
+    pub(crate) recent_reads: Vec<MemoryTimelineRead>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryTimelineRead {
+    pub(crate) id: i64,
+    pub(crate) command: String,
+    pub(crate) query: String,
+    pub(crate) semantic_used: bool,
+    pub(crate) result_count: usize,
+    pub(crate) budget: usize,
+    pub(crate) elapsed_ms: u128,
+    pub(crate) created_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryConflictReviewReport {
+    pub(crate) version: u32,
+    pub(crate) status: String,
+    pub(crate) stale_days: i64,
+    pub(crate) scanned: usize,
+    pub(crate) groups: Vec<MemoryConflictGroup>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct MemoryConflictGroup {
+    pub(crate) kind: String,
+    pub(crate) severity: String,
+    pub(crate) title: String,
+    pub(crate) ids: Vec<String>,
+    pub(crate) detail: String,
+    pub(crate) recommendation: String,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct AutonomousUsefulnessReport {
     pub(crate) version: u32,
     pub(crate) ok: bool,
@@ -9292,16 +9336,16 @@ pub(crate) fn memanto_gap_report(conn: &Connection) -> Result<MemantoGapReport> 
         memanto_gap_capability(
             "temporal",
             "ready",
-            "recall --recent|--as-of-days-ago|--changed-since-days",
+            "recall --recent|--as-of|--changed-since / memory-timeline",
             "temporal recall",
-            "uses local created_at and updated_at without schema migration",
+            "date-aware recall plus per-card event/read timeline",
         ),
         memanto_gap_capability(
             "conflicts",
             "ready",
-            "conflicts / merge-candidates / doctrine / drift",
+            "memory-conflict-review / conflicts / merge-candidates / doctrine / drift",
             "conflict detection",
-            "duplicate and supersession review stays explicit and reversible",
+            "duplicate, stale, superseded, and contradiction-prone groups stay explicit and reversible",
         ),
         memanto_gap_capability(
             "integrations",
@@ -9367,6 +9411,442 @@ fn memanto_gap_capability(
         dukememory_surface: dukememory_surface.to_string(),
         memanto_parallel: memanto_parallel.to_string(),
         detail: detail.to_string(),
+    }
+}
+
+pub(crate) fn print_memory_timeline(
+    conn: &Connection,
+    id: &str,
+    limit: usize,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_timeline_report(conn, id, limit)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Timeline");
+    println!("id: {}", report.id);
+    println!("title: {}", report.memory.memory.title);
+    println!("status: {}", report.memory.memory.status);
+    println!("requests: {}", report.request_count);
+    for event in &report.recent_events {
+        println!(
+            "event: {} #{} {}",
+            event.event_type, event.id, event.created_at
+        );
+    }
+    for read in &report.recent_reads {
+        println!(
+            "read: {} #{} results={} semantic={}",
+            read.command, read.id, read.result_count, read.semantic_used
+        );
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_timeline_report(
+    conn: &Connection,
+    id: &str,
+    limit: usize,
+) -> Result<MemoryTimelineReport> {
+    let memory = get_memory_with_links(conn, id)?;
+    let recent_events = timeline_events(conn, id, limit)?;
+    let recent_reads = timeline_reads(conn, id, limit)?;
+    let request_count = timeline_request_count(conn, id)?;
+    let mut recommendations = Vec::new();
+    if request_count == 0 {
+        recommendations.push(
+            "no recent agent reads reference this card; verify wording or retrieval links if it should be influential"
+                .to_string(),
+        );
+    }
+    if memory.memory.status == "uncertain" {
+        recommendations.push(
+            "promote, reject, or clarify this uncertain card before relying on it".to_string(),
+        );
+    }
+    if memory.memory.superseded_by.is_some() {
+        recommendations.push("this card is superseded; prefer the replacement card".to_string());
+    }
+    if recommendations.is_empty() {
+        recommendations
+            .push("timeline is healthy; keep the card compact and evidence-backed".to_string());
+    }
+    Ok(MemoryTimelineReport {
+        version: 1,
+        ok: true,
+        id: id.to_string(),
+        memory,
+        request_count,
+        recent_events,
+        recent_reads,
+        recommendations,
+    })
+}
+
+pub(crate) fn print_memory_conflict_review(
+    conn: &Connection,
+    stale_days: i64,
+    limit: usize,
+    json_out: bool,
+) -> Result<()> {
+    let report = memory_conflict_review_report(conn, stale_days, limit)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("Memory Conflict Review");
+    println!("status: {}", report.status);
+    println!("groups: {}", report.groups.len());
+    for group in &report.groups {
+        println!("{} {} [{}]", group.kind, group.title, group.ids.join(","));
+        println!("  {}", group.detail);
+        println!("  recommendation: {}", group.recommendation);
+    }
+    for recommendation in &report.recommendations {
+        println!("recommendation: {recommendation}");
+    }
+    Ok(())
+}
+
+pub(crate) fn memory_conflict_review_report(
+    conn: &Connection,
+    stale_days: i64,
+    limit: usize,
+) -> Result<MemoryConflictReviewReport> {
+    let rows = query_memories(
+        conn,
+        None,
+        &[],
+        &[
+            "active".to_string(),
+            "uncertain".to_string(),
+            "superseded".to_string(),
+        ],
+        None,
+        usize::MAX,
+    )?;
+    let cutoff = now_ms().saturating_sub(stale_days.max(0).saturating_mul(86_400_000));
+    let mut groups = Vec::new();
+    groups.extend(conflict_duplicate_groups(&rows, limit));
+    groups.extend(conflict_superseded_groups(&rows, limit));
+    groups.extend(conflict_stale_groups(&rows, cutoff, stale_days, limit));
+    groups.extend(conflict_contradiction_groups(&rows, limit));
+    groups.sort_by(|left, right| {
+        conflict_severity_rank(&right.severity)
+            .cmp(&conflict_severity_rank(&left.severity))
+            .then_with(|| left.kind.cmp(&right.kind))
+    });
+    groups.truncate(limit.max(1));
+    let status = if groups.is_empty() { "ready" } else { "review" }.to_string();
+    let mut recommendations = Vec::new();
+    if groups.is_empty() {
+        recommendations.push("no conflict groups found in active project memory".to_string());
+    } else {
+        recommendations.push(
+            "review high-severity groups first; supersede obsolete cards instead of deleting them"
+                .to_string(),
+        );
+        recommendations.push(
+            "run memory-timeline for surprising ids before changing durable memory".to_string(),
+        );
+    }
+    Ok(MemoryConflictReviewReport {
+        version: 2,
+        status,
+        stale_days,
+        scanned: rows.len(),
+        groups,
+        recommendations,
+    })
+}
+
+fn timeline_events(conn: &Connection, id: &str, limit: usize) -> Result<Vec<MemoryEvent>> {
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT id, event_type, memory_id, detail, created_at
+        FROM memory_events
+        WHERE memory_id = ?1
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?2
+        "#,
+    )?;
+    stmt.query_map(
+        params![id, limit.max(1).min(i64::MAX as usize) as i64],
+        |row| {
+            Ok(MemoryEvent {
+                id: row.get(0)?,
+                event_type: row.get(1)?,
+                memory_id: row.get(2)?,
+                detail: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        },
+    )?
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .map_err(Into::into)
+}
+
+fn timeline_reads(conn: &Connection, id: &str, limit: usize) -> Result<Vec<MemoryTimelineRead>> {
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT id, command, query, memory_ids, semantic_used, result_count, budget, elapsed_ms, created_at
+        FROM memory_read_events
+        ORDER BY created_at DESC, id DESC
+        "#,
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)? != 0,
+                row.get::<_, i64>(5)?.max(0) as usize,
+                row.get::<_, i64>(6)?.max(0) as usize,
+                row.get::<_, i64>(7)?.max(0) as u128,
+                row.get::<_, i64>(8)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::new();
+    for (
+        row_id,
+        command,
+        query,
+        memory_ids,
+        semantic_used,
+        result_count,
+        budget,
+        elapsed_ms,
+        created_at,
+    ) in rows
+    {
+        if split_csv(Some(&memory_ids))
+            .iter()
+            .any(|candidate| candidate == id)
+        {
+            out.push(MemoryTimelineRead {
+                id: row_id,
+                command,
+                query,
+                semantic_used,
+                result_count,
+                budget,
+                elapsed_ms,
+                created_at,
+            });
+            if out.len() >= limit.max(1) {
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn timeline_request_count(conn: &Connection, id: &str) -> Result<usize> {
+    let mut stmt = conn.prepare("SELECT memory_ids FROM memory_read_events")?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .iter()
+        .filter(|memory_ids| {
+            split_csv(Some(memory_ids))
+                .iter()
+                .any(|candidate| candidate == id)
+        })
+        .count())
+}
+
+fn conflict_duplicate_groups(rows: &[Memory], limit: usize) -> Vec<MemoryConflictGroup> {
+    let mut grouped: BTreeMap<(String, String, String), Vec<&Memory>> = BTreeMap::new();
+    for memory in rows.iter().filter(|memory| memory.status == "active") {
+        grouped
+            .entry((
+                memory.memory_type.clone(),
+                memory.scope.clone(),
+                conflict_normalize(&memory.title),
+            ))
+            .or_default()
+            .push(memory);
+    }
+    grouped
+        .into_iter()
+        .filter_map(|((_memory_type, _scope, title), items)| {
+            (items.len() > 1).then(|| MemoryConflictGroup {
+                kind: "duplicate_title".to_string(),
+                severity: "medium".to_string(),
+                title,
+                ids: items.iter().map(|memory| memory.id.clone()).collect(),
+                detail: "active cards share the same normalized type/scope/title".to_string(),
+                recommendation: "merge or supersede duplicate cards after checking evidence"
+                    .to_string(),
+            })
+        })
+        .take(limit.max(1))
+        .collect()
+}
+
+fn conflict_superseded_groups(rows: &[Memory], limit: usize) -> Vec<MemoryConflictGroup> {
+    rows.iter()
+        .filter(|memory| memory.status == "active" && memory.superseded_by.is_some())
+        .take(limit.max(1))
+        .map(|memory| MemoryConflictGroup {
+            kind: "active_superseded".to_string(),
+            severity: "high".to_string(),
+            title: memory.title.clone(),
+            ids: vec![
+                memory.id.clone(),
+                memory.superseded_by.clone().unwrap_or_default(),
+            ],
+            detail: "card is active but already points at a superseding card".to_string(),
+            recommendation: "mark the older card superseded so recall does not surface both"
+                .to_string(),
+        })
+        .collect()
+}
+
+fn conflict_stale_groups(
+    rows: &[Memory],
+    cutoff: i64,
+    stale_days: i64,
+    limit: usize,
+) -> Vec<MemoryConflictGroup> {
+    rows.iter()
+        .filter(|memory| memory.status == "active" && memory.updated_at < cutoff)
+        .take(limit.max(1))
+        .map(|memory| MemoryConflictGroup {
+            kind: "stale_active".to_string(),
+            severity: "low".to_string(),
+            title: memory.title.clone(),
+            ids: vec![memory.id.clone()],
+            detail: format!("active card has not changed for at least {stale_days} day(s)"),
+            recommendation:
+                "keep if still true; otherwise add a replacement and supersede this card"
+                    .to_string(),
+        })
+        .collect()
+}
+
+fn conflict_contradiction_groups(rows: &[Memory], limit: usize) -> Vec<MemoryConflictGroup> {
+    let active = rows
+        .iter()
+        .filter(|memory| memory.status == "active")
+        .collect::<Vec<_>>();
+    let mut groups = Vec::new();
+    for i in 0..active.len() {
+        for j in (i + 1)..active.len() {
+            let left = active[i];
+            let right = active[j];
+            if left.scope != right.scope || left.memory_type != right.memory_type {
+                continue;
+            }
+            let overlap = conflict_token_overlap(&left.title, &right.title)
+                .max(conflict_token_overlap(&left.body, &right.body));
+            if overlap < 0.35 {
+                continue;
+            }
+            if !conflict_has_opposing_language(left, right) {
+                continue;
+            }
+            groups.push(MemoryConflictGroup {
+                kind: "possible_contradiction".to_string(),
+                severity: "high".to_string(),
+                title: left.title.clone(),
+                ids: vec![left.id.clone(), right.id.clone()],
+                detail: "same type/scope has overlapping language with opposing allow/deny wording"
+                    .to_string(),
+                recommendation: "open evidence for both cards and supersede the obsolete rule"
+                    .to_string(),
+            });
+            if groups.len() >= limit.max(1) {
+                return groups;
+            }
+        }
+    }
+    groups
+}
+
+fn conflict_has_opposing_language(left: &Memory, right: &Memory) -> bool {
+    let left_text = format!("{} {}", left.title, left.body).to_lowercase();
+    let right_text = format!("{} {}", right.title, right.body).to_lowercase();
+    (conflict_has_negative_marker(&left_text) && conflict_has_positive_marker(&right_text))
+        || (conflict_has_negative_marker(&right_text) && conflict_has_positive_marker(&left_text))
+}
+
+fn conflict_has_negative_marker(text: &str) -> bool {
+    [
+        " must not ",
+        " do not ",
+        " never ",
+        " no longer ",
+        " forbidden ",
+        " cannot ",
+        " нельзя ",
+        " не ",
+        " запрещ",
+        " больше не ",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+}
+
+fn conflict_has_positive_marker(text: &str) -> bool {
+    [
+        " must ",
+        " should ",
+        " use ",
+        " allow ",
+        " enabled ",
+        " нужно ",
+        " надо ",
+        " использовать ",
+        " можно ",
+        " включ",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+}
+
+fn conflict_token_overlap(left: &str, right: &str) -> f64 {
+    let left = conflict_tokens(left);
+    let right = conflict_tokens(right);
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let overlap = left.intersection(&right).count() as f64;
+    overlap / left.len().max(right.len()) as f64
+}
+
+fn conflict_tokens(value: &str) -> BTreeSet<String> {
+    value
+        .to_lowercase()
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|token| token.len() >= 3)
+        .map(|token| token.to_string())
+        .collect()
+}
+
+fn conflict_normalize(value: &str) -> String {
+    value
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn conflict_severity_rank(severity: &str) -> u8 {
+    match severity {
+        "high" => 3,
+        "medium" => 2,
+        "low" => 1,
+        _ => 0,
     }
 }
 
@@ -11831,6 +12311,8 @@ fn agent_required_commands() -> &'static [&'static str] {
         "import-review",
         "memory-upload",
         "memanto-gap-report",
+        "memory-timeline",
+        "memory-conflict-review",
         "web-control-center-v7",
         "autonomous-usefulness",
         "benchmark-polish",

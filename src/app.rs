@@ -12,7 +12,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
@@ -784,7 +784,9 @@ pub(crate) fn run() -> Result<()> {
             endpoint,
             model,
             recent,
+            as_of,
             as_of_days_ago,
+            changed_since,
             changed_since_days,
             json,
         } => print_recall(
@@ -810,7 +812,9 @@ pub(crate) fn run() -> Result<()> {
                     &runtime.config.embeddings.model,
                 ),
                 recent,
+                as_of: as_of.as_deref(),
                 as_of_days_ago,
+                changed_since: changed_since.as_deref(),
                 changed_since_days,
                 json_out: json,
             },
@@ -1339,6 +1343,14 @@ pub(crate) fn run() -> Result<()> {
             json,
         } => print_memory_upload(&conn, &root, &input, &scope, apply, json)?,
         Command::MemantoGapReport { json } => print_memanto_gap_report(&conn, json)?,
+        Command::MemoryTimeline { id, limit, json } => {
+            print_memory_timeline(&conn, &id, limit, json)?
+        }
+        Command::MemoryConflictReview {
+            stale_days,
+            limit,
+            json,
+        } => print_memory_conflict_review(&conn, stale_days, limit, json)?,
         Command::WebControlCenterV7 {
             root,
             target,
@@ -3887,7 +3899,11 @@ Use `dukememory web-control-center-v11 --json` to inspect the 0.30 web control m
 
 Use `dukememory project-profile --json` to inspect the project memory profile, embedding configuration, and recommended budget.
 
-Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens; use `--recent`, `--as-of-days-ago N`, or `--changed-since-days N` for temporal recall.
+Use `dukememory recall "<task>" --max-chars 1200` when brief/impact is not enough but full context would waste tokens; use `--recent`, `--as-of YYYY-MM-DD`, `--as-of-days-ago N`, `--changed-since YYYY-MM-DD`, or `--changed-since-days N` for temporal recall.
+
+Use `dukememory memory-timeline <memory-id> --json` to inspect one card's facts, audit events, and real agent read influence before editing surprising or high-impact memory.
+
+Use `dukememory memory-conflict-review --json` to review duplicate, stale, active-superseded, and contradiction-prone groups without mutating memory.
 
 Use `dukememory eval live --json` to inspect whether memory reads are later judged useful, useless, or missing.
 
@@ -4027,6 +4043,8 @@ dukememory memory-eval-story --json
 dukememory import-review README.md --json
 dukememory memory-upload README.md --json
 dukememory memanto-gap-report --json
+dukememory memory-timeline <memory-id> --json
+dukememory memory-conflict-review --json
 dukememory web-control-center-v7 --json
 dukememory autonomous-usefulness --json
 dukememory benchmark-polish --json
@@ -4525,6 +4543,8 @@ fn print_completions(shell: CompletionShell) {
         "import-review",
         "memory-upload",
         "memanto-gap-report",
+        "memory-timeline",
+        "memory-conflict-review",
         "web-control-center-v7",
         "autonomous-usefulness",
         "benchmark-polish",
@@ -4716,6 +4736,8 @@ fn print_manpage() {
     println!("  import-review FILE --json     turn text into reviewed inbox candidates");
     println!("  memory-upload FILE --json     upload file into reviewed inbox candidates");
     println!("  memanto-gap-report --json     compare Memanto-style capability coverage");
+    println!("  memory-timeline ID --json     show card events and real read influence");
+    println!("  memory-conflict-review --json review duplicate/stale/contradiction groups");
     println!("  web-control-center-v7         0.26 answer/connect/eval/import control model");
     println!("  autonomous-usefulness --json  plan autonomous usefulness improvements");
     println!("  benchmark-polish --json       polished local benchmark evidence");

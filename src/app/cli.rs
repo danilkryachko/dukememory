@@ -725,7 +725,11 @@ pub(crate) enum Command {
         #[arg(long)]
         recent: bool,
         #[arg(long)]
+        as_of: Option<String>,
+        #[arg(long)]
         as_of_days_ago: Option<i64>,
+        #[arg(long)]
+        changed_since: Option<String>,
         #[arg(long)]
         changed_since_days: Option<i64>,
         #[arg(long)]
@@ -1493,6 +1497,23 @@ pub(crate) enum Command {
     },
     /// Report how dukememory covers Memanto-style memory product capabilities.
     MemantoGapReport {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one memory card timeline: facts, audit events, and real read influence.
+    MemoryTimeline {
+        id: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Review duplicate, stale, superseded, and contradiction-prone memory groups.
+    MemoryConflictReview {
+        #[arg(long, default_value_t = 30)]
+        stale_days: i64,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
         #[arg(long)]
         json: bool,
     },

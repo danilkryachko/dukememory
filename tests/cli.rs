@@ -1175,6 +1175,36 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         writeln!(
             stdin,
             "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"memory_recall","arguments":{"query":"needle mcp","changed_since":"2020-01-01","max_chars":900}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"memory_timeline","arguments":{"id":long_id.clone(),"max_chars":900}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"memory_conflict_review","arguments":{"limit":8,"max_chars":900}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":33,"method":"tools/call","params":{"name":"memory_memanto_gap","arguments":{"max_chars":900}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":34,"method":"tools/call","params":{"name":"memory_upload","arguments":{"input":transcript.display().to_string(),"apply":false,"max_chars":900}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
             serde_json::json!({"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"memory_feedback","arguments":{"id":long_id,"rating":"useful","command":"mcp-test","query":"needle mcp"}}})
         )
         .unwrap();
@@ -1240,6 +1270,11 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
     assert!(stdout.contains("memory_should_write"));
     assert!(stdout.contains("memory_after_task"));
     assert!(stdout.contains("memory_project_health"));
+    assert!(stdout.contains("memory_recall"));
+    assert!(stdout.contains("memory_upload"));
+    assert!(stdout.contains("memory_memanto_gap"));
+    assert!(stdout.contains("memory_timeline"));
+    assert!(stdout.contains("memory_conflict_review"));
     assert!(stdout.find("memory_brief") < stdout.find("memory_context_pack"));
     assert!(stdout.contains("MCP decision"));
     assert!(stdout.contains("needle mcp exact detail"));
@@ -1297,6 +1332,31 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         .find(|line| line.contains("\"id\":29"))
         .unwrap();
     assert!(mcp_project_health.contains("role_profile"));
+    let mcp_recall = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":30"))
+        .unwrap();
+    assert!(mcp_recall.contains("changed_since"));
+    let mcp_timeline = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":31"))
+        .unwrap();
+    assert!(mcp_timeline.contains("request_count"));
+    let mcp_conflict = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":32"))
+        .unwrap();
+    assert!(mcp_conflict.contains("groups"));
+    let mcp_gap = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":33"))
+        .unwrap();
+    assert!(mcp_gap.contains("capabilities"));
+    let mcp_upload = stdout
+        .lines()
+        .find(|line| line.contains("\"id\":34"))
+        .unwrap();
+    assert!(mcp_upload.contains("memory_upload"));
     let review = stdout
         .lines()
         .find(|line| line.contains("\"id\":7"))
@@ -10726,6 +10786,39 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(temporal_recall.contains("\"mode\":\"changed_since\""));
 
+    let temporal_recall_date = http_once(
+        &db,
+        "GET /recall?q=HTTP%20import&as_of=2099-01-01 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(temporal_recall_date.contains("\"mode\":\"as_of\""));
+    assert!(temporal_recall_date.contains("\"as_of\":\"2099-01-01\""));
+
+    let timeline_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("decision")
+            .arg("HTTP timeline review")
+            .arg("HTTP memory timeline should show reads and audit events.")
+            .arg("--scope")
+            .arg("project"),
+    )
+    .trim()
+    .to_string();
+    let timeline_request = format!(
+        "GET /memory-timeline?id={} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        timeline_id
+    );
+    let memory_timeline = http_once(&db, &timeline_request);
+    assert!(memory_timeline.contains("\"memory_timeline\""));
+    assert!(memory_timeline.contains("\"request_count\""));
+
+    let conflict_review = http_once(
+        &db,
+        "GET /memory-conflict-review?limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(conflict_review.contains("\"memory_conflict_review\""));
+    assert!(conflict_review.contains("\"groups\""));
+
     let web_control_v7 = http_once(
         &db,
         "GET /web-control-center-v7?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
@@ -12886,6 +12979,18 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .any(|capability| capability["name"] == "temporal")
     );
 
+    let timeline_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("decision")
+            .arg("Temporal timeline review")
+            .arg("Use memory timeline before editing surprising high-impact memory cards.")
+            .arg("--scope")
+            .arg("project"),
+    )
+    .trim()
+    .to_string();
+
     let temporal_recall = stdout(
         cmd(&db)
             .arg("recall")
@@ -12897,6 +13002,40 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let temporal_recall_json: Value = serde_json::from_str(&temporal_recall).unwrap();
     assert_eq!(temporal_recall_json["mode"], "changed_since");
     assert!(temporal_recall_json["changed_since_ms"].as_i64().is_some());
+
+    let temporal_recall_date = stdout(
+        cmd(&db)
+            .arg("recall")
+            .arg("timeline review")
+            .arg("--as-of")
+            .arg("2099-01-01")
+            .arg("--json"),
+    );
+    let temporal_recall_date_json: Value = serde_json::from_str(&temporal_recall_date).unwrap();
+    assert_eq!(temporal_recall_date_json["mode"], "as_of");
+    assert_eq!(temporal_recall_date_json["as_of"], "2099-01-01");
+
+    let memory_timeline = stdout(
+        cmd(&db)
+            .arg("memory-timeline")
+            .arg(&timeline_id)
+            .arg("--json"),
+    );
+    let memory_timeline_json: Value = serde_json::from_str(&memory_timeline).unwrap();
+    assert_eq!(memory_timeline_json["version"], 1);
+    assert_eq!(memory_timeline_json["id"], timeline_id);
+    assert!(memory_timeline_json["recent_events"].as_array().is_some());
+
+    let conflict_review = stdout(
+        cmd(&db)
+            .arg("memory-conflict-review")
+            .arg("--limit")
+            .arg("10")
+            .arg("--json"),
+    );
+    let conflict_review_json: Value = serde_json::from_str(&conflict_review).unwrap();
+    assert_eq!(conflict_review_json["version"], 2);
+    assert!(conflict_review_json["groups"].as_array().is_some());
 
     let web_control_v7 = stdout(
         cmd(&db)
