@@ -2057,10 +2057,9 @@ fn quality_inbox_target_id(item: &InboxItem) -> Option<String> {
     let marker = "memory ";
     let text = if let Some(index) = item.body.find(marker) {
         &item.body[index + marker.len()..]
-    } else if let Some(index) = item.title.find(marker) {
-        &item.title[index + marker.len()..]
     } else {
-        return None;
+        let index = item.title.find(marker)?;
+        &item.title[index + marker.len()..]
     };
     let id = text
         .chars()
