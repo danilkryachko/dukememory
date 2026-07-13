@@ -235,6 +235,7 @@ pub(crate) fn semantic_search_with_backend(
             scope: None,
         },
         backend,
+        false,
     )
 }
 
@@ -261,13 +262,14 @@ pub(crate) fn semantic_search_with_filters(
     conn: &Connection,
     options: SemanticSearchOptions<'_>,
 ) -> Result<Vec<EmbeddingRow>> {
-    semantic_search_with_filters_and_backend(conn, options, default_vector_backend())
+    semantic_search_with_filters_and_backend(conn, options, default_vector_backend(), true)
 }
 
 fn semantic_search_with_filters_and_backend(
     conn: &Connection,
     options: SemanticSearchOptions<'_>,
     backend: VectorBackend,
+    allow_fallback: bool,
 ) -> Result<Vec<EmbeddingRow>> {
     let limit = options.limit.max(1);
     let endpoint_key = embedding_endpoint_key(options.provider, options.endpoint);
@@ -284,6 +286,7 @@ fn semantic_search_with_filters_and_backend(
         &query_embedding,
         limit,
         backend,
+        allow_fallback,
     )?;
     top_candidates.sort_by(|a, b| {
         b.score
@@ -308,7 +311,10 @@ fn semantic_memory_candidates(
     query_embedding: &[f32],
     limit: usize,
     backend: VectorBackend,
+    allow_fallback: bool,
 ) -> Result<Vec<ScoredEmbeddingCandidate>> {
+    #[cfg(not(feature = "vec"))]
+    let _ = allow_fallback;
     match backend {
         VectorBackend::Json => {
             semantic_memory_candidates_json(conn, options, endpoint_key, query_embedding, limit)
@@ -316,7 +322,7 @@ fn semantic_memory_candidates(
         VectorBackend::SqliteVec => {
             #[cfg(feature = "vec")]
             {
-                sqlite_vec_memory_search(
+                let native = sqlite_vec_memory_search(
                     conn,
                     SqliteVecMemorySearchOptions {
                         endpoint: endpoint_key,
@@ -327,12 +333,21 @@ fn semantic_memory_candidates(
                         statuses: options.statuses,
                         scope: options.scope,
                     },
-                )
-                .map(|rows| {
-                    rows.into_iter()
+                );
+                match native {
+                    Ok(rows) => Ok(rows
+                        .into_iter()
                         .map(|(memory_id, score)| ScoredEmbeddingCandidate { memory_id, score })
-                        .collect()
-                })
+                        .collect()),
+                    Err(_) if allow_fallback => semantic_memory_candidates_json(
+                        conn,
+                        options,
+                        endpoint_key,
+                        query_embedding,
+                        limit,
+                    ),
+                    Err(error) => Err(error),
+                }
             }
             #[cfg(not(feature = "vec"))]
             bail!("sqlite-vec search requires a binary built with --features vec");
@@ -426,7 +441,20 @@ fn semantic_rag_candidates(
     scope: Option<&str>,
     limit: usize,
 ) -> Result<Vec<SemanticRagChunkRow>> {
-    let rows = sqlite_vec_rag_search(conn, endpoint_key, model, query_embedding, scope)?;
+    let rows = match sqlite_vec_rag_search(conn, endpoint_key, model, query_embedding, scope, limit)
+    {
+        Ok(rows) => rows,
+        Err(_) => {
+            return semantic_rag_candidates_json(
+                conn,
+                endpoint_key,
+                model,
+                query_embedding,
+                scope,
+                limit,
+            );
+        }
+    };
     let mut candidates = Vec::with_capacity(limit);
     for row in rows {
         let current_hash = content_hash(&rag_chunk_embedding_content(
@@ -458,6 +486,17 @@ fn semantic_rag_candidates(
 
 #[cfg(not(feature = "vec"))]
 fn semantic_rag_candidates(
+    conn: &Connection,
+    endpoint_key: &str,
+    model: &str,
+    query_embedding: &[f32],
+    scope: Option<&str>,
+    limit: usize,
+) -> Result<Vec<SemanticRagChunkRow>> {
+    semantic_rag_candidates_json(conn, endpoint_key, model, query_embedding, scope, limit)
+}
+
+fn semantic_rag_candidates_json(
     conn: &Connection,
     endpoint_key: &str,
     model: &str,
@@ -513,7 +552,7 @@ fn semantic_rag_candidates(
             continue;
         }
         let embedding: Vec<f32> = serde_json::from_str(&raw_embedding)?;
-        chunk.score = cosine_similarity(&query_embedding, &embedding);
+        chunk.score = cosine_similarity(query_embedding, &embedding);
         push_top_rag_chunk_candidate(&mut top_candidates, chunk, limit);
     }
     Ok(top_candidates)
@@ -812,11 +851,17 @@ fn store_embedding(
     hash: &str,
     embedding: &[f32],
 ) -> Result<()> {
+    ensure_sqlite_vec_memory_index(conn, embedding.len())?;
     conn.execute(
         r#"
-        INSERT OR REPLACE INTO memory_embeddings (
+        INSERT INTO memory_embeddings (
             memory_id, model, endpoint, dimensions, embedding, content_hash, updated_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ON CONFLICT(memory_id, model, endpoint) DO UPDATE SET
+            dimensions = excluded.dimensions,
+            embedding = excluded.embedding,
+            content_hash = excluded.content_hash,
+            updated_at = excluded.updated_at
         "#,
         params![
             memory_id,
@@ -839,11 +884,17 @@ fn store_rag_chunk_embedding(
     hash: &str,
     embedding: &[f32],
 ) -> Result<()> {
+    ensure_sqlite_vec_rag_index(conn, embedding.len())?;
     conn.execute(
         r#"
-        INSERT OR REPLACE INTO rag_chunk_embeddings (
+        INSERT INTO rag_chunk_embeddings (
             chunk_id, model, endpoint, dimensions, embedding, content_hash, updated_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ON CONFLICT(chunk_id, model, endpoint) DO UPDATE SET
+            dimensions = excluded.dimensions,
+            embedding = excluded.embedding,
+            content_hash = excluded.content_hash,
+            updated_at = excluded.updated_at
         "#,
         params![
             chunk_id,
@@ -1071,33 +1122,88 @@ pub(crate) fn print_vector_bench(
     let endpoint_key = embedding_endpoint_key(provider, endpoint);
     let mut stmt = conn.prepare(
         r#"
-        SELECT embedding
+        SELECT memory_id, embedding
         FROM memory_embeddings
         WHERE endpoint = ?1 AND model = ?2
         "#,
     )?;
     let embeddings = stmt
-        .query_map(params![endpoint_key, model], |row| row.get::<_, String>(0))?
+        .query_map(params![endpoint_key, model], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?
         .into_iter()
-        .map(|raw| serde_json::from_str::<Vec<f32>>(&raw).map_err(Into::into))
+        .map(|(id, raw)| {
+            serde_json::from_str::<Vec<f32>>(&raw)
+                .map(|embedding| (id, embedding))
+                .map_err(Into::into)
+        })
         .collect::<Result<Vec<_>>>()?;
     if embeddings.is_empty() {
         println!("vectors: 0");
         println!("bench: no indexed embeddings");
         return Ok(());
     }
-    let query = embeddings[0].clone();
+    let query = embeddings[0].1.clone();
+    let iterations = 25;
     let started = std::time::Instant::now();
-    let mut best = f64::NEG_INFINITY;
-    for embedding in &embeddings {
-        best = best.max(cosine_similarity(&query, embedding));
+    let mut fallback_best = (String::new(), f64::NEG_INFINITY);
+    for _ in 0..iterations {
+        for (memory_id, embedding) in &embeddings {
+            let score = cosine_similarity(&query, embedding);
+            if score > fallback_best.1 {
+                fallback_best = (memory_id.clone(), score);
+            }
+        }
     }
-    let elapsed = started.elapsed();
+    let fallback_elapsed = started.elapsed();
     println!("vectors: {}", embeddings.len());
     println!("dimensions: {}", query.len());
-    println!("best_score: {best:.4}");
-    println!("elapsed_ms: {:.3}", elapsed.as_secs_f64() * 1000.0);
+    println!("iterations: {iterations}");
+    println!("best_score: {:.4}", fallback_best.1);
+    println!(
+        "json_elapsed_ms: {:.3}",
+        fallback_elapsed.as_secs_f64() * 1000.0
+    );
+    #[cfg(feature = "vec")]
+    {
+        let started = std::time::Instant::now();
+        let mut native_best = None;
+        for _ in 0..iterations {
+            native_best = sqlite_vec_memory_search(
+                conn,
+                SqliteVecMemorySearchOptions {
+                    endpoint: &endpoint_key,
+                    model,
+                    query_embedding: &query,
+                    limit: 1,
+                    types: &[],
+                    statuses: &[],
+                    scope: None,
+                },
+            )?
+            .into_iter()
+            .next();
+        }
+        let native_elapsed = started.elapsed();
+        let top_match_equal = native_best
+            .as_ref()
+            .map(|(id, _)| id == &fallback_best.0)
+            .unwrap_or(false);
+        println!(
+            "sqlite_vec_elapsed_ms: {:.3}",
+            native_elapsed.as_secs_f64() * 1000.0
+        );
+        println!("top_match_equal: {top_match_equal}");
+        if native_elapsed.as_nanos() > 0 {
+            println!(
+                "speedup: {:.3}",
+                fallback_elapsed.as_secs_f64() / native_elapsed.as_secs_f64()
+            );
+        }
+    }
+    #[cfg(not(feature = "vec"))]
+    println!("sqlite_vec_elapsed_ms: unavailable (build with --features vec)");
     Ok(())
 }
 

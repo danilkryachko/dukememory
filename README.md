@@ -65,8 +65,12 @@ context cost.
 
 ## Install
 
+Published releases include native Linux/macOS archives and a combined
+`SHA256SUMS` manifest. Verify the archive checksum before installing. For a
+source build with the production vector backend:
+
 ```bash
-cargo build --release
+cargo build --locked --release --features vec
 
 target/release/dukememory update-install \
   --from target/release/dukememory \
@@ -160,6 +164,7 @@ dukememory sync push /mnt/vds/dukememory --encrypt --dry-run --json
 dukememory sync push /mnt/vds/dukememory --encrypt --json
 dukememory sync status /mnt/vds/dukememory --json
 dukememory sync pull /mnt/vds/dukememory --policy manual --dry-run --json
+dukememory sync recover /mnt/vds/dukememory --json
 ```
 
 `--encrypt` writes an authenticated age/scrypt container atomically with mode
@@ -168,6 +173,15 @@ encrypted rollback files and still apply the existing checksum, dry-run, and
 conflict-policy checks. Use either `DUKEMEMORY_SYNC_PASSPHRASE` or the preferred
 `DUKEMEMORY_SYNC_PASSPHRASE_FILE` (mode `600`), never both. Plain JSON export
 and push remain available for compatibility and must stay on private storage.
+
+Every versioned bundle carries a generation and parent generation. Successful
+push/pull operations remember the last observed generation locally, so a stale
+client cannot overwrite a newer remote by accident. Push uses a short lease
+lock, recovers expired locks, preserves the previous verified generation, and
+performs checksum read-back. `sync status` reports generation drift, active
+locks, corruption, and recovery availability. Use `sync recover` to restore the
+verified previous generation; use `sync push --force` only after intentionally
+reviewing an untracked or corrupt remote.
 
 `remote-sync-v2 --target PATH --apply --json` now performs the encrypted push
 and decrypts the stored result for checksum read-back verification. Without
@@ -186,6 +200,8 @@ export DUKEMEMORY_EMBED_MODEL=paraphrase-multilingual-MiniLM-L12-v2
 dukememory embed-index
 dukememory embed-status --json
 dukememory vec-validate --backend json
+dukememory vec-index --json
+dukememory vector-bench
 ```
 
 The default build keeps application-side cosine search as a portable fallback.
@@ -194,6 +210,13 @@ RAG cosine distance inside SQLite. `vec-validate --backend sqlite-vec` executes
 both a native SQL distance check and a real `vec0` KNN probe; `embed-search
 --backend json` can still force the fallback for comparison. The legacy
 `vec-migrate` spelling remains a hidden CLI alias for compatibility.
+
+The vec-enabled build maintains persistent dimension-specific `vec0` indexes
+for both memory cards and RAG chunks. Existing JSON embeddings are backfilled on
+open, insert/update/delete triggers keep row ids synchronized, and
+`vec-index --rebuild` repairs index drift. Internal semantic flows fall back to
+the JSON scorer if a native query fails; an explicitly requested
+`--backend sqlite-vec` remains strict so operational checks cannot hide damage.
 
 RAG commands use the same embedding provider for memory cards and can be
 inspected before generation. `embed-index` also embeds indexed source chunks,
@@ -460,8 +483,12 @@ cargo fmt --check
 cargo test
 cargo test --features vec
 cargo clippy --all-targets --all-features -- -D warnings
-cargo build --release
+cargo build --locked --release --features vec
+scripts/release-smoke.sh target/release/dukememory
 ```
+
+See [docs/releasing.md](docs/releasing.md) for the tag-driven GitHub release,
+checksum, smoke-test, and crates.io publishing workflow.
 
 ## License
 

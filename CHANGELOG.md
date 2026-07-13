@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.36.0 — 2026-07-13
+
+### Added
+
+- Persistent dimension-specific sqlite-vec indexes for memory and RAG
+  embeddings, including startup backfill, synchronized triggers, consistency
+  status, explicit rebuild, recovery from stale registry data, and a native vs
+  JSON benchmark.
+- Versioned sync generations with parent links, per-target peer state, lease
+  locks, stale-client protection, previous-generation backups, corruption
+  diagnostics, and `sync recover`.
+- A tag-driven release workflow that verifies the crate, builds Linux/macOS
+  archives, runs installed-binary smoke tests, publishes SHA-256 manifests,
+  creates the GitHub release, and publishes to crates.io through a protected
+  repository secret.
+
+### Changed
+
+- Native vector search now prefilters endpoint/model metadata in vec0 and keeps
+  a transparent JSON fallback for internal semantic memory and RAG flows.
+- Sync push performs locked atomic writes with checksum/generation read-back;
+  untracked or newer remotes require pull/merge or an explicit `--force`.
+- Schema v19 adds vector-index registry and sync peer-generation state.
+
+### Fixed
+
+- Preserve embedding row ids during reindexing and use vec0-compatible
+  delete/insert update triggers instead of unsupported replace semantics.
+- Import memory exports in two passes so forward supersession references do not
+  violate foreign keys or replace already inserted rows.
+- Preserve and verify the last good remote generation before overwriting or
+  recovering a damaged sync bundle.
+
 ## 0.35.0 — 2026-07-13
 
 ### Added

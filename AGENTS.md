@@ -58,13 +58,13 @@ For every new chat or coding task in this repository:
 - To measure memory usefulness with influence, wasted reads, and semantic-read signals, run `dukememory memory-effectiveness-v2 --json`.
 - To inspect or write guarded recall benchmark baselines, run `dukememory recall-benchmark-baselines --json`; use `--apply` only after reviewing stable probes.
 - To apply only guarded reversible conflict-review actions, run `dukememory memory-conflict-apply --json`; use `--apply` after reviewing the dry-run.
-- To configure local-first VDS/remote sync safely, run `dukememory remote-sync-wizard --json`; use `--target` and `DUKEMEMORY_SYNC_PASSPHRASE` before `--apply`.
+- To configure local-first VDS/remote sync safely, run `dukememory remote-sync-wizard --json`; use `--target` and a mode-600 sync passphrase file before `--apply`.
 - To inspect or write autonomous memory governance policy, run `dukememory memory-governance-policy --json`; use `--apply` to write `.agent/memory-governance.json`.
 - To run the V2 autonomous memory loop with governance and quality gates, run `dukememory autonomous-loop-v2 --json`; use `--apply` only when governance is ready.
 - To enforce autonomous memory governance, run `dukememory governance-enforce --json`; use `--apply` to log a clean enforcement pass.
 - To run a CI-friendly memory quality gate, run `dukememory memory-quality-ci --json`.
 - To inspect all discovered project memories with V2 quality metrics, run `dukememory fleet-dashboard-v2 --json`.
-- To plan guarded remote sync apply, run `dukememory remote-sync-apply-flow --json`; use `--target` and `DUKEMEMORY_SYNC_PASSPHRASE` before `--apply`.
+- To plan guarded remote sync apply, run `dukememory remote-sync-apply-flow --json`; use `--target` and a mode-600 sync passphrase file before `--apply`.
 - To inspect MCP V2 memory tool exposure, run `dukememory mcp-tool-surface-v2 --json`.
 - To inspect MCP V3 memory tool exposure, run `dukememory mcp-tool-surface-v3 --json`.
 - To run the V3 autonomous memory autopilot, run `dukememory autopilot-v3 --json`; use `--apply` for guarded reversible actions.
@@ -72,7 +72,7 @@ For every new chat or coding task in this repository:
 - To detect/apply project-specific memory defaults, run `dukememory project-role-profile --json`; use `--apply` after reviewing inferred kind.
 - To review inbox suggestions with confidence explanations, run `dukememory inbox-ai-reviewer --json`; use `--apply` only for safe high-confidence groups.
 - To inspect the simplified web control model, run `dukememory web-control-center-v3 --json`.
-- To apply guarded local-first remote sync planning, run `dukememory remote-sync-apply --json`; use `--target` and `DUKEMEMORY_SYNC_PASSPHRASE` before `--apply`.
+- To apply guarded local-first encrypted sync, run `dukememory remote-sync-apply --json`; use `--target` and a mode-600 sync passphrase file before `--apply`.
 - To inspect MCP helper tools for memory discipline, run `dukememory mcp-quality-tools --json`.
 - To inspect local-first VDS/remote sync readiness and real push/pull dry-runs, run `dukememory remote-sync-control --json`; pass `--target PATH` for target status.
 - To inspect the actionable web control model, run `dukememory web-control-center-v4 --json`.
@@ -140,7 +140,7 @@ For every new chat or coding task in this repository:
 - To choose a safe sync mode, run `dukememory sync-profile --profile local-first-backup --run-dry-run --json` before push/pull.
 - To enforce memory wiring for future chats, run `dukememory agent-enforce --json` or `dukememory agent-enforce --fix --json`.
 - To review changed files for durable memory updates, run `dukememory memory-diff-review --json`.
-- To plan encrypted local-first VDS/remote sync, run `dukememory remote-sync-v2 --json`; use `--target` and `DUKEMEMORY_SYNC_PASSPHRASE` before `--apply`.
+- To preview or apply encrypted local-first VDS/remote sync, run `dukememory remote-sync-v2 --target PATH --json`; prefer a mode-600 `DUKEMEMORY_SYNC_PASSPHRASE_FILE` before `--apply`.
 - To sync memory safely, preview first with `dukememory sync export bundle.json --dry-run --json` and `dukememory sync import bundle.json --policy manual --dry-run --json`.
 - To use a local-first remote/VDS connector, run `dukememory sync push TARGET --dry-run --json`, `dukememory sync pull TARGET --dry-run --json`, and `dukememory sync status TARGET --json`.
 - To safely group and process inbox suggestions, run `dukememory inbox-v2 report --json`.

@@ -13274,6 +13274,29 @@ pub(crate) fn remote_sync_v2_report(
     if apply && let Err(error) = read_sync_passphrase() {
         blockers.push(error.to_string());
     }
+    if apply && let Some(target) = target {
+        let existing = sync_target_bundle_path_for_read(target);
+        let local_generation = sync_peer_generation(conn, target)?;
+        if existing.exists() {
+            match parse_sync_input(&existing) {
+                Ok((_, Some(manifest), _)) => {
+                    let remote_generation = sync_manifest_generation(&manifest);
+                    if local_generation.as_deref() != Some(remote_generation.as_str()) {
+                        blockers.push(
+                            "remote generation is stale or untracked; pull and merge before remote-sync-v2 --apply"
+                                .to_string(),
+                        );
+                    }
+                }
+                Ok(_) => blockers.push("remote target is not a versioned sync bundle".to_string()),
+                Err(error) => blockers.push(format!("remote target cannot be verified: {error}")),
+            }
+        } else if local_generation.is_some() {
+            blockers.push(
+                "remote target disappeared after a previously observed generation".to_string(),
+            );
+        }
+    }
     blockers.sort();
     blockers.dedup();
     let commands = remote_sync_v2_commands(target_string.as_deref());
@@ -13296,8 +13319,19 @@ pub(crate) fn remote_sync_v2_report(
     let mut verified = false;
     if apply && ok {
         let target = target.expect("target presence is checked before apply");
-        let prepared = prepare_sync_payload(conn, false, true)?;
+        let target_lock = acquire_sync_target_lock(target)?;
+        let existing = sync_target_bundle_path_for_read(target);
+        let parent_generation = if existing.exists() {
+            let (_, manifest, _) = parse_sync_input(&existing)?;
+            manifest.as_ref().map(sync_manifest_generation)
+        } else {
+            None
+        };
+        let prepared = prepare_sync_payload_with_parent(conn, false, true, parent_generation)?;
         let remote_path = sync_target_bundle_path(target, true);
+        if existing.exists() {
+            preserve_previous_sync_bundle(&existing)?;
+        }
         write_private_atomic(&remote_path, &prepared.bytes)?;
         let (_, manifest, stored_encrypted) = parse_sync_input(&remote_path)?;
         verified = stored_encrypted
@@ -13307,6 +13341,15 @@ pub(crate) fn remote_sync_v2_report(
         if !verified {
             bail!("encrypted remote sync read-back verification failed");
         }
+        if existing != remote_path && existing.exists() {
+            fs::remove_file(&existing)?;
+        }
+        record_sync_peer_generation(
+            conn,
+            target,
+            &sync_manifest_generation(&prepared.bundle.manifest),
+            "remote_sync_v2",
+        )?;
         encrypted_bundle = true;
         memory_count = prepared.bundle.manifest.memory_count;
         ciphertext_bytes = prepared.bytes.len();
@@ -13315,6 +13358,14 @@ pub(crate) fn remote_sync_v2_report(
             "encrypted_sync_bundle_written:{}",
             remote_path.display()
         ));
+        actions.push(format!(
+            "sync_generation:{}",
+            prepared.bundle.manifest.generation
+        ));
+        actions.push(format!("sync_lock_wait_ms:{}", target_lock.wait_ms));
+        if target_lock.stale_recovered {
+            actions.push("stale_sync_lock_recovered".to_string());
+        }
 
         let path = root.join(".agent/remote-sync-v2.json");
         let value = json!({
@@ -17395,7 +17446,18 @@ fn ops_storage_status(conn: &Connection, db: &Path, root: &Path) -> Result<OpsSt
         freelist_count.max(0) as f64 / page_count as f64
     };
     let vacuum_recommended = db_bytes > 4 * 1024 * 1024 && freelist_ratio >= 0.20;
-    let agent_bytes = dir_size(&agent_dir)?;
+    let mut agent_bytes = dir_size(&agent_dir)?;
+    if !db.starts_with(&agent_dir) {
+        agent_bytes = agent_bytes.saturating_add(db_bytes);
+        let db_name = db
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("memory.db");
+        let parent = db.parent().unwrap_or_else(|| Path::new("."));
+        agent_bytes = agent_bytes
+            .saturating_add(file_size(&parent.join(format!("{db_name}-wal"))))
+            .saturating_add(file_size(&parent.join(format!("{db_name}-shm"))));
+    }
     let backups_bytes = dir_size(&backup_dir)?;
     let rollback_bytes = dir_size(&rollback_dir)?;
     let install_backups_bytes = dir_size(&install_backup_dir)?;

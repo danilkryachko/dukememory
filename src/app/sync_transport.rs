@@ -2,6 +2,35 @@ use super::*;
 use age::secrecy::SecretString;
 use std::fs::OpenOptions;
 
+const SYNC_LOCK_LEASE_MS: i64 = 120_000;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SyncLockMetadata {
+    token: String,
+    pid: u32,
+    acquired_at: i64,
+    expires_at: i64,
+}
+
+pub(crate) struct SyncTargetLock {
+    path: PathBuf,
+    token: String,
+    pub(crate) wait_ms: u128,
+    pub(crate) stale_recovered: bool,
+}
+
+impl Drop for SyncTargetLock {
+    fn drop(&mut self) {
+        let owns_lock = fs::read(&self.path)
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<SyncLockMetadata>(&raw).ok())
+            .is_some_and(|metadata| metadata.token == self.token);
+        if owns_lock {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 pub(crate) const SYNC_PASSPHRASE_ENV: &str = "DUKEMEMORY_SYNC_PASSPHRASE";
 pub(crate) const SYNC_PASSPHRASE_FILE_ENV: &str = "DUKEMEMORY_SYNC_PASSPHRASE_FILE";
 pub(crate) const SYNC_ENCRYPTION_MODE: &str = "age_scrypt";
@@ -87,6 +116,113 @@ fn decrypt_sync_payload_with_passphrase(
 
 pub(crate) fn is_encrypted_sync_payload(payload: &[u8]) -> bool {
     payload.starts_with(b"age-encryption.org/v1\n")
+}
+
+pub(crate) fn sync_target_lock_path(target: &Path) -> PathBuf {
+    if target.extension().is_some() {
+        let parent = target.parent().unwrap_or_else(|| Path::new("."));
+        let name = target
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("dukememory-sync");
+        parent.join(format!(".{name}.lock"))
+    } else {
+        target.join(".dukememory-sync.lock")
+    }
+}
+
+pub(crate) fn sync_target_lock_status(target: &Path) -> (bool, Option<i64>, bool) {
+    let path = sync_target_lock_path(target);
+    let Ok(metadata) = fs::metadata(path) else {
+        return (false, None, false);
+    };
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64);
+    let age_ms = modified.map(|modified| now_ms().saturating_sub(modified).max(0));
+    let lock_metadata = fs::read(sync_target_lock_path(target))
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<SyncLockMetadata>(&raw).ok());
+    let stale = lock_metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.expires_at <= now_ms())
+        || lock_metadata.is_none() && age_ms.is_some_and(|age| age >= SYNC_LOCK_LEASE_MS);
+    (true, age_ms, stale)
+}
+
+pub(crate) fn acquire_sync_target_lock(target: &Path) -> Result<SyncTargetLock> {
+    let started = Instant::now();
+    let path = sync_target_lock_path(target);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create sync target {}", parent.display()))?;
+    }
+    let token = Uuid::new_v4().to_string();
+    let mut stale_recovered = false;
+    for _ in 0..2 {
+        let acquired_at = now_ms();
+        let metadata = SyncLockMetadata {
+            token: token.clone(),
+            pid: std::process::id(),
+            acquired_at,
+            expires_at: acquired_at.saturating_add(SYNC_LOCK_LEASE_MS),
+        };
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(mut file) => {
+                file.write_all(&serde_json::to_vec_pretty(&metadata)?)?;
+                file.sync_all()?;
+                return Ok(SyncTargetLock {
+                    path,
+                    token,
+                    wait_ms: started.elapsed().as_millis(),
+                    stale_recovered,
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let existing = fs::read(&path)
+                    .ok()
+                    .and_then(|raw| serde_json::from_slice::<SyncLockMetadata>(&raw).ok());
+                let stale = existing
+                    .as_ref()
+                    .is_some_and(|metadata| metadata.expires_at <= now_ms())
+                    || existing.is_none()
+                        && fs::metadata(&path)
+                            .and_then(|metadata| metadata.modified())
+                            .ok()
+                            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                            .is_some_and(|modified| {
+                                now_ms().saturating_sub(modified.as_millis() as i64)
+                                    >= SYNC_LOCK_LEASE_MS
+                            });
+                if !stale {
+                    let owner = existing
+                        .map(|metadata| {
+                            format!("pid {} until {}", metadata.pid, metadata.expires_at)
+                        })
+                        .unwrap_or_else(|| "unknown owner".to_string());
+                    bail!("sync target is locked by {owner}: {}", path.display());
+                }
+                fs::remove_file(&path).with_context(|| {
+                    format!("failed to remove stale sync lock {}", path.display())
+                })?;
+                stale_recovered = true;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to acquire sync lock {}", path.display()));
+            }
+        }
+    }
+    bail!("failed to acquire sync lock {}", path.display())
 }
 
 pub(crate) fn write_private_atomic(path: &Path, content: &[u8]) -> Result<()> {

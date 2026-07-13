@@ -337,6 +337,13 @@ pub(crate) enum Command {
     },
     /// Print optional vector-search support status.
     VecStatus,
+    /// Inspect or rebuild persistent sqlite-vec indexes.
+    VecIndex {
+        #[arg(long)]
+        rebuild: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Serve a small JSON-RPC MCP-style stdio tool surface.
     ServeMcp {
         #[arg(long)]
@@ -2309,6 +2316,9 @@ pub(crate) enum SyncCommand {
         encrypt: bool,
         #[arg(long)]
         dry_run: bool,
+        /// Replace an untracked, stale, or corrupt remote after preserving its previous bytes.
+        #[arg(long)]
+        force: bool,
         #[arg(long)]
         json: bool,
     },
@@ -2322,6 +2332,12 @@ pub(crate) enum SyncCommand {
         json: bool,
     },
     Status {
+        target: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restore the last verified remote generation after corruption.
+    Recover {
         target: PathBuf,
         #[arg(long)]
         json: bool,

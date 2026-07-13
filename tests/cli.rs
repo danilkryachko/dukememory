@@ -1023,6 +1023,11 @@ fn export_import_backup_and_restore() {
     assert_eq!(encrypted_push_json["wrote"], true);
     assert_eq!(encrypted_push_json["encrypted"], true);
     assert_eq!(encrypted_push_json["encryption_mode"], "age_scrypt");
+    let encrypted_generation = encrypted_push_json["generation"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!encrypted_generation.is_empty());
     let encrypted_bundle = encrypted_target.join("dukememory-sync-bundle.age");
     let encrypted_raw = fs::read(&encrypted_bundle).unwrap();
     assert!(encrypted_raw.starts_with(b"age-encryption.org/v1\n"));
@@ -1075,6 +1080,11 @@ fn export_import_backup_and_restore() {
         serde_json::from_str(&encrypted_status_with_file).unwrap();
     assert_eq!(encrypted_status_with_file_json["verified"], true);
     assert_eq!(encrypted_status_with_file_json["memory_count"], 1);
+    assert_eq!(
+        encrypted_status_with_file_json["generation"],
+        encrypted_generation
+    );
+    assert_eq!(encrypted_status_with_file_json["stale_remote"], false);
 
     cmd(&encrypted_db)
         .arg("sync")
@@ -1163,6 +1173,254 @@ fn export_import_backup_and_restore() {
 }
 
 #[test]
+fn sync_generations_locks_stale_detection_and_recovery() {
+    let dir = tempdir().unwrap();
+    let db_a = dir.path().join("a.db");
+    let db_b = dir.path().join("b.db");
+    let target = dir.path().join("remote");
+
+    cmd(&db_a)
+        .arg("add")
+        .arg("decision")
+        .arg("Generation one")
+        .arg("First client owns the initial remote generation.")
+        .assert()
+        .success();
+    let first: Value = serde_json::from_str(&stdout(
+        cmd(&db_a)
+            .arg("sync")
+            .arg("push")
+            .arg(&target)
+            .arg("--json"),
+    ))
+    .unwrap();
+    let generation_one = first["generation"].as_str().unwrap().to_string();
+    assert!(!generation_one.is_empty());
+    assert!(first["parent_generation"].is_null());
+    assert_eq!(first["stale_lock_recovered"], false);
+
+    cmd(&db_a)
+        .arg("add")
+        .arg("note")
+        .arg("Generation two")
+        .arg("Second push preserves the previous generation.")
+        .assert()
+        .success();
+    let second: Value = serde_json::from_str(&stdout(
+        cmd(&db_a)
+            .arg("sync")
+            .arg("push")
+            .arg(&target)
+            .arg("--json"),
+    ))
+    .unwrap();
+    let generation_two = second["generation"].as_str().unwrap().to_string();
+    assert_ne!(generation_two, generation_one);
+    assert_eq!(second["parent_generation"], generation_one);
+    assert!(target.join("dukememory-sync-bundle.previous.json").exists());
+
+    cmd(&db_b)
+        .arg("sync")
+        .arg("pull")
+        .arg(&target)
+        .arg("--json")
+        .assert()
+        .success();
+    cmd(&db_b)
+        .arg("add")
+        .arg("note")
+        .arg("Generation three")
+        .arg("Second client advances the remote.")
+        .assert()
+        .success();
+    let third: Value = serde_json::from_str(&stdout(
+        cmd(&db_b)
+            .arg("sync")
+            .arg("push")
+            .arg(&target)
+            .arg("--json"),
+    ))
+    .unwrap();
+    let generation_three = third["generation"].as_str().unwrap().to_string();
+    assert_eq!(third["parent_generation"], generation_two);
+
+    let stale_status: Value = serde_json::from_str(&stdout(
+        cmd(&db_a)
+            .arg("sync")
+            .arg("status")
+            .arg(&target)
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(stale_status["stale_remote"], true);
+    assert_eq!(stale_status["generation"], generation_three);
+    cmd(&db_a)
+        .arg("sync")
+        .arg("push")
+        .arg(&target)
+        .arg("--json")
+        .assert()
+        .failure()
+        .stderr(contains("stale or untracked remote generation"));
+
+    let forced: Value = serde_json::from_str(&stdout(
+        cmd(&db_a)
+            .arg("sync")
+            .arg("push")
+            .arg(&target)
+            .arg("--force")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(forced["parent_generation"], generation_three);
+
+    let bundle = target.join("dukememory-sync-bundle.json");
+    fs::write(&bundle, b"corrupt remote bytes").unwrap();
+    let corrupt: Value = serde_json::from_str(&stdout(
+        cmd(&db_a)
+            .arg("sync")
+            .arg("status")
+            .arg(&target)
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(corrupt["ok"], false);
+    assert_eq!(corrupt["corrupt"], true);
+    assert_eq!(corrupt["recovery_available"], true);
+
+    let recovered: Value = serde_json::from_str(&stdout(
+        cmd(&db_a)
+            .arg("sync")
+            .arg("recover")
+            .arg(&target)
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(recovered["ok"], true);
+    assert_eq!(recovered["generation"], generation_three);
+    assert!(recovered["corrupt_archive"].as_str().is_some());
+
+    let lock = target.join(".dukememory-sync.lock");
+    fs::write(
+        &lock,
+        serde_json::to_vec(&serde_json::json!({
+            "token": "active-test-lock",
+            "pid": 4242,
+            "acquired_at": now_ms(),
+            "expires_at": now_ms() + 60_000,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let active_lock_status: Value = serde_json::from_str(&stdout(
+        cmd(&db_a)
+            .arg("sync")
+            .arg("status")
+            .arg(&target)
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(active_lock_status["lock_active"], true);
+    assert_eq!(active_lock_status["lock_stale"], false);
+    cmd(&db_a)
+        .arg("sync")
+        .arg("push")
+        .arg(&target)
+        .assert()
+        .failure()
+        .stderr(contains("sync target is locked"));
+
+    fs::write(
+        &lock,
+        serde_json::to_vec(&serde_json::json!({
+            "token": "stale-test-lock",
+            "pid": 4242,
+            "acquired_at": now_ms() - 180_000,
+            "expires_at": now_ms() - 60_000,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let stale_lock_status: Value = serde_json::from_str(&stdout(
+        cmd(&db_a)
+            .arg("sync")
+            .arg("status")
+            .arg(&target)
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(stale_lock_status["lock_active"], true);
+    assert_eq!(stale_lock_status["lock_stale"], true);
+    let after_stale_lock: Value = serde_json::from_str(&stdout(
+        cmd(&db_a)
+            .arg("sync")
+            .arg("push")
+            .arg(&target)
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(after_stale_lock["stale_lock_recovered"], true);
+    assert!(!lock.exists());
+}
+
+#[test]
+fn import_preserves_forward_supersession_links() {
+    let dir = tempdir().unwrap();
+    let source_db = dir.path().join("source.db");
+    let imported_db = dir.path().join("imported.db");
+    let export_path = dir.path().join("export.json");
+
+    let original_id = stdout(
+        cmd(&source_db)
+            .arg("add")
+            .arg("decision")
+            .arg("Original decision")
+            .arg("The original decision body."),
+    )
+    .trim()
+    .to_string();
+    let replacement_id = stdout(
+        cmd(&source_db)
+            .arg("add")
+            .arg("decision")
+            .arg("Replacement decision")
+            .arg("The replacement decision body.")
+            .arg("--supersedes")
+            .arg(&original_id),
+    )
+    .trim()
+    .to_string();
+
+    cmd(&source_db)
+        .arg("export")
+        .arg("--output")
+        .arg(&export_path)
+        .assert()
+        .success();
+    cmd(&imported_db)
+        .arg("import")
+        .arg(&export_path)
+        .assert()
+        .success()
+        .stdout(contains("imported: 2"));
+
+    let original: Value = serde_json::from_str(&stdout(
+        cmd(&imported_db).arg("get").arg(&original_id).arg("--json"),
+    ))
+    .unwrap();
+    let replacement: Value = serde_json::from_str(&stdout(
+        cmd(&imported_db)
+            .arg("get")
+            .arg(&replacement_id)
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(original["status"], "superseded");
+    assert_eq!(original["superseded_by"], replacement_id);
+    assert_eq!(replacement["supersedes"], original_id);
+}
+
+#[test]
 fn review_conflicts_links_session_and_vec_status() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
@@ -1243,18 +1501,17 @@ fn review_conflicts_links_session_and_vec_status() {
 fn sqlite_vec_backend_runs_knn_and_matches_json_fallback() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
+    let mut memory_ids = Vec::new();
     for (title, body) in [
         ("Vector alpha", "sqlite native cosine vector alpha detail"),
         ("Vector beta", "remote sync encrypted bundle beta detail"),
         ("Vector gamma", "HTTP graceful shutdown gamma detail"),
     ] {
-        cmd(&db)
-            .arg("add")
-            .arg("design_note")
-            .arg(title)
-            .arg(body)
-            .assert()
-            .success();
+        memory_ids.push(
+            stdout(cmd(&db).arg("add").arg("design_note").arg(title).arg(body))
+                .trim()
+                .to_string(),
+        );
     }
     cmd(&db)
         .arg("embed-index")
@@ -1264,6 +1521,24 @@ fn sqlite_vec_backend_runs_knn_and_matches_json_fallback() {
         .arg("local")
         .arg("--model")
         .arg("mock-small")
+        .assert()
+        .success();
+    let index_report =
+        serde_json::from_str::<Value>(&stdout(cmd(&db).arg("vec-index").arg("--json"))).unwrap();
+    assert_eq!(index_report["report"]["enabled"], true);
+    assert_eq!(index_report["report"]["consistent"], true);
+    assert_eq!(index_report["report"]["indexes"][0]["kind"], "memory");
+    assert_eq!(index_report["report"]["indexes"][0]["source_rows"], 3);
+    assert_eq!(index_report["report"]["indexes"][0]["indexed_rows"], 3);
+    cmd(&db)
+        .arg("embed-index")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .arg("--force")
         .assert()
         .success();
     cmd(&db)
@@ -1305,6 +1580,114 @@ fn sqlite_vec_backend_runs_knn_and_matches_json_fallback() {
             (native["score"].as_f64().unwrap() - fallback["score"].as_f64().unwrap()).abs();
         assert!(score_delta < 1e-5, "native and fallback scores diverged");
     }
+
+    let rebuilt = serde_json::from_str::<Value>(&stdout(
+        cmd(&db).arg("vec-index").arg("--rebuild").arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(rebuilt["rebuilt"], 1);
+    assert_eq!(rebuilt["report"]["consistent"], true);
+
+    cmd(&db)
+        .arg("delete")
+        .arg(&memory_ids[0])
+        .assert()
+        .success();
+    let after_delete =
+        serde_json::from_str::<Value>(&stdout(cmd(&db).arg("vec-index").arg("--json"))).unwrap();
+    assert_eq!(after_delete["report"]["consistent"], true);
+    assert_eq!(after_delete["report"]["indexes"][0]["source_rows"], 2);
+    assert_eq!(after_delete["report"]["indexes"][0]["indexed_rows"], 2);
+
+    Connection::open(&db)
+        .unwrap()
+        .execute(
+            "UPDATE vector_index_registry SET table_name = 'stale_vec_table' WHERE kind = 'memory'",
+            [],
+        )
+        .unwrap();
+    let recovered =
+        serde_json::from_str::<Value>(&stdout(cmd(&db).arg("vec-index").arg("--json"))).unwrap();
+    assert_eq!(recovered["report"]["consistent"], true);
+    assert_eq!(
+        recovered["report"]["indexes"][0]["table_name"],
+        "dukememory_memory_vec_64"
+    );
+
+    Connection::open(&db)
+        .unwrap()
+        .execute_batch("DROP TRIGGER dukememory_memory_vec_64_ai")
+        .unwrap();
+    cmd(&db)
+        .arg("vec-validate")
+        .arg("--backend")
+        .arg("sqlite-vec")
+        .assert()
+        .failure()
+        .stderr(contains("persistent sqlite-vec index is inconsistent"));
+    let repaired = serde_json::from_str::<Value>(&stdout(
+        cmd(&db).arg("vec-index").arg("--rebuild").arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(repaired["report"]["consistent"], true);
+    assert_eq!(repaired["report"]["indexes"][0]["triggers_ok"], true);
+}
+
+#[cfg(feature = "vec")]
+#[test]
+fn sqlite_vec_persists_rag_chunk_index() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let source = dir.path().join("source.txt");
+    fs::write(
+        &source,
+        "Persistent RAG vector index keeps project documentation searchable.\n",
+    )
+    .unwrap();
+
+    cmd(&db)
+        .arg("rag-ingest")
+        .arg(&source)
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--scope")
+        .arg("project")
+        .arg("--apply")
+        .arg("--embed")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .arg("--json")
+        .assert()
+        .success()
+        .stdout(contains("\"rag_chunks_indexed\": 1"));
+
+    let report =
+        serde_json::from_str::<Value>(&stdout(cmd(&db).arg("vec-index").arg("--json"))).unwrap();
+    assert_eq!(report["report"]["consistent"], true);
+    assert_eq!(report["report"]["indexes"][0]["kind"], "rag");
+    assert_eq!(report["report"]["indexes"][0]["source_rows"], 1);
+    assert_eq!(report["report"]["indexes"][0]["indexed_rows"], 1);
+
+    cmd(&db)
+        .arg("rag-debug")
+        .arg("persistent vector documentation")
+        .arg("--scope")
+        .arg("project")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .arg("--json")
+        .assert()
+        .success()
+        .stdout(contains("\"source_kind\": \"chunk\""))
+        .stdout(contains("\"semantic_score\":"));
 }
 
 #[test]
@@ -2768,7 +3151,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .arg("status")
         .assert()
         .success()
-        .stdout(contains("expected: 18"));
+        .stdout(contains("expected: 19"));
     cmd(&db)
         .arg("schema")
         .arg("verify")
@@ -2841,7 +3224,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .assert()
         .success()
         .stdout(contains("version:"))
-        .stdout(contains("schema: 18"));
+        .stdout(contains("schema: 19"));
 
     let install_dir = dir.path().join("install");
     let target = install_dir.join("dukememory");
@@ -3358,7 +3741,7 @@ fn v11_release_bundle_bench_and_self_host() {
 
     let bench = stdout(cmd(&db).arg("bench").arg("--json"));
     let bench_json: Value = serde_json::from_str(&bench).unwrap();
-    assert_eq!(bench_json["schema"], 18);
+    assert_eq!(bench_json["schema"], 19);
     assert_eq!(bench_json["memory_count"], 4);
     assert!(bench_json["db_bytes"].as_u64().unwrap() > 0);
 
@@ -3374,7 +3757,7 @@ fn v11_release_bundle_bench_and_self_host() {
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(bundle.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(manifest["schema"], 18);
+    assert_eq!(manifest["schema"], 19);
     assert_eq!(manifest["memory_stats"]["total"], 4);
     assert_eq!(manifest["binary_sha256"].as_str().unwrap().len(), 64);
 }
@@ -3408,7 +3791,7 @@ fn v12_always_on_operations() {
     );
     let health_json: Value = serde_json::from_str(&health).unwrap();
     assert_eq!(health_json["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(health_json["schema"], 18);
+    assert_eq!(health_json["schema"], 19);
     assert_eq!(health_json["endpoint_ok"], true);
 
     for _ in 0..3 {
@@ -3482,7 +3865,7 @@ fn v13_stabilization_integrity_optimize_and_large_http_request() {
     let integrity = stdout(cmd(&db).arg("integrity").arg("--json"));
     let integrity_json: Value = serde_json::from_str(&integrity).unwrap();
     assert_eq!(integrity_json["ok"], true);
-    assert_eq!(integrity_json["schema"], 18);
+    assert_eq!(integrity_json["schema"], 19);
     assert_eq!(integrity_json["integrity_check"], "ok");
 
     let optimized = stdout(cmd(&db).arg("optimize").arg("--vacuum").arg("--json"));

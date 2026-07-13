@@ -494,6 +494,7 @@ pub(crate) fn run() -> Result<()> {
             json,
         )?,
         Command::VecStatus => print_vec_status(&conn),
+        Command::VecIndex { rebuild, json } => print_vec_index(&conn, rebuild, json)?,
         Command::ServeMcp { content_length } => mcp_server::serve_mcp(&cli.db, content_length)?,
         Command::ProjectSummary { max_chars, json } => {
             print_project_summary(&conn, max_chars, json)?
