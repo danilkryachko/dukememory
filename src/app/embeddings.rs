@@ -1113,21 +1113,168 @@ fn provider_models(provider: &str, endpoint: &str) -> Result<Vec<ProviderModel>>
     }
 }
 
-pub(crate) fn print_vector_bench(
+#[derive(Debug, Serialize)]
+pub(crate) struct VectorBenchTiming {
+    pub(crate) total_ms: f64,
+    pub(crate) mean_ms: f64,
+    pub(crate) p50_ms: f64,
+    pub(crate) p95_ms: f64,
+    pub(crate) p99_ms: f64,
+    pub(crate) queries_per_second: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct VectorBenchReport {
+    pub(crate) version: u8,
+    pub(crate) provider: String,
+    pub(crate) endpoint: String,
+    pub(crate) model: String,
+    pub(crate) vectors: usize,
+    pub(crate) dimensions: usize,
+    pub(crate) iterations: usize,
+    pub(crate) warmup: usize,
+    pub(crate) best_score: Option<f64>,
+    pub(crate) json: Option<VectorBenchTiming>,
+    pub(crate) sqlite_vec: Option<VectorBenchTiming>,
+    pub(crate) top_match_equal: Option<bool>,
+    pub(crate) speedup: Option<f64>,
+    pub(crate) message: Option<String>,
+}
+
+pub(crate) struct VectorBenchOptions<'a> {
+    pub(crate) provider: &'a str,
+    pub(crate) endpoint: &'a str,
+    pub(crate) model: &'a str,
+    pub(crate) iterations: usize,
+    pub(crate) warmup: usize,
+    pub(crate) limit: Option<usize>,
+    pub(crate) json_out: bool,
+}
+
+fn percentile(sorted: &[f64], percentile: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let rank = percentile.clamp(0.0, 1.0) * (sorted.len() - 1) as f64;
+    let lower = rank.floor() as usize;
+    let upper = rank.ceil() as usize;
+    if lower == upper {
+        sorted[lower]
+    } else {
+        let weight = rank - lower as f64;
+        sorted[lower] + (sorted[upper] - sorted[lower]) * weight
+    }
+}
+
+fn benchmark_queries<T>(
+    iterations: usize,
+    warmup: usize,
+    mut query: impl FnMut() -> Result<T>,
+) -> Result<(T, VectorBenchTiming)> {
+    for _ in 0..warmup {
+        let _ = query()?;
+    }
+    let mut samples = Vec::with_capacity(iterations);
+    let mut last = None;
+    for _ in 0..iterations {
+        let started = std::time::Instant::now();
+        last = Some(query()?);
+        samples.push(started.elapsed().as_secs_f64() * 1000.0);
+    }
+    let total_ms = samples.iter().sum::<f64>();
+    let mean_ms = total_ms / iterations as f64;
+    samples.sort_by(f64::total_cmp);
+    Ok((
+        last.expect("iterations are validated as non-zero"),
+        VectorBenchTiming {
+            total_ms,
+            mean_ms,
+            p50_ms: percentile(&samples, 0.50),
+            p95_ms: percentile(&samples, 0.95),
+            p99_ms: percentile(&samples, 0.99),
+            queries_per_second: if mean_ms > 0.0 { 1000.0 / mean_ms } else { 0.0 },
+        },
+    ))
+}
+
+#[cfg(feature = "vec")]
+fn benchmark_sqlite_vec_queries(
     conn: &Connection,
-    provider: &str,
-    endpoint: &str,
-    model: &str,
-) -> Result<()> {
+    embeddings: &[(String, Vec<f32>)],
+    query: &[f32],
+    iterations: usize,
+    warmup: usize,
+) -> Result<((String, f64), VectorBenchTiming)> {
+    let table = "dukememory_vector_bench_vec";
+    let result = (|| -> Result<((String, f64), VectorBenchTiming)> {
+        conn.execute_batch(&format!(
+            r#"
+            DROP TABLE IF EXISTS temp.{table};
+            CREATE VIRTUAL TABLE temp.{table} USING vec0(
+                embedding float[{}] distance_metric=cosine
+            );
+            "#,
+            query.len()
+        ))?;
+        {
+            let mut insert = conn.prepare(&format!(
+                "INSERT INTO {table}(rowid, embedding) VALUES (?1, ?2)"
+            ))?;
+            for (index, (_, embedding)) in embeddings.iter().enumerate() {
+                insert.execute(params![
+                    i64::try_from(index + 1)?,
+                    serde_json::to_string(embedding)?
+                ])?;
+            }
+        }
+        let query_json = serde_json::to_string(query)?;
+        benchmark_queries(iterations, warmup, || {
+            let (rowid, distance) = conn.query_row(
+                &format!("SELECT rowid, distance FROM {table} WHERE embedding MATCH ?1 AND k = 1"),
+                [&query_json],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)),
+            )?;
+            let index = usize::try_from(rowid.saturating_sub(1))?;
+            let memory_id = embeddings
+                .get(index)
+                .map(|(memory_id, _)| memory_id.clone())
+                .ok_or_else(|| anyhow::anyhow!("sqlite-vec benchmark returned invalid rowid"))?;
+            Ok((memory_id, 1.0 - distance))
+        })
+    })();
+    let _ = conn.execute_batch(&format!("DROP TABLE IF EXISTS temp.{table};"));
+    result
+}
+
+pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<'_>) -> Result<()> {
+    let VectorBenchOptions {
+        provider,
+        endpoint,
+        model,
+        iterations,
+        warmup,
+        limit,
+        json_out,
+    } = options;
+    if iterations == 0 || iterations > 10_000 {
+        bail!("vector-bench --iterations must be between 1 and 10000");
+    }
+    if warmup > 10_000 {
+        bail!("vector-bench --warmup must not exceed 10000");
+    }
+    if limit == Some(0) {
+        bail!("vector-bench --limit must be greater than zero");
+    }
     let endpoint_key = embedding_endpoint_key(provider, endpoint);
     let mut stmt = conn.prepare(
         r#"
         SELECT memory_id, embedding
         FROM memory_embeddings
         WHERE endpoint = ?1 AND model = ?2
+        ORDER BY memory_id
         "#,
     )?;
-    let embeddings = stmt
+    let mut embeddings = stmt
         .query_map(params![endpoint_key, model], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
@@ -1139,71 +1286,108 @@ pub(crate) fn print_vector_bench(
                 .map_err(Into::into)
         })
         .collect::<Result<Vec<_>>>()?;
+    if let Some(limit) = limit {
+        embeddings.truncate(limit);
+    }
     if embeddings.is_empty() {
-        println!("vectors: 0");
-        println!("bench: no indexed embeddings");
+        let report = VectorBenchReport {
+            version: 2,
+            provider: provider.to_string(),
+            endpoint: endpoint_key,
+            model: model.to_string(),
+            vectors: 0,
+            dimensions: 0,
+            iterations,
+            warmup,
+            best_score: None,
+            json: None,
+            sqlite_vec: None,
+            top_match_equal: None,
+            speedup: None,
+            message: Some("no indexed embeddings".to_string()),
+        };
+        if json_out {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            println!("vectors: 0");
+            println!("bench: no indexed embeddings");
+        }
         return Ok(());
     }
     let query = embeddings[0].1.clone();
-    let iterations = 25;
-    let started = std::time::Instant::now();
-    let mut fallback_best = (String::new(), f64::NEG_INFINITY);
-    for _ in 0..iterations {
+    let (fallback_best, json_timing) = benchmark_queries(iterations, warmup, || {
+        let mut best = (String::new(), f64::NEG_INFINITY);
         for (memory_id, embedding) in &embeddings {
             let score = cosine_similarity(&query, embedding);
-            if score > fallback_best.1 {
-                fallback_best = (memory_id.clone(), score);
+            if score > best.1 {
+                best = (memory_id.clone(), score);
             }
         }
-    }
-    let fallback_elapsed = started.elapsed();
-    println!("vectors: {}", embeddings.len());
-    println!("dimensions: {}", query.len());
-    println!("iterations: {iterations}");
-    println!("best_score: {:.4}", fallback_best.1);
-    println!(
-        "json_elapsed_ms: {:.3}",
-        fallback_elapsed.as_secs_f64() * 1000.0
-    );
+        Ok(best)
+    })?;
+    #[allow(unused_mut)]
+    let mut report = VectorBenchReport {
+        version: 2,
+        provider: provider.to_string(),
+        endpoint: endpoint_key.clone(),
+        model: model.to_string(),
+        vectors: embeddings.len(),
+        dimensions: query.len(),
+        iterations,
+        warmup,
+        best_score: Some(fallback_best.1),
+        json: Some(json_timing),
+        sqlite_vec: None,
+        top_match_equal: None,
+        speedup: None,
+        message: None,
+    };
     #[cfg(feature = "vec")]
     {
-        let started = std::time::Instant::now();
-        let mut native_best = None;
-        for _ in 0..iterations {
-            native_best = sqlite_vec_memory_search(
-                conn,
-                SqliteVecMemorySearchOptions {
-                    endpoint: &endpoint_key,
-                    model,
-                    query_embedding: &query,
-                    limit: 1,
-                    types: &[],
-                    statuses: &[],
-                    scope: None,
-                },
-            )?
-            .into_iter()
-            .next();
+        let (native_best, native_timing) =
+            benchmark_sqlite_vec_queries(conn, &embeddings, &query, iterations, warmup)?;
+        let top_match_equal = native_best.0 == fallback_best.0;
+        report.top_match_equal = Some(top_match_equal);
+        if native_timing.mean_ms > 0.0 {
+            report.speedup = report
+                .json
+                .as_ref()
+                .map(|timing| timing.mean_ms / native_timing.mean_ms);
         }
-        let native_elapsed = started.elapsed();
-        let top_match_equal = native_best
-            .as_ref()
-            .map(|(id, _)| id == &fallback_best.0)
-            .unwrap_or(false);
-        println!(
-            "sqlite_vec_elapsed_ms: {:.3}",
-            native_elapsed.as_secs_f64() * 1000.0
-        );
-        println!("top_match_equal: {top_match_equal}");
-        if native_elapsed.as_nanos() > 0 {
-            println!(
-                "speedup: {:.3}",
-                fallback_elapsed.as_secs_f64() / native_elapsed.as_secs_f64()
-            );
-        }
+        report.sqlite_vec = Some(native_timing);
     }
-    #[cfg(not(feature = "vec"))]
-    println!("sqlite_vec_elapsed_ms: unavailable (build with --features vec)");
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("vectors: {}", report.vectors);
+    println!("dimensions: {}", report.dimensions);
+    println!("iterations: {}", report.iterations);
+    println!("warmup: {}", report.warmup);
+    println!("best_score: {:.4}", report.best_score.unwrap_or_default());
+    if let Some(timing) = &report.json {
+        println!("json_elapsed_ms: {:.3}", timing.total_ms);
+        println!("json_mean_ms: {:.3}", timing.mean_ms);
+        println!("json_p50_ms: {:.3}", timing.p50_ms);
+        println!("json_p95_ms: {:.3}", timing.p95_ms);
+        println!("json_p99_ms: {:.3}", timing.p99_ms);
+        println!("json_qps: {:.1}", timing.queries_per_second);
+    }
+    if let Some(timing) = &report.sqlite_vec {
+        println!("sqlite_vec_elapsed_ms: {:.3}", timing.total_ms);
+        println!("sqlite_vec_mean_ms: {:.3}", timing.mean_ms);
+        println!("sqlite_vec_p50_ms: {:.3}", timing.p50_ms);
+        println!("sqlite_vec_p95_ms: {:.3}", timing.p95_ms);
+        println!("sqlite_vec_p99_ms: {:.3}", timing.p99_ms);
+        println!("sqlite_vec_qps: {:.1}", timing.queries_per_second);
+        println!(
+            "top_match_equal: {}",
+            report.top_match_equal.unwrap_or(false)
+        );
+        println!("speedup: {:.3}", report.speedup.unwrap_or_default());
+    } else {
+        println!("sqlite_vec_elapsed_ms: unavailable (build with --features vec)");
+    }
     Ok(())
 }
 

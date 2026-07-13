@@ -415,7 +415,7 @@ pub(super) fn handle_http_request(
                 since_days,
             )?}))
         }
-        ("GET", "/memory-control-center-v2") => {
+        ("GET", "/memory-control-center") | ("GET", "/memory-control-center-v2") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
@@ -424,12 +424,15 @@ pub(super) fn handle_http_request(
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
                 .unwrap_or(7);
-            HttpResponse::ok(json!({"control_v2": memory_control_center_v2_report(
-                &conn,
-                &ctx.db,
-                &ctx.root,
-                since_days,
-            )?}))
+            let report = memory_control_center_v2_report(&conn, &ctx.db, &ctx.root, since_days)?;
+            if path == "/memory-control-center" {
+                HttpResponse::ok(json!({
+                    "control": report,
+                    "current_version": "v2",
+                }))
+            } else {
+                HttpResponse::ok(json!({"control_v2": report}))
+            }
         }
         ("GET", "/auto-supersede-v2") => {
             let params = parse_query(query);
@@ -1948,7 +1951,7 @@ pub(super) fn handle_http_request(
                 true,
             )?}))
         }
-        ("GET", "/web-control-center-v12") => {
+        ("GET", "/web-control-center") | ("GET", "/web-control-center-v12") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
@@ -1962,14 +1965,22 @@ pub(super) fn handle_http_request(
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
                 .unwrap_or(7);
-            HttpResponse::ok(json!({"control_v12": web_control_center_v12_report(
+            let report = web_control_center_v12_report(
                 &conn,
                 &ctx.db,
                 &ctx.root,
                 target.as_deref(),
                 task,
                 since_days,
-            )?}))
+            )?;
+            if path == "/web-control-center" {
+                HttpResponse::ok(json!({
+                    "control": report,
+                    "current_version": "v12",
+                }))
+            } else {
+                HttpResponse::ok(json!({"control_v12": report}))
+            }
         }
         ("GET", "/mcp-discipline-v2") => {
             let params = parse_query(query);

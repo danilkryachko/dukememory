@@ -2686,7 +2686,7 @@ Use `dukememory memory-test-harness --json` to run lightweight retrieval probes 
 
 Use `dukememory agent-audit-v2 --json` to audit read discipline, semantic effectiveness, write pressure, feedback, and explainability.
 
-Use `dukememory memory-control-center-v2 --json` to aggregate health, intent, probes, audit, recall explanations, and autonomy.
+Use `dukememory memory-control-center --json` to aggregate health, intent, probes, audit, recall explanations, and autonomy; `memory-control-center-v2` remains available for pinned clients.
 
 Use `dukememory auto-supersede-v2 --json` to safely supersede duplicate/obsolete cards; use `--apply` only for high-confidence reversible status changes.
 
@@ -2912,7 +2912,7 @@ dukememory explain-recall "query" --json
 dukememory project-intent-map --json
 dukememory memory-test-harness --json
 dukememory agent-audit-v2 --json
-dukememory memory-control-center-v2 --json
+dukememory memory-control-center --json
 dukememory auto-supersede-v2 --json
 dukememory memory-diff-apply --json
 dukememory recall-benchmark-suite --json
@@ -3397,8 +3397,17 @@ fn print_vec_index(conn: &Connection, rebuild: bool, json_out: bool) -> Result<(
     }
     for index in report.indexes {
         println!(
-            "{} {}d source={} indexed={} table={}",
-            index.kind, index.dimensions, index.source_rows, index.indexed_rows, index.table_name
+            "{} {}d source={} indexed={} missing={} orphaned={} triggers={}/4 version={}/{} table={}",
+            index.kind,
+            index.dimensions,
+            index.source_rows,
+            index.indexed_rows,
+            index.missing_rows,
+            index.orphaned_rows,
+            index.trigger_count,
+            index.trigger_version,
+            index.expected_trigger_version,
+            index.table_name
         );
     }
     Ok(())
@@ -3468,6 +3477,7 @@ fn print_completions(shell: CompletionShell) {
         "memory-test-harness",
         "agent-audit-v2",
         "memory-control-center-v2",
+        "memory-control-center",
         "auto-supersede-v2",
         "memory-diff-apply",
         "recall-benchmark-suite",
@@ -3532,6 +3542,7 @@ fn print_completions(shell: CompletionShell) {
         "fleet-supervisor-watch-install",
         "web-control-center-v11",
         "web-control-center-v12",
+        "web-control-center",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -3666,7 +3677,7 @@ fn print_manpage() {
     println!("  project-intent-map --json     summarize goals, constraints, tasks");
     println!("  memory-test-harness --json    run retrieval quality probes");
     println!("  agent-audit-v2 --json         stricter agent memory behavior audit");
-    println!("  memory-control-center-v2      aggregate health, recall, tests, autonomy");
+    println!("  memory-control-center         aggregate health, recall, tests, autonomy");
     println!("  auto-supersede-v2 --json      safely supersede duplicate memory");
     println!("  memory-diff-apply --json      write high-confidence diff memory cards");
     println!("  recall-benchmark-suite        compare retrieval probes against baseline");

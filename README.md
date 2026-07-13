@@ -201,7 +201,7 @@ dukememory embed-index
 dukememory embed-status --json
 dukememory vec-validate --backend json
 dukememory vec-index --json
-dukememory vector-bench
+dukememory vector-bench --iterations 100 --warmup 10 --limit 10000 --json
 ```
 
 The default build keeps application-side cosine search as a portable fallback.
@@ -213,9 +213,13 @@ both a native SQL distance check and a real `vec0` KNN probe; `embed-search
 
 The vec-enabled build maintains persistent dimension-specific `vec0` indexes
 for both memory cards and RAG chunks. Existing JSON embeddings are backfilled on
-open, insert/update/delete triggers keep row ids synchronized, and
-`vec-index --rebuild` repairs index drift. Internal semantic flows fall back to
-the JSON scorer if a native query fails; an explicitly requested
+open, insert/update/delete triggers keep row ids synchronized, and startup
+health checks reconstruct missing triggers, stale registries, invalid virtual
+tables, and missing/orphaned row memberships. `vec-index --json` exposes these
+checks; `vec-index --rebuild` remains available for an explicit rebuild.
+`vector-bench` reports exact sample size, warmup, p50/p95/p99 latency, QPS, and
+JSON/vec0 top-match equivalence. Internal semantic flows fall back to the JSON
+scorer if a native query fails; an explicitly requested
 `--backend sqlite-vec` remains strict so operational checks cannot hide damage.
 
 RAG commands use the same embedding provider for memory cards and can be
@@ -395,7 +399,7 @@ dukememory explain-recall "auth decisions" --json
 dukememory project-intent-map --json
 dukememory memory-test-harness --json
 dukememory agent-audit-v2 --json
-dukememory memory-control-center-v2 --json
+dukememory memory-control-center --json
 dukememory auto-supersede-v2 --json
 dukememory memory-diff-apply --json
 dukememory recall-benchmark-suite --json
@@ -457,7 +461,7 @@ dukememory web-control-center-v10 --json
 dukememory fleet-supervisor-watch-install --dry-run --json
 dukememory web-control-center-v11 --json
 dukememory release-gate-v3 --json
-dukememory web-control-center-v12 --json
+dukememory web-control-center --json
 dukememory auto-ranking-tune --apply --json
 dukememory ranking-profile --profile balanced --apply --json
 dukememory project-template --kind rust-cli --apply --json
@@ -475,6 +479,12 @@ selected, intent maps define project direction, probes measure retrieval quality
 safe supersede and diff apply keep durable cards clean, governance policy bounds
 autonomous writes, sync stays local-first, and release gate v2 catches memory
 regressions before publishing.
+
+`memory-control-center` currently maps to V2 and `web-control-center` to V12.
+The versioned spellings remain supported for clients that pin a response model.
+`autonomous-supervisor --apply` uses conservative, rollback-backed maintenance;
+it reports inferred feedback candidates but never materializes them unless
+`auto-feedback` is invoked explicitly.
 
 ## Development
 

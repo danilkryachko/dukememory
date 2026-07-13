@@ -1866,6 +1866,10 @@ pub(crate) struct AutonomousSupervisorReport {
     pub(crate) root: String,
     pub(crate) since_days: i64,
     pub(crate) applied: bool,
+    pub(crate) quality_before: f64,
+    pub(crate) quality_after: f64,
+    pub(crate) quality_delta: f64,
+    pub(crate) guardrails: Vec<String>,
     pub(crate) doctor_before: ProjectDoctorReport,
     pub(crate) planned_actions: Vec<AutonomousSupervisorAction>,
     pub(crate) executed_actions: Vec<AutonomousSupervisorAction>,
@@ -11561,6 +11565,9 @@ pub(crate) fn print_autonomous_supervisor(
     println!("Autonomous Supervisor");
     println!("status: {}", report.status);
     println!("applied: {}", report.applied);
+    println!("quality_before: {:.1}", report.quality_before);
+    println!("quality_after: {:.1}", report.quality_after);
+    println!("quality_delta: {:+.1}", report.quality_delta);
     for action in &report.planned_actions {
         println!("plan: {} - {}", action.name, action.reason);
     }
@@ -11578,6 +11585,7 @@ pub(crate) fn autonomous_supervisor_report(
     apply: bool,
 ) -> Result<AutonomousSupervisorReport> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let quality_before = quality_report(conn, since_days, 100)?.average_score;
     let doctor_before = project_doctor_report(conn, db, &root, since_days, false)?;
     let planned_actions = autonomous_supervisor_plan(&doctor_before);
     let mut executed_actions = Vec::new();
@@ -11612,8 +11620,14 @@ pub(crate) fn autonomous_supervisor_report(
             }
         }
     }
-    let autonomous_loop =
-        autonomous_loop_report(conn, db, &root, since_days, AutonomousLevel::Normal, apply)?;
+    let autonomous_loop = autonomous_loop_report(
+        conn,
+        db,
+        &root,
+        since_days,
+        AutonomousLevel::Conservative,
+        apply,
+    )?;
     if apply {
         executed_actions.push(AutonomousSupervisorAction {
             name: "autonomous_loop".to_string(),
@@ -11644,6 +11658,8 @@ pub(crate) fn autonomous_supervisor_report(
         });
     }
     let doctor_after = project_doctor_report(conn, db, &root, since_days, apply)?;
+    let quality_after = quality_report(conn, since_days, 100)?.average_score;
+    let quality_delta = quality_after - quality_before;
     if apply {
         executed_actions.push(AutonomousSupervisorAction {
             name: "doctor_project".to_string(),
@@ -11663,13 +11679,19 @@ pub(crate) fn autonomous_supervisor_report(
     }
     recommendations.sort();
     recommendations.dedup();
+    let guardrails = vec![
+        "conservative autonomous level only".to_string(),
+        "inferred feedback is previewed but never materialized automatically".to_string(),
+        "rollback backup is created before autonomous mutations".to_string(),
+        "inbox candidates remain reviewable; no automatic approval or supersession".to_string(),
+    ];
     let ok = if apply {
         doctor_after.ok && autonomous_loop.ok && agent_enforce.ok && contract_v2.ok
     } else {
         doctor_before.ok && planned_actions.is_empty()
     };
     Ok(AutonomousSupervisorReport {
-        version: 1,
+        version: 2,
         ok,
         status: if ok {
             "ready"
@@ -11682,6 +11704,10 @@ pub(crate) fn autonomous_supervisor_report(
         root: root.display().to_string(),
         since_days,
         applied: apply,
+        quality_before,
+        quality_after,
+        quality_delta,
+        guardrails,
         doctor_before,
         planned_actions,
         executed_actions,
@@ -13651,6 +13677,7 @@ fn agent_required_commands() -> &'static [&'static str] {
         "memory-test-harness",
         "agent-audit-v2",
         "memory-control-center-v2",
+        "memory-control-center",
         "auto-supersede-v2",
         "memory-diff-apply",
         "recall-benchmark-suite",
@@ -13715,6 +13742,7 @@ fn agent_required_commands() -> &'static [&'static str] {
         "fleet-supervisor-watch-install",
         "web-control-center-v11",
         "web-control-center-v12",
+        "web-control-center",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -15862,7 +15890,7 @@ fn run_dashboard_autonomous_repair(
 fn compact_autonomous_repair_detail(report: &AutonomousReport) -> String {
     let mut parts = vec![format!("ok={} actions={}", report.ok, report.actions.len())];
     for kind in [
-        "inferred_feedback",
+        "inferred_feedback_preview",
         "gap_inbox",
         "gap_inbox_resolved",
         "live_eval_snapshot",

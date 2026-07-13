@@ -911,7 +911,7 @@
         api(`/project-intent-map?${params.toString()}`),
         api(`/memory-test-harness?${params.toString()}&limit=8`),
         api(`/agent-audit-v2?${params.toString()}`),
-        api(`/memory-control-center-v2?${params.toString()}`),
+        api(`/memory-control-center?${params.toString()}`),
         api(`/auto-supersede-v2?${params.toString()}`),
         api(`/memory-diff-apply?${params.toString()}`),
         api(`/recall-benchmark-suite?${params.toString()}&limit=8`),
@@ -972,7 +972,7 @@
         api(`/mcp-discipline-v3?${params.toString()}`),
         api(`/fleet-quality?${params.toString()}`),
         api(`/release-gate-v3?${params.toString()}`),
-        api(`/web-control-center-v12?${params.toString()}&task=${encodeURIComponent(taskQuery)}`)
+        api(`/web-control-center?${params.toString()}&task=${encodeURIComponent(taskQuery)}`)
       ]);
       state.roi = roi.roi;
       state.agentAudit = audit.agent_audit;
@@ -1008,7 +1008,7 @@
       state.intentMap = intentMap.intent_map;
       state.memoryHarness = memoryHarness.harness;
       state.agentAuditV2 = agentAuditV2.audit_v2;
-      state.controlCenterV2 = controlCenterV2.control_v2;
+      state.controlCenterV2 = controlCenterV2.control;
       state.autoSupersedeV2 = autoSupersedeV2.supersede;
       state.memoryDiffApply = memoryDiffApply.apply;
       state.recallBenchmark = recallBenchmark.benchmark;
@@ -1069,7 +1069,7 @@
       state.mcpDisciplineV3 = mcpDisciplineV3.discipline_v3;
       state.fleetQuality = fleetQuality.fleet_quality;
       state.releaseGateV3 = releaseGateV3.release_gate_v3;
-      state.webControlV12 = webControlV12.control_v12;
+      state.webControlV12 = webControlV12.control;
       renderSettings();
     }
 

@@ -1300,6 +1300,35 @@ fn sync_generations_locks_stale_detection_and_recovery() {
     assert_eq!(recovered["generation"], generation_three);
     assert!(recovered["corrupt_archive"].as_str().is_some());
 
+    let verified_bundle = fs::read(&bundle).unwrap();
+    let previous = target.join("dukememory-sync-bundle.previous.json");
+    let interrupted = target.join(".dukememory-sync-bundle.json.interrupted.tmp");
+    fs::write(&interrupted, b"partial writer output").unwrap();
+    let partial_status: Value = serde_json::from_str(&stdout(
+        cmd(&db_a)
+            .arg("sync")
+            .arg("status")
+            .arg(&target)
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(partial_status["verified"], true);
+    assert_eq!(partial_status["generation"], generation_three);
+
+    fs::write(&bundle, b"corrupt current generation").unwrap();
+    fs::write(&previous, b"corrupt previous generation").unwrap();
+    cmd(&db_a)
+        .arg("sync")
+        .arg("recover")
+        .arg(&target)
+        .arg("--json")
+        .assert()
+        .failure()
+        .stderr(contains("previous sync generation is invalid"));
+    assert_eq!(fs::read(&bundle).unwrap(), b"corrupt current generation");
+    fs::write(&bundle, &verified_bundle).unwrap();
+    fs::write(&previous, &verified_bundle).unwrap();
+
     let lock = target.join(".dukememory-sync.lock");
     fs::write(
         &lock,
@@ -1530,6 +1559,10 @@ fn sqlite_vec_backend_runs_knn_and_matches_json_fallback() {
     assert_eq!(index_report["report"]["indexes"][0]["kind"], "memory");
     assert_eq!(index_report["report"]["indexes"][0]["source_rows"], 3);
     assert_eq!(index_report["report"]["indexes"][0]["indexed_rows"], 3);
+    assert_eq!(index_report["report"]["indexes"][0]["missing_rows"], 0);
+    assert_eq!(index_report["report"]["indexes"][0]["orphaned_rows"], 0);
+    assert_eq!(index_report["report"]["indexes"][0]["trigger_count"], 4);
+    assert_eq!(index_report["report"]["indexes"][0]["trigger_version"], 2);
     cmd(&db)
         .arg("embed-index")
         .arg("--provider")
@@ -1618,19 +1651,45 @@ fn sqlite_vec_backend_runs_knn_and_matches_json_fallback() {
         .unwrap()
         .execute_batch("DROP TRIGGER dukememory_memory_vec_64_ai")
         .unwrap();
+    let repaired =
+        serde_json::from_str::<Value>(&stdout(cmd(&db).arg("vec-index").arg("--json"))).unwrap();
+    assert_eq!(repaired["report"]["consistent"], true);
+    assert_eq!(repaired["report"]["indexes"][0]["triggers_ok"], true);
+    assert_eq!(repaired["report"]["indexes"][0]["trigger_count"], 4);
+
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        r#"
+        DROP TRIGGER dukememory_memory_vec_64_ai;
+        DROP TRIGGER dukememory_memory_vec_64_au_remove;
+        DROP TRIGGER dukememory_memory_vec_64_au_upsert;
+        DROP TRIGGER dukememory_memory_vec_64_ad;
+        UPDATE memory_embeddings
+        SET rowid = rowid + 1000000
+        WHERE rowid = (SELECT MIN(rowid) FROM memory_embeddings);
+        "#,
+    )
+    .unwrap();
+    drop(conn);
+    let membership_repaired =
+        serde_json::from_str::<Value>(&stdout(cmd(&db).arg("vec-index").arg("--json"))).unwrap();
+    assert_eq!(membership_repaired["report"]["consistent"], true);
+    assert_eq!(
+        membership_repaired["report"]["indexes"][0]["missing_rows"],
+        0
+    );
+    assert_eq!(
+        membership_repaired["report"]["indexes"][0]["orphaned_rows"],
+        0
+    );
+
     cmd(&db)
         .arg("vec-validate")
         .arg("--backend")
         .arg("sqlite-vec")
         .assert()
-        .failure()
-        .stderr(contains("persistent sqlite-vec index is inconsistent"));
-    let repaired = serde_json::from_str::<Value>(&stdout(
-        cmd(&db).arg("vec-index").arg("--rebuild").arg("--json"),
-    ))
-    .unwrap();
-    assert_eq!(repaired["report"]["consistent"], true);
-    assert_eq!(repaired["report"]["indexes"][0]["triggers_ok"], true);
+        .success()
+        .stdout(contains("persistent index(es) consistent"));
 }
 
 #[cfg(feature = "vec")]
@@ -2604,6 +2663,79 @@ fn v3_project_intelligence_rhai_suggest_compact_and_lifecycle() {
 }
 
 #[test]
+fn vector_bench_reports_configured_scale_and_latency_percentiles() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    cmd(&db).arg("list").arg("--json").assert().success();
+    let mut conn = Connection::open(&db).unwrap();
+    let transaction = conn.transaction().unwrap();
+    for index in 0..128 {
+        let memory_id = format!("bench-{index:03}");
+        transaction
+            .execute(
+                r#"
+                INSERT INTO memories(
+                    id, type, scope, title, body, status, created_at, updated_at, confidence
+                ) VALUES (?1, 'note', 'project', ?2, ?3, 'active', ?4, ?4, 1.0)
+                "#,
+                params![
+                    memory_id,
+                    format!("Benchmark {index}"),
+                    format!("Vector benchmark fixture {index}"),
+                    index as i64 + 1,
+                ],
+            )
+            .unwrap();
+        let mut embedding = vec![0.0_f32; 64];
+        embedding[index % 64] = 1.0;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO memory_embeddings(
+                    memory_id, model, endpoint, dimensions, embedding, content_hash, updated_at
+                ) VALUES (?1, 'mock-small', 'mock:local', 64, ?2, ?3, ?4)
+                "#,
+                params![
+                    memory_id,
+                    serde_json::to_string(&embedding).unwrap(),
+                    format!("hash-{index}"),
+                    index as i64 + 1,
+                ],
+            )
+            .unwrap();
+    }
+    transaction.commit().unwrap();
+
+    let bench: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("vector-bench")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--iterations")
+            .arg("9")
+            .arg("--warmup")
+            .arg("2")
+            .arg("--limit")
+            .arg("64")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(bench["vectors"], 64);
+    assert_eq!(bench["dimensions"], 64);
+    assert_eq!(bench["iterations"], 9);
+    assert!(bench["json"]["p99_ms"].as_f64().unwrap() >= 0.0);
+    assert!(bench["json"]["queries_per_second"].as_f64().unwrap() >= 0.0);
+    if cfg!(feature = "vec") {
+        assert_eq!(bench["top_match_equal"], true);
+        assert!(bench["sqlite_vec"]["p95_ms"].as_f64().unwrap() >= 0.0);
+    }
+}
+
+#[test]
 fn v4_inbox_mock_embeddings_redaction_and_provider_registry() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
@@ -2676,6 +2808,37 @@ fn v4_inbox_mock_embeddings_redaction_and_provider_registry() {
         .assert()
         .success()
         .stdout(contains("vectors: 1"));
+
+    let bench: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("vector-bench")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--iterations")
+            .arg("5")
+            .arg("--warmup")
+            .arg("1")
+            .arg("--limit")
+            .arg("1")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(bench["version"], 2);
+    assert_eq!(bench["vectors"], 1);
+    assert_eq!(bench["iterations"], 5);
+    assert_eq!(bench["warmup"], 1);
+    assert!(bench["json"]["p50_ms"].as_f64().unwrap() >= 0.0);
+    assert!(bench["json"]["p95_ms"].as_f64().unwrap() >= 0.0);
+    if cfg!(feature = "vec") {
+        assert_eq!(bench["top_match_equal"], true);
+        assert!(bench["sqlite_vec"]["queries_per_second"].as_f64().unwrap() >= 0.0);
+    } else {
+        assert!(bench["sqlite_vec"].is_null());
+    }
 
     cmd(&db)
         .arg("add")
@@ -9501,6 +9664,7 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-test-harness",
         "agent-audit-v2",
         "memory-control-center-v2",
+        "memory-control-center",
         "auto-supersede-v2",
         "memory-diff-apply",
         "recall-benchmark-suite",
@@ -9563,6 +9727,7 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "fleet-supervisor-watch-install",
         "web-control-center-v11",
         "web-control-center-v12",
+        "web-control-center",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -9614,6 +9779,7 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "memory-test-harness",
         "agent-audit-v2",
         "memory-control-center-v2",
+        "memory-control-center",
         "auto-supersede-v2",
         "memory-diff-apply",
         "recall-benchmark-suite",
@@ -9676,6 +9842,7 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "fleet-supervisor-watch-install",
         "web-control-center-v11",
         "web-control-center-v12",
+        "web-control-center",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -10596,7 +10763,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/project-intent-map"));
     assert!(html.contains("/memory-test-harness"));
     assert!(html.contains("/agent-audit-v2"));
-    assert!(html.contains("/memory-control-center-v2"));
+    assert!(html.contains("/memory-control-center?"));
     assert!(html.contains("/auto-supersede-v2"));
     assert!(html.contains("/memory-diff-apply"));
     assert!(html.contains("/recall-benchmark-suite"));
@@ -10659,7 +10826,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/fleet-supervisor-watch-install"));
     assert!(html.contains("/web-control-center-v11"));
     assert!(html.contains("/release-gate-v3"));
-    assert!(html.contains("/web-control-center-v12"));
+    assert!(html.contains("/web-control-center?"));
     assert!(html.contains("/project-diff"));
     assert!(html.contains("/intelligence-dashboard"));
     assert!(html.contains("/remote-sync-dry-run"));
@@ -11128,6 +11295,12 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(control_v2.contains("\"control_v2\""));
     assert!(control_v2.contains("\"health\""));
+
+    let control = server.request("GET /memory-control-center?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(control.contains("\"control\""));
+    assert!(control.contains("\"current_version\":\"v2\""));
+    assert!(control.contains("\"health\""));
     assert!(control_v2.contains("\"next_actions\""));
 
     let auto_supersede_v2 = server.request("GET /auto-supersede-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
@@ -11538,6 +11711,12 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(web_control_v12.contains("\"control_v12\""));
     assert!(web_control_v12.contains("\"effectiveness_v2\""));
     assert!(web_control_v12.contains("\"release_gate_v3\""));
+
+    let web_control = server.request("GET /web-control-center?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(web_control.contains("\"control\""));
+    assert!(web_control.contains("\"current_version\":\"v12\""));
+    assert!(web_control.contains("\"release_gate_v3\""));
 
     let web_control_v11 = server.request("GET /web-control-center-v11?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
@@ -12983,6 +13162,22 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(control_v2_json["health"]["score"].as_f64().is_some());
     assert!(control_v2_json["next_actions"].as_array().is_some());
 
+    let control = stdout(
+        cmd(&db)
+            .arg("memory-control-center")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let control_json: Value = serde_json::from_str(&control).unwrap();
+    assert_eq!(control_json["status"], control_v2_json["status"]);
+    assert_eq!(
+        control_json["health"]["score"],
+        control_v2_json["health"]["score"]
+    );
+
     let auto_supersede_v2 = stdout(
         cmd(&db)
             .arg("auto-supersede-v2")
@@ -13757,7 +13952,24 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .arg("--json"),
     );
     let autonomous_supervisor_json: Value = serde_json::from_str(&autonomous_supervisor).unwrap();
-    assert_eq!(autonomous_supervisor_json["version"], 1);
+    assert_eq!(autonomous_supervisor_json["version"], 2);
+    assert_eq!(
+        autonomous_supervisor_json["autonomous_loop"]["level"],
+        "conservative"
+    );
+    assert!(autonomous_supervisor_json["quality_before"].is_number());
+    assert!(autonomous_supervisor_json["quality_after"].is_number());
+    assert!(autonomous_supervisor_json["quality_delta"].is_number());
+    assert!(
+        autonomous_supervisor_json["guardrails"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item
+                .as_str()
+                .unwrap()
+                .contains("never materialized automatically"))
+    );
     assert!(
         autonomous_supervisor_json["planned_actions"]
             .as_array()
@@ -13954,6 +14166,27 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let web_control_v12_json: Value = serde_json::from_str(&web_control_v12).unwrap();
     assert_eq!(web_control_v12_json["version"], 1);
     assert!(web_control_v12_json["panels"].as_array().is_some());
+
+    let web_control = stdout(
+        cmd(&db)
+            .arg("web-control-center")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(dir.path().join("remote-sync-target"))
+            .arg("--task")
+            .arg("project memory")
+            .arg("--since-days")
+            .arg("7")
+            .arg("--json"),
+    );
+    let web_control_json: Value = serde_json::from_str(&web_control).unwrap();
+    assert_eq!(web_control_json["version"], 1);
+    assert_eq!(web_control_json["status"], web_control_v12_json["status"]);
+    assert_eq!(
+        web_control_json["panels"].as_array().unwrap().len(),
+        web_control_v12_json["panels"].as_array().unwrap().len()
+    );
 
     let project_template = stdout(
         cmd(&db)
@@ -14152,6 +14385,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_array()
             .unwrap()
             .iter()
+            .any(|item| item.as_str() == Some("memory-control-center"))
+    );
+    assert!(
+        agent_enforce_json["required_commands"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|item| item.as_str() == Some("release-gate-v2"))
     );
     assert!(
@@ -14244,12 +14484,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .arg("--json"),
     );
     let gap_run_json: Value = serde_json::from_str(&gap_run).unwrap();
-    assert!(
-        gap_run_json["inferred_feedback"]["written"]
-            .as_u64()
-            .unwrap()
-            >= 1
-    );
+    assert_eq!(gap_run_json["inferred_feedback"]["written"], 0);
     assert!(
         gap_run_json["inferred_feedback"]["missing"]
             .as_u64()
@@ -14273,7 +14508,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item["kind"] == "inferred_feedback" && item["status"] == "ok")
+            .any(|item| item["kind"] == "inferred_feedback_preview" && item["status"] == "review")
     );
     assert!(
         gap_run_json["actions"]
@@ -14951,7 +15186,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
                 && action["detail"]
                     .as_str()
                     .unwrap()
-                    .contains("inferred_feedback:"))
+                    .contains("inferred_feedback_preview:"))
     );
     assert!(
         dashboard_repair_apply_json["projects"]

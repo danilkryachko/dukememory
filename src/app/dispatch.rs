@@ -663,7 +663,22 @@ pub(crate) fn run() -> Result<()> {
             provider,
             endpoint,
             model,
-        } => embeddings::print_vector_bench(&conn, &provider, &endpoint, &model)?,
+            iterations,
+            warmup,
+            limit,
+            json,
+        } => embeddings::print_vector_bench(
+            &conn,
+            embeddings::VectorBenchOptions {
+                provider: &provider,
+                endpoint: &endpoint,
+                model: &model,
+                iterations,
+                warmup,
+                limit,
+                json_out: json,
+            },
+        )?,
         Command::EmbedStatus {
             provider,
             endpoint,
@@ -963,6 +978,11 @@ pub(crate) fn run() -> Result<()> {
             json,
         } => print_agent_audit_v2(&conn, &root, since_days, json)?,
         Command::MemoryControlCenterV2 {
+            root,
+            since_days,
+            json,
+        } => print_memory_control_center_v2(&conn, &cli.db, &root, since_days, json)?,
+        Command::MemoryControlCenter {
             root,
             since_days,
             json,
@@ -1699,6 +1719,21 @@ pub(crate) fn run() -> Result<()> {
             json,
         } => print_release_gate_v3(&conn, &cli.db, &root, since_days, strict, run, json)?,
         Command::WebControlCenterV12 {
+            root,
+            target,
+            task,
+            since_days,
+            json,
+        } => print_web_control_center_v12(
+            &conn,
+            &cli.db,
+            &root,
+            target.as_deref(),
+            &task,
+            since_days,
+            json,
+        )?,
+        Command::WebControlCenter {
             root,
             target,
             task,

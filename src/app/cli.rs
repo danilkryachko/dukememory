@@ -579,6 +579,17 @@ pub(crate) enum Command {
         endpoint: String,
         #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
         model: String,
+        /// Number of measured queries.
+        #[arg(long, default_value_t = 25)]
+        iterations: usize,
+        /// Warmup queries excluded from measurements.
+        #[arg(long, default_value_t = 3)]
+        warmup: usize,
+        /// Benchmark at most this many indexed vectors.
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long)]
+        json: bool,
     },
     /// Show embedding freshness and indexed vector counts.
     EmbedStatus {
@@ -1021,6 +1032,15 @@ pub(crate) enum Command {
     },
     /// Aggregate the next-generation memory control center.
     MemoryControlCenterV2 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Aggregate the current stable memory control center (currently V2).
+    MemoryControlCenter {
         #[arg(long, default_value = ".")]
         root: PathBuf,
         #[arg(long, default_value_t = 7)]
@@ -1836,6 +1856,19 @@ pub(crate) enum Command {
     },
     /// Render the V12 web control model with effectiveness and release panels.
     WebControlCenterV12 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value = "project memory")]
+        task: String,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render the current stable web control model (currently V12).
+    WebControlCenter {
         #[arg(long, default_value = ".")]
         root: PathBuf,
         #[arg(long)]

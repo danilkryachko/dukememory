@@ -1344,19 +1344,26 @@ pub(crate) fn autonomous_run_once(
             ),
             memory_id: None,
         });
-        let inferred_feedback = materialize_inferred_feedback(conn, 7, 100)?;
+        let live_eval = live_eval_report(conn, 7)?;
+        let inferred_feedback = InferredFeedbackReport {
+            version: 1,
+            since_days: 7,
+            scanned: live_eval.reads,
+            written: 0,
+            useful: live_eval.inferred_useful,
+            missing: live_eval.inferred_missing,
+            skipped: live_eval.reads.saturating_sub(
+                live_eval
+                    .inferred_useful
+                    .saturating_add(live_eval.inferred_missing),
+            ),
+        };
         report.actions.push(AutonomousAction {
-            kind: "inferred_feedback".to_string(),
-            status: if inferred_feedback.written == 0 {
-                "skipped"
-            } else {
-                "ok"
-            }
-            .to_string(),
+            kind: "inferred_feedback_preview".to_string(),
+            status: "review".to_string(),
             detail: format!(
-                "scanned={} written={} useful={} missing={} skipped={}",
+                "scanned={} written=0 useful_candidates={} missing_candidates={} skipped={}; explicit auto-feedback is required",
                 inferred_feedback.scanned,
-                inferred_feedback.written,
                 inferred_feedback.useful,
                 inferred_feedback.missing,
                 inferred_feedback.skipped
@@ -1364,7 +1371,6 @@ pub(crate) fn autonomous_run_once(
             memory_id: None,
         });
         report.inferred_feedback = Some(inferred_feedback);
-        let live_eval = live_eval_report(conn, 7)?;
         report.actions.push(AutonomousAction {
             kind: "live_eval_snapshot".to_string(),
             status: "ok".to_string(),

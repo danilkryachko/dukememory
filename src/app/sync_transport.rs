@@ -178,8 +178,18 @@ pub(crate) fn acquire_sync_target_lock(target: &Path) -> Result<SyncTargetLock> 
         }
         match options.open(&path) {
             Ok(mut file) => {
-                file.write_all(&serde_json::to_vec_pretty(&metadata)?)?;
-                file.sync_all()?;
+                let write_result = (|| -> Result<()> {
+                    file.write_all(&serde_json::to_vec_pretty(&metadata)?)
+                        .with_context(|| format!("failed to write sync lock {}", path.display()))?;
+                    file.sync_all()
+                        .with_context(|| format!("failed to sync sync lock {}", path.display()))?;
+                    Ok(())
+                })();
+                if let Err(error) = write_result {
+                    drop(file);
+                    let _ = fs::remove_file(&path);
+                    return Err(error);
+                }
                 return Ok(SyncTargetLock {
                     path,
                     token,
@@ -256,12 +266,28 @@ pub(crate) fn write_private_atomic(path: &Path, content: &[u8]) -> Result<()> {
                 temporary.display()
             )
         })?;
+        sync_parent_directory(parent)?;
         Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> Result<()> {
+    OpenOptions::new()
+        .read(true)
+        .open(parent)
+        .with_context(|| format!("failed to open {} for directory sync", parent.display()))?
+        .sync_all()
+        .with_context(|| format!("failed to sync directory {}", parent.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -287,5 +313,107 @@ mod tests {
         let last = tampered.len() - 1;
         tampered[last] ^= 1;
         assert!(decrypt_sync_payload_with_passphrase(&tampered, passphrase).is_err());
+    }
+
+    #[test]
+    fn sync_lock_is_exclusive_and_drop_only_removes_owned_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("remote");
+        let lock_path = sync_target_lock_path(&target);
+        let lock = acquire_sync_target_lock(&target).unwrap();
+        assert!(lock_path.exists());
+        let error = acquire_sync_target_lock(&target).err().unwrap().to_string();
+        assert!(error.contains("sync target is locked"));
+
+        let replacement = SyncLockMetadata {
+            token: "replacement-owner".to_string(),
+            pid: 4242,
+            acquired_at: now_ms(),
+            expires_at: now_ms() + SYNC_LOCK_LEASE_MS,
+        };
+        fs::write(&lock_path, serde_json::to_vec(&replacement).unwrap()).unwrap();
+        drop(lock);
+        assert!(
+            lock_path.exists(),
+            "an old guard must not remove a new owner's lock"
+        );
+    }
+
+    #[test]
+    fn stale_lock_recovers_but_fresh_malformed_lock_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("remote");
+        let lock_path = sync_target_lock_path(&target);
+        fs::create_dir_all(&target).unwrap();
+        fs::write(&lock_path, b"partial-lock-write").unwrap();
+        let (active, _, stale) = sync_target_lock_status(&target);
+        assert!(active);
+        assert!(!stale);
+        assert!(acquire_sync_target_lock(&target).is_err());
+
+        let expired = SyncLockMetadata {
+            token: "expired-owner".to_string(),
+            pid: 4242,
+            acquired_at: now_ms() - SYNC_LOCK_LEASE_MS * 2,
+            expires_at: now_ms() - 1,
+        };
+        fs::write(&lock_path, serde_json::to_vec(&expired).unwrap()).unwrap();
+        let recovered = acquire_sync_target_lock(&target).unwrap();
+        assert!(recovered.stale_recovered);
+        drop(recovered);
+        assert!(!lock_path.exists());
+    }
+
+    #[test]
+    fn concurrent_sync_writers_have_exactly_one_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = std::sync::Arc::new(dir.path().join("remote"));
+        let start = std::sync::Arc::new(std::sync::Barrier::new(9));
+        let mut writers = Vec::new();
+        for _ in 0..8 {
+            let target = target.clone();
+            let start = start.clone();
+            writers.push(std::thread::spawn(move || {
+                start.wait();
+                match acquire_sync_target_lock(&target) {
+                    Ok(_lock) => {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        true
+                    }
+                    Err(_) => false,
+                }
+            }));
+        }
+        start.wait();
+        let owners = writers
+            .into_iter()
+            .map(|writer| writer.join().unwrap())
+            .filter(|owns_lock| *owns_lock)
+            .count();
+        assert_eq!(owners, 1);
+        assert!(!sync_target_lock_path(&target).exists());
+    }
+
+    #[test]
+    fn atomic_write_replaces_content_privately_without_temp_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("bundle.json");
+        write_private_atomic(&target, b"generation-one").unwrap();
+        write_private_atomic(&target, b"generation-two").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"generation-two");
+        let artifacts = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect::<Vec<_>>();
+        assert!(artifacts.is_empty());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 }

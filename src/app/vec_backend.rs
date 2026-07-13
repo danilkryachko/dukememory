@@ -7,6 +7,9 @@ use std::sync::OnceLock;
 static SQLITE_VEC_REGISTRATION: OnceLock<i32> = OnceLock::new();
 
 #[cfg(feature = "vec")]
+const VEC_TRIGGER_VERSION: i64 = 2;
+
+#[cfg(feature = "vec")]
 type SqliteExtensionEntry = unsafe extern "C" fn(
     *mut rusqlite::ffi::sqlite3,
     *mut *mut std::os::raw::c_char,
@@ -22,7 +25,12 @@ pub(crate) struct SqliteVecIndexRow {
     pub(crate) source_rows: usize,
     pub(crate) indexed_rows: usize,
     pub(crate) registry_rows: usize,
+    pub(crate) missing_rows: usize,
+    pub(crate) orphaned_rows: usize,
     pub(crate) rebuilt_at: i64,
+    pub(crate) trigger_version: i64,
+    pub(crate) expected_trigger_version: i64,
+    pub(crate) trigger_count: usize,
     pub(crate) triggers_ok: bool,
     pub(crate) consistent: bool,
 }
@@ -40,6 +48,38 @@ pub(crate) struct SqliteVecIndexReport {
 enum VecIndexKind {
     Memory,
     Rag,
+}
+
+#[cfg(feature = "vec")]
+struct VecIndexHealth {
+    table_exists: bool,
+    table_valid: bool,
+    source_rows: i64,
+    indexed_rows: i64,
+    missing_rows: i64,
+    orphaned_rows: i64,
+    trigger_count: i64,
+}
+
+#[cfg(feature = "vec")]
+struct VecIndexStructureHealth {
+    table_exists: bool,
+    table_valid: bool,
+    trigger_count: i64,
+}
+
+#[cfg(feature = "vec")]
+impl VecIndexHealth {
+    fn triggers_ok(&self) -> bool {
+        self.table_valid && self.trigger_count == 4
+    }
+
+    fn membership_ok(&self) -> bool {
+        self.table_valid
+            && self.source_rows == self.indexed_rows
+            && self.missing_rows == 0
+            && self.orphaned_rows == 0
+    }
 }
 
 #[cfg(feature = "vec")]
@@ -86,15 +126,21 @@ pub(crate) fn register_sqlite_vec() -> Result<()> {
 pub(crate) fn initialize_sqlite_vec_indexes(conn: &Connection) -> Result<()> {
     for kind in [VecIndexKind::Memory, VecIndexKind::Rag] {
         let sql = format!(
-            "SELECT DISTINCT dimensions FROM {} WHERE dimensions > 0 ORDER BY dimensions",
+            r#"
+            SELECT dimensions FROM (
+                SELECT DISTINCT dimensions FROM {} WHERE dimensions > 0
+                UNION
+                SELECT dimensions FROM vector_index_registry WHERE kind = ?1
+            ) ORDER BY dimensions
+            "#,
             kind.source_table()
         );
         let mut stmt = conn.prepare(&sql)?;
         let dimensions = stmt
-            .query_map([], |row| row.get::<_, i64>(0))?
+            .query_map([kind.name()], |row| row.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for dimensions in dimensions {
-            let _ = ensure_vec_index(conn, kind, usize::try_from(dimensions)?, false);
+            let _ = ensure_vec_index(conn, kind, usize::try_from(dimensions)?, false, true);
         }
     }
     Ok(())
@@ -119,18 +165,15 @@ fn ensure_vec_index(
     kind: VecIndexKind,
     dimensions: usize,
     rebuild: bool,
+    check_membership: bool,
 ) -> Result<String> {
     validate_dimensions(dimensions)?;
     let table_name = kind.table_name(dimensions);
     let source_table = kind.source_table();
-    let table_existed = conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
-            [&table_name],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
+    let initial_structure = vec_index_structure_health(conn, &table_name)?;
+    if initial_structure.table_exists && !initial_structure.table_valid {
+        drop_vec_index_objects(conn, &table_name)?;
+    }
     conn.execute_batch(&format!(
         r#"
         CREATE VIRTUAL TABLE IF NOT EXISTS {table_name} USING vec0(
@@ -148,17 +191,139 @@ fn ensure_vec_index(
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
         )
         .optional()?;
-    let registered = table_existed
-        && registered_index
-            .as_ref()
-            .is_some_and(|(stored_table, trigger_version)| {
-                stored_table == &table_name && *trigger_version == 1
-            });
-    if rebuild || !registered {
+    let registered = registered_index
+        .as_ref()
+        .is_some_and(|(stored_table, trigger_version)| {
+            stored_table == &table_name && *trigger_version == VEC_TRIGGER_VERSION
+        });
+    let structure = vec_index_structure_health(conn, &table_name)?;
+    let membership_ok = if check_membership && registered && structure.trigger_count == 4 {
+        vec_index_health(conn, source_table, &table_name, dimensions)?.membership_ok()
+    } else {
+        true
+    };
+    let healthy =
+        registered && structure.table_valid && structure.trigger_count == 4 && membership_ok;
+    if rebuild || !healthy {
         install_vec_index_triggers(conn, source_table, &table_name, dimensions)?;
         rebuild_vec_index(conn, kind, dimensions, &table_name)?;
     }
     Ok(table_name)
+}
+
+#[cfg(feature = "vec")]
+fn drop_vec_index_objects(conn: &Connection, table_name: &str) -> Result<()> {
+    conn.execute_batch(&format!(
+        r#"
+        DROP TRIGGER IF EXISTS {table_name}_ai;
+        DROP TRIGGER IF EXISTS {table_name}_au_remove;
+        DROP TRIGGER IF EXISTS {table_name}_au_upsert;
+        DROP TRIGGER IF EXISTS {table_name}_ad;
+        DROP TABLE IF EXISTS {table_name};
+        "#
+    ))?;
+    Ok(())
+}
+
+#[cfg(feature = "vec")]
+fn vec_index_health(
+    conn: &Connection,
+    source_table: &str,
+    table_name: &str,
+    dimensions: usize,
+) -> Result<VecIndexHealth> {
+    let structure = vec_index_structure_health(conn, table_name)?;
+    let table_exists = structure.table_exists;
+    let table_valid = structure.table_valid;
+    let trigger_count = structure.trigger_count;
+    let source_rows = conn.query_row(
+        &format!("SELECT COUNT(*) FROM {source_table} WHERE dimensions = ?1"),
+        [dimensions as i64],
+        |row| row.get::<_, i64>(0),
+    )?;
+    if !table_valid {
+        return Ok(VecIndexHealth {
+            table_exists,
+            table_valid,
+            source_rows,
+            indexed_rows: 0,
+            missing_rows: source_rows,
+            orphaned_rows: 0,
+            trigger_count,
+        });
+    }
+    let indexed_rows =
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table_name}"), [], |row| {
+            row.get::<_, i64>(0)
+        })?;
+    let missing_rows = conn.query_row(
+        &format!(
+            r#"
+            SELECT COUNT(*)
+            FROM {source_table} source
+            LEFT JOIN {table_name} vec_index ON vec_index.embedding_rowid = source.rowid
+            WHERE source.dimensions = ?1 AND vec_index.embedding_rowid IS NULL
+            "#
+        ),
+        [dimensions as i64],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let orphaned_rows = conn.query_row(
+        &format!(
+            r#"
+            SELECT COUNT(*)
+            FROM {table_name} vec_index
+            LEFT JOIN {source_table} source
+              ON source.rowid = vec_index.embedding_rowid AND source.dimensions = ?1
+            WHERE source.rowid IS NULL
+            "#
+        ),
+        [dimensions as i64],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(VecIndexHealth {
+        table_exists,
+        table_valid,
+        source_rows,
+        indexed_rows,
+        missing_rows,
+        orphaned_rows,
+        trigger_count,
+    })
+}
+
+#[cfg(feature = "vec")]
+fn vec_index_structure_health(
+    conn: &Connection,
+    table_name: &str,
+) -> Result<VecIndexStructureHealth> {
+    let table_sql = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table_name],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    let table_exists = table_sql.is_some();
+    let table_valid = table_sql
+        .as_deref()
+        .is_some_and(|sql| sql.to_ascii_lowercase().contains("using vec0"));
+    let trigger_count = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN (?1, ?2, ?3, ?4)",
+        params![
+            format!("{table_name}_ai"),
+            format!("{table_name}_au_remove"),
+            format!("{table_name}_au_upsert"),
+            format!("{table_name}_ad"),
+        ],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(VecIndexStructureHealth {
+        table_exists,
+        table_valid,
+        trigger_count,
+    })
 }
 
 #[cfg(feature = "vec")]
@@ -230,7 +395,7 @@ fn rebuild_vec_index(
         ) VALUES (
             '{}', {dimensions}, '{table_name}',
             (SELECT COUNT(*) FROM {source_table} WHERE dimensions = {dimensions}),
-            {now}, 1
+            {now}, {VEC_TRIGGER_VERSION}
         )
         ON CONFLICT(kind, dimensions) DO UPDATE SET
             table_name = excluded.table_name,
@@ -251,7 +416,7 @@ fn rebuild_vec_index(
 
 #[cfg(feature = "vec")]
 pub(crate) fn ensure_sqlite_vec_memory_index(conn: &Connection, dimensions: usize) -> Result<()> {
-    ensure_vec_index(conn, VecIndexKind::Memory, dimensions, false).map(|_| ())
+    ensure_vec_index(conn, VecIndexKind::Memory, dimensions, false, false).map(|_| ())
 }
 
 #[cfg(not(feature = "vec"))]
@@ -261,7 +426,7 @@ pub(crate) fn ensure_sqlite_vec_memory_index(_conn: &Connection, _dimensions: us
 
 #[cfg(feature = "vec")]
 pub(crate) fn ensure_sqlite_vec_rag_index(conn: &Connection, dimensions: usize) -> Result<()> {
-    ensure_vec_index(conn, VecIndexKind::Rag, dimensions, false).map(|_| ())
+    ensure_vec_index(conn, VecIndexKind::Rag, dimensions, false, false).map(|_| ())
 }
 
 #[cfg(not(feature = "vec"))]
@@ -288,7 +453,7 @@ pub(crate) fn rebuild_all_sqlite_vec_indexes(conn: &Connection) -> Result<usize>
             .query_map([kind.name()], |row| row.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for dimensions in dimensions {
-            ensure_vec_index(conn, kind, usize::try_from(dimensions)?, true)?;
+            ensure_vec_index(conn, kind, usize::try_from(dimensions)?, true, true)?;
             rebuilt += 1;
         }
     }
@@ -305,7 +470,7 @@ pub(crate) fn sqlite_vec_index_report(conn: &Connection) -> Result<SqliteVecInde
     let version: String = conn.query_row("SELECT vec_version()", [], |row| row.get(0))?;
     let mut stmt = conn.prepare(
         r#"
-        SELECT kind, dimensions, table_name, indexed_rows, rebuilt_at
+        SELECT kind, dimensions, table_name, indexed_rows, rebuilt_at, trigger_version
         FROM vector_index_registry
         ORDER BY kind, dimensions
         "#,
@@ -318,14 +483,18 @@ pub(crate) fn sqlite_vec_index_report(conn: &Connection) -> Result<SqliteVecInde
                 row.get::<_, String>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut registry = BTreeMap::new();
     let mut keys = BTreeSet::new();
-    for (kind, dimensions, table_name, indexed_rows, rebuilt_at) in registry_rows {
+    for (kind, dimensions, table_name, indexed_rows, rebuilt_at, trigger_version) in registry_rows {
         keys.insert((kind.clone(), dimensions));
-        registry.insert((kind, dimensions), (table_name, indexed_rows, rebuilt_at));
+        registry.insert(
+            (kind, dimensions),
+            (table_name, indexed_rows, rebuilt_at, trigger_version),
+        );
     }
     for kind in [VecIndexKind::Memory, VecIndexKind::Rag] {
         let mut dimensions = conn.prepare(&format!(
@@ -348,53 +517,37 @@ pub(crate) fn sqlite_vec_index_report(conn: &Connection) -> Result<SqliteVecInde
         };
         let expected_table = format!("dukememory_{kind}_vec_{dimensions}");
         let registered_row = registry.remove(&(kind.clone(), dimensions));
-        let registered = registered_row
-            .as_ref()
-            .is_some_and(|(table_name, _, _)| table_name == &expected_table);
-        let (table_name, rebuilt_rows, rebuilt_at) =
-            registered_row.unwrap_or_else(|| (expected_table.clone(), 0, 0));
-        let source_rows: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM {source_table} WHERE dimensions = ?1"),
-            [dimensions],
-            |row| row.get(0),
+        let registered =
+            registered_row
+                .as_ref()
+                .is_some_and(|(table_name, _, _, trigger_version)| {
+                    table_name == &expected_table && *trigger_version == VEC_TRIGGER_VERSION
+                });
+        let (table_name, rebuilt_rows, rebuilt_at, trigger_version) =
+            registered_row.unwrap_or_else(|| (expected_table.clone(), 0, 0, 0));
+        let health = vec_index_health(
+            conn,
+            source_table,
+            &table_name,
+            usize::try_from(dimensions)?,
         )?;
-        let table_exists = conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
-                [&table_name],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        let indexed_rows: i64 = if table_exists {
-            conn.query_row(&format!("SELECT COUNT(*) FROM {table_name}"), [], |row| {
-                row.get(0)
-            })?
-        } else {
-            0
-        };
-        let trigger_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN (?1, ?2, ?3, ?4)",
-            params![
-                format!("{table_name}_ai"),
-                format!("{table_name}_au_remove"),
-                format!("{table_name}_au_upsert"),
-                format!("{table_name}_ad"),
-            ],
-            |row| row.get(0),
-        )?;
-        let triggers_ok = table_exists && trigger_count == 4;
+        let triggers_ok = health.triggers_ok();
         indexes.push(SqliteVecIndexRow {
             kind,
             dimensions: usize::try_from(dimensions)?,
             table_name,
             registered,
-            source_rows: usize::try_from(source_rows)?,
-            indexed_rows: usize::try_from(indexed_rows)?,
+            source_rows: usize::try_from(health.source_rows)?,
+            indexed_rows: usize::try_from(health.indexed_rows)?,
             registry_rows: usize::try_from(rebuilt_rows)?,
+            missing_rows: usize::try_from(health.missing_rows)?,
+            orphaned_rows: usize::try_from(health.orphaned_rows)?,
             rebuilt_at,
+            trigger_version,
+            expected_trigger_version: VEC_TRIGGER_VERSION,
+            trigger_count: usize::try_from(health.trigger_count)?,
             triggers_ok,
-            consistent: registered && source_rows == indexed_rows && triggers_ok,
+            consistent: registered && triggers_ok && health.membership_ok(),
         });
     }
     Ok(SqliteVecIndexReport {
@@ -467,7 +620,7 @@ pub(crate) fn sqlite_vec_memory_search(
     options: SqliteVecMemorySearchOptions<'_>,
 ) -> Result<Vec<(String, f64)>> {
     let dimensions = options.query_embedding.len();
-    let table_name = ensure_vec_index(conn, VecIndexKind::Memory, dimensions, false)?;
+    let table_name = ensure_vec_index(conn, VecIndexKind::Memory, dimensions, false, false)?;
     let total: usize = conn.query_row(
         r#"
         SELECT COUNT(*) FROM memory_embeddings
@@ -574,7 +727,7 @@ pub(crate) fn sqlite_vec_rag_search(
     use rusqlite::types::Value as SqlValue;
 
     let dimensions = query_embedding.len();
-    let table_name = ensure_vec_index(conn, VecIndexKind::Rag, dimensions, false)?;
+    let table_name = ensure_vec_index(conn, VecIndexKind::Rag, dimensions, false, false)?;
     let total: usize = conn.query_row(
         r#"
         SELECT COUNT(*) FROM rag_chunk_embeddings
@@ -643,5 +796,82 @@ pub(crate) fn sqlite_vec_rag_search(
             return Ok(rows);
         }
         candidate_limit = total;
+    }
+}
+
+#[cfg(all(test, feature = "vec"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vec_index_faults_rebuild_automatically() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("memory.db");
+        let conn = crate::app::db::open_db(&db).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO memories(
+                id, type, scope, title, body, status, created_at, updated_at, confidence
+            ) VALUES ('memory-1', 'design_note', 'project', 'Vector', 'Vector body',
+                      'active', 1, 1, 1.0)
+            "#,
+            [],
+        )
+        .unwrap();
+        let embedding = serde_json::to_string(&vec![0.25_f32; 8]).unwrap();
+        conn.execute(
+            r#"
+            INSERT INTO memory_embeddings(
+                memory_id, model, endpoint, dimensions, embedding, content_hash, updated_at
+            ) VALUES ('memory-1', 'mock-small', 'local', 8, ?1, 'hash-1', 1)
+            "#,
+            [embedding],
+        )
+        .unwrap();
+        ensure_vec_index(&conn, VecIndexKind::Memory, 8, false, true).unwrap();
+
+        conn.execute_batch(
+            r#"
+            DELETE FROM dukememory_memory_vec_8
+            WHERE embedding_rowid = (SELECT rowid FROM memory_embeddings LIMIT 1);
+            INSERT INTO dukememory_memory_vec_8(embedding_rowid, embedding, endpoint, model)
+            VALUES (999999, '[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]', 'local', 'mock-small');
+            "#,
+        )
+        .unwrap();
+        let drifted =
+            vec_index_health(&conn, "memory_embeddings", "dukememory_memory_vec_8", 8).unwrap();
+        assert_eq!(drifted.missing_rows, 1);
+        assert_eq!(drifted.orphaned_rows, 1);
+        ensure_vec_index(&conn, VecIndexKind::Memory, 8, false, true).unwrap();
+        let repaired = sqlite_vec_index_report(&conn).unwrap();
+        assert!(repaired.consistent);
+        assert_eq!(repaired.indexes[0].missing_rows, 0);
+        assert_eq!(repaired.indexes[0].orphaned_rows, 0);
+
+        conn.execute_batch(
+            r#"
+            DROP TRIGGER dukememory_memory_vec_8_ai;
+            DROP TRIGGER dukememory_memory_vec_8_au_remove;
+            DROP TRIGGER dukememory_memory_vec_8_au_upsert;
+            DROP TRIGGER dukememory_memory_vec_8_ad;
+            DROP TABLE dukememory_memory_vec_8;
+            CREATE TABLE dukememory_memory_vec_8(embedding_rowid INTEGER PRIMARY KEY);
+            "#,
+        )
+        .unwrap();
+        ensure_sqlite_vec_memory_index(&conn, 8).unwrap();
+        let repaired = sqlite_vec_index_report(&conn).unwrap();
+        assert!(repaired.consistent);
+        assert_eq!(repaired.indexes[0].indexed_rows, 1);
+        assert_eq!(repaired.indexes[0].trigger_version, VEC_TRIGGER_VERSION);
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'dukememory_memory_vec_8'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(sql.to_ascii_lowercase().contains("using vec0"));
     }
 }

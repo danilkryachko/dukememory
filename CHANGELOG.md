@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.37.0 — 2026-07-13 (local development)
+
+### Added
+
+- Fault-injection coverage for vec0 registry, trigger, row-membership, and table
+  corruption, with automatic reconstruction of invalid indexes.
+- Sync transport tests for concurrent writers, lock ownership, malformed and
+  expired leases, interrupted temporary files, corrupt recovery generations,
+  and private atomic replacement.
+- Vector benchmark JSON v2 with configurable warmup, iterations, vector limit,
+  p50/p95/p99 latency, throughput, backend equivalence, and exact-scale vec0
+  comparison.
+- Stable `memory-control-center` and `web-control-center` CLI/HTTP aliases while
+  retaining all versioned commands and routes for compatibility.
+
+### Changed
+
+- The autonomous supervisor now runs at the conservative level, reports
+  before/after quality and guardrails, and previews inferred feedback without
+  writing synthetic feedback events; explicit `auto-feedback` remains the
+  opt-in materialization path.
+- Atomic sync writes now fsync the containing directory after rename, and a
+  failed lock initialization removes the incomplete lock file.
+- The built-in memory UI consumes stable control-center endpoints.
+
+### Fixed
+
+- Detect vec0 indexes whose row counts happen to match while their row ids do
+  not, and repair missing/orphaned memberships on the next database open.
+- Recover missing triggers, stale trigger versions, stale registry table names,
+  and ordinary SQLite tables shadowing expected vec0 virtual tables.
+- Prevent an old sync lock guard from deleting a replacement owner's lock.
+
 ## 0.36.0 — 2026-07-13
 
 ### Added
