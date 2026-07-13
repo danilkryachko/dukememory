@@ -40,6 +40,11 @@ jobs:
           cargo test --features vec --bin dukememory
           cargo test --features vec --test cli review_conflicts_links_session_and_vec_status -- --exact
           cargo test --features vec --test cli sqlite_vec_backend_runs_knn_and_matches_json_fallback -- --exact
+          cargo test --features vec --test cli sqlite_vec_persists_rag_chunk_index -- --exact
+      - name: Smoke-test installed vec-enabled binary
+        run: |
+          cargo build --features vec
+          scripts/release-smoke.sh target/debug/dukememory
       - name: Check local generation build
         run: cargo check --features local-embeddings,local-generation
 

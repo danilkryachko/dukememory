@@ -100,6 +100,25 @@ CREATE TABLE IF NOT EXISTS rag_chunk_embeddings (
 );
 CREATE INDEX IF NOT EXISTS idx_rag_chunk_embeddings_model ON rag_chunk_embeddings(model, endpoint);
 
+CREATE TABLE IF NOT EXISTS vector_index_registry (
+    kind TEXT NOT NULL,
+    dimensions INTEGER NOT NULL,
+    table_name TEXT NOT NULL UNIQUE,
+    indexed_rows INTEGER NOT NULL DEFAULT 0,
+    rebuilt_at INTEGER NOT NULL,
+    trigger_version INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (kind, dimensions)
+);
+CREATE INDEX IF NOT EXISTS idx_vector_index_registry_kind ON vector_index_registry(kind);
+
+CREATE TABLE IF NOT EXISTS sync_peer_state (
+    target TEXT PRIMARY KEY,
+    last_seen_generation TEXT NOT NULL,
+    last_operation TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sync_peer_state_updated_at ON sync_peer_state(updated_at);
+
 CREATE TABLE IF NOT EXISTS embedding_provider_health (
     provider TEXT NOT NULL,
     endpoint TEXT NOT NULL,
@@ -247,6 +266,7 @@ pub(crate) fn open_db(path: &Path) -> Result<Connection> {
     )?;
     conn.execute_batch(SCHEMA)?;
     run_migrations(&conn)?;
+    initialize_sqlite_vec_indexes(&conn)?;
     Ok(conn)
 }
 
@@ -255,6 +275,12 @@ fn run_migrations(conn: &Connection) -> Result<()> {
     ensure_column(conn, "memories", "confidence", "REAL NOT NULL DEFAULT 1.0")?;
     ensure_column(conn, "memories", "layer", "TEXT")?;
     ensure_column(conn, "memory_inbox", "layer", "TEXT")?;
+    ensure_column(
+        conn,
+        "vector_index_registry",
+        "trigger_version",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     let version: Option<i64> =
         conn.query_row("SELECT MAX(version) FROM schema_versions", [], |row| {
             row.get::<_, Option<i64>>(0)
@@ -350,6 +376,10 @@ fn migrations() -> &'static [Migration] {
             version: 18,
             name: "Production v18 RAG source chunk embeddings schema",
         },
+        Migration {
+            version: 19,
+            name: "Production v19 persistent sqlite-vec index registry",
+        },
     ]
 }
 
@@ -404,6 +434,8 @@ pub(crate) fn verify_schema(conn: &Connection) -> Result<()> {
         "memory_links",
         "memory_embeddings",
         "rag_chunk_embeddings",
+        "vector_index_registry",
+        "sync_peer_state",
         "memory_inbox",
         "memory_events",
         "memory_read_events",

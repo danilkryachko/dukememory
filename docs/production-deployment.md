@@ -17,7 +17,10 @@ sudo install -o dukememory -g dukememory -m 600 /dev/null \
 openssl rand -hex 32 | sudo tee /etc/dukememory/http-token >/dev/null
 ```
 
-Install the release binary as `/usr/local/bin/dukememory`. Do not place the
+Download the release archive and its entry in `SHA256SUMS`, verify SHA-256, then
+install the binary as `/usr/local/bin/dukememory`. The release workflow already
+runs `scripts/release-smoke.sh` against an installed copy of each native
+artifact. Do not place the
 bearer token in the unit command line, shell history, proxy configuration, or
 Git. Browser users enter it in the UI; API clients send it as a bearer token.
 
@@ -70,9 +73,19 @@ curl --fail \
   -H "Authorization: Bearer $(sudo cat /etc/dukememory/http-token)" \
   https://memory.example.com/metrics
 journalctl -u dukememory -f
+dukememory --db /var/lib/dukememory/.agent/memory.db schema verify
+dukememory --db /var/lib/dukememory/.agent/memory.db integrity --json
+dukememory --db /var/lib/dukememory/.agent/memory.db vec-validate --backend sqlite-vec
+dukememory --db /var/lib/dukememory/.agent/memory.db vec-index --json
 ```
 
 The first request verifies TLS and the unauthenticated liveness endpoint. The
 second verifies bearer authentication. Access logs are one-line JSON on stderr
 and therefore appear in the systemd journal. Rotate the HTTP token by replacing
 the file atomically and restarting the service.
+
+For encrypted VDS sync, monitor `sync status --json`. A healthy status has
+`verified: true`, `corrupt: false`, `stale_remote: false`, and no active lock.
+The writer preserves a previous verified generation. If the current bundle is
+damaged, inspect status and run `sync recover TARGET --json`; do not use
+`sync push --force` until the generation mismatch or corruption is understood.

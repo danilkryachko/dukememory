@@ -30,7 +30,7 @@ const DEFAULT_EMBED_ENDPOINT: &str = "local";
 const DEFAULT_EMBED_MODEL: &str = "paraphrase-multilingual-MiniLM-L12-v2";
 const DEFAULT_EMBED_PROVIDER: &str = "local";
 const DEFAULT_INSTALL_BACKUP_KEEP: usize = 3;
-const CURRENT_SCHEMA_VERSION: i64 = 18;
+const CURRENT_SCHEMA_VERSION: i64 = 19;
 const EXPORT_VERSION: u32 = 1;
 const VALID_SCOPES: &[&str] = &["global", "user", "project", "repo", "thread", "task"];
 
@@ -168,6 +168,10 @@ struct SyncBundleManifest {
     export_sha256: String,
     local_first: bool,
     source_schema: i64,
+    #[serde(default)]
+    generation: String,
+    #[serde(default)]
+    parent_generation: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -181,8 +185,13 @@ struct SyncExportReport {
     encrypted: bool,
     encryption_mode: Option<String>,
     export_sha256: String,
+    generation: String,
+    parent_generation: Option<String>,
     bytes: usize,
     wrote: bool,
+    previous_bundle: Option<String>,
+    lock_wait_ms: u128,
+    stale_lock_recovered: bool,
     recommendations: Vec<String>,
 }
 
@@ -219,6 +228,8 @@ struct SyncImportReport {
     encrypted: bool,
     encryption_mode: Option<String>,
     export_sha256: Option<String>,
+    generation: Option<String>,
+    parent_generation: Option<String>,
     checksum_ok: Option<bool>,
     rollback: Option<String>,
     imported: usize,
@@ -242,9 +253,33 @@ struct SyncRemoteStatusReport {
     verified: bool,
     memory_count: Option<usize>,
     export_sha256: Option<String>,
+    generation: Option<String>,
+    parent_generation: Option<String>,
     updated_at: Option<i64>,
+    previous_bundle: String,
+    recovery_available: bool,
+    corrupt: bool,
+    error: Option<String>,
+    lock_active: bool,
+    lock_age_ms: Option<i64>,
+    lock_stale: bool,
+    last_seen_generation: Option<String>,
+    stale_remote: Option<bool>,
     local_first: bool,
     recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SyncRecoveryReport {
+    version: u32,
+    ok: bool,
+    target: String,
+    bundle: String,
+    restored_from: String,
+    corrupt_archive: Option<String>,
+    generation: String,
+    lock_wait_ms: u128,
+    stale_lock_recovered: bool,
 }
 
 fn sync_bundle(conn: &Connection, redact: bool) -> Result<SyncBundle> {
@@ -266,6 +301,8 @@ fn sync_bundle(conn: &Connection, redact: bool) -> Result<SyncBundle> {
             export_sha256,
             local_first: true,
             source_schema: schema_version(conn).unwrap_or(CURRENT_SCHEMA_VERSION),
+            generation: Uuid::new_v4().to_string(),
+            parent_generation: None,
         },
         export,
     })
@@ -282,7 +319,17 @@ fn prepare_sync_payload(
     redact: bool,
     encrypt: bool,
 ) -> Result<PreparedSyncPayload> {
-    let bundle = sync_bundle(conn, redact)?;
+    prepare_sync_payload_with_parent(conn, redact, encrypt, None)
+}
+
+fn prepare_sync_payload_with_parent(
+    conn: &Connection,
+    redact: bool,
+    encrypt: bool,
+    parent_generation: Option<String>,
+) -> Result<PreparedSyncPayload> {
+    let mut bundle = sync_bundle(conn, redact)?;
+    bundle.manifest.parent_generation = parent_generation;
     let plaintext = serde_json::to_vec_pretty(&bundle)?;
     let bytes = if encrypt {
         encrypt_sync_payload(&plaintext)?
@@ -436,39 +483,64 @@ fn import_memory_export(conn: &Connection, export: MemoryExport, replace: bool) 
         if replace {
             conn.execute("DELETE FROM memories", [])?;
         }
-        let mut count = 0;
-        for item in export.memories {
+        let memories = export.memories;
+        for item in &memories {
             conn.execute(
                 r#"
-                INSERT OR REPLACE INTO memories (
+                INSERT INTO memories (
                     id, type, scope, title, body, status, source,
                     created_at, updated_at, supersedes, superseded_by, confidence, layer
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?11)
+                ON CONFLICT(id) DO UPDATE SET
+                    type = excluded.type,
+                    scope = excluded.scope,
+                    title = excluded.title,
+                    body = excluded.body,
+                    status = excluded.status,
+                    source = excluded.source,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at,
+                    supersedes = NULL,
+                    superseded_by = NULL,
+                    confidence = excluded.confidence,
+                    layer = excluded.layer
                 "#,
                 params![
-                    item.memory.id,
-                    item.memory.memory_type,
-                    item.memory.scope,
-                    item.memory.title,
-                    item.memory.body,
-                    item.memory.status,
-                    item.memory.source,
+                    &item.memory.id,
+                    &item.memory.memory_type,
+                    &item.memory.scope,
+                    &item.memory.title,
+                    &item.memory.body,
+                    &item.memory.status,
+                    &item.memory.source,
                     item.memory.created_at,
                     item.memory.updated_at,
-                    item.memory.supersedes,
-                    item.memory.superseded_by,
                     item.memory.confidence,
-                    item.memory.layer,
+                    &item.memory.layer,
+                ],
+            )?;
+        }
+        for item in &memories {
+            conn.execute(
+                r#"
+                UPDATE memories
+                SET supersedes = (SELECT id FROM memories WHERE id = ?2),
+                    superseded_by = (SELECT id FROM memories WHERE id = ?3)
+                WHERE id = ?1
+                "#,
+                params![
+                    &item.memory.id,
+                    &item.memory.supersedes,
+                    &item.memory.superseded_by,
                 ],
             )?;
             conn.execute(
                 "DELETE FROM memory_links WHERE memory_id = ?1",
-                params![item.memory.id],
+                params![&item.memory.id],
             )?;
             insert_links(conn, &item.memory.id, &item.links)?;
-            count += 1;
         }
-        Ok(count)
+        Ok(memories.len())
     })
 }
 
@@ -788,10 +860,17 @@ fn vec_validate(conn: &Connection, backend: VectorBackend) -> Result<()> {
         VectorBackend::Json => {
             "validated JSON embedding storage with application-side cosine search".to_string()
         }
-        VectorBackend::SqliteVec => format!(
-            "validated bundled sqlite-vec {} with native SQL cosine search and vec0 KNN",
-            sqlite_vec_version.as_deref().unwrap_or("unknown")
-        ),
+        VectorBackend::SqliteVec => {
+            let report = sqlite_vec_index_report(conn)?;
+            if !report.consistent {
+                bail!("persistent sqlite-vec index is inconsistent; run vec-index --rebuild");
+            }
+            format!(
+                "validated bundled sqlite-vec {} with native SQL cosine search and vec0 KNN; {} persistent index(es) consistent",
+                sqlite_vec_version.as_deref().unwrap_or("unknown"),
+                report.indexes.len()
+            )
+        }
     };
     log_event(conn, "vec_validate", None, &detail)?;
     println!("{detail}");
@@ -1033,8 +1112,13 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
                 encrypted: prepared.encrypted,
                 encryption_mode: prepared.encrypted.then(|| SYNC_ENCRYPTION_MODE.to_string()),
                 export_sha256: prepared.bundle.manifest.export_sha256.clone(),
+                generation: sync_manifest_generation(&prepared.bundle.manifest),
+                parent_generation: prepared.bundle.manifest.parent_generation.clone(),
                 bytes: prepared.bytes.len(),
                 wrote: !dry_run,
+                previous_bundle: None,
+                lock_wait_ms: 0,
+                stale_lock_recovered: false,
                 recommendations: vec![
                     "import with dukememory sync import --dry-run before applying".to_string(),
                     "keep agent reads local-first; use this bundle for backup/sync only"
@@ -1068,6 +1152,10 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
             let export_sha256 = manifest
                 .as_ref()
                 .map(|manifest| manifest.export_sha256.clone());
+            let generation = manifest.as_ref().map(sync_manifest_generation);
+            let parent_generation = manifest
+                .as_ref()
+                .and_then(|manifest| manifest.parent_generation.clone());
             let blocked = plan.blocked;
             let rollback = if dry_run || blocked {
                 None
@@ -1102,6 +1190,8 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
                 encrypted,
                 encryption_mode: encrypted.then(|| SYNC_ENCRYPTION_MODE.to_string()),
                 export_sha256,
+                generation,
+                parent_generation,
                 checksum_ok: manifest.as_ref().map(|_| true),
                 rollback,
                 imported,
@@ -1145,10 +1235,96 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
             redact,
             encrypt,
             dry_run,
+            force,
             json,
         } => {
             let bundle_path = sync_target_bundle_path(&target, encrypt);
-            let prepared = prepare_sync_payload(conn, redact, encrypt)?;
+            let existing_bundle = sync_target_bundle_path_for_read(&target);
+            let target_lock = if dry_run {
+                None
+            } else {
+                Some(acquire_sync_target_lock(&target)?)
+            };
+            let lock_wait_ms = target_lock.as_ref().map_or(0, |lock| lock.wait_ms);
+            let stale_lock_recovered = target_lock
+                .as_ref()
+                .is_some_and(|lock| lock.stale_recovered);
+            let local_generation = sync_peer_generation(conn, &target)?;
+            let inspect_remote = || -> Result<Option<SyncBundleManifest>> {
+                if !existing_bundle.exists() {
+                    return Ok(None);
+                }
+                let (_, manifest, _) = parse_sync_input(&existing_bundle)?;
+                manifest
+                    .ok_or_else(|| anyhow::anyhow!("remote is a legacy export, not a sync bundle"))
+                    .map(Some)
+            };
+            let remote_manifest = match inspect_remote() {
+                Ok(manifest) => manifest,
+                Err(error) if force => {
+                    let _ = error;
+                    None
+                }
+                Err(error) => {
+                    bail!(
+                        "remote sync bundle cannot be verified: {error}; run sync status/recover or rerun push with --force"
+                    )
+                }
+            };
+            let remote_generation = remote_manifest.as_ref().map(sync_manifest_generation);
+            let stale_remote = if existing_bundle.exists() {
+                local_generation.as_deref() != remote_generation.as_deref()
+            } else {
+                local_generation.is_some()
+            };
+            if stale_remote && !force {
+                bail!(
+                    "stale or untracked remote generation (local={:?}, remote={:?}); pull and merge first or rerun with --force",
+                    local_generation,
+                    remote_generation
+                );
+            }
+            let prepared =
+                prepare_sync_payload_with_parent(conn, redact, encrypt, remote_generation.clone())?;
+            let mut previous_bundle = None;
+            if !dry_run {
+                if existing_bundle.exists() {
+                    if remote_manifest.is_some() {
+                        previous_bundle = preserve_previous_sync_bundle(&existing_bundle)?
+                            .map(|path| path.display().to_string());
+                    } else {
+                        let archive = sync_corrupt_archive_path(&existing_bundle);
+                        let bytes = fs::read(&existing_bundle)?;
+                        write_private_atomic(&archive, &bytes)?;
+                        previous_bundle = Some(archive.display().to_string());
+                    }
+                }
+                write_private_atomic(&bundle_path, &prepared.bytes)?;
+                let (_, stored_manifest, stored_encrypted) = parse_sync_input(&bundle_path)?;
+                let stored_manifest = stored_manifest
+                    .ok_or_else(|| anyhow::anyhow!("written remote is not a sync bundle"))?;
+                if stored_encrypted != encrypt
+                    || stored_manifest.export_sha256 != prepared.bundle.manifest.export_sha256
+                    || sync_manifest_generation(&stored_manifest)
+                        != sync_manifest_generation(&prepared.bundle.manifest)
+                {
+                    bail!("remote sync read-back verification failed");
+                }
+                if existing_bundle != bundle_path && existing_bundle.exists() {
+                    fs::remove_file(&existing_bundle).with_context(|| {
+                        format!(
+                            "failed to remove superseded bundle {}",
+                            existing_bundle.display()
+                        )
+                    })?;
+                }
+                record_sync_peer_generation(
+                    conn,
+                    &target,
+                    &sync_manifest_generation(&prepared.bundle.manifest),
+                    "push",
+                )?;
+            }
             let report = SyncExportReport {
                 version: 1,
                 ok: true,
@@ -1159,17 +1335,19 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
                 encrypted: prepared.encrypted,
                 encryption_mode: prepared.encrypted.then(|| SYNC_ENCRYPTION_MODE.to_string()),
                 export_sha256: prepared.bundle.manifest.export_sha256.clone(),
+                generation: sync_manifest_generation(&prepared.bundle.manifest),
+                parent_generation: prepared.bundle.manifest.parent_generation.clone(),
                 bytes: prepared.bytes.len(),
                 wrote: !dry_run,
+                previous_bundle,
+                lock_wait_ms,
+                stale_lock_recovered,
                 recommendations: vec![
                     "run dukememory sync status TARGET after push".to_string(),
                     "remote connector is local-first; agents should still read local memory"
                         .to_string(),
                 ],
             };
-            if !dry_run {
-                write_private_atomic(&bundle_path, &prepared.bytes)?;
-            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -1184,19 +1362,33 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
             json,
         } => {
             let bundle_path = sync_target_bundle_path_for_read(&target);
+            let (remote_export, remote_manifest, _) = parse_sync_input(&bundle_path)?;
+            let plan = sync_import_plan(conn, &remote_export, policy, false)?;
             handle_sync(
                 conn,
                 SyncCommand::Import {
-                    input: bundle_path,
+                    input: bundle_path.clone(),
                     replace: false,
                     policy,
                     dry_run,
                     json,
                 },
-            )
+            )?;
+            if !dry_run
+                && !plan.blocked
+                && let Some(manifest) = remote_manifest.as_ref()
+            {
+                record_sync_peer_generation(
+                    conn,
+                    &target,
+                    &sync_manifest_generation(manifest),
+                    "pull",
+                )?;
+            }
+            Ok(())
         }
         SyncCommand::Status { target, json } => {
-            let report = sync_remote_status(&target)?;
+            let report = sync_remote_status(conn, &target)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -1206,6 +1398,63 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
                 if let Some(count) = report.memory_count {
                     println!("memories: {count}");
                 }
+            }
+            Ok(())
+        }
+        SyncCommand::Recover { target, json } => {
+            let current_bundle = sync_target_bundle_path_for_read(&target);
+            let previous = sync_recovery_candidate(&target, &current_bundle);
+            if !previous.exists() {
+                bail!("no previous sync generation found for {}", target.display());
+            }
+            let target_lock = acquire_sync_target_lock(&target)?;
+            let (_, manifest, previous_encrypted) =
+                parse_sync_input(&previous).with_context(|| {
+                    format!(
+                        "previous sync generation is invalid: {}",
+                        previous.display()
+                    )
+                })?;
+            let manifest = manifest
+                .ok_or_else(|| anyhow::anyhow!("previous file is not a versioned sync bundle"))?;
+            let bundle = if current_bundle.exists() {
+                current_bundle
+            } else {
+                sync_target_bundle_path(&target, previous_encrypted)
+            };
+            let corrupt_archive = if bundle.exists() {
+                let archive = sync_corrupt_archive_path(&bundle);
+                write_private_atomic(&archive, &fs::read(&bundle)?)?;
+                Some(archive)
+            } else {
+                None
+            };
+            let bytes = fs::read(&previous)?;
+            write_private_atomic(&bundle, &bytes)?;
+            let (_, restored_manifest, _) = parse_sync_input(&bundle)?;
+            let restored_manifest = restored_manifest
+                .ok_or_else(|| anyhow::anyhow!("restored file is not a sync bundle"))?;
+            let generation = sync_manifest_generation(&restored_manifest);
+            if generation != sync_manifest_generation(&manifest) {
+                bail!("restored sync generation failed read-back verification");
+            }
+            record_sync_peer_generation(conn, &target, &generation, "recover")?;
+            let report = SyncRecoveryReport {
+                version: 1,
+                ok: true,
+                target: target.display().to_string(),
+                bundle: bundle.display().to_string(),
+                restored_from: previous.display().to_string(),
+                corrupt_archive: corrupt_archive.map(|path| path.display().to_string()),
+                generation,
+                lock_wait_ms: target_lock.wait_ms,
+                stale_lock_recovered: target_lock.stale_recovered,
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("recovered: {}", report.bundle);
+                println!("generation: {}", report.generation);
             }
             Ok(())
         }
@@ -1258,12 +1507,125 @@ fn sync_target_bundle_path_for_read(target: &Path) -> PathBuf {
     }
 }
 
-fn sync_remote_status(target: &Path) -> Result<SyncRemoteStatusReport> {
-    let bundle = sync_target_bundle_path_for_read(target);
+fn sync_previous_bundle_path(bundle: &Path) -> PathBuf {
+    let parent = bundle.parent().unwrap_or_else(|| Path::new("."));
+    let stem = bundle
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("dukememory-sync-bundle");
+    match bundle.extension().and_then(|value| value.to_str()) {
+        Some(extension) => parent.join(format!("{stem}.previous.{extension}")),
+        None => parent.join(format!("{stem}.previous")),
+    }
+}
+
+fn sync_corrupt_archive_path(bundle: &Path) -> PathBuf {
+    let parent = bundle.parent().unwrap_or_else(|| Path::new("."));
+    let stem = bundle
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("dukememory-sync-bundle");
+    match bundle.extension().and_then(|value| value.to_str()) {
+        Some(extension) => parent.join(format!("{stem}.corrupt-{}.{}", now_ms(), extension)),
+        None => parent.join(format!("{stem}.corrupt-{}", now_ms())),
+    }
+}
+
+fn sync_manifest_generation(manifest: &SyncBundleManifest) -> String {
+    if manifest.generation.trim().is_empty() {
+        format!(
+            "legacy-{}",
+            &manifest.export_sha256[..16.min(manifest.export_sha256.len())]
+        )
+    } else {
+        manifest.generation.clone()
+    }
+}
+
+fn sync_target_key(target: &Path) -> String {
+    if let Ok(canonical) = target.canonicalize() {
+        return canonical.display().to_string();
+    }
+    if target.is_absolute() {
+        target.display().to_string()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(target)
+            .display()
+            .to_string()
+    }
+}
+
+fn sync_peer_generation(conn: &Connection, target: &Path) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT last_seen_generation FROM sync_peer_state WHERE target = ?1",
+        [sync_target_key(target)],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn record_sync_peer_generation(
+    conn: &Connection,
+    target: &Path,
+    generation: &str,
+    operation: &str,
+) -> Result<()> {
+    conn.execute(
+        r#"
+        INSERT INTO sync_peer_state(target, last_seen_generation, last_operation, updated_at)
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(target) DO UPDATE SET
+            last_seen_generation = excluded.last_seen_generation,
+            last_operation = excluded.last_operation,
+            updated_at = excluded.updated_at
+        "#,
+        params![sync_target_key(target), generation, operation, now_ms()],
+    )?;
+    Ok(())
+}
+
+fn preserve_previous_sync_bundle(bundle: &Path) -> Result<Option<PathBuf>> {
     if !bundle.exists() {
+        return Ok(None);
+    }
+    let previous = sync_previous_bundle_path(bundle);
+    let bytes = fs::read(bundle)
+        .with_context(|| format!("failed to read previous sync bundle {}", bundle.display()))?;
+    write_private_atomic(&previous, &bytes)?;
+    Ok(Some(previous))
+}
+
+fn sync_recovery_candidate(target: &Path, bundle: &Path) -> PathBuf {
+    let direct = sync_previous_bundle_path(bundle);
+    if direct.exists() || target.extension().is_some() {
+        return direct;
+    }
+    for encrypted in [true, false] {
+        let candidate = sync_previous_bundle_path(&sync_target_bundle_path(target, encrypted));
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    direct
+}
+
+fn sync_remote_status(conn: &Connection, target: &Path) -> Result<SyncRemoteStatusReport> {
+    let bundle = sync_target_bundle_path_for_read(target);
+    let previous = sync_recovery_candidate(target, &bundle);
+    let local_generation = sync_peer_generation(conn, target)?;
+    let (lock_active, lock_age_ms, lock_stale) = sync_target_lock_status(target);
+    if !bundle.exists() {
+        let recovery_available = previous.exists()
+            && parse_sync_input(&previous)
+                .ok()
+                .and_then(|(_, manifest, _)| manifest)
+                .is_some();
         return Ok(SyncRemoteStatusReport {
             version: 1,
-            ok: false,
+            ok: recovery_available,
             target: target.display().to_string(),
             bundle: bundle.display().to_string(),
             exists: false,
@@ -1272,52 +1634,119 @@ fn sync_remote_status(target: &Path) -> Result<SyncRemoteStatusReport> {
             verified: false,
             memory_count: None,
             export_sha256: None,
+            generation: None,
+            parent_generation: None,
             updated_at: None,
+            previous_bundle: previous.display().to_string(),
+            recovery_available,
+            corrupt: false,
+            error: None,
+            lock_active,
+            lock_age_ms,
+            lock_stale,
+            last_seen_generation: local_generation.clone(),
+            stale_remote: local_generation.as_ref().map(|_| true),
             local_first: true,
-            recommendations: vec!["run dukememory sync push TARGET --json".to_string()],
+            recommendations: if recovery_available {
+                vec!["run dukememory sync recover TARGET --json".to_string()]
+            } else if local_generation.is_some() {
+                vec![
+                    "remote disappeared after a previously observed generation; recover it or push with --force"
+                        .to_string(),
+                ]
+            } else {
+                vec!["run dukememory sync push TARGET --json".to_string()]
+            },
         });
     }
     let raw = fs::read(&bundle)
         .with_context(|| format!("failed to read sync bundle {}", bundle.display()))?;
     let encrypted = is_encrypted_sync_payload(&raw);
-    let manifest = if encrypted && !sync_passphrase_is_configured() {
-        None
+    let can_decrypt = !encrypted || sync_passphrase_is_configured();
+    let (manifest, corrupt, error) = if !can_decrypt {
+        (None, false, None)
     } else {
-        let (_, manifest, _) = parse_sync_input(&bundle)?;
-        manifest
+        match parse_sync_input(&bundle) {
+            Ok((_, manifest, _)) => (manifest, false, None),
+            Err(error) => (None, true, Some(error.to_string())),
+        }
     };
+    let recovery_available = previous.exists()
+        && parse_sync_input(&previous)
+            .ok()
+            .and_then(|(_, manifest, _)| manifest)
+            .is_some();
     let modified = fs::metadata(&bundle)
         .and_then(|meta| meta.modified())
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_millis() as i64);
+    let generation = manifest.as_ref().map(sync_manifest_generation);
+    let stale_remote = generation
+        .as_ref()
+        .map(|generation| local_generation.as_deref() != Some(generation.as_str()));
+    let mut recommendations = Vec::new();
+    if encrypted && !can_decrypt {
+        recommendations.push(
+            "configure the sync passphrase to verify checksum, generation, and recovery data"
+                .to_string(),
+        );
+    }
+    if corrupt {
+        if recovery_available {
+            recommendations.push("run dukememory sync recover TARGET --json".to_string());
+        } else {
+            recommendations.push(
+                "remote is corrupt and has no verified previous generation; restore a backup or push with --force"
+                    .to_string(),
+            );
+        }
+    } else if stale_remote == Some(true) {
+        recommendations.push(
+            "remote generation is untracked or newer; pull and merge before the next push"
+                .to_string(),
+        );
+    }
+    if lock_active {
+        recommendations.push(if lock_stale {
+            "the sync lease is stale and the next guarded writer can recover it".to_string()
+        } else {
+            "wait for the active sync lease before writing the target".to_string()
+        });
+    }
+    recommendations.push(
+        "run dukememory sync pull TARGET --policy manual --dry-run --json before applying"
+            .to_string(),
+    );
     Ok(SyncRemoteStatusReport {
         version: 1,
-        ok: true,
+        ok: !corrupt,
         target: target.display().to_string(),
         bundle: bundle.display().to_string(),
         exists: true,
         encrypted,
         encryption_mode: encrypted.then(|| SYNC_ENCRYPTION_MODE.to_string()),
-        verified: manifest.is_some(),
+        verified: manifest.is_some() && !corrupt,
         memory_count: manifest.as_ref().map(|manifest| manifest.memory_count),
         export_sha256: manifest
             .as_ref()
             .map(|manifest| manifest.export_sha256.clone()),
+        generation,
+        parent_generation: manifest
+            .as_ref()
+            .and_then(|manifest| manifest.parent_generation.clone()),
         updated_at: modified,
+        previous_bundle: previous.display().to_string(),
+        recovery_available,
+        corrupt,
+        error,
+        lock_active,
+        lock_age_ms,
+        lock_stale,
+        last_seen_generation: local_generation,
+        stale_remote,
         local_first: true,
-        recommendations: if encrypted && manifest.is_none() {
-            vec![
-                "configure the sync passphrase to verify checksum and inspect metadata".to_string(),
-                "run dukememory sync pull TARGET --policy manual --dry-run --json before applying"
-                    .to_string(),
-            ]
-        } else {
-            vec![
-                "run dukememory sync pull TARGET --policy manual --dry-run --json before applying"
-                    .to_string(),
-            ]
-        },
+        recommendations,
     })
 }
 
@@ -2932,11 +3361,47 @@ fn print_vec_status(conn: &Connection) {
         "sqlite-vec extension: {}",
         sqlite_vec_version.as_deref().unwrap_or("not loaded")
     );
+    if let Ok(report) = sqlite_vec_index_report(conn) {
+        println!("persistent indexes: {}", report.indexes.len());
+        println!("persistent indexes consistent: {}", report.consistent);
+    }
     println!("embedding providers: local, ollama, openai-compatible, gemini, mock");
     println!("default provider: {DEFAULT_EMBED_PROVIDER}");
     println!("default endpoint: {DEFAULT_EMBED_ENDPOINT}");
     println!("default model: {DEFAULT_EMBED_MODEL}");
-    println!("commands: embed-index, embed-search, context-pack");
+    println!("commands: embed-index, embed-search, vec-index, context-pack");
+}
+
+fn print_vec_index(conn: &Connection, rebuild: bool, json_out: bool) -> Result<()> {
+    let rebuilt = if rebuild {
+        rebuild_all_sqlite_vec_indexes(conn)?
+    } else {
+        0
+    };
+    let report = sqlite_vec_index_report(conn)?;
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "version": 1,
+                "rebuilt": rebuilt,
+                "report": report,
+            }))?
+        );
+        return Ok(());
+    }
+    println!("sqlite_vec_indexes: {}", report.indexes.len());
+    println!("consistent: {}", report.consistent);
+    if rebuild {
+        println!("rebuilt: {rebuilt}");
+    }
+    for index in report.indexes {
+        println!(
+            "{} {}d source={} indexed={} table={}",
+            index.kind, index.dimensions, index.source_rows, index.indexed_rows, index.table_name
+        );
+    }
+    Ok(())
 }
 
 fn print_completions(shell: CompletionShell) {
@@ -2980,6 +3445,9 @@ fn print_completions(shell: CompletionShell) {
         "embed-watch",
         "provider-list",
         "vector-bench",
+        "vec-status",
+        "vec-index",
+        "vec-validate",
         "serve-mcp",
         "completions",
         "man",
@@ -3168,6 +3636,7 @@ fn print_manpage() {
     println!("  embed-index                   incremental indexing");
     println!("  embed-status                  freshness report");
     println!("  embed-watch --once            one incremental pass");
+    println!("  vec-index --rebuild           rebuild persistent sqlite-vec indexes");
     println!("TRANSCRIPTS");
     println!("  ingest-transcript FILE --llm  extract inbox suggestions via local Ollama");
     println!("  auto-ingest --input DIR       scan session files into inbox without duplicates");
