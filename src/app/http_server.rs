@@ -2,9 +2,12 @@ use super::*;
 
 #[path = "http_routes.rs"]
 mod routes;
+#[path = "http_security.rs"]
+mod security;
 
 const HTTP_WORKERS: usize = 4;
 const HTTP_QUEUE_CAPACITY: usize = 64;
+const HTTP_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 pub(crate) fn serve_http(
     db: &Path,
@@ -29,41 +32,89 @@ pub(crate) fn serve_http(
         return handle_http_stream(db, stream, auth_token);
     }
 
+    let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let signal_shutdown = std::sync::Arc::clone(&shutdown);
+    ctrlc::set_handler(move || {
+        signal_shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    })
+    .with_context(|| "failed to install HTTP shutdown signal handler")?;
+    listener.set_nonblocking(true)?;
+
     let (sender, receiver) = std::sync::mpsc::sync_channel::<TcpStream>(HTTP_QUEUE_CAPACITY);
     let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
-    for _ in 0..HTTP_WORKERS {
+    let mut workers = Vec::with_capacity(HTTP_WORKERS);
+    for worker_index in 0..HTTP_WORKERS {
         let receiver = std::sync::Arc::clone(&receiver);
         let db = db.to_path_buf();
         let auth_token = auth_token.map(ToOwned::to_owned);
-        std::thread::spawn(move || {
-            loop {
-                let stream = match receiver.lock() {
-                    Ok(receiver) => receiver.recv(),
-                    Err(_) => return,
-                };
-                let Ok(stream) = stream else {
-                    return;
-                };
-                if let Err(err) = handle_http_stream(&db, stream, auth_token.as_deref()) {
-                    eprintln!("HTTP request failed: {err:#}");
+        let worker = std::thread::Builder::new()
+            .name(format!("dukememory-http-{worker_index}"))
+            .stack_size(HTTP_WORKER_STACK_BYTES)
+            .spawn(move || {
+                loop {
+                    let stream = match receiver.lock() {
+                        Ok(receiver) => receiver.recv(),
+                        Err(_) => return,
+                    };
+                    let Ok(stream) = stream else {
+                        return;
+                    };
+                    if let Err(err) = handle_http_stream(&db, stream, auth_token.as_deref()) {
+                        eprintln!("HTTP request failed: {err:#}");
+                    }
                 }
-            }
-        });
+            })
+            .with_context(|| format!("failed to start HTTP worker {worker_index}"))?;
+        workers.push(worker);
     }
-    for stream in listener.incoming() {
-        sender
-            .send(stream?)
-            .with_context(|| "HTTP worker queue stopped")?;
+    while !shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((stream, _)) => sender
+                .send(stream)
+                .with_context(|| "HTTP worker queue stopped")?,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(err) => return Err(err).with_context(|| "HTTP listener failed"),
+        }
+    }
+    drop(sender);
+    for worker in workers {
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("HTTP worker panicked during shutdown"))?;
     }
     Ok(())
 }
 
+pub(crate) fn resolve_http_auth_token(
+    inline_token: Option<&str>,
+    token_file: Option<&Path>,
+) -> Result<Option<String>> {
+    security::resolve_auth_token(inline_token, token_file)
+}
+
 fn handle_http_stream(db: &Path, mut stream: TcpStream, auth_token: Option<&str>) -> Result<()> {
+    let started = std::time::Instant::now();
+    let peer = stream
+        .peer_addr()
+        .map(|address| address.to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
     let response = match routes::handle_http_request(db, &mut stream, auth_token) {
         Ok(response) => response,
         Err(err) => HttpResponse::internal_error(err.to_string()),
     };
+    let status = response.status;
     crate::http_api::write_response(&mut stream, response)?;
+    eprintln!(
+        "{}",
+        json!({
+            "event": "http_access",
+            "peer": peer,
+            "status": status,
+            "elapsed_ms": started.elapsed().as_millis(),
+        })
+    );
     Ok(())
 }
 
@@ -72,21 +123,6 @@ fn is_loopback_host(host: &str) -> bool {
         || host
             .parse::<std::net::IpAddr>()
             .is_ok_and(|address| address.is_loopback())
-}
-
-fn http_token_matches(expected: &str, provided: &str) -> bool {
-    let expected = expected.as_bytes();
-    let provided = provided.as_bytes();
-    if expected.len() != provided.len() {
-        return false;
-    }
-    expected
-        .iter()
-        .zip(provided)
-        .fold(0_u8, |difference, (left, right)| {
-            difference | (left ^ right)
-        })
-        == 0
 }
 
 fn parse_json_body(body: &str) -> Result<Value> {

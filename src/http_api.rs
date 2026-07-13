@@ -39,6 +39,14 @@ impl HttpResponse {
         )
     }
 
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::json(
+            403,
+            "Forbidden",
+            json!({"error": {"code": "forbidden", "message": message.into()}}),
+        )
+    }
+
     pub fn not_found() -> Self {
         Self::json(
             404,

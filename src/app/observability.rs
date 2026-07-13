@@ -1998,50 +1998,6 @@ pub(crate) struct ProjectTemplateReport {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct SyncLatencyReport {
-    pub(crate) version: u32,
-    pub(crate) ok: bool,
-    pub(crate) status: String,
-    pub(crate) root: String,
-    pub(crate) local_first: bool,
-    pub(crate) samples: usize,
-    pub(crate) local_db_bytes: u64,
-    pub(crate) local_read_ms: u128,
-    pub(crate) target: Option<String>,
-    pub(crate) target_write_ms: Option<u128>,
-    pub(crate) target_read_ms: Option<u128>,
-    pub(crate) estimated_roundtrip_ms: u32,
-    pub(crate) recommended_mode: String,
-    pub(crate) issues: Vec<String>,
-    pub(crate) recommendations: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct SyncProfileReport {
-    pub(crate) version: u32,
-    pub(crate) ok: bool,
-    pub(crate) status: String,
-    pub(crate) root: String,
-    pub(crate) profile: String,
-    pub(crate) applied: bool,
-    pub(crate) local_first: bool,
-    pub(crate) target: Option<String>,
-    pub(crate) latency: SyncLatencyReport,
-    pub(crate) commands: Vec<String>,
-    pub(crate) flow_steps: Vec<SyncProfileFlowStep>,
-    pub(crate) actions: Vec<String>,
-    pub(crate) blockers: Vec<String>,
-    pub(crate) recommendations: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct SyncProfileFlowStep {
-    pub(crate) name: String,
-    pub(crate) ok: bool,
-    pub(crate) detail: String,
-}
-
-#[derive(Debug, Serialize)]
 pub(crate) struct MemoryDiffReviewReport {
     pub(crate) version: u32,
     pub(crate) ok: bool,
@@ -2098,25 +2054,6 @@ pub(crate) struct AutonomyControlCenterReport {
     pub(crate) diff_review: MemoryDiffReviewReport,
     pub(crate) remote_sync: RemoteSyncV2Report,
     pub(crate) issues: Vec<String>,
-    pub(crate) recommendations: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct RemoteSyncV2Report {
-    pub(crate) version: u32,
-    pub(crate) ok: bool,
-    pub(crate) status: String,
-    pub(crate) root: String,
-    pub(crate) target: Option<String>,
-    pub(crate) applied: bool,
-    pub(crate) local_first: bool,
-    pub(crate) encrypted_bundle: bool,
-    pub(crate) encryption_mode: String,
-    pub(crate) latency: SyncLatencyReport,
-    pub(crate) conflict_policy: String,
-    pub(crate) commands: Vec<String>,
-    pub(crate) actions: Vec<String>,
-    pub(crate) blockers: Vec<String>,
     pub(crate) recommendations: Vec<String>,
 }
 
@@ -7278,6 +7215,7 @@ pub(crate) fn remote_sync_control_report(
 ) -> Result<RemoteSyncControlReport> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let target_string = target.map(|path| path.display().to_string());
+    let target_arg = target_string.as_deref().unwrap_or("TARGET");
     let bundle_path = target
         .map(remote_sync_control_bundle_path)
         .unwrap_or_else(|| PathBuf::from("TARGET/dukememory-sync-bundle.json"));
@@ -7309,7 +7247,6 @@ pub(crate) fn remote_sync_control_report(
     }
     blockers.sort();
     blockers.dedup();
-    let target_arg = target_string.as_deref().unwrap_or("TARGET");
     let dry_run_commands = vec![
         format!("dukememory sync push {target_arg} --dry-run --json"),
         format!("dukememory sync pull {target_arg} --policy manual --dry-run --json"),
@@ -13324,7 +13261,6 @@ pub(crate) fn remote_sync_v2_report(
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let latency = sync_latency_report(conn, db, &root, target, 1)?;
     let target_string = target.map(|path| path.display().to_string());
-    let target_arg = target_string.as_deref().unwrap_or("TARGET");
     // This command writes an executable plan. Encryption is performed only
     // when the emitted OpenSSL command is run by the operator.
     let encrypted_bundle = false;
@@ -13340,13 +13276,7 @@ pub(crate) fn remote_sync_v2_report(
     }
     blockers.sort();
     blockers.dedup();
-    let commands = vec![
-        "dukememory sync export memory-sync.json --json".to_string(),
-        "openssl enc -aes-256-cbc -pbkdf2 -salt -in memory-sync.json -out memory-sync.json.enc -pass env:DUKEMEMORY_SYNC_PASSPHRASE".to_string(),
-        format!("install -m 600 memory-sync.json.enc {target_arg}/dukememory-sync-bundle.json.enc"),
-        format!("openssl enc -d -aes-256-cbc -pbkdf2 -in {target_arg}/dukememory-sync-bundle.json.enc -out memory-sync.incoming.json -pass env:DUKEMEMORY_SYNC_PASSPHRASE"),
-        "dukememory sync import memory-sync.incoming.json --policy manual --dry-run --json".to_string(),
-    ];
+    let commands = remote_sync_v2_commands(target_string.as_deref());
     let mut recommendations = latency.recommendations.clone();
     recommendations.push(
         "keep agent reads local; never use remote as authoritative memory by default".to_string(),
@@ -13366,6 +13296,9 @@ pub(crate) fn remote_sync_v2_report(
             "version": 1,
             "local_first": true,
             "target": &target_string,
+            "experimental": true,
+            "plan_only": true,
+            "executed": false,
             "encrypted_bundle": encrypted_bundle,
             "encryption_mode": &encryption_mode,
             "conflict_policy": "manual",
@@ -13382,10 +13315,22 @@ pub(crate) fn remote_sync_v2_report(
     Ok(RemoteSyncV2Report {
         version: 1,
         ok,
-        status: if ok { "plan_ready" } else { "blocked" }.to_string(),
+        status: if ok {
+            if apply {
+                "experimental_plan_written"
+            } else {
+                "experimental_plan_ready"
+            }
+        } else {
+            "blocked"
+        }
+        .to_string(),
         root: root.display().to_string(),
         target: target_string,
         applied: apply && ok,
+        experimental: true,
+        plan_only: true,
+        executed: false,
         local_first: true,
         encrypted_bundle,
         encryption_mode,

@@ -160,9 +160,10 @@ dukememory sync pull /mnt/vds/dukememory --policy manual --dry-run --json
 
 The basic `sync export` and `sync push` bundle is plaintext JSON. Keep its
 target private and permission-restricted. `remote-sync-v2` only writes an
-external OpenSSL encryption/transfer plan; it does not encrypt or transfer a
-bundle by itself, and its report keeps `encrypted_bundle: false` until those
-commands are executed.
+experimental external OpenSSL encryption/transfer plan; it does not encrypt or
+transfer a bundle by itself. Its report is deliberately marked
+`experimental: true`, `plan_only: true`, `executed: false`, and
+`encrypted_bundle: false`.
 
 `web-control-center-v5` exposes the same model for UI buttons: preview first,
 apply only guarded reversible actions, and keep rollback hints visible.
@@ -176,7 +177,13 @@ export DUKEMEMORY_EMBED_MODEL=paraphrase-multilingual-MiniLM-L12-v2
 
 dukememory embed-index
 dukememory embed-status --json
+dukememory vec-validate --backend json
 ```
+
+`vec-validate --backend sqlite-vec` only probes an extension already loaded
+into SQLite. Retrieval continues to use application-side cosine search over
+the JSON embeddings; the legacy `vec-migrate` spelling remains a hidden CLI
+alias for compatibility.
 
 RAG commands use the same embedding provider for memory cards and can be
 inspected before generation. `embed-index` also embeds indexed source chunks,
@@ -282,9 +289,29 @@ dukememory serve-http --host 127.0.0.1 --port 8765
 Open `http://127.0.0.1:8765/`.
 
 Loopback access needs no token. Binding to a non-loopback address is refused
-unless `--auth-token` or `DUKEMEMORY_HTTP_TOKEN` is set. API clients send it as
-`Authorization: Bearer ...`; the web UI asks once and keeps it in session
-storage. Use TLS through a trusted reverse proxy when traffic leaves the host.
+unless a bearer token is configured. Prefer a permission-restricted token file
+so the secret does not appear in the process list:
+
+```bash
+umask 077
+openssl rand -hex 32 > .agent/http-token
+dukememory serve-http --host 0.0.0.0 --port 8765 \
+  --auth-token-file .agent/http-token
+```
+
+`--auth-token` and `DUKEMEMORY_HTTP_TOKEN` remain available for compatibility;
+`DUKEMEMORY_HTTP_TOKEN_FILE` is the environment equivalent of the file option.
+API clients send `Authorization: Bearer ...`; the web UI asks once and keeps it
+in session storage. State-changing browser requests are restricted to the
+request host. Extra trusted origins can be listed, comma-separated, in
+`DUKEMEMORY_HTTP_ALLOWED_ORIGINS`.
+
+The built-in server is plain HTTP. Terminate TLS at a trusted reverse proxy
+(for example Caddy or nginx) whenever traffic leaves the host, preserve the
+original `Host` header, and restrict network access with a firewall. Access
+events are emitted as one-line JSON on stderr. SIGINT, SIGTERM, and SIGHUP stop
+accepting new connections, drain the bounded worker queue, and join workers
+before exit.
 
 Use it to search memory, inspect evidence, review inbox items, watch usage,
 check autonomous health, explain recall, inspect the project intent map, run

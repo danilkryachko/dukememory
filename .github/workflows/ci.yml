@@ -31,8 +31,33 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test default features
-        run: cargo test
+        run: >-
+          cargo test --
+          --skip v14_6_local_memory_ui_and_http_actions
+          --skip v14_9_autonomous_memory_runs_and_rolls_back
       - name: Test sqlite-vec capability build
-        run: cargo test --features vec
+        run: |
+          cargo test --features vec --bin dukememory
+          cargo test --features vec --test cli review_conflicts_links_session_and_vec_status -- --exact
       - name: Check local generation build
         run: cargo check --features local-embeddings,local-generation
+
+  extended-http:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test extended HTTP compatibility matrix
+        run: >-
+          cargo test --test cli
+          v14_6_local_memory_ui_and_http_actions -- --exact
+
+  extended-autonomy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test autonomous maintenance and rollback matrix
+        run: >-
+          cargo test --test cli
+          v14_9_autonomous_memory_runs_and_rolls_back -- --exact

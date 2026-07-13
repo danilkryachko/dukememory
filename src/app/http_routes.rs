@@ -14,32 +14,47 @@ pub(super) fn handle_http_request(
     let method = parts.first().copied().unwrap_or("");
     let raw_path = parts.get(1).copied().unwrap_or("/");
     let (path, query) = split_query(raw_path);
+    let headers = lines
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect::<HashMap<_, _>>();
     if let Some(expected) = auth_token
         && !matches!(
             (method, path),
             ("GET", "/") | ("GET", "/ui") | ("GET", "/health")
         )
     {
-        let provided = lines.find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            if name.eq_ignore_ascii_case("authorization") {
-                value.trim().strip_prefix("Bearer ").map(str::trim)
-            } else if name.eq_ignore_ascii_case("x-dukememory-token") {
-                Some(value.trim())
-            } else {
-                None
-            }
-        });
-        if !provided.is_some_and(|provided| http_token_matches(expected, provided)) {
+        let provided = headers
+            .get("authorization")
+            .and_then(|value| value.strip_prefix("Bearer ").map(str::trim))
+            .or_else(|| headers.get("x-dukememory-token").map(String::as_str));
+        if !provided.is_some_and(|provided| security::token_matches(expected, provided)) {
             return Ok(HttpResponse::unauthorized());
         }
     }
+    if matches!(method, "POST" | "PUT" | "PATCH" | "DELETE")
+        && let Some(origin) = headers.get("origin")
+        && !security::origin_allowed(origin, headers.get("host").map(String::as_str))
+    {
+        return Ok(HttpResponse::forbidden(
+            "cross-origin state-changing requests are not allowed",
+        ));
+    }
+    match (method, path) {
+        ("GET", "/") | ("GET", "/ui") => {
+            return Ok(HttpResponse::html(memory_ui_html()));
+        }
+        ("GET", "/health") => {
+            return Ok(HttpResponse::ok(
+                json!({"ok": true, "version": env!("CARGO_PKG_VERSION")}),
+            ));
+        }
+        _ => {}
+    }
     let conn = open_db(db)?;
     let response = match (method, path) {
-        ("GET", "/") | ("GET", "/ui") => HttpResponse::html(memory_ui_html()),
-        ("GET", "/health") => {
-            HttpResponse::ok(json!({"ok": true, "version": env!("CARGO_PKG_VERSION")}))
-        }
         ("GET", "/projects") => HttpResponse::ok(json!({"projects": discover_projects(db)?})),
         ("GET", "/metrics") => HttpResponse::ok(http_metrics(&conn)?),
         ("GET", "/audit") => HttpResponse::ok(json!({"events": audit_events(&conn, 50)?})),

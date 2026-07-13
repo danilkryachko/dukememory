@@ -59,6 +59,7 @@ pub(crate) mod rag_ingest;
 mod release_ops;
 mod retrieval;
 mod shared;
+mod sync_planning;
 mod topology;
 use autonomous::*;
 use cli::*;
@@ -74,6 +75,7 @@ use rag::*;
 use rag_ingest::*;
 use retrieval::*;
 use shared::*;
+use sync_planning::*;
 
 fn init_project(conn: &Connection, db: &Path, config: &Path, force: bool) -> Result<()> {
     if config.exists() && !force {
@@ -747,7 +749,7 @@ fn ensure_vector_backend(conn: &Connection, backend: VectorBackend) -> Result<()
     }
 }
 
-fn vec_migrate(conn: &Connection, backend: VectorBackend) -> Result<()> {
+fn vec_validate(conn: &Connection, backend: VectorBackend) -> Result<()> {
     ensure_vector_backend(conn, backend)?;
     let detail = match backend {
         VectorBackend::Json => {
@@ -757,7 +759,7 @@ fn vec_migrate(conn: &Connection, backend: VectorBackend) -> Result<()> {
             "validated externally loaded sqlite-vec capability; retrieval remains application-side"
         }
     };
-    log_event(conn, "vec_migrate", None, detail)?;
+    log_event(conn, "vec_validate", None, detail)?;
     println!("{detail}");
     Ok(())
 }

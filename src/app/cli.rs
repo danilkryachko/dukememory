@@ -2063,9 +2063,12 @@ pub(crate) enum Command {
         once: bool,
         #[arg(long, env = "DUKEMEMORY_HTTP_TOKEN", hide_env_values = true)]
         auth_token: Option<String>,
+        #[arg(long, env = "DUKEMEMORY_HTTP_TOKEN_FILE")]
+        auth_token_file: Option<PathBuf>,
     },
-    /// Validate the JSON backend or probe an externally loaded sqlite-vec extension.
-    VecMigrate {
+    /// Validate JSON vector storage or probe an externally loaded sqlite-vec extension.
+    #[command(alias = "vec-migrate")]
+    VecValidate {
         #[arg(long, value_enum, default_value_t = VectorBackend::Json)]
         backend: VectorBackend,
     },

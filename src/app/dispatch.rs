@@ -1861,8 +1861,15 @@ pub(crate) fn run() -> Result<()> {
             port,
             once,
             auth_token,
-        } => http_server::serve_http(&cli.db, &host, port, once, auth_token.as_deref())?,
-        Command::VecMigrate { backend } => vec_migrate(&conn, backend)?,
+            auth_token_file,
+        } => {
+            let auth_token = http_server::resolve_http_auth_token(
+                auth_token.as_deref(),
+                auth_token_file.as_deref(),
+            )?;
+            http_server::serve_http(&cli.db, &host, port, once, auth_token.as_deref())?;
+        }
+        Command::VecValidate { backend } => vec_validate(&conn, backend)?,
         Command::MergeCandidates { limit, json } => print_merge_candidates(&conn, limit, json)?,
         Command::MergeApply {
             primary_id,

@@ -95,13 +95,14 @@ fn insert_read_event_with_ids(db: &std::path::Path, command: &str, query: &str, 
 }
 
 fn http_once(db: &std::path::Path, request: &str) -> String {
-    http_once_configured(db, "127.0.0.1", None, request)
+    http_once_configured(db, "127.0.0.1", None, None, request)
 }
 
 fn http_once_configured(
     db: &std::path::Path,
     host: &str,
     auth_token: Option<&str>,
+    auth_token_file: Option<&std::path::Path>,
     request: &str,
 ) -> String {
     let mut command = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"));
@@ -119,6 +120,9 @@ fn http_once_configured(
         .stdout(Stdio::piped());
     if let Some(auth_token) = auth_token {
         command.arg("--auth-token").arg(auth_token);
+    }
+    if let Some(auth_token_file) = auth_token_file {
+        command.arg("--auth-token-file").arg(auth_token_file);
     }
     let mut child = command.spawn().unwrap();
     let stdout_pipe = child.stdout.take().unwrap();
@@ -139,6 +143,88 @@ fn http_once_configured(
     stream.read_to_string(&mut response).unwrap();
     assert!(child.wait().unwrap().success());
     response
+}
+
+struct PersistentHttpServer {
+    child: Option<std::process::Child>,
+    output_thread: Option<std::thread::JoinHandle<std::io::Result<u64>>>,
+    port: u16,
+}
+
+impl PersistentHttpServer {
+    fn start(db: &std::path::Path) -> Self {
+        let mut command = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"));
+        command
+            .arg("--db")
+            .arg(db)
+            .arg("serve-http")
+            .arg("--host")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg("0")
+            .env("DUKEMEMORY_EMBED_PROVIDER", "mock")
+            .env("DUKEMEMORY_GEN_PROVIDER", "mock")
+            .stdout(Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        let stdout_pipe = child.stdout.take().unwrap();
+        let mut reader = BufReader::new(stdout_pipe);
+        let mut url = String::new();
+        reader.read_line(&mut url).unwrap();
+        let port = url
+            .trim()
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        let output_thread = std::thread::spawn(move || {
+            let mut sink = std::io::sink();
+            std::io::copy(&mut reader, &mut sink)
+        });
+        Self {
+            child: Some(child),
+            output_thread: Some(output_thread),
+            port,
+        }
+    }
+
+    fn request(&self, request: &str) -> String {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", self.port)).unwrap();
+        let timeout = Some(std::time::Duration::from_secs(180));
+        stream.set_read_timeout(timeout).unwrap();
+        stream.set_write_timeout(timeout).unwrap();
+        write!(stream, "{request}").unwrap();
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut response = String::new();
+        let started = std::time::Instant::now();
+        stream.read_to_string(&mut response).unwrap_or_else(|err| {
+            panic!(
+                "HTTP test request {:?} failed after {:?}: {err}",
+                request.lines().next().unwrap_or("<empty request>"),
+                started.elapsed()
+            )
+        });
+        if started.elapsed() >= std::time::Duration::from_secs(1) {
+            eprintln!(
+                "slow HTTP test request {:?}: {:?}",
+                request.lines().next().unwrap_or("<empty request>"),
+                started.elapsed()
+            );
+        }
+        response
+    }
+}
+
+impl Drop for PersistentHttpServer {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(output_thread) = self.output_thread.take() {
+            let _ = output_thread.join();
+        }
+    }
 }
 
 #[test]
@@ -2326,7 +2412,7 @@ fn v8_daemon_http_merge_profiles_and_sync() {
         .stdout(contains("daemon_tick"));
 
     cmd(&db)
-        .arg("vec-migrate")
+        .arg("vec-validate")
         .arg("--backend")
         .arg("json")
         .assert()
@@ -9259,8 +9345,10 @@ fn v14_1_daemon_autopilot_writes_status_backup_cleanup_and_ingests() {
 fn daemon_tick_skips_embed_index_when_provider_is_unreachable() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
+    let sessions = dir.path().join("sessions");
     let backups = dir.path().join("backups");
     let status = dir.path().join("daemon-status.json");
+    fs::create_dir_all(&sessions).unwrap();
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let endpoint = format!("http://127.0.0.1:{port}");
@@ -9330,6 +9418,8 @@ fn daemon_tick_skips_embed_index_when_provider_is_unreachable() {
             .arg("report")
             .arg("--status-file")
             .arg(&status)
+            .arg("--session-dir")
+            .arg(&sessions)
             .arg("--backup-dir")
             .arg(&backups)
             .arg("--provider")
@@ -9355,6 +9445,8 @@ fn daemon_tick_skips_embed_index_when_provider_is_unreachable() {
         .arg("alert")
         .arg("--status-file")
         .arg(&status)
+        .arg("--session-dir")
+        .arg(&sessions)
         .arg("--backup-dir")
         .arg(&backups)
         .arg("--provider")
@@ -9822,10 +9914,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
         .success()
         .stdout(contains("Memory: read brief"));
 
-    let html = http_once(
-        &db,
-        "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
+    let server = PersistentHttpServer::start(&db);
+    let html = server.request("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(html.contains("200 OK"));
     assert!(html.contains("Content-Type: text/html"));
     assert!(html.contains("dukememory."));
@@ -10074,54 +10164,40 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("Auto feedback"));
     assert!(html.contains("/upgrade-project"));
 
-    let memory = http_once(
-        &db,
-        "GET /memory?status=active&type=decision&q=ui HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let memory = server.request("GET /memory?status=active&type=decision&q=ui HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(memory.contains("200 OK"));
     assert!(memory.contains("\"memories\""));
     assert!(memory.contains("Memory UI"));
     assert!(memory.contains("\"request_count\""));
 
-    let hot_memory = http_once(
-        &db,
-        "GET /memory?status=active&type=decision&q=ui&usage=hot&sort=request_count HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let hot_memory = server.request("GET /memory?status=active&type=decision&q=ui&usage=hot&sort=request_count HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(hot_memory.contains("200 OK"));
     assert!(hot_memory.contains("\"request_count\""));
 
-    let usefulness = http_once(
-        &db,
-        "GET /usefulness?since_days=30&stale_days=30&hot_threshold=1 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let usefulness = server.request("GET /usefulness?since_days=30&stale_days=30&hot_threshold=1 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(usefulness.contains("\"usefulness\""));
     assert!(usefulness.contains("\"hot\""));
 
-    let quality = http_once(
-        &db,
-        "GET /quality?since_days=30&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let quality = server.request("GET /quality?since_days=30&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(quality.contains("\"quality\""));
     assert!(quality.contains("\"average_score\""));
 
-    let budget = http_once(
-        &db,
-        "GET /budget-plan?task=small%20memory%20task HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let budget = server.request("GET /budget-plan?task=small%20memory%20task HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(budget.contains("\"budget\""));
     assert!(budget.contains("\"profile\""));
 
-    let profile = http_once(
-        &db,
-        "GET /project-profile HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
+    let profile = server
+        .request("GET /project-profile HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(profile.contains("\"profile\""));
     assert!(profile.contains("\"memory_count\""));
 
-    let dashboard = http_once(
-        &db,
-        "GET /dashboard HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
+    let dashboard =
+        server.request("GET /dashboard HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(dashboard.contains("\"dashboard\""));
     assert!(dashboard.contains("\"projects\""));
     assert!(dashboard.contains("\"autonomous_live_reads\""));
@@ -10170,18 +10246,15 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(dashboard.contains("\"attention_projects\""));
     assert!(dashboard.contains("\"missing_live_eval_projects\""));
 
-    let dashboard_repair = http_once(
-        &db,
-        "GET /dashboard-repair HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
+    let dashboard_repair = server
+        .request("GET /dashboard-repair HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(dashboard_repair.contains("\"repair\""));
     assert!(dashboard_repair.contains("\"apply\":false"));
     assert!(dashboard_repair.contains("\"skipped_actions\""));
 
     insert_empty_read_event(&db, "brief", "missing ui deployment memory");
 
-    let eval_live = http_once(
-        &db,
+    let eval_live = server.request(
         "GET /eval-live?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(eval_live.contains("\"eval\""));
@@ -10198,34 +10271,27 @@ fn v14_6_local_memory_ui_and_http_actions() {
         dashboard_repair_body.len(),
         dashboard_repair_body
     );
-    let dashboard_repair_apply = http_once(&db, &dashboard_repair_request);
+    let dashboard_repair_apply = server.request(&dashboard_repair_request);
     assert!(dashboard_repair_apply.contains("\"repair\""));
     assert!(dashboard_repair_apply.contains("\"apply\":true"));
     assert!(dashboard_repair_apply.contains("\"ok\":true"));
-    let audit = http_once(
-        &db,
-        "GET /audit HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
+    let audit =
+        server.request("GET /audit HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(audit.contains("dashboard_repair"));
-    let dashboard_repair_history = http_once(
-        &db,
+    let dashboard_repair_history = server.request(
         "GET /dashboard-repair-history HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(dashboard_repair_history.contains("\"history\""));
     assert!(dashboard_repair_history.contains("\"total_runs\""));
     assert!(dashboard_repair_history.contains("\"runs_by_source\""));
 
-    let recall = http_once(
-        &db,
-        "GET /recall?q=memory%20ui&max_chars=800 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let recall = server.request("GET /recall?q=memory%20ui&max_chars=800 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(recall.contains("\"recall\""));
     assert!(recall.contains("\"token_saving_estimate\""));
 
-    let inbox_v2 = http_once(
-        &db,
-        "GET /inbox-v2 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
+    let inbox_v2 =
+        server.request("GET /inbox-v2 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(inbox_v2.contains("\"inbox_v2\""));
     assert!(inbox_v2.contains("\"groups\""));
 
@@ -10237,7 +10303,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
         feedback_body.len(),
         feedback_body
     );
-    let feedback = http_once(&db, &feedback_request);
+    let feedback = server.request(&feedback_request);
     assert!(feedback.contains("\"feedback\""));
     assert!(feedback.contains("\"positive\""));
 
@@ -10247,12 +10313,11 @@ fn v14_6_local_memory_ui_and_http_actions() {
         policy_body.len(),
         policy_body
     );
-    let policy = http_once(&db, &policy_request);
+    let policy = server.request(&policy_request);
     assert!(policy.contains("\"policy\""));
     assert!(policy.contains("\"risk_limit\""));
 
-    let qa = http_once(
-        &db,
+    let qa = server.request(
         "GET /memory-qa?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(qa.contains("\"qa\""));
@@ -10262,8 +10327,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(qa.contains("\"semantic_eligible_empty_read_count\""));
     assert!(qa.contains("\"semantic_empty_queries\""));
 
-    let ops = http_once(
-        &db,
+    let ops = server.request(
         "GET /ops-status?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(ops.contains("\"ops\""));
@@ -10285,8 +10349,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(ops.contains("\"multi_device\""));
     assert!(ops.contains("\"inferred_missing\":1"));
 
-    let roi = http_once(
-        &db,
+    let roi = server.request(
         "GET /roi-report?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(roi.contains("\"roi\""));
@@ -10294,25 +10357,21 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(roi.contains("\"write_pressure\""));
     assert!(roi.contains("\"top_memories\""));
 
-    let agent_audit = http_once(
-        &db,
+    let agent_audit = server.request(
         "GET /agent-audit?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(agent_audit.contains("\"agent_audit\""));
     assert!(agent_audit.contains("\"brief_reads\""));
     assert!(agent_audit.contains("\"durable_writes\""));
 
-    let remote = http_once(
-        &db,
+    let remote = server.request(
         "GET /remote-status?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(remote.contains("\"remote\""));
     assert!(remote.contains("\"local_first\""));
     assert!(remote.contains("\"estimated_vds_latency_ms\""));
 
-    let trace = http_once(
-        &db,
-        "GET /decision-trace?since_days=7&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let trace = server.request("GET /decision-trace?since_days=7&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(trace.contains("\"trace\""));
     assert!(trace.contains("\"influenced_reads\""));
@@ -10321,9 +10380,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(trace.contains("\"memory_titles\""));
     assert!(trace.contains("\"without_memory\""));
 
-    let auto_feedback = http_once(
-        &db,
-        "GET /auto-feedback?since_days=7&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let auto_feedback = server.request("GET /auto-feedback?since_days=7&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(auto_feedback.contains("\"auto_feedback\""));
     assert!(auto_feedback.contains("\"applied\":false"));
@@ -10331,41 +10388,33 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(auto_feedback.contains("\"closed_missing\""));
     assert!(auto_feedback.contains("\"unresolved_missing_queries\""));
 
-    let cost_guard = http_once(
-        &db,
+    let cost_guard = server.request(
         "GET /cost-guard?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(cost_guard.contains("\"cost_guard\""));
     assert!(cost_guard.contains("\"recommended_profile\""));
     assert!(cost_guard.contains("\"guard_active\""));
 
-    let project_diff = http_once(
-        &db,
-        "GET /project-diff?changed_only=true HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let project_diff = server.request("GET /project-diff?changed_only=true HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(project_diff.contains("\"project_diff\""));
     assert!(project_diff.contains("\"changed_files\""));
     assert!(project_diff.contains("\"drift\""));
 
-    let intelligence = http_once(
-        &db,
-        "GET /intelligence-dashboard?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let intelligence = server.request("GET /intelligence-dashboard?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(intelligence.contains("\"intelligence\""));
     assert!(intelligence.contains("\"cost_guard\""));
     assert!(intelligence.contains("\"decision_trace\""));
     assert!(intelligence.contains("\"remote_sync\""));
 
-    let remote_sync = http_once(
-        &db,
-        "GET /remote-sync-dry-run?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let remote_sync = server.request("GET /remote-sync-dry-run?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(remote_sync.contains("\"remote_sync\""));
     assert!(remote_sync.contains("\"estimated_roundtrip_ms\""));
     assert!(remote_sync.contains("\"local_first\":true"));
 
-    let doctor = http_once(
-        &db,
+    let doctor = server.request(
         "GET /doctor-project?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(doctor.contains("\"doctor\""));
@@ -10373,8 +10422,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(doctor.contains("\"memory_qa\""));
     assert!(doctor.contains("\"embedding\""));
 
-    let release_gate = http_once(
-        &db,
+    let release_gate = server.request(
         "GET /release-gate?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(release_gate.contains("\"release_gate\""));
@@ -10382,496 +10430,382 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(release_gate.contains("\"doctor_project\""));
     assert!(release_gate.contains("\"required_commands\""));
 
-    let replay = http_once(
-        &db,
-        "GET /memory-replay?since_days=7&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let replay = server.request("GET /memory-replay?since_days=7&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(replay.contains("\"replay\""));
     assert!(replay.contains("\"influenced_reads\""));
     assert!(replay.contains("\"effect\""));
 
-    let watch = http_once(
-        &db,
+    let watch = server.request(
         "GET /project-watch?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(watch.contains("\"watch\""));
     assert!(watch.contains("\"total_projects\""));
     assert!(watch.contains("\"attention_projects\""));
 
-    let autonomous_loop = http_once(
-        &db,
-        "GET /autonomous-loop?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let autonomous_loop = server.request("GET /autonomous-loop?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(autonomous_loop.contains("\"loop\""));
     assert!(autonomous_loop.contains("\"applied\":false"));
     assert!(autonomous_loop.contains("\"watch\""));
 
-    let autonomous_watch_install = http_once(
-        &db,
-        "GET /autonomous-watch-install?interval_secs=60 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let autonomous_watch_install = server.request("GET /autonomous-watch-install?interval_secs=60 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(autonomous_watch_install.contains("\"install\""));
     assert!(autonomous_watch_install.contains("\"dry_run\":true"));
     assert!(autonomous_watch_install.contains("autonomous-loop"));
 
-    let action_journal = http_once(
-        &db,
-        "GET /action-journal?since_days=7&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let action_journal = server.request("GET /action-journal?since_days=7&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(action_journal.contains("\"journal\""));
     assert!(action_journal.contains("\"rollback_events\""));
     assert!(action_journal.contains("\"items\""));
 
-    let usefulness_engine = http_once(
-        &db,
-        "GET /usefulness-engine?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let usefulness_engine = server.request("GET /usefulness-engine?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(usefulness_engine.contains("\"engine\""));
     assert!(usefulness_engine.contains("\"ranking_policy\""));
     assert!(usefulness_engine.contains("\"suppress_candidates\""));
 
-    let ranking_profile = http_once(
-        &db,
-        "GET /ranking-profile?profile=precision-heavy HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let ranking_profile = server.request("GET /ranking-profile?profile=precision-heavy HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(ranking_profile.contains("\"ranking\""));
     assert!(ranking_profile.contains("\"profile\":\"precision_heavy\""));
     assert!(ranking_profile.contains("\"weights\""));
 
-    let context_governor = http_once(
-        &db,
-        "GET /context-governor?task=memory%20task&target=src/app.rs HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let context_governor = server.request("GET /context-governor?task=memory%20task&target=src/app.rs HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(context_governor.contains("\"governor\""));
     assert!(context_governor.contains("\"selected_flow\""));
     assert!(context_governor.contains("\"budget\""));
 
-    let memory_router = http_once(
-        &db,
-        "GET /memory-router?q=memory&include_siblings=true HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let memory_router = server.request("GET /memory-router?q=memory&include_siblings=true HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(memory_router.contains("\"router\""));
     assert!(memory_router.contains("\"routes\""));
     assert!(memory_router.contains("\"authoritative\""));
 
-    let auto_ranking = http_once(
-        &db,
-        "GET /auto-ranking-tune?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let auto_ranking = server.request("GET /auto-ranking-tune?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(auto_ranking.contains("\"tune\""));
     assert!(auto_ranking.contains("\"selected_profile\""));
     assert!(auto_ranking.contains("\"ranking\""));
 
-    let memory_health = http_once(
-        &db,
-        "GET /memory-health-score?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let memory_health = server.request("GET /memory-health-score?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(memory_health.contains("\"health\""));
     assert!(memory_health.contains("\"components\""));
     assert!(memory_health.contains("\"grade\""));
 
-    let explain_recall = http_once(
-        &db,
-        "GET /explain-recall?q=memory&limit=4 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let explain_recall = server.request("GET /explain-recall?q=memory&limit=4 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(explain_recall.contains("\"explain\""));
     assert!(explain_recall.contains("\"hits\""));
     assert!(explain_recall.contains("\"recommendations\""));
 
-    let intent_map = http_once(
-        &db,
+    let intent_map = server.request(
         "GET /project-intent-map HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(intent_map.contains("\"intent_map\""));
     assert!(intent_map.contains("\"recommended_start_flow\""));
     assert!(intent_map.contains("\"contract_preview\""));
 
-    let memory_harness = http_once(
-        &db,
-        "GET /memory-test-harness?since_days=7&limit=4 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let memory_harness = server.request("GET /memory-test-harness?since_days=7&limit=4 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(memory_harness.contains("\"harness\""));
     assert!(memory_harness.contains("\"probes\""));
     assert!(memory_harness.contains("\"failures\""));
 
-    let audit_v2 = http_once(
-        &db,
+    let audit_v2 = server.request(
         "GET /agent-audit-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(audit_v2.contains("\"audit_v2\""));
     assert!(audit_v2.contains("\"disciplined_reads\""));
     assert!(audit_v2.contains("\"trace_explainable\""));
 
-    let control_v2 = http_once(
-        &db,
-        "GET /memory-control-center-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let control_v2 = server.request("GET /memory-control-center-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(control_v2.contains("\"control_v2\""));
     assert!(control_v2.contains("\"health\""));
     assert!(control_v2.contains("\"next_actions\""));
 
-    let auto_supersede_v2 = http_once(
-        &db,
-        "GET /auto-supersede-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let auto_supersede_v2 = server.request("GET /auto-supersede-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(auto_supersede_v2.contains("\"supersede\""));
     assert!(auto_supersede_v2.contains("\"candidates\""));
     assert!(auto_supersede_v2.contains("\"rollback_hint\""));
 
-    let memory_diff_apply = http_once(
-        &db,
-        "GET /memory-diff-apply HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
+    let memory_diff_apply = server
+        .request("GET /memory-diff-apply HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(memory_diff_apply.contains("\"apply\""));
     assert!(memory_diff_apply.contains("\"written_ids\""));
     assert!(memory_diff_apply.contains("\"reviewed\""));
 
-    let recall_benchmark = http_once(
-        &db,
-        "GET /recall-benchmark-suite?since_days=7&limit=4 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let recall_benchmark = server.request("GET /recall-benchmark-suite?since_days=7&limit=4 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(recall_benchmark.contains("\"benchmark\""));
     assert!(recall_benchmark.contains("\"baseline_path\""));
     assert!(recall_benchmark.contains("\"regression\""));
 
-    let release_gate_v2 = http_once(
-        &db,
-        "GET /release-gate-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let release_gate_v2 = server.request("GET /release-gate-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(release_gate_v2.contains("\"release_gate_v2\""));
     assert!(release_gate_v2.contains("\"memory_health_score\""));
     assert!(release_gate_v2.contains("\"recall_benchmark\""));
 
-    let effectiveness_v2 = http_once(
-        &db,
-        "GET /memory-effectiveness-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let effectiveness_v2 = server.request("GET /memory-effectiveness-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(effectiveness_v2.contains("\"effectiveness_v2\""));
     assert!(effectiveness_v2.contains("\"wasted_read_rate\""));
     assert!(effectiveness_v2.contains("\"top_useful_cards\""));
 
-    let recall_baselines = http_once(
-        &db,
-        "GET /recall-benchmark-baselines?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let recall_baselines = server.request("GET /recall-benchmark-baselines?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(recall_baselines.contains("\"recall_baselines\""));
     assert!(recall_baselines.contains("\"baseline_present\""));
     assert!(recall_baselines.contains("\"current_score\""));
 
-    let conflict_apply = http_once(
-        &db,
-        "GET /memory-conflict-apply?limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let conflict_apply = server.request("GET /memory-conflict-apply?limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(conflict_apply.contains("\"conflict_apply\""));
     assert!(conflict_apply.contains("\"safe_actions\""));
     assert!(conflict_apply.contains("\"rollback_hint\""));
 
-    let remote_sync_wizard = http_once(
-        &db,
-        "GET /remote-sync-wizard?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let remote_sync_wizard = server.request("GET /remote-sync-wizard?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(remote_sync_wizard.contains("\"wizard\""));
     assert!(remote_sync_wizard.contains("\"steps\""));
     assert!(remote_sync_wizard.contains("\"local_first\""));
 
-    let governance_policy = http_once(
-        &db,
+    let governance_policy = server.request(
         "GET /memory-governance-policy HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(governance_policy.contains("\"governance\""));
     assert!(governance_policy.contains("\"auto_write_types\""));
     assert!(governance_policy.contains("\"max_write_pressure\""));
 
-    let autonomous_loop_v2 = http_once(
-        &db,
-        "GET /autonomous-loop-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let autonomous_loop_v2 = server.request("GET /autonomous-loop-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(autonomous_loop_v2.contains("\"loop_v2\""));
     assert!(autonomous_loop_v2.contains("\"governance\""));
     assert!(autonomous_loop_v2.contains("\"release_gate_v2\""));
 
-    let governance_enforce = http_once(
-        &db,
-        "GET /governance-enforce?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let governance_enforce = server.request("GET /governance-enforce?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(governance_enforce.contains("\"enforce\""));
     assert!(governance_enforce.contains("\"write_pressure\""));
     assert!(governance_enforce.contains("\"violations\""));
 
-    let quality_ci = http_once(
-        &db,
-        "GET /memory-quality-ci?since_days=7&minimal=true HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let quality_ci = server.request("GET /memory-quality-ci?since_days=7&minimal=true HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(quality_ci.contains("\"ci\""));
     assert!(quality_ci.contains("\"failed_checks\""));
     assert!(quality_ci.contains("\"health_score\""));
 
-    let fleet_v2 = http_once(
-        &db,
-        "GET /fleet-dashboard-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let fleet_v2 = server.request("GET /fleet-dashboard-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(fleet_v2.contains("\"fleet\""));
     assert!(fleet_v2.contains("\"total_projects\""));
     assert!(fleet_v2.contains("\"attention_projects\""));
 
-    let remote_apply_flow = http_once(
-        &db,
-        "GET /remote-sync-apply-flow?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let remote_apply_flow = server.request("GET /remote-sync-apply-flow?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(remote_apply_flow.contains("\"flow\""));
     assert!(remote_apply_flow.contains("\"apply_allowed\""));
     assert!(remote_apply_flow.contains("\"passphrase_ready\""));
 
-    let mcp_surface_v2 = http_once(
-        &db,
+    let mcp_surface_v2 = server.request(
         "GET /mcp-tool-surface-v2 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(mcp_surface_v2.contains("\"mcp\""));
     assert!(mcp_surface_v2.contains("\"expected_tools\""));
     assert!(mcp_surface_v2.contains("\"missing_tools\""));
 
-    let mcp_surface_v3 = http_once(
-        &db,
+    let mcp_surface_v3 = server.request(
         "GET /mcp-tool-surface-v3 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(mcp_surface_v3.contains("\"surface\""));
     assert!(mcp_surface_v3.contains("\"memory_release_gate_v3\""));
     assert!(mcp_surface_v3.contains("\"required_startup_tools\""));
 
-    let autopilot_v3 = http_once(
-        &db,
+    let autopilot_v3 = server.request(
         "GET /autopilot-v3?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(autopilot_v3.contains("\"autopilot_v3\""));
     assert!(autopilot_v3.contains("\"learning\""));
     assert!(autopilot_v3.contains("\"mcp_quality\""));
 
-    let self_learning = http_once(
-        &db,
-        "GET /self-learning-retrieval?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let self_learning = server.request("GET /self-learning-retrieval?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(self_learning.contains("\"learning\""));
     assert!(self_learning.contains("\"selected_profile\""));
     assert!(self_learning.contains("\"signals\""));
 
-    let role_profile = http_once(
-        &db,
+    let role_profile = server.request(
         "GET /project-role-profile HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(role_profile.contains("\"role\""));
     assert!(role_profile.contains("\"inferred_kind\""));
     assert!(role_profile.contains("\"template\""));
 
-    let inbox_reviewer = http_once(
-        &db,
+    let inbox_reviewer = server.request(
         "GET /inbox-ai-reviewer?limit=20 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(inbox_reviewer.contains("\"reviewer\""));
     assert!(inbox_reviewer.contains("\"approve_ready\""));
     assert!(inbox_reviewer.contains("\"explanations\""));
 
-    let web_control_v3 = http_once(
-        &db,
-        "GET /web-control-center-v3?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let web_control_v3 = server.request("GET /web-control-center-v3?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(web_control_v3.contains("\"control_v3\""));
     assert!(web_control_v3.contains("\"tabs\""));
     assert!(web_control_v3.contains("\"primary_actions\""));
 
-    let remote_sync_apply = http_once(
-        &db,
-        "GET /remote-sync-apply?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let remote_sync_apply = server.request("GET /remote-sync-apply?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(remote_sync_apply.contains("\"remote_apply\""));
     assert!(remote_sync_apply.contains("\"sync_profile\""));
     assert!(remote_sync_apply.contains("\"commands\""));
 
-    let mcp_quality_tools = http_once(
-        &db,
-        "GET /mcp-quality-tools HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
+    let mcp_quality_tools = server
+        .request("GET /mcp-quality-tools HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(mcp_quality_tools.contains("\"mcp_quality\""));
     assert!(mcp_quality_tools.contains("\"quality_tools\""));
     assert!(mcp_quality_tools.contains("\"recommended_flow\""));
 
-    let remote_sync_control = http_once(
-        &db,
-        "GET /remote-sync-control?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let remote_sync_control = server.request("GET /remote-sync-control?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(remote_sync_control.contains("\"remote_sync_control\""));
     assert!(remote_sync_control.contains("\"dry_run_commands\""));
     assert!(remote_sync_control.contains("\"rollback_hint\""));
 
-    let web_control_v4 = http_once(
-        &db,
-        "GET /web-control-center-v4?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let web_control_v4 = server.request("GET /web-control-center-v4?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(web_control_v4.contains("\"control_v4\""));
     assert!(web_control_v4.contains("\"controls\""));
     assert!(web_control_v4.contains("\"feedback_loop\""));
 
-    let mcp_discipline_v2 = http_once(
-        &db,
-        "GET /mcp-discipline-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let mcp_discipline_v2 = server.request("GET /mcp-discipline-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(mcp_discipline_v2.contains("\"discipline\""));
     assert!(mcp_discipline_v2.contains("\"startup_flow\""));
     assert!(mcp_discipline_v2.contains("\"after_task_flow\""));
 
-    let mcp_discipline_v3 = http_once(
-        &db,
-        "GET /mcp-discipline-v3?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let mcp_discipline_v3 = server.request("GET /mcp-discipline-v3?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(mcp_discipline_v3.contains("\"discipline_v3\""));
     assert!(mcp_discipline_v3.contains("\"before_edit_flow\""));
     assert!(mcp_discipline_v3.contains("\"memory_effectiveness_v2\""));
 
-    let feedback_loop_v2 = http_once(
-        &db,
-        "GET /feedback-loop-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let feedback_loop_v2 = server.request("GET /feedback-loop-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(feedback_loop_v2.contains("\"feedback_loop\""));
     assert!(feedback_loop_v2.contains("\"auto_feedback\""));
     assert!(feedback_loop_v2.contains("\"benchmark\""));
 
-    let upgrade_all_v2 = http_once(
-        &db,
+    let upgrade_all_v2 = server.request(
         "GET /upgrade-all-projects-v2 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(upgrade_all_v2.contains("\"upgrade_all_v2\""));
     assert!(upgrade_all_v2.contains("\"project_summaries\""));
     assert!(upgrade_all_v2.contains("\"dry_run\":true"));
 
-    let fleet_quality = http_once(
-        &db,
+    let fleet_quality = server.request(
         "GET /fleet-quality?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(fleet_quality.contains("\"fleet_quality\""));
     assert!(fleet_quality.contains("\"average_effectiveness_score\""));
     assert!(fleet_quality.contains("\"ready_projects\""));
 
-    let vds_sync_pack = http_once(
-        &db,
+    let vds_sync_pack = server.request(
         "GET /vds-sync-pack?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(vds_sync_pack.contains("\"vds_sync_pack\""));
     assert!(vds_sync_pack.contains("\"verify_commands\""));
 
-    let web_control_v5 = http_once(
-        &db,
-        "GET /web-control-center-v5?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let web_control_v5 = server.request("GET /web-control-center-v5?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(web_control_v5.contains("\"control_v5\""));
     assert!(web_control_v5.contains("\"quality_autopilot\""));
 
-    let quality_autopilot = http_once(
-        &db,
-        "GET /quality-autopilot-v31?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let quality_autopilot = server.request("GET /quality-autopilot-v31?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(quality_autopilot.contains("\"quality_autopilot\""));
     assert!(quality_autopilot.contains("\"cost_guard\""));
 
-    let router_v2 = http_once(
-        &db,
-        "GET /memory-router-v2?q=memory&include_siblings=true HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let router_v2 = server.request("GET /memory-router-v2?q=memory&include_siblings=true HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(router_v2.contains("\"router_v2\""));
     assert!(router_v2.contains("\"guardrails\""));
 
-    let benchmark_profiles = http_once(
-        &db,
-        "GET /benchmark-profiles?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let benchmark_profiles = server.request("GET /benchmark-profiles?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(benchmark_profiles.contains("\"benchmark_profiles\""));
     assert!(benchmark_profiles.contains("\"selected_kind\""));
 
-    let install_polish = http_once(
-        &db,
-        "GET /install-polish HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
+    let install_polish = server
+        .request("GET /install-polish HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(install_polish.contains("\"install_polish\""));
     assert!(install_polish.contains("\"checks\""));
 
-    let effectiveness_lab = http_once(
-        &db,
-        "GET /memory-effectiveness-lab?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let effectiveness_lab = server.request("GET /memory-effectiveness-lab?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(effectiveness_lab.contains("\"effectiveness\""));
     assert!(effectiveness_lab.contains("\"score\""));
 
-    let context_budgeter_v2 = http_once(
-        &db,
-        "GET /auto-context-budgeter-v2?task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let context_budgeter_v2 = server.request("GET /auto-context-budgeter-v2?task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(context_budgeter_v2.contains("\"budgeter\""));
     assert!(context_budgeter_v2.contains("\"selected_commands\""));
 
-    let contract_v2 = http_once(
-        &db,
+    let contract_v2 = server.request(
         "GET /memory-contract-v2 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(contract_v2.contains("\"contract_v2\""));
     assert!(contract_v2.contains("\"sections\""));
 
-    let cross_project = http_once(
-        &db,
-        "GET /cross-project-learning?q=memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let cross_project = server.request("GET /cross-project-learning?q=memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(cross_project.contains("\"cross_project\""));
     assert!(cross_project.contains("\"guardrails\""));
 
-    let agent_trace = http_once(
-        &db,
-        "GET /agent-trace?since_days=7&limit=8 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let agent_trace = server.request("GET /agent-trace?since_days=7&limit=8 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(agent_trace.contains("\"agent_trace\""));
     assert!(agent_trace.contains("\"timeline\""));
 
-    let vds_hardening = http_once(
-        &db,
-        "GET /vds-sync-hardening?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let vds_hardening = server.request("GET /vds-sync-hardening?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(vds_hardening.contains("\"vds_hardening\""));
     assert!(vds_hardening.contains("\"checks\""));
 
-    let install_quality = http_once(
-        &db,
-        "GET /install-quality?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let install_quality = server.request("GET /install-quality?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(install_quality.contains("\"install_quality\""));
     assert!(install_quality.contains("\"future_chats\""));
 
-    let web_control_v6 = http_once(
-        &db,
-        "GET /web-control-center-v6?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let web_control_v6 = server.request("GET /web-control-center-v6?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(web_control_v6.contains("\"control_v6\""));
     assert!(web_control_v6.contains("\"agent_trace\""));
 
-    let answer = http_once(
-        &db,
-        "GET /answer?q=project%20memory&limit=8 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let answer = server.request("GET /answer?q=project%20memory&limit=8 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(answer.contains("\"answer\""));
     assert!(answer.contains("\"citations\""));
 
-    let connect_codex = http_once(
-        &db,
+    let connect_codex = server.request(
         "GET /connect-codex?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(connect_codex.contains("\"connect_codex\""));
     assert!(connect_codex.contains("\"checks\""));
 
-    let type_guide = http_once(
-        &db,
-        "GET /memory-type-guide HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
+    let type_guide = server
+        .request("GET /memory-type-guide HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(type_guide.contains("\"type_guide\""));
     assert!(type_guide.contains("\"recommended_order\""));
 
-    let eval_story = http_once(
-        &db,
-        "GET /memory-eval-story?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let eval_story = server.request("GET /memory-eval-story?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(eval_story.contains("\"eval_story\""));
     assert!(eval_story.contains("\"public_claims\""));
@@ -10891,7 +10825,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
         import_body.len(),
         import_body
     );
-    let import_review = http_once(&db, &import_request);
+    let import_review = server.request(&import_request);
     assert!(import_review.contains("\"import_review\""));
     assert!(import_review.contains("\"candidate_count\""));
 
@@ -10904,26 +10838,21 @@ fn v14_6_local_memory_ui_and_http_actions() {
         upload_body.len(),
         upload_body
     );
-    let memory_upload = http_once(&db, &upload_request);
+    let memory_upload = server.request(&upload_request);
     assert!(memory_upload.contains("\"memory_upload\""));
     assert!(memory_upload.contains("\"memory_upload:reviewed_file_pipeline\""));
 
-    let gap_report = http_once(
-        &db,
+    let gap_report = server.request(
         "GET /memanto-gap-report HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(gap_report.contains("\"memanto_gap\""));
     assert!(gap_report.contains("\"temporal\""));
 
-    let temporal_recall = http_once(
-        &db,
-        "GET /recall?q=HTTP%20import&changed_since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let temporal_recall = server.request("GET /recall?q=HTTP%20import&changed_since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(temporal_recall.contains("\"mode\":\"changed_since\""));
 
-    let temporal_recall_date = http_once(
-        &db,
-        "GET /recall?q=HTTP%20import&as_of=2099-01-01 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let temporal_recall_date = server.request("GET /recall?q=HTTP%20import&as_of=2099-01-01 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(temporal_recall_date.contains("\"mode\":\"as_of\""));
     assert!(temporal_recall_date.contains("\"as_of\":\"2099-01-01\""));
@@ -10943,154 +10872,117 @@ fn v14_6_local_memory_ui_and_http_actions() {
         "GET /memory-timeline?id={} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
         timeline_id
     );
-    let memory_timeline = http_once(&db, &timeline_request);
+    let memory_timeline = server.request(&timeline_request);
     assert!(memory_timeline.contains("\"memory_timeline\""));
     assert!(memory_timeline.contains("\"request_count\""));
 
-    let conflict_review = http_once(
-        &db,
-        "GET /memory-conflict-review?limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let conflict_review = server.request("GET /memory-conflict-review?limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(conflict_review.contains("\"memory_conflict_review\""));
     assert!(conflict_review.contains("\"groups\""));
 
-    let web_control_v7 = http_once(
-        &db,
-        "GET /web-control-center-v7?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let web_control_v7 = server.request("GET /web-control-center-v7?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(web_control_v7.contains("\"control_v7\""));
     assert!(web_control_v7.contains("\"connect_codex\""));
 
-    let autonomous_usefulness = http_once(
-        &db,
-        "GET /autonomous-usefulness?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let autonomous_usefulness = server.request("GET /autonomous-usefulness?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(autonomous_usefulness.contains("\"autonomous_usefulness\""));
     assert!(autonomous_usefulness.contains("\"action_plan\""));
 
-    let benchmark_polish = http_once(
-        &db,
-        "GET /benchmark-polish?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let benchmark_polish = server.request("GET /benchmark-polish?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(benchmark_polish.contains("\"benchmark_polish\""));
     assert!(benchmark_polish.contains("\"dashboard_stats\""));
 
-    let web_control_v8 = http_once(
-        &db,
-        "GET /web-control-center-v8?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let web_control_v8 = server.request("GET /web-control-center-v8?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(web_control_v8.contains("\"control_v8\""));
     assert!(web_control_v8.contains("\"panels\""));
 
-    let autonomous_supervisor = http_once(
-        &db,
-        "GET /autonomous-supervisor?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let autonomous_supervisor = server.request("GET /autonomous-supervisor?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(autonomous_supervisor.contains("\"supervisor\""));
     assert!(autonomous_supervisor.contains("\"planned_actions\""));
 
-    let web_control_v9 = http_once(
-        &db,
-        "GET /web-control-center-v9?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let web_control_v9 = server.request("GET /web-control-center-v9?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(web_control_v9.contains("\"control_v9\""));
     assert!(web_control_v9.contains("\"supervisor\""));
 
-    let fleet_supervisor = http_once(
-        &db,
-        "GET /fleet-supervisor?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let fleet_supervisor = server.request("GET /fleet-supervisor?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(fleet_supervisor.contains("\"fleet\""));
     assert!(fleet_supervisor.contains("\"total_projects\""));
 
-    let web_control_v10 = http_once(
-        &db,
-        "GET /web-control-center-v10?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let web_control_v10 = server.request("GET /web-control-center-v10?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(web_control_v10.contains("\"control_v10\""));
     assert!(web_control_v10.contains("\"fleet\""));
 
-    let fleet_watch_install = http_once(
-        &db,
-        "GET /fleet-supervisor-watch-install?interval_secs=60 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let fleet_watch_install = server.request("GET /fleet-supervisor-watch-install?interval_secs=60 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(fleet_watch_install.contains("\"install\""));
     assert!(fleet_watch_install.contains("\"fleet-supervisor\""));
 
-    let release_gate_v3 = http_once(
-        &db,
-        "GET /release-gate-v3?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let release_gate_v3 = server.request("GET /release-gate-v3?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(release_gate_v3.contains("\"release_gate_v3\""));
     assert!(release_gate_v3.contains("\"memory_effectiveness_v2\""));
     assert!(release_gate_v3.contains("\"mcp_discipline_v3\""));
 
-    let web_control_v12 = http_once(
-        &db,
-        "GET /web-control-center-v12?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let web_control_v12 = server.request("GET /web-control-center-v12?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(web_control_v12.contains("\"control_v12\""));
     assert!(web_control_v12.contains("\"effectiveness_v2\""));
     assert!(web_control_v12.contains("\"release_gate_v3\""));
 
-    let web_control_v11 = http_once(
-        &db,
-        "GET /web-control-center-v11?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let web_control_v11 = server.request("GET /web-control-center-v11?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(web_control_v11.contains("\"control_v11\""));
     assert!(web_control_v11.contains("\"fleet_watch\""));
 
-    let project_template = http_once(
-        &db,
-        "GET /project-template?kind=rust-cli HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let project_template = server.request("GET /project-template?kind=rust-cli HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(project_template.contains("\"template\""));
     assert!(project_template.contains("\"kind\":\"rust_cli\""));
     assert!(project_template.contains("\"recommended_commands\""));
 
-    let watch_control = http_once(
-        &db,
-        "GET /watch-control?interval_secs=60 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let watch_control = server.request("GET /watch-control?interval_secs=60 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(watch_control.contains("\"watch_control\""));
     assert!(watch_control.contains("\"installed\""));
     assert!(watch_control.contains("\"running\""));
 
-    let autonomy_control = http_once(
-        &db,
-        "GET /autonomy-control-center?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let autonomy_control = server.request("GET /autonomy-control-center?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(autonomy_control.contains("\"control\""));
     assert!(autonomy_control.contains("\"diff_review\""));
     assert!(autonomy_control.contains("\"remote_sync\""));
 
-    let sync_latency = http_once(
-        &db,
+    let sync_latency = server.request(
         "GET /sync-latency?samples=1 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(sync_latency.contains("\"latency\""));
     assert!(sync_latency.contains("\"local_first\":true"));
     assert!(sync_latency.contains("\"recommended_mode\""));
 
-    let sync_profile = http_once(
-        &db,
-        "GET /sync-profile?profile=local_first_backup HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let sync_profile = server.request("GET /sync-profile?profile=local_first_backup HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(sync_profile.contains("\"profile\""));
     assert!(sync_profile.contains("\"local_first\":true"));
     assert!(sync_profile.contains("\"commands\""));
     assert!(sync_profile.contains("\"flow_steps\""));
 
-    let agent_enforce = http_once(
-        &db,
+    let agent_enforce = server.request(
         "GET /agent-enforce?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(agent_enforce.contains("\"enforce\""));
     assert!(agent_enforce.contains("\"required_commands\""));
     assert!(agent_enforce.contains("\"missing_commands\""));
 
-    let memory_diff_review = http_once(
-        &db,
+    let memory_diff_review = server.request(
         "GET /memory-diff-review HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(memory_diff_review.contains("\"review\""));
@@ -11099,19 +10991,19 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(memory_diff_review.contains("\"write_ready\""));
     assert!(memory_diff_review.contains("\"stale_memory_ids\""));
 
-    let remote_sync_v2 = http_once(
-        &db,
+    let remote_sync_v2 = server.request(
         "GET /remote-sync-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(remote_sync_v2.contains("\"remote_sync_v2\""));
+    assert!(remote_sync_v2.contains("\"experimental\":true"));
+    assert!(remote_sync_v2.contains("\"plan_only\":true"));
+    assert!(remote_sync_v2.contains("\"executed\":false"));
     assert!(remote_sync_v2.contains("\"encrypted_bundle\":false"));
     assert!(remote_sync_v2.contains("\"encryption_mode\":\"external_openssl_plan\""));
     assert!(remote_sync_v2.contains("\"conflict_policy\":\"manual\""));
 
-    let contract = http_once(
-        &db,
-        "GET /memory-contract HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
+    let contract = server
+        .request("GET /memory-contract HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(contract.contains("\"contract\""));
     assert!(contract.contains("Project Contract"));
 
@@ -11121,7 +11013,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
         upgrade_body.len(),
         upgrade_body
     );
-    let upgrade = http_once(&db, &upgrade_request);
+    let upgrade = server.request(&upgrade_request);
     assert!(upgrade.contains("\"upgrade\""));
     assert!(upgrade.contains("\"dry_run\":true"));
     assert!(upgrade.contains("\"install_ux\""));
@@ -11132,15 +11024,13 @@ fn v14_6_local_memory_ui_and_http_actions() {
         upgrade_body.len(),
         upgrade_body
     );
-    let upgrade_all = http_once(&db, &upgrade_all_request);
+    let upgrade_all = server.request(&upgrade_all_request);
     assert!(upgrade_all.contains("\"upgrade_all\""));
     assert!(upgrade_all.contains("\"total_projects\""));
     assert!(upgrade_all.contains("\"dry_run\":true"));
 
-    let embed_status = http_once(
-        &db,
-        "GET /embed-status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
+    let embed_status = server
+        .request("GET /embed-status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(embed_status.contains("\"embedding\""));
     assert!(embed_status.contains("\"provider_reachable\""));
     assert!(embed_status.contains("\"provider_health_ms\""));
@@ -11152,7 +11042,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
         embed_body.len(),
         embed_body
     );
-    let embed_index = http_once(&db, &embed_request);
+    let embed_index = server.request(&embed_request);
     assert!(embed_index.contains("\"embedding\""));
     assert!(embed_index.contains("\"mock-small\""));
 
@@ -11162,7 +11052,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
         body.len(),
         body
     );
-    let status = http_once(&db, &request);
+    let status = server.request(&request);
     assert!(status.contains("\"status\":\"uncertain\""));
 
     let evidence_body = format!(r#"{{"id":"{memory_id}"}}"#);
@@ -11171,7 +11061,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
         evidence_body.len(),
         evidence_body
     );
-    let evidence = http_once(&db, &evidence_request);
+    let evidence = server.request(&evidence_request);
     assert!(evidence.contains("\"evidence\""));
     assert!(evidence.contains("Memory UI"));
     assert!(evidence.contains("\"request_count\""));
@@ -11184,7 +11074,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
         update_body.len(),
         update_body
     );
-    let update = http_once(&db, &update_request);
+    let update = server.request(&update_request);
     assert!(update.contains("\"ok\":true"));
     assert!(update.contains("Updated Memory UI"));
     assert!(update.contains("file"));
@@ -11195,13 +11085,11 @@ fn v14_6_local_memory_ui_and_http_actions() {
         bulk_body.len(),
         bulk_body
     );
-    let bulk = http_once(&db, &bulk_request);
+    let bulk = server.request(&bulk_request);
     assert!(bulk.contains("\"changed\":1"));
 
-    let autopilot = http_once(
-        &db,
-        "GET /autopilot/ui HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
+    let autopilot = server
+        .request("GET /autopilot/ui HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(autopilot.contains("\"alert\""));
     assert!(autopilot.contains("\"report\""));
 
@@ -11211,7 +11099,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
         autopilot_body.len(),
         autopilot_body
     );
-    let repair = http_once(&db, &repair_request);
+    let repair = server.request(&repair_request);
     assert!(repair.contains("\"repair\""));
 
     let run_once_request = format!(
@@ -11219,7 +11107,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
         autopilot_body.len(),
         autopilot_body
     );
-    let run_once = http_once(&db, &run_once_request);
+    let run_once = server.request(&run_once_request);
     assert!(run_once.contains("\"ok\":true"));
 
     let export_request = format!(
@@ -11227,13 +11115,11 @@ fn v14_6_local_memory_ui_and_http_actions() {
         autopilot_body.len(),
         autopilot_body
     );
-    let export_status = http_once(&db, &export_request);
+    let export_status = server.request(&export_request);
     assert!(export_status.contains("\"output\""));
 
-    let autonomous_status = http_once(
-        &db,
-        "GET /autonomous/status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
+    let autonomous_status = server
+        .request("GET /autonomous/status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(autonomous_status.contains("\"status_file\""));
 
     let autonomous_body =
@@ -11243,16 +11129,14 @@ fn v14_6_local_memory_ui_and_http_actions() {
         autonomous_body.len(),
         autonomous_body
     );
-    let autonomous = http_once(&db, &autonomous_request);
+    let autonomous = server.request(&autonomous_request);
     assert!(autonomous.contains("\"report\""));
     assert!(autonomous.contains("\"embed_index\""));
     assert!(autonomous.contains("\"optimize_storage\""));
     assert!(autonomous.contains("\"live_eval\""));
     assert!(autonomous.contains("\"live_eval_snapshot\""));
 
-    let inbox = http_once(
-        &db,
-        "GET /inbox?status=pending&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let inbox = server.request("GET /inbox?status=pending&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(inbox.contains("\"items\""));
     assert!(inbox.contains("browser based"));
@@ -15000,18 +14884,115 @@ fn external_http_bind_requires_token_and_enforces_bearer_auth() {
 
     let unauthorized = http_once_configured(
         &db,
-        "0.0.0.0",
+        "127.0.0.1",
         Some("test-http-token"),
+        None,
         "GET /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(unauthorized.contains("401 Unauthorized"));
 
     let authorized = http_once_configured(
         &db,
-        "0.0.0.0",
+        "127.0.0.1",
         Some("test-http-token"),
+        None,
         "GET /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-http-token\r\nConnection: close\r\n\r\n",
     );
     assert!(authorized.contains("200 OK"));
     assert!(authorized.contains("\"memories\""));
+
+    let token_file = dir.path().join("http-token");
+    fs::write(&token_file, "file-http-token\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&token_file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let file_authorized = http_once_configured(
+        &db,
+        "127.0.0.1",
+        None,
+        Some(&token_file),
+        "GET /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer file-http-token\r\nConnection: close\r\n\r\n",
+    );
+    assert!(file_authorized.contains("200 OK"));
+
+    let body = r#"{"query":"origin check"}"#;
+    let cross_origin = http_once(
+        &db,
+        &format!(
+            "POST /search HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.example\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        ),
+    );
+    assert!(cross_origin.contains("403 Forbidden"));
+    let same_origin = http_once(
+        &db,
+        &format!(
+            "POST /search HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        ),
+    );
+    assert!(same_origin.contains("200 OK"));
+}
+
+#[cfg(unix)]
+#[test]
+fn http_server_drains_workers_on_termination_signal() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
+        .arg("--db")
+        .arg(&db)
+        .arg("serve-http")
+        .arg("--host")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg("0")
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut url = String::new();
+    reader.read_line(&mut url).unwrap();
+    let port = url
+        .trim()
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse::<u16>()
+        .unwrap();
+
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(
+        stream,
+        "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.contains("200 OK"));
+
+    let signal_status = StdCommand::new("kill")
+        .arg("-TERM")
+        .arg(child.id().to_string())
+        .status()
+        .unwrap();
+    assert!(signal_status.success());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("HTTP server did not finish graceful shutdown within five seconds");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 }

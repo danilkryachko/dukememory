@@ -1,6 +1,6 @@
 [package]
 name = "dukememory"
-version = "0.33.0"
+version = "0.34.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "Local project memory for AI coding agents: durable context, SQLite, MCP, Codex skill, embeddings, and autonomous maintenance."
@@ -12,6 +12,7 @@ categories = ["command-line-utilities", "development-tools"]
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive", "env"] }
+ctrlc = { version = "3.5", features = ["termination"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 regex = "1.12"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
