@@ -476,6 +476,15 @@ pub(crate) fn run() -> Result<()> {
             )?;
             println!("{id}");
         }
+        Command::AgentSession { command } => handle_agent_session(
+            &conn,
+            command,
+            &runner_profile_root(&cli.db),
+            &runtime.config.embeddings.provider,
+            &runtime.config.embeddings.endpoint,
+            &runtime.config.embeddings.model,
+        )?,
+        Command::RunnerProfile { command } => handle_runner_profile(command)?,
         Command::Install { to, force } => install_binary(&to, force)?,
         Command::InstallSkill { path, force } => install_codex_skill(&expand_tilde(&path), force)?,
         Command::UpdateInstall {
@@ -666,6 +675,9 @@ pub(crate) fn run() -> Result<()> {
             iterations,
             warmup,
             limit,
+            baseline,
+            write_baseline,
+            max_regression_percent,
             json,
         } => embeddings::print_vector_bench(
             &conn,
@@ -676,6 +688,9 @@ pub(crate) fn run() -> Result<()> {
                 iterations,
                 warmup,
                 limit,
+                baseline: baseline.as_deref(),
+                write_baseline,
+                max_regression_percent,
                 json_out: json,
             },
         )?,

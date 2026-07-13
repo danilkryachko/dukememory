@@ -306,6 +306,16 @@ pub(crate) enum Command {
         #[arg(long)]
         allow_sensitive: bool,
     },
+    /// Run an evidence-backed agent work session.
+    AgentSession {
+        #[command(subcommand)]
+        command: AgentSessionCommand,
+    },
+    /// Inspect and validate named external runner profiles.
+    RunnerProfile {
+        #[command(subcommand)]
+        command: RunnerProfileCommand,
+    },
     /// Copy the release/debug binary to a directory.
     Install {
         #[arg(long, default_value = "~/.local/bin")]
@@ -588,6 +598,15 @@ pub(crate) enum Command {
         /// Benchmark at most this many indexed vectors.
         #[arg(long)]
         limit: Option<usize>,
+        /// Read or write a JSON performance baseline.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        /// Write the current report as the baseline instead of comparing it.
+        #[arg(long)]
+        write_baseline: bool,
+        /// Fail when p95 latency or QPS regresses by more than this percentage.
+        #[arg(long, default_value_t = 25.0)]
+        max_regression_percent: f64,
         #[arg(long)]
         json: bool,
     },
@@ -2520,6 +2539,116 @@ pub(crate) enum FeedbackRating {
     Useful,
     Useless,
     Missing,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, Serialize)]
+#[value(rename_all = "snake_case")]
+pub(crate) enum AgentSessionOutcome {
+    Success,
+    Failed,
+    Partial,
+    Abandoned,
+}
+
+impl fmt::Display for AgentSessionOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Success => "success",
+            Self::Failed => "failed",
+            Self::Partial => "partial",
+            Self::Abandoned => "abandoned",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Subcommand)]
+pub(crate) enum AgentSessionCommand {
+    /// Start a durable agent session and return its id.
+    Start {
+        task: String,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, default_value = "project")]
+        scope: String,
+        #[arg(long)]
+        runner_profile: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Load brief, impact, and doctrine for a session in one audited read.
+    Context {
+        id: String,
+        #[arg(long, default_value_t = 12)]
+        limit: usize,
+        #[arg(long, default_value_t = 4000)]
+        max_chars: usize,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        embed_provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        embed_endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        embed_model: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Finish once; successful feedback requires explicit evidence.
+    Finish {
+        id: String,
+        #[arg(long, value_enum)]
+        outcome: AgentSessionOutcome,
+        #[arg(long)]
+        summary: String,
+        #[arg(long = "changed-file")]
+        changed_files: Vec<String>,
+        #[arg(long = "validation")]
+        validations: Vec<String>,
+        #[arg(long)]
+        commit: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one session, or recent sessions when no id is supplied.
+    Status {
+        id: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the causal chain from recalled cards to validation and outcome.
+    Trace {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum RunnerProfileCommand {
+    /// List built-in profiles and local overrides.
+    List {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check whether configured runner commands are available on PATH.
+    Doctor {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Preview or write .agent/runner-profiles.toml.
+    Init {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]

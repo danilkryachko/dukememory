@@ -56,6 +56,110 @@ pub(super) fn handle_http_request(
     let conn = open_db(db)?;
     let response = match (method, path) {
         ("GET", "/projects") => HttpResponse::ok(json!({"projects": discover_projects(db)?})),
+        ("GET", "/agent-sessions") => {
+            let params = parse_query(query);
+            if let Some(id) = params.get("id") {
+                HttpResponse::ok(json!({"session": get_agent_session(&conn, id)?}))
+            } else {
+                let limit = params
+                    .get("limit")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(20);
+                HttpResponse::ok(json!({"sessions": list_agent_sessions(&conn, limit)?}))
+            }
+        }
+        ("GET", "/agent-sessions/trace") => {
+            let params = parse_query(query);
+            let id = params
+                .get("id")
+                .ok_or_else(|| anyhow::anyhow!("missing agent session id"))?;
+            HttpResponse::ok(json!({"trace": agent_session_trace(&conn, id)?}))
+        }
+        ("POST", "/agent-sessions/start") => {
+            let value = parse_json_body(body)?;
+            let task = value
+                .get("task")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing task"))?;
+            let scope = value
+                .get("scope")
+                .and_then(Value::as_str)
+                .unwrap_or("project");
+            validate_scope(scope)?;
+            HttpResponse::ok(json!({"session": start_agent_session(
+                &conn,
+                task,
+                value.get("target").and_then(Value::as_str),
+                scope,
+                value.get("runner_profile").and_then(Value::as_str),
+                &runner_profile_root(db),
+            )?}))
+        }
+        ("POST", "/agent-sessions/context") => {
+            let value = parse_json_body(body)?;
+            let id = value
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing agent session id"))?;
+            HttpResponse::ok(json!({"context": agent_session_context(
+                &conn,
+                id,
+                value.get("limit").and_then(Value::as_u64).unwrap_or(12) as usize,
+                value.get("max_chars").and_then(Value::as_u64).unwrap_or(4000) as usize,
+                value.get("provider").and_then(Value::as_str).unwrap_or(DEFAULT_EMBED_PROVIDER),
+                value.get("endpoint").and_then(Value::as_str).unwrap_or(DEFAULT_EMBED_ENDPOINT),
+                value.get("model").and_then(Value::as_str).unwrap_or(DEFAULT_EMBED_MODEL),
+            )?}))
+        }
+        ("POST", "/agent-sessions/finish") => {
+            let value = parse_json_body(body)?;
+            let id = value
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing agent session id"))?;
+            let summary = value
+                .get("summary")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing summary"))?;
+            let outcome = match value.get("outcome").and_then(Value::as_str) {
+                Some("success") => AgentSessionOutcome::Success,
+                Some("failed") => AgentSessionOutcome::Failed,
+                Some("partial") => AgentSessionOutcome::Partial,
+                Some("abandoned") => AgentSessionOutcome::Abandoned,
+                _ => bail!("invalid outcome: expected success, failed, partial, or abandoned"),
+            };
+            let changed_files = value
+                .get("changed_files")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            let validations = value
+                .get("validations")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            HttpResponse::ok(json!({"finish": finish_agent_session(
+                &conn,
+                id,
+                outcome,
+                summary,
+                &changed_files,
+                &validations,
+                value.get("commit").and_then(Value::as_str),
+            )?}))
+        }
+        ("GET", "/runner-profiles") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            HttpResponse::ok(json!({"profiles": runner_profiles_status(&ctx.root)?}))
+        }
         ("GET", "/metrics") => HttpResponse::ok(http_metrics(&conn)?),
         ("GET", "/audit") => HttpResponse::ok(json!({"events": audit_events(&conn, 50)?})),
         ("GET", "/snapshot") => HttpResponse::ok(http_snapshot(&conn)?),
@@ -1956,6 +2060,59 @@ pub(super) fn handle_http_request(
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
             let conn = open_db(&ctx.db)?;
+            if path == "/web-control-center" {
+                let sessions = list_agent_sessions(&conn, 20)?;
+                let profiles = runner_profiles_status(&ctx.root)?;
+                let active_sessions = sessions
+                    .iter()
+                    .filter(|session| session.status == "active")
+                    .count();
+                let ready_profiles = profiles.iter().filter(|profile| profile.available).count();
+                let memory_count: i64 =
+                    conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
+                let pending_inbox: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM memory_inbox WHERE status = 'pending'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let status = if ready_profiles > 0 {
+                    "ready"
+                } else {
+                    "attention"
+                };
+                return Ok(HttpResponse::ok(json!({
+                    "control": {
+                        "version": 12,
+                        "ok": status == "ready",
+                        "status": status,
+                        "root": ctx.root.display().to_string(),
+                        "panels": [
+                            {
+                                "name": "agent_sessions",
+                                "status": if active_sessions == 0 { "ready" } else { "active" },
+                                "headline": format!("{} active / {} recent", active_sessions, sessions.len()),
+                            },
+                            {
+                                "name": "runner_profiles",
+                                "status": if ready_profiles > 0 { "ready" } else { "attention" },
+                                "headline": format!("{} ready / {} configured", ready_profiles, profiles.len()),
+                            },
+                            {
+                                "name": "project_memory",
+                                "status": "ready",
+                                "headline": format!("{} memories / {} pending", memory_count, pending_inbox),
+                            }
+                        ],
+                        "controls": [],
+                        "recommendations": [],
+                        "details_endpoint": "/web-control-center-v12",
+                    },
+                    "current_version": "v12",
+                    "agent_sessions": sessions,
+                    "runner_profiles": profiles,
+                    "request_budget": {"initial_requests": 1, "details": "lazy"},
+                })));
+            }
             let target = params.get("target").map(PathBuf::from);
             let task = params
                 .get("task")
@@ -1973,14 +2130,7 @@ pub(super) fn handle_http_request(
                 task,
                 since_days,
             )?;
-            if path == "/web-control-center" {
-                HttpResponse::ok(json!({
-                    "control": report,
-                    "current_version": "v12",
-                }))
-            } else {
-                HttpResponse::ok(json!({"control_v12": report}))
-            }
+            HttpResponse::ok(json!({"control_v12": report}))
         }
         ("GET", "/mcp-discipline-v2") => {
             let params = parse_query(query);

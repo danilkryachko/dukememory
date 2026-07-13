@@ -2028,6 +2028,24 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
             serde_json::json!({"jsonrpc":"2.0","id":35,"method":"tools/call","params":{"name":"memory_mcp_surface_v3","arguments":{"max_chars":4000}}})
         )
         .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":36,"method":"tools/call","params":{"name":"memory_session_start","arguments":{"task":"MCP agent session","runner_profile":"codex_default"}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":37,"method":"tools/call","params":{"name":"memory_session_status","arguments":{"limit":5}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":38,"method":"tools/call","params":{"name":"memory_runner_profiles","arguments":{}}})
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
 
@@ -2055,6 +2073,12 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
     assert!(stdout.contains("memory_conflict_review"));
     assert!(stdout.contains("memory_release_gate_v3"));
     assert!(stdout.contains("memory_mcp_surface_v3"));
+    assert!(stdout.contains("memory_session_start"));
+    assert!(stdout.contains("memory_session_context"));
+    assert!(stdout.contains("memory_session_finish"));
+    assert!(stdout.contains("memory_runner_profiles"));
+    assert!(stdout.contains("MCP agent session"));
+    assert!(stdout.contains("gemini_flash_high"));
     assert!(stdout.find("memory_brief") < stdout.find("memory_context_pack"));
     assert!(stdout.contains("MCP decision"));
     assert!(stdout.contains("needle mcp exact detail"));
@@ -2733,6 +2757,408 @@ fn vector_bench_reports_configured_scale_and_latency_percentiles() {
         assert_eq!(bench["top_match_equal"], true);
         assert!(bench["sqlite_vec"]["p95_ms"].as_f64().unwrap() >= 0.0);
     }
+
+    let baseline = dir.path().join("vector-bench-baseline.json");
+    cmd(&db)
+        .arg("vector-bench")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .arg("--iterations")
+        .arg("3")
+        .arg("--limit")
+        .arg("64")
+        .arg("--baseline")
+        .arg(&baseline)
+        .arg("--write-baseline")
+        .arg("--json")
+        .assert()
+        .success();
+    assert!(baseline.exists());
+
+    let compared: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("vector-bench")
+            .arg("--provider")
+            .arg("mock")
+            .arg("--endpoint")
+            .arg("local")
+            .arg("--model")
+            .arg("mock-small")
+            .arg("--iterations")
+            .arg("3")
+            .arg("--limit")
+            .arg("64")
+            .arg("--baseline")
+            .arg(&baseline)
+            .arg("--max-regression-percent")
+            .arg("100000")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(compared["regression"]["ok"], true);
+
+    let mut impossible: Value =
+        serde_json::from_str(&fs::read_to_string(&baseline).unwrap()).unwrap();
+    impossible["json"]["p95_ms"] = serde_json::json!(1e-12);
+    impossible["json"]["queries_per_second"] = serde_json::json!(1e30);
+    if cfg!(feature = "vec") {
+        impossible["sqlite_vec"]["p95_ms"] = serde_json::json!(1e-12);
+        impossible["sqlite_vec"]["queries_per_second"] = serde_json::json!(1e30);
+    }
+    fs::write(&baseline, serde_json::to_vec_pretty(&impossible).unwrap()).unwrap();
+    cmd(&db)
+        .arg("vector-bench")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .arg("--iterations")
+        .arg("3")
+        .arg("--limit")
+        .arg("64")
+        .arg("--baseline")
+        .arg(&baseline)
+        .arg("--max-regression-percent")
+        .arg("25")
+        .arg("--json")
+        .assert()
+        .failure()
+        .stderr(contains("vector benchmark regression gate failed"));
+}
+
+#[test]
+fn agent_session_lifecycle_is_idempotent_and_feedback_requires_evidence() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Agent session protocol")
+        .arg("Implement feature protocol with explicit validation evidence")
+        .arg("--id")
+        .arg("session-protocol")
+        .assert()
+        .success();
+
+    let started: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("start")
+            .arg("implement feature protocol")
+            .arg("--target")
+            .arg("src/app.rs")
+            .arg("--runner-profile")
+            .arg("codex_default")
+            .arg("--json"),
+    ))
+    .unwrap();
+    let id = started["id"].as_str().unwrap();
+    assert_eq!(started["status"], "active");
+
+    let context: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("context")
+            .arg(id)
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert!(
+        context["memory_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "session-protocol")
+    );
+    let linked_reads: i64 = Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM memory_read_events WHERE session_id = ?1 AND command = 'agent_session_context'",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(linked_reads, 1);
+
+    let finished: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("finish")
+            .arg(id)
+            .arg("--outcome")
+            .arg("success")
+            .arg("--summary")
+            .arg("implemented and checked")
+            .arg("--changed-file")
+            .arg("src/app.rs")
+            .arg("--validation")
+            .arg("cargo check")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(finished["session"]["status"], "completed");
+    assert_eq!(finished["feedback"], "useful");
+    assert_eq!(finished["causal_trace"]["outcome"], "success");
+    assert!(finished["causal_trace"]["events"].as_array().unwrap().len() >= 4);
+
+    let repeated: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("finish")
+            .arg(id)
+            .arg("--outcome")
+            .arg("success")
+            .arg("--summary")
+            .arg("implemented and checked")
+            .arg("--changed-file")
+            .arg("src/app.rs")
+            .arg("--validation")
+            .arg("cargo check")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(repeated["idempotent"], true);
+    cmd(&db)
+        .arg("agent-session")
+        .arg("finish")
+        .arg(id)
+        .arg("--outcome")
+        .arg("failed")
+        .arg("--summary")
+        .arg("conflicting result")
+        .assert()
+        .failure()
+        .stderr(contains("already finished with different evidence"));
+    let feedback_events: i64 = Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM memory_events WHERE event_type = 'memory_feedback' AND detail LIKE ?1",
+            [format!("%{id}%")],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(feedback_events, 1);
+
+    let unevidenced: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("start")
+            .arg("implement feature protocol")
+            .arg("--json"),
+    ))
+    .unwrap();
+    let unevidenced_id = unevidenced["id"].as_str().unwrap();
+    cmd(&db)
+        .arg("agent-session")
+        .arg("context")
+        .arg(unevidenced_id)
+        .arg("--json")
+        .assert()
+        .success();
+    let unevidenced_finish: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("finish")
+            .arg(unevidenced_id)
+            .arg("--outcome")
+            .arg("success")
+            .arg("--summary")
+            .arg("claimed success")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(unevidenced_finish["feedback"], "none");
+    assert_eq!(unevidenced_finish["evidence_present"], false);
+
+    let abandoned: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("start")
+            .arg("interrupted work")
+            .arg("--json"),
+    ))
+    .unwrap();
+    let abandoned_id = abandoned["id"].as_str().unwrap();
+    let abandoned_finish: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("finish")
+            .arg(abandoned_id)
+            .arg("--outcome")
+            .arg("abandoned")
+            .arg("--summary")
+            .arg("runner stopped")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(abandoned_finish["session"]["status"], "abandoned");
+    assert_eq!(abandoned_finish["feedback"], "none");
+}
+
+#[test]
+fn agent_session_survives_process_exit_and_runner_profiles_are_named() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let started: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("start")
+            .arg("recover after runner crash")
+            .arg("--json"),
+    ))
+    .unwrap();
+    let id = started["id"].as_str().unwrap();
+    let recovered: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("status")
+            .arg(id)
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(recovered[0]["status"], "active");
+
+    let profiles: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("runner-profile")
+            .arg("list")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    ))
+    .unwrap();
+    let names = profiles["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|profile| profile["name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"codex_default"));
+    assert!(names.contains(&"gemini_flash_high"));
+    assert!(names.contains(&"antigravity_pro_high"));
+    assert!(names.contains(&"ollama_local"));
+
+    let project_root = dir.path().join("profile-project");
+    let agent_dir = project_root.join(".agent");
+    fs::create_dir_all(&agent_dir).unwrap();
+    fs::write(
+        agent_dir.join("runner-profiles.toml"),
+        "[profiles.custom_review]\nrunner = \"custom\"\ncommand = \"custom-runner\"\nrole = \"review\"\n",
+    )
+    .unwrap();
+    let profile_db = agent_dir.join("memory.db");
+    let custom: Value = serde_json::from_str(&stdout(
+        cmd(&profile_db)
+            .arg("agent-session")
+            .arg("start")
+            .arg("use project-local runner profile")
+            .arg("--runner-profile")
+            .arg("custom_review")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(custom["runner_profile"], "custom_review");
+}
+
+#[test]
+fn schema_v20_upgrades_existing_read_events_before_creating_session_index() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE memory_read_events (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT, command TEXT NOT NULL, query TEXT NOT NULL, \
+            memory_ids TEXT NOT NULL DEFAULT '', semantic_used INTEGER NOT NULL DEFAULT 0, \
+            result_count INTEGER NOT NULL DEFAULT 0, budget INTEGER NOT NULL DEFAULT 0, \
+            elapsed_ms INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL\
+        );",
+    )
+    .unwrap();
+    drop(conn);
+    cmd(&db).arg("schema").arg("verify").assert().success();
+    let conn = Connection::open(&db).unwrap();
+    let has_session_id = conn
+        .prepare("PRAGMA table_info(memory_read_events)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+        .contains(&"session_id".to_string());
+    assert!(has_session_id);
+    let schema: i64 = conn
+        .query_row("SELECT MAX(version) FROM schema_versions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(schema, 20);
+}
+
+#[test]
+fn memory_ui_initial_intelligence_load_obeys_one_request_budget() {
+    let html = include_str!("../src/app/memory_ui.html");
+    let initial = html
+        .split("async function loadIntelligence()")
+        .nth(1)
+        .unwrap()
+        .split("async function loadIntelligenceDetails()")
+        .next()
+        .unwrap();
+    assert_eq!(initial.matches("api(`").count(), 1);
+    assert!(initial.contains("/web-control-center?"));
+    assert!(!initial.contains("/web-control-center-v12"));
+    assert!(html.contains("data-intelligence=\"load-details\""));
+}
+
+#[test]
+fn http_exposes_agent_sessions_profiles_and_stable_control_snapshot() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let body = serde_json::json!({
+        "task": "HTTP agent session",
+        "runner_profile": "codex_default"
+    })
+    .to_string();
+    let response = http_once(
+        &db,
+        &format!(
+            "POST /agent-sessions/start HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body,
+        ),
+    );
+    assert!(response.starts_with("HTTP/1.1 200"));
+    assert!(response.contains("HTTP agent session"));
+    assert!(response.contains("\"status\":\"active\""));
+
+    let sessions = http_once(
+        &db,
+        "GET /agent-sessions HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(sessions.contains("\"sessions\""));
+    assert!(sessions.contains("HTTP agent session"));
+
+    let profiles = http_once(
+        &db,
+        "GET /runner-profiles HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(profiles.contains("gemini_flash_high"));
+    assert!(profiles.contains("antigravity_pro_high"));
+
+    let control = http_once(
+        &db,
+        "GET /web-control-center HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(control.contains("\"initial_requests\":1"));
+    assert!(control.contains("\"details\":\"lazy\""));
+    assert!(control.contains("\"agent_sessions\""));
+    assert!(control.contains("\"runner_profiles\""));
 }
 
 #[test]
@@ -2827,7 +3253,7 @@ fn v4_inbox_mock_embeddings_redaction_and_provider_registry() {
             .arg("--json"),
     ))
     .unwrap();
-    assert_eq!(bench["version"], 2);
+    assert_eq!(bench["version"], 3);
     assert_eq!(bench["vectors"], 1);
     assert_eq!(bench["iterations"], 5);
     assert_eq!(bench["warmup"], 1);
@@ -3314,7 +3740,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .arg("status")
         .assert()
         .success()
-        .stdout(contains("expected: 19"));
+        .stdout(contains("expected: 20"));
     cmd(&db)
         .arg("schema")
         .arg("verify")
@@ -3387,7 +3813,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .assert()
         .success()
         .stdout(contains("version:"))
-        .stdout(contains("schema: 19"));
+        .stdout(contains("schema: 20"));
 
     let install_dir = dir.path().join("install");
     let target = install_dir.join("dukememory");
@@ -3505,6 +3931,25 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .stdout(contains("dukememory"));
     assert!(install_to.join("dukememory").exists());
     assert!(home.join(".codex/skills/dukememory-use/SKILL.md").exists());
+    #[cfg(unix)]
+    let first_install_inode = {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(install_to.join("dukememory")).unwrap().ino()
+    };
+    cmd(&db)
+        .env("HOME", &home)
+        .arg("install")
+        .arg("--to")
+        .arg(&install_to)
+        .arg("--force")
+        .assert()
+        .success();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let second_install_inode = fs::metadata(install_to.join("dukememory")).unwrap().ino();
+        assert_ne!(first_install_inode, second_install_inode);
+    }
 
     cmd(&db)
         .arg("doctor")
@@ -3904,7 +4349,7 @@ fn v11_release_bundle_bench_and_self_host() {
 
     let bench = stdout(cmd(&db).arg("bench").arg("--json"));
     let bench_json: Value = serde_json::from_str(&bench).unwrap();
-    assert_eq!(bench_json["schema"], 19);
+    assert_eq!(bench_json["schema"], 20);
     assert_eq!(bench_json["memory_count"], 4);
     assert!(bench_json["db_bytes"].as_u64().unwrap() > 0);
 
@@ -3920,7 +4365,7 @@ fn v11_release_bundle_bench_and_self_host() {
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(bundle.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(manifest["schema"], 19);
+    assert_eq!(manifest["schema"], 20);
     assert_eq!(manifest["memory_stats"]["total"], 4);
     assert_eq!(manifest["binary_sha256"].as_str().unwrap().len(), 64);
 }
@@ -3954,7 +4399,7 @@ fn v12_always_on_operations() {
     );
     let health_json: Value = serde_json::from_str(&health).unwrap();
     assert_eq!(health_json["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(health_json["schema"], 19);
+    assert_eq!(health_json["schema"], 20);
     assert_eq!(health_json["endpoint_ok"], true);
 
     for _ in 0..3 {
@@ -4028,7 +4473,7 @@ fn v13_stabilization_integrity_optimize_and_large_http_request() {
     let integrity = stdout(cmd(&db).arg("integrity").arg("--json"));
     let integrity_json: Value = serde_json::from_str(&integrity).unwrap();
     assert_eq!(integrity_json["ok"], true);
-    assert_eq!(integrity_json["schema"], 19);
+    assert_eq!(integrity_json["schema"], 20);
     assert_eq!(integrity_json["integrity_check"], "ok");
 
     let optimized = stdout(cmd(&db).arg("optimize").arg("--vacuum").arg("--json"));
@@ -11716,7 +12161,9 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(web_control.contains("\"control\""));
     assert!(web_control.contains("\"current_version\":\"v12\""));
-    assert!(web_control.contains("\"release_gate_v3\""));
+    assert!(web_control.contains("\"agent_sessions\""));
+    assert!(web_control.contains("\"runner_profiles\""));
+    assert!(web_control.contains("\"initial_requests\":1"));
 
     let web_control_v11 = server.request("GET /web-control-center-v11?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );

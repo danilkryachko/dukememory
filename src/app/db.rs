@@ -168,10 +168,43 @@ CREATE TABLE IF NOT EXISTS memory_read_events (
     result_count INTEGER NOT NULL DEFAULT 0,
     budget INTEGER NOT NULL DEFAULT 0,
     elapsed_ms INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    session_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_memory_read_events_created_at ON memory_read_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_read_events_command ON memory_read_events(command);
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id TEXT PRIMARY KEY,
+    task TEXT NOT NULL,
+    target TEXT,
+    scope TEXT NOT NULL DEFAULT 'project',
+    runner_profile TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    outcome TEXT,
+    summary TEXT,
+    changed_files TEXT NOT NULL DEFAULT '[]',
+    validation_commands TEXT NOT NULL DEFAULT '[]',
+    commit_hash TEXT,
+    memory_ids TEXT NOT NULL DEFAULT '[]',
+    feedback_written INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    finished_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_status_updated_at
+    ON agent_sessions(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS agent_session_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_agent_session_events_session_created
+    ON agent_session_events(session_id, created_at, id);
 
 CREATE TABLE IF NOT EXISTS memory_locks (
     name TEXT PRIMARY KEY,
@@ -281,6 +314,11 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         "trigger_version",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
+    ensure_column(conn, "memory_read_events", "session_id", "TEXT")?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_read_events_session_id ON memory_read_events(session_id)",
+        [],
+    )?;
     let version: Option<i64> =
         conn.query_row("SELECT MAX(version) FROM schema_versions", [], |row| {
             row.get::<_, Option<i64>>(0)
@@ -380,6 +418,10 @@ fn migrations() -> &'static [Migration] {
             version: 19,
             name: "Production v19 persistent sqlite-vec index registry",
         },
+        Migration {
+            version: 20,
+            name: "Production v20 agent session control plane",
+        },
     ]
 }
 
@@ -439,6 +481,8 @@ pub(crate) fn verify_schema(conn: &Connection) -> Result<()> {
         "memory_inbox",
         "memory_events",
         "memory_read_events",
+        "agent_sessions",
+        "agent_session_events",
         "embedding_provider_health",
         "memory_locks",
         "eval_cases",

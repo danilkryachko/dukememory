@@ -113,6 +113,12 @@ fn mcp_tools() -> Value {
         {"name":"memory_impact","description":"Return lightweight impact memory for a file, symbol, or topic","inputSchema":{"type":"object","properties":{"target":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"max_chars":{"type":"number"},"scope":{"type":"string"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["target"]}},
         {"name":"memory_budget_plan","description":"Choose the smallest useful memory budget for a task","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"scope":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_feedback","description":"Record lightweight useful/useless/missing feedback for memory reads","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"rating":{"type":"string"},"command":{"type":"string"},"query":{"type":"string"},"note":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["rating"]}},
+        {"name":"memory_session_start","description":"Start a durable evidence-backed agent session","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"target":{"type":"string"},"scope":{"type":"string"},"runner_profile":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
+        {"name":"memory_session_context","description":"Load brief, impact, and doctrine into one audited agent session read","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
+        {"name":"memory_session_finish","description":"Finish an agent session; automatic useful feedback requires success plus explicit evidence","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"outcome":{"type":"string","enum":["success","failed","partial","abandoned"]},"summary":{"type":"string"},"changed_files":{"type":"array","items":{"type":"string"}},"validations":{"type":"array","items":{"type":"string"}},"commit":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","outcome","summary"]}},
+        {"name":"memory_session_status","description":"Show one agent session or recent sessions","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_session_trace","description":"Show recalled memory, actions, validation, and outcome for an agent session","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
+        {"name":"memory_runner_profiles","description":"List named Codex, Gemini, Antigravity, and local runner profiles with PATH readiness","inputSchema":{"type":"object","properties":{"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_drift","description":"Detect cheap local memory drift before coding as bounded summary by default","inputSchema":{"type":"object","properties":{"changed_only":{"type":"boolean"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"}}}},
         {"name":"memory_add","description":"Add a typed memory card","inputSchema":{"type":"object","properties":{"type":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"scope":{"type":"string"},"source":{"type":"string"},"layer":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["type","title","body"]}},
         {"name":"memory_remember","description":"Remember plain text as local memory","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"type":{"type":"string"},"scope":{"type":"string"},"layer":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["text"]}},
@@ -178,6 +184,87 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
     let conn = open_db(&selected_db).map_err(|err| err.to_string())?;
     let selected_root = mcp_selected_root(&selected_db, &args);
     let text = match name {
+        "memory_session_start" => {
+            let task = json_string(&args, "task").ok_or_else(|| "missing task".to_string())?;
+            let target = json_string(&args, "target");
+            let scope = json_string(&args, "scope").unwrap_or_else(|| "project".to_string());
+            validate_scope(&scope).map_err(|err| err.to_string())?;
+            let runner_profile = json_string(&args, "runner_profile");
+            let session = start_agent_session(
+                &conn,
+                &task,
+                target.as_deref(),
+                &scope,
+                runner_profile.as_deref(),
+                &selected_root,
+            )
+            .map_err(|err| err.to_string())?;
+            serde_json::to_string_pretty(&session).map_err(|err| err.to_string())?
+        }
+        "memory_session_context" => {
+            let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            let limit = json_usize(&args, "limit").unwrap_or(12);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(4000);
+            let provider = json_string(&args, "provider")
+                .unwrap_or_else(|| DEFAULT_EMBED_PROVIDER.to_string());
+            let endpoint = json_string(&args, "endpoint")
+                .unwrap_or_else(|| DEFAULT_EMBED_ENDPOINT.to_string());
+            let model =
+                json_string(&args, "model").unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
+            let report =
+                agent_session_context(&conn, &id, limit, max_chars, &provider, &endpoint, &model)
+                    .map_err(|err| err.to_string())?;
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+        }
+        "memory_session_finish" => {
+            let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            let summary =
+                json_string(&args, "summary").ok_or_else(|| "missing summary".to_string())?;
+            let outcome = match json_string(&args, "outcome").as_deref() {
+                Some("success") => AgentSessionOutcome::Success,
+                Some("failed") => AgentSessionOutcome::Failed,
+                Some("partial") => AgentSessionOutcome::Partial,
+                Some("abandoned") => AgentSessionOutcome::Abandoned,
+                _ => {
+                    return Err(
+                        "invalid outcome: expected success, failed, partial, or abandoned"
+                            .to_string(),
+                    );
+                }
+            };
+            let changed_files = json_string_array(&args, "changed_files");
+            let validations = json_string_array(&args, "validations");
+            let commit = json_string(&args, "commit");
+            let report = finish_agent_session(
+                &conn,
+                &id,
+                outcome,
+                &summary,
+                &changed_files,
+                &validations,
+                commit.as_deref(),
+            )
+            .map_err(|err| err.to_string())?;
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+        }
+        "memory_session_status" => {
+            let sessions = if let Some(id) = json_string(&args, "id") {
+                vec![get_agent_session(&conn, &id).map_err(|err| err.to_string())?]
+            } else {
+                list_agent_sessions(&conn, json_usize(&args, "limit").unwrap_or(20))
+                    .map_err(|err| err.to_string())?
+            };
+            serde_json::to_string_pretty(&sessions).map_err(|err| err.to_string())?
+        }
+        "memory_session_trace" => {
+            let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            let trace = agent_session_trace(&conn, &id).map_err(|err| err.to_string())?;
+            serde_json::to_string_pretty(&trace).map_err(|err| err.to_string())?
+        }
+        "memory_runner_profiles" => {
+            let profiles = runner_profiles_status(&selected_root).map_err(|err| err.to_string())?;
+            serde_json::to_string_pretty(&profiles).map_err(|err| err.to_string())?
+        }
         "memory_add" => {
             let memory_type = json_string(&args, "type").unwrap_or_else(|| "note".to_string());
             let title = json_string(&args, "title").ok_or_else(|| "missing title".to_string())?;

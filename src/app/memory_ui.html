@@ -566,7 +566,8 @@
       evalStory: null, memantoGap: null, webControlV7: null, autonomousUsefulness: null, benchmarkPolish: null, webControlV8: null,
       autonomousSupervisor: null, webControlV9: null, fleetSupervisor: null, webControlV10: null,
       fleetWatchInstall: null, webControlV11: null, effectivenessV2: null, recallBaselines: null, conflictApply: null,
-      mcpSurfaceV3: null, mcpDisciplineV3: null, fleetQuality: null, releaseGateV3: null, webControlV12: null
+      mcpSurfaceV3: null, mcpDisciplineV3: null, fleetQuality: null, releaseGateV3: null, webControlV12: null,
+      agentSessions: [], runnerProfiles: [], intelligenceRequestBudget: null, intelligenceDetailsLoaded: false
     };
     const $ = (id) => document.getElementById(id);
     const t = (key) => i18n[state.lang][key] || i18n.en[key] || key;
@@ -876,6 +877,19 @@
       const params = new URLSearchParams({ since_days: "7" });
       if (state.project) params.set("project", state.project);
       const taskQuery = $("q")?.value || "memory task";
+      const data = await api(`/web-control-center?${params.toString()}&task=${encodeURIComponent(taskQuery)}`);
+      state.webControlV12 = data.control || null;
+      state.agentSessions = data.agent_sessions || [];
+      state.runnerProfiles = data.runner_profiles || [];
+      state.intelligenceRequestBudget = data.request_budget || null;
+      state.intelligenceDetailsLoaded = false;
+      renderSettings();
+    }
+
+    async function loadIntelligenceDetails() {
+      const params = new URLSearchParams({ since_days: "7" });
+      if (state.project) params.set("project", state.project);
+      const taskQuery = $("q")?.value || "memory task";
       const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch, loop, journal, engine, latency, syncProfile, enforce, watchInstall, rankingProfile, projectTemplate, diffReview, contextGovernor, memoryRouter, autoRanking, watchControl, autonomyCenter, remoteSyncV2, memoryHealth, explainRecall, intentMap, memoryHarness, agentAuditV2, controlCenterV2, autoSupersedeV2, memoryDiffApply, recallBenchmark, releaseGateV2, remoteSyncWizard, governancePolicy, autonomousLoopV2, governanceEnforce, qualityCi, fleetV2, remoteApplyFlow, mcpSurfaceV2, autopilotV3, selfLearning, roleProfile, inboxReviewer, webControlV3, remoteApply, mcpQuality, remoteSyncControl, webControlV4, mcpDisciplineV2, feedbackLoopV2, upgradeAllV2, vdsSyncPack, webControlV5, qualityAutopilotV31, memoryRouterV2, benchmarkProfiles, installPolish, effectivenessLab, contextBudgeterV2, contractV2, crossProjectLearning, agentTrace, vdsHardening, installQuality, webControlV6, answer, connectCodex, typeGuide, evalStory, memantoGap, webControlV7, autonomousUsefulness, benchmarkPolish, webControlV8, autonomousSupervisor, webControlV9, fleetSupervisor, webControlV10, fleetWatchInstall, webControlV11, effectivenessV2, recallBaselines, conflictApply, mcpSurfaceV3, mcpDisciplineV3, fleetQuality, releaseGateV3, webControlV12] = await Promise.all([
         api(`/roi-report?${params.toString()}`),
         api(`/agent-audit?${params.toString()}`),
@@ -972,7 +986,7 @@
         api(`/mcp-discipline-v3?${params.toString()}`),
         api(`/fleet-quality?${params.toString()}`),
         api(`/release-gate-v3?${params.toString()}`),
-        api(`/web-control-center?${params.toString()}&task=${encodeURIComponent(taskQuery)}`)
+        api(`/web-control-center-v12?${params.toString()}&task=${encodeURIComponent(taskQuery)}`)
       ]);
       state.roi = roi.roi;
       state.agentAudit = audit.agent_audit;
@@ -1069,12 +1083,17 @@
       state.mcpDisciplineV3 = mcpDisciplineV3.discipline_v3;
       state.fleetQuality = fleetQuality.fleet_quality;
       state.releaseGateV3 = releaseGateV3.release_gate_v3;
-      state.webControlV12 = webControlV12.control;
+      state.webControlV12 = webControlV12.control_v12;
+      state.intelligenceDetailsLoaded = true;
       renderSettings();
     }
 
     async function intelligenceAction(action) {
-      if (action === "doctor-fix") {
+      if (action === "load-details") {
+        await loadIntelligenceDetails();
+        setToast("intelligence details loaded");
+        return;
+      } else if (action === "doctor-fix") {
         await api("/doctor-project/fix", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
       } else if (action === "release-run") {
         await api("/release-gate/run", { method: "POST", body: JSON.stringify(withProject({ since_days: 7, strict: false })) });
@@ -1560,6 +1579,9 @@
       const fleetQuality = state.fleetQuality || {};
       const releaseGateV3 = state.releaseGateV3 || {};
       const webControlV12 = state.webControlV12 || {};
+      const agentSessions = state.agentSessions || [];
+      const runnerProfiles = state.runnerProfiles || [];
+      const intelligenceRequestBudget = state.intelligenceRequestBudget || {};
       const contract = state.contract || {};
       const ops = state.ops || {};
       const effectiveness = ops.effectiveness || {};
@@ -1691,7 +1713,13 @@
         <div class="stat"><strong>${Number(fleetQuality.ready_projects || 0)}/${Number(fleetQuality.total_projects || 0)}</strong><span>fleet quality</span></div>
         <div class="stat"><strong>${escapeHtml(releaseGateV3.status || "-")}</strong><span>release v3</span></div>
         <div class="stat"><strong>${escapeHtml(webControlV12.status || "-")}</strong><span>control v12</span></div>
+        <div class="stat"><strong>${Number(intelligenceRequestBudget.initial_requests || 0)}</strong><span>initial requests</span></div>
+        <div class="stat"><strong>${agentSessions.filter((session) => session.status === "active").length}</strong><span>active sessions</span></div>
+        <div class="stat"><strong>${runnerProfiles.filter((profile) => profile.available).length}/${runnerProfiles.length}</strong><span>runner profiles</span></div>
       </div>
+      <div class="card"><div class="title">agent sessions</div><div class="body">${agentSessions.length ? agentSessions.slice(0, 8).map((session) => `${escapeHtml(session.status)} ${escapeHtml(session.task)} (${escapeHtml(session.runner_profile || "default")})`).join("<br>") : "no sessions"}</div></div>
+      <div class="card"><div class="title">runner profiles</div><div class="body">${runnerProfiles.length ? runnerProfiles.map((profile) => `${profile.available ? "ready" : "missing"} ${escapeHtml(profile.name)}: ${escapeHtml(profile.command)} / ${escapeHtml(profile.role)}`).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">control request budget</div><div class="body">initial ${Number(intelligenceRequestBudget.initial_requests || 0)} / details ${escapeHtml(intelligenceRequestBudget.details || "-")} / loaded ${state.intelligenceDetailsLoaded ? "yes" : "no"}</div><div class="actions"><button class="primary" data-intelligence="load-details">Load diagnostic details</button></div></div>
       <div class="card"><div class="title">doctor project</div><div class="body">status ${escapeHtml(doctor.status || "-")}<br>qa ${Number(doctor.memory_qa?.score || 0).toFixed(1)}<br>embedding ${doctor.embedding ? `${Number(doctor.embedding.missing || 0)} missing / ${Number(doctor.embedding.stale || 0)} stale` : "-"}<br>${doctor.checks?.length ? doctor.checks.slice(0, 6).map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">release gate</div><div class="body">status ${escapeHtml(releaseGate.status || "-")}<br>strict ${releaseGate.strict ? "yes" : "no"}<br>${releaseGate.checks?.length ? releaseGate.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}<br>${releaseGate.issues?.length ? releaseGate.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
       <div class="card"><div class="title">release gate v3</div><div class="body">status ${escapeHtml(releaseGateV3.status || "-")}<br>checks ${Number(releaseGateV3.checks?.length || 0)} / issues ${Number(releaseGateV3.issues?.length || 0)}<br>${releaseGateV3.checks?.length ? releaseGateV3.checks.slice(0, 10).map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}: ${escapeHtml(check.detail)}`).join("<br>") : "-"}<br>${releaseGateV3.issues?.length ? releaseGateV3.issues.slice(0, 6).map(escapeHtml).join("<br>") : "issues -"}</div></div>

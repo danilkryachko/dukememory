@@ -149,6 +149,50 @@ No cloud service is required. The default local profile uses MiniLM embeddings
 stored in SQLite; semantic recall remains optional for projects that only need
 FTS.
 
+## Evidence-Backed Agent Sessions
+
+Use one durable session id to connect task context, touched files, validation,
+and the final result:
+
+```bash
+SESSION_ID=$(dukememory agent-session start \
+  "implement checkout validation" \
+  --target src/checkout.rs \
+  --runner-profile codex_default)
+
+dukememory agent-session context "$SESSION_ID" --json
+
+dukememory agent-session finish "$SESSION_ID" \
+  --outcome success \
+  --summary "implemented client and server validation" \
+  --changed-file src/checkout.rs \
+  --validation "cargo test --all-targets" \
+  --json
+
+dukememory agent-session trace "$SESSION_ID" --json
+```
+
+`context` combines brief, optional target impact, and doctrine in one audited
+read. A successful finish creates automatic `useful` feedback only when the
+session recalled memory and includes explicit evidence: a changed file,
+validation command, or commit. Exact finish retries are safe; a conflicting
+second finish is rejected. `failed`, `partial`, and `abandoned` outcomes never
+produce automatic positive feedback.
+
+Named runner profiles are built in and may be overridden in
+`.agent/runner-profiles.toml`:
+
+```bash
+dukememory runner-profile list --json
+dukememory runner-profile doctor --json
+dukememory runner-profile init --json
+dukememory runner-profile init --apply --json
+```
+
+The defaults are `codex_default`, `gemini_flash_high`,
+`antigravity_pro_high`, and `ollama_local`. Profile doctor checks command
+availability without executing external runners.
+
 ## Local-First Sync
 
 Remote or VDS sync is optional and remains local-first: agents keep reading the
@@ -202,6 +246,11 @@ dukememory embed-status --json
 dukememory vec-validate --backend json
 dukememory vec-index --json
 dukememory vector-bench --iterations 100 --warmup 10 --limit 10000 --json
+dukememory vector-bench --iterations 100 --limit 10000 \
+  --baseline .agent/vector-bench-baseline.json --write-baseline --json
+dukememory vector-bench --iterations 100 --limit 10000 \
+  --baseline .agent/vector-bench-baseline.json \
+  --max-regression-percent 25 --json
 ```
 
 The default build keeps application-side cosine search as a portable fallback.
@@ -218,7 +267,8 @@ health checks reconstruct missing triggers, stale registries, invalid virtual
 tables, and missing/orphaned row memberships. `vec-index --json` exposes these
 checks; `vec-index --rebuild` remains available for an explicit rebuild.
 `vector-bench` reports exact sample size, warmup, p50/p95/p99 latency, QPS, and
-JSON/vec0 top-match equivalence. Internal semantic flows fall back to the JSON
+JSON/vec0 top-match equivalence. A reviewed baseline can gate both p95 latency
+growth and QPS loss with a non-zero exit on regression. Internal semantic flows fall back to the JSON
 scorer if a native query fails; an explicitly requested
 `--backend sqlite-vec` remains strict so operational checks cannot hide damage.
 
@@ -462,6 +512,8 @@ dukememory fleet-supervisor-watch-install --dry-run --json
 dukememory web-control-center-v11 --json
 dukememory release-gate-v3 --json
 dukememory web-control-center --json
+dukememory agent-session status --json
+dukememory runner-profile doctor --json
 dukememory auto-ranking-tune --apply --json
 dukememory ranking-profile --profile balanced --apply --json
 dukememory project-template --kind rust-cli --apply --json
@@ -480,8 +532,10 @@ safe supersede and diff apply keep durable cards clean, governance policy bounds
 autonomous writes, sync stays local-first, and release gate v2 catches memory
 regressions before publishing.
 
-`memory-control-center` currently maps to V2 and `web-control-center` to V12.
-The versioned spellings remain supported for clients that pin a response model.
+`memory-control-center` currently maps to V2. The stable `web-control-center`
+returns a compact one-request snapshot with sessions and runner readiness; its
+full diagnostic model remains pinned at `web-control-center-v12`. The UI loads
+that versioned detail only on demand.
 `autonomous-supervisor --apply` uses conservative, rollback-backed maintenance;
 it reports inferred feedback candidates but never materializes them unless
 `auto-feedback` is invoked explicitly.

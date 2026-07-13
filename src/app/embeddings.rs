@@ -1113,7 +1113,7 @@ fn provider_models(provider: &str, endpoint: &str) -> Result<Vec<ProviderModel>>
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct VectorBenchTiming {
     pub(crate) total_ms: f64,
     pub(crate) mean_ms: f64,
@@ -1123,7 +1123,7 @@ pub(crate) struct VectorBenchTiming {
     pub(crate) queries_per_second: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct VectorBenchReport {
     pub(crate) version: u8,
     pub(crate) provider: String,
@@ -1139,6 +1139,17 @@ pub(crate) struct VectorBenchReport {
     pub(crate) top_match_equal: Option<bool>,
     pub(crate) speedup: Option<f64>,
     pub(crate) message: Option<String>,
+    pub(crate) baseline_path: Option<String>,
+    pub(crate) baseline_written: bool,
+    pub(crate) regression: Option<VectorBenchRegression>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct VectorBenchRegression {
+    pub(crate) max_allowed_percent: f64,
+    pub(crate) p95_percent: f64,
+    pub(crate) qps_percent: f64,
+    pub(crate) ok: bool,
 }
 
 pub(crate) struct VectorBenchOptions<'a> {
@@ -1148,6 +1159,9 @@ pub(crate) struct VectorBenchOptions<'a> {
     pub(crate) iterations: usize,
     pub(crate) warmup: usize,
     pub(crate) limit: Option<usize>,
+    pub(crate) baseline: Option<&'a Path>,
+    pub(crate) write_baseline: bool,
+    pub(crate) max_regression_percent: f64,
     pub(crate) json_out: bool,
 }
 
@@ -1254,6 +1268,9 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
         iterations,
         warmup,
         limit,
+        baseline,
+        write_baseline,
+        max_regression_percent,
         json_out,
     } = options;
     if iterations == 0 || iterations > 10_000 {
@@ -1264,6 +1281,12 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
     }
     if limit == Some(0) {
         bail!("vector-bench --limit must be greater than zero");
+    }
+    if !max_regression_percent.is_finite() || max_regression_percent < 0.0 {
+        bail!("vector-bench --max-regression-percent must be a finite non-negative number");
+    }
+    if write_baseline && baseline.is_none() {
+        bail!("vector-bench --write-baseline requires --baseline PATH");
     }
     let endpoint_key = embedding_endpoint_key(provider, endpoint);
     let mut stmt = conn.prepare(
@@ -1291,7 +1314,7 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
     }
     if embeddings.is_empty() {
         let report = VectorBenchReport {
-            version: 2,
+            version: 3,
             provider: provider.to_string(),
             endpoint: endpoint_key,
             model: model.to_string(),
@@ -1305,6 +1328,9 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
             top_match_equal: None,
             speedup: None,
             message: Some("no indexed embeddings".to_string()),
+            baseline_path: baseline.map(|path| path.display().to_string()),
+            baseline_written: false,
+            regression: None,
         };
         if json_out {
             println!("{}", serde_json::to_string_pretty(&report)?);
@@ -1327,7 +1353,7 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
     })?;
     #[allow(unused_mut)]
     let mut report = VectorBenchReport {
-        version: 2,
+        version: 3,
         provider: provider.to_string(),
         endpoint: endpoint_key.clone(),
         model: model.to_string(),
@@ -1341,6 +1367,9 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
         top_match_equal: None,
         speedup: None,
         message: None,
+        baseline_path: baseline.map(|path| path.display().to_string()),
+        baseline_written: false,
+        regression: None,
     };
     #[cfg(feature = "vec")]
     {
@@ -1356,8 +1385,37 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
         }
         report.sqlite_vec = Some(native_timing);
     }
+    if let Some(path) = baseline {
+        if write_baseline {
+            report.baseline_written = true;
+            let encoded = serde_json::to_vec_pretty(&report)?;
+            write_file(path, &encoded)?;
+        } else {
+            let raw = fs::read_to_string(path).with_context(|| {
+                format!(
+                    "failed to read vector benchmark baseline {}",
+                    path.display()
+                )
+            })?;
+            let previous: VectorBenchReport = serde_json::from_str(&raw).with_context(|| {
+                format!(
+                    "failed to parse vector benchmark baseline {}",
+                    path.display()
+                )
+            })?;
+            report.regression = Some(vector_bench_regression(
+                &report,
+                &previous,
+                max_regression_percent,
+            )?);
+        }
+    }
+    let regression_failed = report.regression.as_ref().is_some_and(|gate| !gate.ok);
     if json_out {
         println!("{}", serde_json::to_string_pretty(&report)?);
+        if regression_failed {
+            bail!("vector benchmark regression gate failed");
+        }
         return Ok(());
     }
     println!("vectors: {}", report.vectors);
@@ -1388,7 +1446,69 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
     } else {
         println!("sqlite_vec_elapsed_ms: unavailable (build with --features vec)");
     }
+    if let Some(regression) = &report.regression {
+        println!("regression_p95_percent: {:.2}", regression.p95_percent);
+        println!("regression_qps_percent: {:.2}", regression.qps_percent);
+        println!("regression_ok: {}", regression.ok);
+    }
+    if report.baseline_written {
+        println!("baseline_written: true");
+    }
+    if regression_failed {
+        bail!("vector benchmark regression gate failed");
+    }
     Ok(())
+}
+
+fn vector_bench_regression(
+    current: &VectorBenchReport,
+    previous: &VectorBenchReport,
+    max_allowed_percent: f64,
+) -> Result<VectorBenchRegression> {
+    if current.vectors != previous.vectors || current.dimensions != previous.dimensions {
+        bail!(
+            "vector benchmark baseline scale mismatch: current={}/{} baseline={}/{}",
+            current.vectors,
+            current.dimensions,
+            previous.vectors,
+            previous.dimensions,
+        );
+    }
+    let current_timing = current
+        .sqlite_vec
+        .as_ref()
+        .or(current.json.as_ref())
+        .ok_or_else(|| anyhow::anyhow!("current vector benchmark has no timing"))?;
+    let previous_timing = previous
+        .sqlite_vec
+        .as_ref()
+        .or(previous.json.as_ref())
+        .ok_or_else(|| anyhow::anyhow!("baseline vector benchmark has no timing"))?;
+    let p95_percent = percent_increase(current_timing.p95_ms, previous_timing.p95_ms);
+    let qps_percent = percent_decrease(
+        current_timing.queries_per_second,
+        previous_timing.queries_per_second,
+    );
+    Ok(VectorBenchRegression {
+        max_allowed_percent,
+        p95_percent,
+        qps_percent,
+        ok: p95_percent <= max_allowed_percent && qps_percent <= max_allowed_percent,
+    })
+}
+
+fn percent_increase(current: f64, previous: f64) -> f64 {
+    if previous <= f64::EPSILON {
+        return 0.0;
+    }
+    ((current - previous) / previous * 100.0).max(0.0)
+}
+
+fn percent_decrease(current: f64, previous: f64) -> f64 {
+    if previous <= f64::EPSILON {
+        return 0.0;
+    }
+    ((previous - current) / previous * 100.0).max(0.0)
 }
 
 #[derive(Debug, Serialize)]
@@ -1564,8 +1684,7 @@ fn embedding_provider_health(
     let result = match provider_key.as_str() {
         "ollama" => {
             let url = format!("{endpoint_key}/api/tags");
-            reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_millis(PROVIDER_HEALTH_TIMEOUT_MS))
+            provider_health_client(&endpoint_key)
                 .build()
                 .and_then(|client| client.get(url).send())
                 .and_then(|response| response.error_for_status().map(|_| ()))
@@ -1573,10 +1692,7 @@ fn embedding_provider_health(
         }
         "openai" | "openai-compatible" | "openai_compatible" => {
             let url = format!("{endpoint_key}/v1/models");
-            let client = match reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_millis(PROVIDER_HEALTH_TIMEOUT_MS))
-                .build()
-            {
+            let client = match provider_health_client(&endpoint_key).build() {
                 Ok(client) => client,
                 Err(error) => {
                     let health = provider_health_error(started, error.into());
@@ -1607,6 +1723,29 @@ fn embedding_provider_health(
     };
     store_embedding_provider_health(conn, &provider_key, &endpoint_key, &health);
     health
+}
+
+fn provider_health_client(endpoint: &str) -> reqwest::blocking::ClientBuilder {
+    let builder = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(PROVIDER_HEALTH_TIMEOUT_MS));
+    if endpoint_is_loopback(endpoint) {
+        builder.no_proxy()
+    } else {
+        builder
+    }
+}
+
+fn endpoint_is_loopback(endpoint: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 fn cached_embedding_provider_health(

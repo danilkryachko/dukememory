@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.38.0 — 2026-07-14 (local development)
+
+### Added
+
+- Schema v20 agent sessions with durable start/context/finish/status/trace
+  lifecycle, explicit outcomes, validation evidence, runner attribution, and
+  process-crash recovery through SQLite state.
+- Evidence-backed feedback that writes a useful signal only after an explicit
+  successful finish with recalled memory and recorded files, validation
+  commands, or a commit; repeated finishes are idempotent and conflicting
+  finishes fail closed.
+- Named Codex, Gemini Flash High, Antigravity Pro High, and Ollama runner
+  profiles with local TOML overrides, previewable initialization, PATH-based
+  doctor checks, and CLI/MCP/HTTP visibility.
+- Vector benchmark baselines with p95/QPS regression comparison, configurable
+  thresholds, JSON evidence, and a failing local gate.
+- MCP and HTTP agent-session control surfaces plus causal traces from recalled
+  memory through actions and validation to the final outcome.
+
+### Changed
+
+- The built-in memory UI now loads one stable control snapshot initially;
+  versioned diagnostic detail is fetched only on demand.
+- Stable `web-control-center` responses include recent agent sessions, runner
+  readiness, and an explicit one-request initial-load budget while the full V12
+  response remains available at `web-control-center-v12`.
+- Existing schema 19 databases add the read-event session link before its index
+  is created, keeping upgrades safe and compatible.
+
+### Fixed
+
+- Prevent automatic positive memory feedback for successful-looking work that
+  has no explicit validation evidence.
+- Reject a second finish that attempts to rewrite a session's outcome or
+  evidence while allowing exact retries after interrupted clients.
+- Install binary upgrades through same-directory atomic rename so running MCP
+  processes keep their old executable mapping while new processes start the
+  replacement safely.
+
 ## 0.37.0 — 2026-07-13 (local development)
 
 ### Added

@@ -113,6 +113,12 @@ For every new chat or coding task in this repository:
 - To preview periodic fleet maintenance, run `dukememory fleet-supervisor-watch-install --dry-run --json`; omit `--dry-run` to write the launchd plist.
 - To inspect the 0.30 web control model, run `dukememory web-control-center-v11 --json`.
 - To inspect the 0.33 web control model, run `dukememory web-control-center-v12 --json`.
+- To run an evidence-backed agent loop, use `dukememory agent-session start`,
+  `context`, `finish`, `status`, and `trace`; automatic positive feedback
+  requires an explicit successful result with recorded evidence.
+- To inspect or initialize named external runner profiles, run
+  `dukememory runner-profile list|doctor|init --json`; initialization writes
+  `.agent/runner-profiles.toml` only with `--apply`.
 - To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`; use `--recent`, `--as-of YYYY-MM-DD`, `--as-of-days-ago N`, `--changed-since YYYY-MM-DD`, or `--changed-since-days N` for temporal recall.
 - To inspect one memory card's facts, audit events, and real agent read influence, run `dukememory memory-timeline <memory-id> --json`.
 - To review duplicate, stale, active-superseded, and contradiction-prone memory groups without mutating memory, run `dukememory memory-conflict-review --json`.

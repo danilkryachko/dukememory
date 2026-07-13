@@ -30,10 +30,11 @@ const DEFAULT_EMBED_ENDPOINT: &str = "local";
 const DEFAULT_EMBED_MODEL: &str = "paraphrase-multilingual-MiniLM-L12-v2";
 const DEFAULT_EMBED_PROVIDER: &str = "local";
 const DEFAULT_INSTALL_BACKUP_KEEP: usize = 3;
-const CURRENT_SCHEMA_VERSION: i64 = 19;
+const CURRENT_SCHEMA_VERSION: i64 = 20;
 const EXPORT_VERSION: u32 = 1;
 const VALID_SCOPES: &[&str] = &["global", "user", "project", "repo", "thread", "task"];
 
+mod agent_session;
 mod autonomous;
 mod cli;
 mod db;
@@ -58,11 +59,13 @@ mod rag;
 pub(crate) mod rag_ingest;
 mod release_ops;
 mod retrieval;
+mod runner_profiles;
 mod shared;
 mod sync_planning;
 mod sync_transport;
 mod topology;
 mod vec_backend;
+use agent_session::*;
 use autonomous::*;
 use cli::*;
 use db::*;
@@ -76,6 +79,7 @@ use project::*;
 use rag::*;
 use rag_ingest::*;
 use retrieval::*;
+use runner_profiles::*;
 use shared::*;
 use sync_planning::*;
 use sync_transport::*;
@@ -2501,8 +2505,33 @@ fn install_binary(to: &str, force: bool) -> Result<()> {
             dest.display()
         );
     }
-    fs::copy(&exe, &dest)
-        .with_context(|| format!("failed to copy {} to {}", exe.display(), dest.display()))?;
+    let temp = dest_dir.join(format!(
+        ".dukememory-install-{}.tmp",
+        Uuid::new_v4().simple()
+    ));
+    let install_result = (|| -> Result<()> {
+        fs::copy(&exe, &temp)
+            .with_context(|| format!("failed to copy {} to {}", exe.display(), temp.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&temp)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&temp, perms)?;
+        }
+        #[cfg(windows)]
+        if dest.exists() {
+            fs::remove_file(&dest)
+                .with_context(|| format!("failed to replace {}", dest.display()))?;
+        }
+        fs::rename(&temp, &dest)
+            .with_context(|| format!("failed to atomically install {}", dest.display()))?;
+        Ok(())
+    })();
+    if install_result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    install_result?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
