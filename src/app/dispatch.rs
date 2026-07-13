@@ -639,8 +639,9 @@ pub(crate) fn run() -> Result<()> {
             backend,
         } => {
             ensure_vector_backend(&conn, backend)?;
-            let rows =
-                embeddings::semantic_search(&conn, &provider, &endpoint, &model, &query, limit)?;
+            let rows = embeddings::semantic_search_with_backend(
+                &conn, &provider, &endpoint, &model, &query, limit, backend,
+            )?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&rows)?);
             } else {

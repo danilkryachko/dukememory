@@ -58,6 +58,10 @@ pub(crate) struct RemoteSyncV2Report {
     pub(crate) local_first: bool,
     pub(crate) encrypted_bundle: bool,
     pub(crate) encryption_mode: String,
+    pub(crate) bundle: Option<String>,
+    pub(crate) memory_count: usize,
+    pub(crate) ciphertext_bytes: usize,
+    pub(crate) verified: bool,
     pub(crate) latency: SyncLatencyReport,
     pub(crate) conflict_policy: String,
     pub(crate) commands: Vec<String>,
@@ -69,12 +73,10 @@ pub(crate) struct RemoteSyncV2Report {
 pub(crate) fn remote_sync_v2_commands(target: Option<&str>) -> Vec<String> {
     let target = target.unwrap_or("TARGET");
     vec![
-        "dukememory sync export memory-sync.json --json".to_string(),
-        "openssl enc -aes-256-cbc -pbkdf2 -salt -in memory-sync.json -out memory-sync.json.enc -pass env:DUKEMEMORY_SYNC_PASSPHRASE".to_string(),
-        format!("install -m 600 memory-sync.json.enc {target}/dukememory-sync-bundle.json.enc"),
-        format!("openssl enc -d -aes-256-cbc -pbkdf2 -in {target}/dukememory-sync-bundle.json.enc -out memory-sync.incoming.json -pass env:DUKEMEMORY_SYNC_PASSPHRASE"),
-        "dukememory sync import memory-sync.incoming.json --policy manual --dry-run --json"
-            .to_string(),
+        format!("dukememory sync push {target} --encrypt --dry-run --json"),
+        format!("dukememory sync push {target} --encrypt --json"),
+        format!("dukememory sync status {target} --json"),
+        format!("dukememory sync pull {target} --policy manual --dry-run --json"),
     ]
 }
 
@@ -83,13 +85,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remote_sync_plan_never_claims_implicit_execution() {
+    fn remote_sync_commands_use_builtin_encrypted_transport() {
         let commands = remote_sync_v2_commands(Some("/srv/private-memory"));
-        assert!(
-            commands
-                .iter()
-                .any(|command| command.contains("openssl enc"))
-        );
+        assert!(commands.iter().any(|command| command.contains("--encrypt")));
+        assert!(!commands.iter().any(|command| command.contains("openssl")));
         assert!(commands.iter().any(|command| command.contains("--dry-run")));
         assert!(
             commands

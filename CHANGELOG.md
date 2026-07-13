@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.35.0 — 2026-07-13
+
+### Added
+
+- Built-in age/scrypt encryption for sync export/push, passphrase files with
+  Unix permission checks, encrypted imports, and encrypted rollback bundles.
+- A statically bundled sqlite-vec feature with native SQL cosine search for
+  memory and RAG embeddings plus a real `vec0` validation probe.
+- Hardened systemd, Caddy, and nginx production templates with a TLS deployment
+  and operations guide.
+
+### Changed
+
+- `remote-sync-v2 --apply` now writes and verifies an encrypted remote bundle;
+  dry-run remains non-mutating and reports the exact guarded command sequence.
+- Sync writes are atomic and permission-restricted, status works without a key
+  as unverified metadata, and pull prefers encrypted bundles when both formats
+  are present.
+- Optimize SHA-256 in development and test profiles, reducing repeated binary
+  install dry-runs in the extended compatibility matrix by almost six times.
+
+### Fixed
+
+- Place sync rollback files next to the active project database instead of the
+  caller's unrelated working directory.
+- Preserve an explicit JSON semantic-search fallback in sqlite-vec builds for
+  equivalence testing and compatibility.
+
 ## 0.34.0 — 2026-07-13
 
 ### Added

@@ -2066,7 +2066,7 @@ pub(crate) enum Command {
         #[arg(long, env = "DUKEMEMORY_HTTP_TOKEN_FILE")]
         auth_token_file: Option<PathBuf>,
     },
-    /// Validate JSON vector storage or probe an externally loaded sqlite-vec extension.
+    /// Validate JSON fallback storage or the bundled sqlite-vec search backend.
     #[command(alias = "vec-migrate")]
     VecValidate {
         #[arg(long, value_enum, default_value_t = VectorBackend::Json)]
@@ -2281,6 +2281,9 @@ pub(crate) enum SyncCommand {
         output: PathBuf,
         #[arg(long)]
         redact: bool,
+        /// Encrypt the bundle with age using the configured sync passphrase.
+        #[arg(long)]
+        encrypt: bool,
         #[arg(long)]
         dry_run: bool,
         #[arg(long)]
@@ -2301,6 +2304,9 @@ pub(crate) enum SyncCommand {
         target: PathBuf,
         #[arg(long)]
         redact: bool,
+        /// Encrypt the remote bundle with age using the configured sync passphrase.
+        #[arg(long)]
+        encrypt: bool,
         #[arg(long)]
         dry_run: bool,
         #[arg(long)]
@@ -2428,9 +2434,10 @@ pub(crate) enum CompletionShell {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-#[value(rename_all = "snake_case")]
+#[value(rename_all = "kebab-case")]
 pub(crate) enum VectorBackend {
     Json,
+    #[value(alias = "sqlite_vec")]
     SqliteVec,
 }
 

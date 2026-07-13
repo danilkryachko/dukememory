@@ -153,17 +153,25 @@ local SQLite database, while push/pull moves reviewable sync bundles.
 ```bash
 dukememory remote-sync-control --target /mnt/vds/dukememory --json
 dukememory vds-sync-pack --target /mnt/vds/dukememory --json
-dukememory sync push /mnt/vds/dukememory --dry-run --json
+umask 077
+openssl rand -base64 48 > .agent/sync-passphrase
+export DUKEMEMORY_SYNC_PASSPHRASE_FILE=.agent/sync-passphrase
+dukememory sync push /mnt/vds/dukememory --encrypt --dry-run --json
+dukememory sync push /mnt/vds/dukememory --encrypt --json
 dukememory sync status /mnt/vds/dukememory --json
 dukememory sync pull /mnt/vds/dukememory --policy manual --dry-run --json
 ```
 
-The basic `sync export` and `sync push` bundle is plaintext JSON. Keep its
-target private and permission-restricted. `remote-sync-v2` only writes an
-experimental external OpenSSL encryption/transfer plan; it does not encrypt or
-transfer a bundle by itself. Its report is deliberately marked
-`experimental: true`, `plan_only: true`, `executed: false`, and
-`encrypted_bundle: false`.
+`--encrypt` writes an authenticated age/scrypt container atomically with mode
+`600`. Pull and status auto-detect the `.age` bundle; encrypted imports create
+encrypted rollback files and still apply the existing checksum, dry-run, and
+conflict-policy checks. Use either `DUKEMEMORY_SYNC_PASSPHRASE` or the preferred
+`DUKEMEMORY_SYNC_PASSPHRASE_FILE` (mode `600`), never both. Plain JSON export
+and push remain available for compatibility and must stay on private storage.
+
+`remote-sync-v2 --target PATH --apply --json` now performs the encrypted push
+and decrypts the stored result for checksum read-back verification. Without
+`--apply` it returns the guarded command sequence without moving data.
 
 `web-control-center-v5` exposes the same model for UI buttons: preview first,
 apply only guarded reversible actions, and keep rollback hints visible.
@@ -180,10 +188,12 @@ dukememory embed-status --json
 dukememory vec-validate --backend json
 ```
 
-`vec-validate --backend sqlite-vec` only probes an extension already loaded
-into SQLite. Retrieval continues to use application-side cosine search over
-the JSON embeddings; the legacy `vec-migrate` spelling remains a hidden CLI
-alias for compatibility.
+The default build keeps application-side cosine search as a portable fallback.
+Build with `--features vec` to statically register sqlite-vec and run memory and
+RAG cosine distance inside SQLite. `vec-validate --backend sqlite-vec` executes
+both a native SQL distance check and a real `vec0` KNN probe; `embed-search
+--backend json` can still force the fallback for comparison. The legacy
+`vec-migrate` spelling remains a hidden CLI alias for compatibility.
 
 RAG commands use the same embedding provider for memory cards and can be
 inspected before generation. `embed-index` also embeds indexed source chunks,
@@ -312,6 +322,9 @@ original `Host` header, and restrict network access with a firewall. Access
 events are emitted as one-line JSON on stderr. SIGINT, SIGTERM, and SIGHUP stop
 accepting new connections, drain the bounded worker queue, and join workers
 before exit.
+
+Ready-to-adapt systemd, Caddy, and nginx templates plus verification steps are
+in [`docs/production-deployment.md`](docs/production-deployment.md).
 
 Use it to search memory, inspect evidence, review inbox items, watch usage,
 check autonomous health, explain recall, inspect the project intent map, run

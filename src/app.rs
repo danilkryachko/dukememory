@@ -60,7 +60,9 @@ mod release_ops;
 mod retrieval;
 mod shared;
 mod sync_planning;
+mod sync_transport;
 mod topology;
+mod vec_backend;
 use autonomous::*;
 use cli::*;
 use db::*;
@@ -76,6 +78,8 @@ use rag_ingest::*;
 use retrieval::*;
 use shared::*;
 use sync_planning::*;
+use sync_transport::*;
+use vec_backend::*;
 
 fn init_project(conn: &Connection, db: &Path, config: &Path, force: bool) -> Result<()> {
     if config.exists() && !force {
@@ -174,6 +178,8 @@ struct SyncExportReport {
     output: String,
     memory_count: usize,
     redacted: bool,
+    encrypted: bool,
+    encryption_mode: Option<String>,
     export_sha256: String,
     bytes: usize,
     wrote: bool,
@@ -210,6 +216,8 @@ struct SyncImportReport {
     replace: bool,
     policy: SyncConflictPolicy,
     memory_count: usize,
+    encrypted: bool,
+    encryption_mode: Option<String>,
     export_sha256: Option<String>,
     checksum_ok: Option<bool>,
     rollback: Option<String>,
@@ -229,6 +237,9 @@ struct SyncRemoteStatusReport {
     target: String,
     bundle: String,
     exists: bool,
+    encrypted: bool,
+    encryption_mode: Option<String>,
+    verified: bool,
     memory_count: Option<usize>,
     export_sha256: Option<String>,
     updated_at: Option<i64>,
@@ -260,10 +271,41 @@ fn sync_bundle(conn: &Connection, redact: bool) -> Result<SyncBundle> {
     })
 }
 
-fn parse_sync_input(input: &Path) -> Result<(MemoryExport, Option<SyncBundleManifest>)> {
-    let raw =
-        fs::read_to_string(input).with_context(|| format!("failed to read {}", input.display()))?;
-    let value: Value = serde_json::from_str(&raw)?;
+struct PreparedSyncPayload {
+    bundle: SyncBundle,
+    bytes: Vec<u8>,
+    encrypted: bool,
+}
+
+fn prepare_sync_payload(
+    conn: &Connection,
+    redact: bool,
+    encrypt: bool,
+) -> Result<PreparedSyncPayload> {
+    let bundle = sync_bundle(conn, redact)?;
+    let plaintext = serde_json::to_vec_pretty(&bundle)?;
+    let bytes = if encrypt {
+        encrypt_sync_payload(&plaintext)?
+    } else {
+        plaintext
+    };
+    Ok(PreparedSyncPayload {
+        bundle,
+        bytes,
+        encrypted: encrypt,
+    })
+}
+
+fn parse_sync_input(input: &Path) -> Result<(MemoryExport, Option<SyncBundleManifest>, bool)> {
+    let raw = fs::read(input).with_context(|| format!("failed to read {}", input.display()))?;
+    let encrypted = is_encrypted_sync_payload(&raw);
+    let plaintext = if encrypted {
+        decrypt_sync_payload(&raw)?
+    } else {
+        raw
+    };
+    let value: Value = serde_json::from_slice(&plaintext)
+        .with_context(|| format!("failed to parse sync bundle {}", input.display()))?;
     if value.get("kind").and_then(Value::as_str) == Some("dukememory.sync.bundle") {
         let bundle: SyncBundle = serde_json::from_value(value)?;
         if bundle.version != 1 {
@@ -274,10 +316,10 @@ fn parse_sync_input(input: &Path) -> Result<(MemoryExport, Option<SyncBundleMani
         if actual != bundle.manifest.export_sha256 {
             bail!("sync bundle checksum mismatch");
         }
-        return Ok((bundle.export, Some(bundle.manifest)));
+        return Ok((bundle.export, Some(bundle.manifest), encrypted));
     }
     let export: MemoryExport = serde_json::from_value(value)?;
-    Ok((export, None))
+    Ok((export, None, encrypted))
 }
 
 fn sync_import_plan(
@@ -380,7 +422,7 @@ fn filtered_export_for_plan(export: MemoryExport, plan: &SyncImportPlan) -> Memo
 }
 
 fn import_memories(conn: &Connection, input: &Path, replace: bool) -> Result<()> {
-    let (export, _) = parse_sync_input(input)?;
+    let (export, _, _) = parse_sync_input(input)?;
     import_memory_export(conn, export, replace).map(|count| {
         println!("imported: {count}");
     })
@@ -726,40 +768,32 @@ fn memory_events(conn: &Connection, memory_id: &str, limit: usize) -> Result<Vec
     .map_err(Into::into)
 }
 
-fn ensure_vector_backend(conn: &Connection, backend: VectorBackend) -> Result<()> {
+fn ensure_vector_backend(conn: &Connection, backend: VectorBackend) -> Result<Option<String>> {
     match backend {
-        VectorBackend::Json => Ok(()),
+        VectorBackend::Json => Ok(None),
         VectorBackend::SqliteVec => {
             if !cfg!(feature = "vec") {
                 bail!(
-                    "sqlite-vec capability probe requested, but this binary was built without --features vec"
+                    "sqlite-vec backend requested, but this binary was built without --features vec"
                 );
             }
-            let available = conn
-                .query_row("SELECT vec_version()", [], |row| row.get::<_, String>(0))
-                .optional()
-                .is_ok();
-            if !available {
-                bail!(
-                    "sqlite-vec capability probe requested, but no extension exposing vec_version() is loaded"
-                );
-            }
-            Ok(())
+            sqlite_vec_probe(conn).map(Some)
         }
     }
 }
 
 fn vec_validate(conn: &Connection, backend: VectorBackend) -> Result<()> {
-    ensure_vector_backend(conn, backend)?;
+    let sqlite_vec_version = ensure_vector_backend(conn, backend)?;
     let detail = match backend {
         VectorBackend::Json => {
-            "validated JSON embedding storage with application-side cosine search"
+            "validated JSON embedding storage with application-side cosine search".to_string()
         }
-        VectorBackend::SqliteVec => {
-            "validated externally loaded sqlite-vec capability; retrieval remains application-side"
-        }
+        VectorBackend::SqliteVec => format!(
+            "validated bundled sqlite-vec {} with native SQL cosine search and vec0 KNN",
+            sqlite_vec_version.as_deref().unwrap_or("unknown")
+        ),
     };
-    log_event(conn, "vec_validate", None, detail)?;
+    log_event(conn, "vec_validate", None, &detail)?;
     println!("{detail}");
     Ok(())
 }
@@ -984,20 +1018,22 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
         SyncCommand::Export {
             output,
             redact,
+            encrypt,
             dry_run,
             json,
         } => {
-            let bundle = sync_bundle(conn, redact)?;
-            let payload = serde_json::to_vec_pretty(&bundle)?;
+            let prepared = prepare_sync_payload(conn, redact, encrypt)?;
             let report = SyncExportReport {
                 version: 1,
                 ok: true,
                 dry_run,
                 output: output.display().to_string(),
-                memory_count: bundle.manifest.memory_count,
+                memory_count: prepared.bundle.manifest.memory_count,
                 redacted: redact,
-                export_sha256: bundle.manifest.export_sha256.clone(),
-                bytes: payload.len(),
+                encrypted: prepared.encrypted,
+                encryption_mode: prepared.encrypted.then(|| SYNC_ENCRYPTION_MODE.to_string()),
+                export_sha256: prepared.bundle.manifest.export_sha256.clone(),
+                bytes: prepared.bytes.len(),
                 wrote: !dry_run,
                 recommendations: vec![
                     "import with dukememory sync import --dry-run before applying".to_string(),
@@ -1006,7 +1042,7 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
                 ],
             };
             if !dry_run {
-                write_file(&output, &payload)?;
+                write_private_atomic(&output, &prepared.bytes)?;
             }
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
@@ -1026,7 +1062,7 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
             dry_run,
             json,
         } => {
-            let (export, manifest) = parse_sync_input(&input)?;
+            let (export, manifest, encrypted) = parse_sync_input(&input)?;
             let plan = sync_import_plan(conn, &export, policy, replace)?;
             let memory_count = export.memories.len();
             let export_sha256 = manifest
@@ -1036,14 +1072,17 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
             let rollback = if dry_run || blocked {
                 None
             } else {
-                let rollback_dir = PathBuf::from(".agent/sync-rollbacks");
-                fs::create_dir_all(&rollback_dir)?;
-                let rollback_path = rollback_dir.join(format!("sync-{}.json", now_ms()));
+                let rollback_dir = sync_rollback_dir(conn)?;
+                let extension = if encrypted { "age" } else { "json" };
+                let rollback_path = rollback_dir.join(format!("sync-{}.{}", now_ms(), extension));
                 let rollback_export = export_memories(conn, &[], &[], None)?;
-                write_file(
-                    &rollback_path,
-                    serde_json::to_string_pretty(&rollback_export)?.as_bytes(),
-                )?;
+                let rollback_plaintext = serde_json::to_vec_pretty(&rollback_export)?;
+                let rollback_bytes = if encrypted {
+                    encrypt_sync_payload(&rollback_plaintext)?
+                } else {
+                    rollback_plaintext
+                };
+                write_private_atomic(&rollback_path, &rollback_bytes)?;
                 Some(rollback_path.display().to_string())
             };
             let imported = if dry_run || blocked {
@@ -1060,6 +1099,8 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
                 replace,
                 policy,
                 memory_count,
+                encrypted,
+                encryption_mode: encrypted.then(|| SYNC_ENCRYPTION_MODE.to_string()),
                 export_sha256,
                 checksum_ok: manifest.as_ref().map(|_| true),
                 rollback,
@@ -1102,21 +1143,23 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
         SyncCommand::Push {
             target,
             redact,
+            encrypt,
             dry_run,
             json,
         } => {
-            let bundle_path = sync_target_bundle_path(&target);
-            let bundle = sync_bundle(conn, redact)?;
-            let payload = serde_json::to_vec_pretty(&bundle)?;
+            let bundle_path = sync_target_bundle_path(&target, encrypt);
+            let prepared = prepare_sync_payload(conn, redact, encrypt)?;
             let report = SyncExportReport {
                 version: 1,
                 ok: true,
                 dry_run,
                 output: bundle_path.display().to_string(),
-                memory_count: bundle.manifest.memory_count,
+                memory_count: prepared.bundle.manifest.memory_count,
                 redacted: redact,
-                export_sha256: bundle.manifest.export_sha256.clone(),
-                bytes: payload.len(),
+                encrypted: prepared.encrypted,
+                encryption_mode: prepared.encrypted.then(|| SYNC_ENCRYPTION_MODE.to_string()),
+                export_sha256: prepared.bundle.manifest.export_sha256.clone(),
+                bytes: prepared.bytes.len(),
                 wrote: !dry_run,
                 recommendations: vec![
                     "run dukememory sync status TARGET after push".to_string(),
@@ -1125,8 +1168,7 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
                 ],
             };
             if !dry_run {
-                fs::create_dir_all(&target)?;
-                write_file(&bundle_path, &payload)?;
+                write_private_atomic(&bundle_path, &prepared.bytes)?;
             }
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
@@ -1141,7 +1183,7 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
             dry_run,
             json,
         } => {
-            let bundle_path = sync_target_bundle_path(&target);
+            let bundle_path = sync_target_bundle_path_for_read(&target);
             handle_sync(
                 conn,
                 SyncCommand::Import {
@@ -1170,16 +1212,54 @@ fn handle_sync(conn: &Connection, command: SyncCommand) -> Result<()> {
     }
 }
 
-fn sync_target_bundle_path(target: &Path) -> PathBuf {
-    if target.extension().and_then(|value| value.to_str()) == Some("json") {
+fn sync_rollback_dir(conn: &Connection) -> Result<PathBuf> {
+    let database: String = conn
+        .query_row(
+            "SELECT file FROM pragma_database_list WHERE name = 'main'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or_default();
+    if database.is_empty() {
+        return Ok(PathBuf::from(".agent/sync-rollbacks"));
+    }
+    let parent = Path::new(&database)
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    if parent.file_name().and_then(|value| value.to_str()) == Some(".agent") {
+        Ok(parent.join("sync-rollbacks"))
+    } else {
+        Ok(parent.join(".agent/sync-rollbacks"))
+    }
+}
+
+fn sync_target_bundle_path(target: &Path, encrypted: bool) -> PathBuf {
+    if matches!(
+        target.extension().and_then(|value| value.to_str()),
+        Some("json" | "age")
+    ) {
         target.to_path_buf()
+    } else if encrypted {
+        target.join("dukememory-sync-bundle.age")
     } else {
         target.join("dukememory-sync-bundle.json")
     }
 }
 
+fn sync_target_bundle_path_for_read(target: &Path) -> PathBuf {
+    if target.extension().is_some() {
+        return target.to_path_buf();
+    }
+    let encrypted = sync_target_bundle_path(target, true);
+    if encrypted.exists() {
+        encrypted
+    } else {
+        sync_target_bundle_path(target, false)
+    }
+}
+
 fn sync_remote_status(target: &Path) -> Result<SyncRemoteStatusReport> {
-    let bundle = sync_target_bundle_path(target);
+    let bundle = sync_target_bundle_path_for_read(target);
     if !bundle.exists() {
         return Ok(SyncRemoteStatusReport {
             version: 1,
@@ -1187,6 +1267,9 @@ fn sync_remote_status(target: &Path) -> Result<SyncRemoteStatusReport> {
             target: target.display().to_string(),
             bundle: bundle.display().to_string(),
             exists: false,
+            encrypted: false,
+            encryption_mode: None,
+            verified: false,
             memory_count: None,
             export_sha256: None,
             updated_at: None,
@@ -1194,7 +1277,15 @@ fn sync_remote_status(target: &Path) -> Result<SyncRemoteStatusReport> {
             recommendations: vec!["run dukememory sync push TARGET --json".to_string()],
         });
     }
-    let (_, manifest) = parse_sync_input(&bundle)?;
+    let raw = fs::read(&bundle)
+        .with_context(|| format!("failed to read sync bundle {}", bundle.display()))?;
+    let encrypted = is_encrypted_sync_payload(&raw);
+    let manifest = if encrypted && !sync_passphrase_is_configured() {
+        None
+    } else {
+        let (_, manifest, _) = parse_sync_input(&bundle)?;
+        manifest
+    };
     let modified = fs::metadata(&bundle)
         .and_then(|meta| meta.modified())
         .ok()
@@ -1206,13 +1297,27 @@ fn sync_remote_status(target: &Path) -> Result<SyncRemoteStatusReport> {
         target: target.display().to_string(),
         bundle: bundle.display().to_string(),
         exists: true,
+        encrypted,
+        encryption_mode: encrypted.then(|| SYNC_ENCRYPTION_MODE.to_string()),
+        verified: manifest.is_some(),
         memory_count: manifest.as_ref().map(|manifest| manifest.memory_count),
-        export_sha256: manifest.map(|manifest| manifest.export_sha256),
+        export_sha256: manifest
+            .as_ref()
+            .map(|manifest| manifest.export_sha256.clone()),
         updated_at: modified,
         local_first: true,
-        recommendations: vec![
-            "run dukememory sync pull TARGET --dry-run --json before applying".to_string(),
-        ],
+        recommendations: if encrypted && manifest.is_none() {
+            vec![
+                "configure the sync passphrase to verify checksum and inspect metadata".to_string(),
+                "run dukememory sync pull TARGET --policy manual --dry-run --json before applying"
+                    .to_string(),
+            ]
+        } else {
+            vec![
+                "run dukememory sync pull TARGET --policy manual --dry-run --json before applying"
+                    .to_string(),
+            ]
+        },
     })
 }
 
@@ -2180,7 +2285,7 @@ Use `dukememory memory-quality-ci --json` to run a CI-friendly memory quality ga
 
 Use `dukememory fleet-dashboard-v2 --json` to inspect all discovered project memories with V2 quality metrics.
 
-Use `dukememory remote-sync-apply-flow --json` to plan guarded remote sync apply; use `--target` and `DUKEMEMORY_SYNC_PASSPHRASE` before `--apply`.
+Use `dukememory remote-sync-apply-flow --json` to plan guarded remote sync apply; use `--target` and a mode-600 sync passphrase file before `--apply`.
 
 Use `dukememory mcp-tool-surface-v2 --json` to inspect MCP V2 memory tool exposure.
 
@@ -2196,7 +2301,7 @@ Use `dukememory inbox-ai-reviewer --json` to explain inbox groups and safely pro
 
 Use `dukememory web-control-center-v3 --json` to inspect the simplified Health, Autonomy, Projects, and Sync control model.
 
-Use `dukememory remote-sync-apply --json` to apply guarded local-first remote sync planning; use `--target` and `DUKEMEMORY_SYNC_PASSPHRASE` before `--apply`.
+Use `dukememory remote-sync-apply --json` to apply guarded local-first encrypted sync; use `--target` and a mode-600 sync passphrase file before `--apply`.
 
 Use `dukememory mcp-quality-tools --json` to inspect MCP helper tools for memory discipline.
 
@@ -2334,7 +2439,7 @@ Use `dukememory agent-enforce --json` to verify future chats will use memory; us
 
 Use `dukememory memory-diff-review --json` to review changed files against memory and decide whether durable task_state/design_note cards are needed.
 
-Use `dukememory remote-sync-v2 --json` to plan encrypted local-first VDS/remote sync with manual conflict policy.
+Use `dukememory remote-sync-v2 --target PATH --json` to preview encrypted local-first sync; set a permission-restricted sync passphrase file before `--apply`.
 
 Use `dukememory sync export bundle.json --dry-run --json` before writing a local-first sync bundle; use `dukememory sync import bundle.json --dry-run --json` before applying it.
 
@@ -2815,9 +2920,14 @@ fn print_vec_status(conn: &Connection) {
     let sqlite_vec_version = conn
         .query_row("SELECT vec_version()", [], |row| row.get::<_, String>(0))
         .ok();
-    println!("retrieval backend: application-side cosine search");
-    println!("embedding storage: SQLite JSON");
-    println!("sqlite-vec probe feature: {}", cfg!(feature = "vec"));
+    if cfg!(feature = "vec") {
+        println!("retrieval backend: native sqlite-vec SQL cosine search");
+        println!("embedding storage: SQLite JSON, consumed directly by sqlite-vec");
+    } else {
+        println!("retrieval backend: application-side cosine search");
+        println!("embedding storage: SQLite JSON");
+    }
+    println!("sqlite-vec bundled feature: {}", cfg!(feature = "vec"));
     println!(
         "sqlite-vec extension: {}",
         sqlite_vec_version.as_deref().unwrap_or("not loaded")
@@ -3183,7 +3293,7 @@ fn print_manpage() {
     println!("  sync-latency --json           measure local/VDS sync latency");
     println!("  sync-profile --json           choose a local-first sync profile");
     println!("  memory-diff-review --json     review changed files for memory updates");
-    println!("  remote-sync-v2 --json         plan encrypted local-first remote sync");
+    println!("  remote-sync-v2 --json         preview or apply encrypted local-first sync");
     println!("  agent-enforce --fix --json    enforce memory use for future chats");
     println!("  onboard --root DIR            initialize memory/profile/embeddings");
     println!("  inbox-v2 report|auto-apply    group and process pending suggestions");
