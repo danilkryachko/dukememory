@@ -35,10 +35,11 @@ jobs:
           cargo test --
           --skip v14_6_local_memory_ui_and_http_actions
           --skip v14_9_autonomous_memory_runs_and_rolls_back
-      - name: Test sqlite-vec capability build
+      - name: Test sqlite-vec native backend
         run: |
           cargo test --features vec --bin dukememory
           cargo test --features vec --test cli review_conflicts_links_session_and_vec_status -- --exact
+          cargo test --features vec --test cli sqlite_vec_backend_runs_knn_and_matches_json_fallback -- --exact
       - name: Check local generation build
         run: cargo check --features local-embeddings,local-generation
 

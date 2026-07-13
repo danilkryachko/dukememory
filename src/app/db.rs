@@ -227,6 +227,7 @@ END;
 "#;
 
 pub(crate) fn open_db(path: &Path) -> Result<Connection> {
+    register_sqlite_vec()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;

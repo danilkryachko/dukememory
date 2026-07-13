@@ -1,6 +1,6 @@
 [package]
 name = "dukememory"
-version = "0.34.0"
+version = "0.35.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "Local project memory for AI coding agents: durable context, SQLite, MCP, Codex skill, embeddings, and autonomous maintenance."
@@ -10,10 +10,12 @@ keywords = ["ai-agent", "memory", "mcp", "sqlite", "embeddings"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
+age = { version = "0.11", default-features = false }
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive", "env"] }
 ctrlc = { version = "3.5", features = ["termination"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+sqlite-vec = { version = "0.1.9", optional = true }
 regex = "1.12"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rhai = { version = "1.22", default-features = false, features = ["std"] }
@@ -35,11 +37,18 @@ default = []
 # Compatibility marker: local MiniLM embeddings are part of the default build.
 local-embeddings = []
 local-generation = ["dep:encoding_rs", "dep:llama-cpp-2"]
-# Enables probing an externally loaded sqlite-vec extension; it does not load
-# the extension or replace the current application-side JSON vector scan.
-vec = []
+# Statically registers sqlite-vec and runs semantic distance queries in SQLite.
+vec = ["dep:sqlite-vec"]
 
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
 tempfile = "3.13"
+
+# Install/update dry-runs hash large binaries. Optimizing SHA-256 keeps the
+# extended CLI compatibility matrix fast without changing application code.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.test.package.sha2]
+opt-level = 3

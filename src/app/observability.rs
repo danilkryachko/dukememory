@@ -5796,9 +5796,7 @@ pub(crate) fn remote_sync_wizard_report(
 ) -> Result<RemoteSyncWizardReport> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let sync = remote_sync_v2_report(conn, db, &root, target, since_days, apply)?;
-    let passphrase_ready = std::env::var("DUKEMEMORY_SYNC_PASSPHRASE")
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
+    let passphrase_ready = sync_passphrase_is_configured();
     let mut steps = vec![
         RemoteSyncWizardStep {
             name: "target".to_string(),
@@ -5811,9 +5809,9 @@ pub(crate) fn remote_sync_wizard_report(
             name: "encryption".to_string(),
             ok: passphrase_ready || !apply,
             detail: if passphrase_ready {
-                "DUKEMEMORY_SYNC_PASSPHRASE is set".to_string()
+                "sync passphrase environment or file is configured".to_string()
             } else {
-                "set DUKEMEMORY_SYNC_PASSPHRASE before --apply".to_string()
+                "set DUKEMEMORY_SYNC_PASSPHRASE_FILE (preferred) or DUKEMEMORY_SYNC_PASSPHRASE before --apply".to_string()
             },
         },
         RemoteSyncWizardStep {
@@ -5837,7 +5835,9 @@ pub(crate) fn remote_sync_wizard_report(
         blockers.push("target is required".to_string());
     }
     if apply && !passphrase_ready {
-        blockers.push("DUKEMEMORY_SYNC_PASSPHRASE is required for encrypted apply".to_string());
+        blockers.push(
+            "a sync passphrase environment or file is required for encrypted apply".to_string(),
+        );
     }
     blockers.sort();
     blockers.dedup();
@@ -6444,11 +6444,9 @@ pub(crate) fn remote_sync_apply_flow_report(
     let wizard = remote_sync_wizard_report(conn, db, &root, target, since_days, apply)?;
     let dry_run_commands = wizard.sync.commands.clone();
     let mut blockers = wizard.blockers.clone();
-    let passphrase_ready = std::env::var("DUKEMEMORY_SYNC_PASSPHRASE")
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
+    let passphrase_ready = sync_passphrase_is_configured();
     if apply && !passphrase_ready {
-        blockers.push("encrypted apply requires DUKEMEMORY_SYNC_PASSPHRASE".to_string());
+        blockers.push("encrypted apply requires a sync passphrase environment or file".to_string());
     }
     if !wizard.sync.local_first {
         blockers.push("remote sync apply requires local-first mode".to_string());
@@ -7072,7 +7070,9 @@ pub(crate) fn remote_sync_apply_report(
     apply: bool,
 ) -> Result<RemoteSyncApplyReport> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let flow = remote_sync_apply_flow_report(conn, db, &root, target, since_days, apply)?;
+    // The flow report is an eligibility check here; execution belongs to the
+    // single sync_v2 call below so an apply never encrypts and writes twice.
+    let flow = remote_sync_apply_flow_report(conn, db, &root, target, since_days, false)?;
     let sync_v2 = remote_sync_v2_report(
         conn,
         db,
@@ -7096,7 +7096,7 @@ pub(crate) fn remote_sync_apply_report(
     commands.dedup();
     let mut blockers = flow.blockers.clone();
     if !flow.apply_allowed {
-        blockers.push("apply requires target and DUKEMEMORY_SYNC_PASSPHRASE".to_string());
+        blockers.push("apply requires a target and configured sync passphrase".to_string());
     }
     blockers.extend(sync_v2.blockers.clone());
     blockers.extend(sync_profile.blockers.clone());
@@ -13261,10 +13261,7 @@ pub(crate) fn remote_sync_v2_report(
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let latency = sync_latency_report(conn, db, &root, target, 1)?;
     let target_string = target.map(|path| path.display().to_string());
-    // This command writes an executable plan. Encryption is performed only
-    // when the emitted OpenSSL command is run by the operator.
-    let encrypted_bundle = false;
-    let encryption_mode = "external_openssl_plan".to_string();
+    let encryption_mode = SYNC_ENCRYPTION_MODE.to_string();
     let mut blockers = Vec::new();
     if target.is_none() {
         blockers.push(
@@ -13273,6 +13270,9 @@ pub(crate) fn remote_sync_v2_report(
     }
     if !latency.ok {
         blockers.extend(latency.issues.iter().cloned());
+    }
+    if apply && let Err(error) = read_sync_passphrase() {
+        blockers.push(error.to_string());
     }
     blockers.sort();
     blockers.dedup();
@@ -13283,29 +13283,58 @@ pub(crate) fn remote_sync_v2_report(
     );
     recommendations.push("review conflicts manually before import or pull apply".to_string());
     recommendations.push(
-        "set DUKEMEMORY_SYNC_PASSPHRASE before executing the emitted OpenSSL commands; remote-sync-v2 itself does not encrypt or transfer data"
-            .to_string(),
+        "prefer DUKEMEMORY_SYNC_PASSPHRASE_FILE with mode 600 for unattended sync".to_string(),
     );
     recommendations.sort();
     recommendations.dedup();
     let ok = blockers.is_empty();
     let mut actions = Vec::new();
+    let mut encrypted_bundle = false;
+    let mut bundle_path = None;
+    let mut memory_count = 0;
+    let mut ciphertext_bytes = 0;
+    let mut verified = false;
     if apply && ok {
+        let target = target.expect("target presence is checked before apply");
+        let prepared = prepare_sync_payload(conn, false, true)?;
+        let remote_path = sync_target_bundle_path(target, true);
+        write_private_atomic(&remote_path, &prepared.bytes)?;
+        let (_, manifest, stored_encrypted) = parse_sync_input(&remote_path)?;
+        verified = stored_encrypted
+            && manifest.as_ref().is_some_and(|manifest| {
+                manifest.export_sha256 == prepared.bundle.manifest.export_sha256
+            });
+        if !verified {
+            bail!("encrypted remote sync read-back verification failed");
+        }
+        encrypted_bundle = true;
+        memory_count = prepared.bundle.manifest.memory_count;
+        ciphertext_bytes = prepared.bytes.len();
+        bundle_path = Some(remote_path.display().to_string());
+        actions.push(format!(
+            "encrypted_sync_bundle_written:{}",
+            remote_path.display()
+        ));
+
         let path = root.join(".agent/remote-sync-v2.json");
         let value = json!({
             "version": 1,
             "local_first": true,
             "target": &target_string,
-            "experimental": true,
-            "plan_only": true,
-            "executed": false,
+            "experimental": false,
+            "plan_only": false,
+            "executed": true,
             "encrypted_bundle": encrypted_bundle,
             "encryption_mode": &encryption_mode,
+            "bundle": &bundle_path,
+            "memory_count": memory_count,
+            "ciphertext_bytes": ciphertext_bytes,
+            "verified": verified,
             "conflict_policy": "manual",
             "commands": &commands,
             "updated_at": now_ms(),
         });
-        write_file(&path, serde_json::to_string_pretty(&value)?.as_bytes())?;
+        write_private_atomic(&path, serde_json::to_string_pretty(&value)?.as_bytes())?;
         actions.push(format!("remote_sync_v2_written:{}", path.display()));
     } else if apply {
         actions.push("remote_sync_v2_not_written:blockers_present".to_string());
@@ -13317,9 +13346,9 @@ pub(crate) fn remote_sync_v2_report(
         ok,
         status: if ok {
             if apply {
-                "experimental_plan_written"
+                "encrypted_push_completed"
             } else {
-                "experimental_plan_ready"
+                "encrypted_sync_ready"
             }
         } else {
             "blocked"
@@ -13328,12 +13357,16 @@ pub(crate) fn remote_sync_v2_report(
         root: root.display().to_string(),
         target: target_string,
         applied: apply && ok,
-        experimental: true,
-        plan_only: true,
-        executed: false,
+        experimental: false,
+        plan_only: false,
+        executed: apply && ok,
         local_first: true,
         encrypted_bundle,
         encryption_mode,
+        bundle: bundle_path,
+        memory_count,
+        ciphertext_bytes,
+        verified,
         latency,
         conflict_policy: "manual".to_string(),
         commands,

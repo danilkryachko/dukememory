@@ -21,7 +21,18 @@ fn cmd(db: &std::path::Path) -> Command {
 }
 
 fn stdout(command: &mut Command) -> String {
-    String::from_utf8(command.assert().success().get_output().stdout.clone()).unwrap()
+    let started = std::time::Instant::now();
+    let description = std::env::var_os("DUKEMEMORY_TEST_TIMINGS")
+        .is_some()
+        .then(|| format!("{command:?}"));
+    let output = command.assert().success().get_output().stdout.clone();
+    if let Some(description) = description {
+        eprintln!(
+            "test_command_ms={} {description}",
+            started.elapsed().as_millis()
+        );
+    }
+    String::from_utf8(output).unwrap()
 }
 
 fn json_section_ids(value: &Value, sections: &[&str]) -> Vec<String> {
@@ -996,6 +1007,144 @@ fn export_import_backup_and_restore() {
     assert_eq!(pull_json["dry_run"], true);
     assert_eq!(pull_json["checksum_ok"], true);
 
+    let sync_passphrase = "test-only encrypted sync passphrase";
+    let encrypted_target = dir.path().join("encrypted-sync-target");
+    let encrypted_db = dir.path().join("encrypted-import.db");
+    let encrypted_push = stdout(
+        cmd(&db)
+            .arg("sync")
+            .arg("push")
+            .arg(&encrypted_target)
+            .arg("--encrypt")
+            .arg("--json")
+            .env("DUKEMEMORY_SYNC_PASSPHRASE", sync_passphrase),
+    );
+    let encrypted_push_json: Value = serde_json::from_str(&encrypted_push).unwrap();
+    assert_eq!(encrypted_push_json["wrote"], true);
+    assert_eq!(encrypted_push_json["encrypted"], true);
+    assert_eq!(encrypted_push_json["encryption_mode"], "age_scrypt");
+    let encrypted_bundle = encrypted_target.join("dukememory-sync-bundle.age");
+    let encrypted_raw = fs::read(&encrypted_bundle).unwrap();
+    assert!(encrypted_raw.starts_with(b"age-encryption.org/v1\n"));
+    assert!(!String::from_utf8_lossy(&encrypted_raw).contains("Exported decision"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&encrypted_bundle)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    let encrypted_status_without_key = stdout(
+        cmd(&db)
+            .arg("sync")
+            .arg("status")
+            .arg(&encrypted_target)
+            .arg("--json")
+            .env_remove("DUKEMEMORY_SYNC_PASSPHRASE")
+            .env_remove("DUKEMEMORY_SYNC_PASSPHRASE_FILE"),
+    );
+    let encrypted_status_without_key_json: Value =
+        serde_json::from_str(&encrypted_status_without_key).unwrap();
+    assert_eq!(encrypted_status_without_key_json["exists"], true);
+    assert_eq!(encrypted_status_without_key_json["encrypted"], true);
+    assert_eq!(encrypted_status_without_key_json["verified"], false);
+
+    let passphrase_file = dir.path().join("sync-passphrase");
+    fs::write(&passphrase_file, format!("{sync_passphrase}\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&passphrase_file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let encrypted_status_with_file = stdout(
+        cmd(&db)
+            .arg("sync")
+            .arg("status")
+            .arg(&encrypted_target)
+            .arg("--json")
+            .env_remove("DUKEMEMORY_SYNC_PASSPHRASE")
+            .env("DUKEMEMORY_SYNC_PASSPHRASE_FILE", &passphrase_file),
+    );
+    let encrypted_status_with_file_json: Value =
+        serde_json::from_str(&encrypted_status_with_file).unwrap();
+    assert_eq!(encrypted_status_with_file_json["verified"], true);
+    assert_eq!(encrypted_status_with_file_json["memory_count"], 1);
+
+    cmd(&encrypted_db)
+        .arg("sync")
+        .arg("pull")
+        .arg(&encrypted_target)
+        .arg("--dry-run")
+        .arg("--json")
+        .env(
+            "DUKEMEMORY_SYNC_PASSPHRASE",
+            "wrong passphrase for this bundle",
+        )
+        .assert()
+        .failure()
+        .stderr(contains("failed to decrypt age sync bundle"));
+    let encrypted_pull = stdout(
+        cmd(&encrypted_db)
+            .arg("sync")
+            .arg("pull")
+            .arg(&encrypted_target)
+            .arg("--json")
+            .env("DUKEMEMORY_SYNC_PASSPHRASE", sync_passphrase),
+    );
+    let encrypted_pull_json: Value = serde_json::from_str(&encrypted_pull).unwrap();
+    assert_eq!(encrypted_pull_json["ok"], true);
+    assert_eq!(encrypted_pull_json["encrypted"], true);
+    assert_eq!(encrypted_pull_json["checksum_ok"], true);
+    let encrypted_rollback =
+        std::path::PathBuf::from(encrypted_pull_json["rollback"].as_str().unwrap());
+    assert_eq!(
+        encrypted_rollback
+            .extension()
+            .and_then(|value| value.to_str()),
+        Some("age")
+    );
+    assert!(
+        fs::read(&encrypted_rollback)
+            .unwrap()
+            .starts_with(b"age-encryption.org/v1\n")
+    );
+    cmd(&encrypted_db)
+        .arg("get")
+        .arg(&id)
+        .assert()
+        .success()
+        .stdout(contains("Exported decision"));
+
+    let remote_sync_v2_target = dir.path().join("remote-sync-v2-target");
+    let remote_sync_v2_apply = stdout(
+        cmd(&db)
+            .arg("remote-sync-v2")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--target")
+            .arg(&remote_sync_v2_target)
+            .arg("--apply")
+            .arg("--json")
+            .env_remove("DUKEMEMORY_SYNC_PASSPHRASE")
+            .env("DUKEMEMORY_SYNC_PASSPHRASE_FILE", &passphrase_file),
+    );
+    let remote_sync_v2_apply_json: Value = serde_json::from_str(&remote_sync_v2_apply).unwrap();
+    assert_eq!(remote_sync_v2_apply_json["ok"], true);
+    assert_eq!(remote_sync_v2_apply_json["executed"], true);
+    assert_eq!(remote_sync_v2_apply_json["encrypted_bundle"], true);
+    assert_eq!(remote_sync_v2_apply_json["verified"], true);
+    assert!(
+        remote_sync_v2_target
+            .join("dukememory-sync-bundle.age")
+            .exists()
+    );
+
     cmd(&db).arg("backup").arg(&backup_db).assert().success();
     assert!(backup_db.exists());
 
@@ -1077,16 +1226,85 @@ fn review_conflicts_links_session_and_vec_status() {
         .arg("Run release build")
         .assert()
         .success();
+    let vec_status = stdout(cmd(&db).arg("vec-status"));
+    if cfg!(feature = "vec") {
+        assert!(vec_status.contains("retrieval backend: native sqlite-vec SQL cosine search"));
+        assert!(vec_status.contains("sqlite-vec bundled feature: true"));
+    } else {
+        assert!(vec_status.contains("retrieval backend: application-side cosine search"));
+        assert!(vec_status.contains("sqlite-vec bundled feature: false"));
+    }
+    assert!(vec_status.contains("local"));
+    assert!(vec_status.contains("paraphrase-multilingual-MiniLM-L12-v2"));
+}
+
+#[cfg(feature = "vec")]
+#[test]
+fn sqlite_vec_backend_runs_knn_and_matches_json_fallback() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    for (title, body) in [
+        ("Vector alpha", "sqlite native cosine vector alpha detail"),
+        ("Vector beta", "remote sync encrypted bundle beta detail"),
+        ("Vector gamma", "HTTP graceful shutdown gamma detail"),
+    ] {
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(title)
+            .arg(body)
+            .assert()
+            .success();
+    }
     cmd(&db)
-        .arg("vec-status")
+        .arg("embed-index")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("vec-validate")
+        .arg("--backend")
+        .arg("sqlite_vec")
         .assert()
         .success()
-        .stdout(contains(
-            "retrieval backend: application-side cosine search",
-        ))
-        .stdout(contains("sqlite-vec probe feature:"))
-        .stdout(contains("local"))
-        .stdout(contains("paraphrase-multilingual-MiniLM-L12-v2"));
+        .stdout(contains("native SQL cosine search and vec0 KNN"));
+
+    let search = |backend: &str| {
+        let output = stdout(
+            cmd(&db)
+                .arg("embed-search")
+                .arg("sqlite native cosine vector alpha detail")
+                .arg("--provider")
+                .arg("mock")
+                .arg("--endpoint")
+                .arg("local")
+                .arg("--model")
+                .arg("mock-small")
+                .arg("--limit")
+                .arg("3")
+                .arg("--backend")
+                .arg(backend)
+                .arg("--json"),
+        );
+        serde_json::from_str::<Value>(&output).unwrap()
+    };
+    let native = search("sqlite-vec");
+    let fallback = search("json");
+    let native_rows = native.as_array().unwrap();
+    let fallback_rows = fallback.as_array().unwrap();
+    assert_eq!(native_rows.len(), 3);
+    assert_eq!(native_rows.len(), fallback_rows.len());
+    for (native, fallback) in native_rows.iter().zip(fallback_rows) {
+        assert_eq!(native["memory"]["id"], fallback["memory"]["id"]);
+        let score_delta =
+            (native["score"].as_f64().unwrap() - fallback["score"].as_f64().unwrap()).abs();
+        assert!(score_delta < 1e-5, "native and fallback scores diverged");
+    }
 }
 
 #[test]
@@ -10995,11 +11213,11 @@ fn v14_6_local_memory_ui_and_http_actions() {
         "GET /remote-sync-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(remote_sync_v2.contains("\"remote_sync_v2\""));
-    assert!(remote_sync_v2.contains("\"experimental\":true"));
-    assert!(remote_sync_v2.contains("\"plan_only\":true"));
+    assert!(remote_sync_v2.contains("\"experimental\":false"));
+    assert!(remote_sync_v2.contains("\"plan_only\":false"));
     assert!(remote_sync_v2.contains("\"executed\":false"));
     assert!(remote_sync_v2.contains("\"encrypted_bundle\":false"));
-    assert!(remote_sync_v2.contains("\"encryption_mode\":\"external_openssl_plan\""));
+    assert!(remote_sync_v2.contains("\"encryption_mode\":\"age_scrypt\""));
     assert!(remote_sync_v2.contains("\"conflict_policy\":\"manual\""));
 
     let contract = server
@@ -13480,11 +13698,11 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let remote_sync_v2_json: Value = serde_json::from_str(&remote_sync_v2).unwrap();
     assert_eq!(remote_sync_v2_json["version"], 1);
     assert_eq!(remote_sync_v2_json["local_first"], true);
+    assert_eq!(remote_sync_v2_json["experimental"], false);
+    assert_eq!(remote_sync_v2_json["plan_only"], false);
+    assert_eq!(remote_sync_v2_json["executed"], false);
     assert_eq!(remote_sync_v2_json["encrypted_bundle"], false);
-    assert_eq!(
-        remote_sync_v2_json["encryption_mode"],
-        "external_openssl_plan"
-    );
+    assert_eq!(remote_sync_v2_json["encryption_mode"], "age_scrypt");
 
     let agent_enforce = stdout(
         cmd(&db)
@@ -14936,6 +15154,32 @@ fn external_http_bind_requires_token_and_enforces_bearer_auth() {
         ),
     );
     assert!(same_origin.contains("200 OK"));
+}
+
+#[test]
+fn production_deployment_templates_preserve_http_security_invariants() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let systemd = fs::read_to_string(root.join("deploy/systemd/dukememory.service")).unwrap();
+    assert!(systemd.contains("serve-http --host 127.0.0.1 --port 8765"));
+    assert!(systemd.contains("--auth-token-file /etc/dukememory/http-token"));
+    assert!(systemd.contains("NoNewPrivileges=true"));
+    assert!(systemd.contains("ProtectSystem=strict"));
+    assert!(systemd.contains("KillSignal=SIGTERM"));
+
+    let caddy = fs::read_to_string(root.join("deploy/caddy/Caddyfile")).unwrap();
+    assert!(caddy.contains("reverse_proxy 127.0.0.1:8765"));
+    assert!(caddy.contains("header_up Host {host}"));
+    assert!(caddy.contains("Strict-Transport-Security"));
+
+    let nginx = fs::read_to_string(root.join("deploy/nginx/dukememory.conf")).unwrap();
+    assert!(nginx.contains("proxy_pass http://127.0.0.1:8765"));
+    assert!(nginx.contains("proxy_set_header Host $host"));
+    assert!(nginx.contains("ssl_protocols TLSv1.2 TLSv1.3"));
+
+    let guide = fs::read_to_string(root.join("docs/production-deployment.md")).unwrap();
+    assert!(guide.contains("curl --fail http://127.0.0.1:8765/health"));
+    assert!(guide.contains("DUKEMEMORY_HTTP_ALLOWED_ORIGINS=https://memory.example.com"));
+    assert!(guide.contains("DUKEMEMORY_SYNC_PASSPHRASE_FILE"));
 }
 
 #[cfg(unix)]

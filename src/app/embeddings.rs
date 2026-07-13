@@ -213,6 +213,31 @@ pub(crate) fn semantic_search(
     )
 }
 
+pub(crate) fn semantic_search_with_backend(
+    conn: &Connection,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+    query: &str,
+    limit: usize,
+    backend: VectorBackend,
+) -> Result<Vec<EmbeddingRow>> {
+    semantic_search_with_filters_and_backend(
+        conn,
+        SemanticSearchOptions {
+            provider,
+            endpoint,
+            model,
+            query,
+            limit,
+            types: &[],
+            statuses: &[],
+            scope: None,
+        },
+        backend,
+    )
+}
+
 pub(crate) struct SemanticSearchOptions<'a> {
     pub(crate) provider: &'a str,
     pub(crate) endpoint: &'a str,
@@ -224,9 +249,25 @@ pub(crate) struct SemanticSearchOptions<'a> {
     pub(crate) scope: Option<&'a str>,
 }
 
+fn default_vector_backend() -> VectorBackend {
+    if cfg!(feature = "vec") {
+        VectorBackend::SqliteVec
+    } else {
+        VectorBackend::Json
+    }
+}
+
 pub(crate) fn semantic_search_with_filters(
     conn: &Connection,
     options: SemanticSearchOptions<'_>,
+) -> Result<Vec<EmbeddingRow>> {
+    semantic_search_with_filters_and_backend(conn, options, default_vector_backend())
+}
+
+fn semantic_search_with_filters_and_backend(
+    conn: &Connection,
+    options: SemanticSearchOptions<'_>,
+    backend: VectorBackend,
 ) -> Result<Vec<EmbeddingRow>> {
     let limit = options.limit.max(1);
     let endpoint_key = embedding_endpoint_key(options.provider, options.endpoint);
@@ -236,6 +277,76 @@ pub(crate) fn semantic_search_with_filters(
         options.model,
         options.query,
     )?;
+    let mut top_candidates = semantic_memory_candidates(
+        conn,
+        &options,
+        &endpoint_key,
+        &query_embedding,
+        limit,
+        backend,
+    )?;
+    top_candidates.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut scored = Vec::with_capacity(top_candidates.len());
+    for candidate in top_candidates {
+        let memory = get_memory_with_links(conn, &candidate.memory_id)?;
+        scored.push(EmbeddingRow {
+            memory,
+            score: candidate.score,
+        });
+    }
+    Ok(scored)
+}
+
+fn semantic_memory_candidates(
+    conn: &Connection,
+    options: &SemanticSearchOptions<'_>,
+    endpoint_key: &str,
+    query_embedding: &[f32],
+    limit: usize,
+    backend: VectorBackend,
+) -> Result<Vec<ScoredEmbeddingCandidate>> {
+    match backend {
+        VectorBackend::Json => {
+            semantic_memory_candidates_json(conn, options, endpoint_key, query_embedding, limit)
+        }
+        VectorBackend::SqliteVec => {
+            #[cfg(feature = "vec")]
+            {
+                sqlite_vec_memory_search(
+                    conn,
+                    SqliteVecMemorySearchOptions {
+                        endpoint: endpoint_key,
+                        model: options.model,
+                        query_embedding,
+                        limit,
+                        types: options.types,
+                        statuses: options.statuses,
+                        scope: options.scope,
+                    },
+                )
+                .map(|rows| {
+                    rows.into_iter()
+                        .map(|(memory_id, score)| ScoredEmbeddingCandidate { memory_id, score })
+                        .collect()
+                })
+            }
+            #[cfg(not(feature = "vec"))]
+            bail!("sqlite-vec search requires a binary built with --features vec");
+        }
+    }
+}
+
+fn semantic_memory_candidates_json(
+    conn: &Connection,
+    options: &SemanticSearchOptions<'_>,
+    endpoint_key: &str,
+    query_embedding: &[f32],
+    limit: usize,
+) -> Result<Vec<ScoredEmbeddingCandidate>> {
     let mut sql = String::from(
         r#"
         SELECT e.memory_id, e.embedding
@@ -244,7 +355,7 @@ pub(crate) fn semantic_search_with_filters(
         WHERE e.endpoint = ? AND e.model = ?
         "#,
     );
-    let mut values = vec![endpoint_key, options.model.to_string()];
+    let mut values = vec![endpoint_key.to_string(), options.model.to_string()];
     if !options.types.is_empty() {
         sql.push_str(&format!(
             " AND m.type IN ({})",
@@ -271,27 +382,14 @@ pub(crate) fn semantic_search_with_filters(
     for row in rows {
         let (memory_id, raw_embedding) = row?;
         let embedding: Vec<f32> = serde_json::from_str(&raw_embedding)?;
-        let score = cosine_similarity(&query_embedding, &embedding);
+        let score = cosine_similarity(query_embedding, &embedding);
         push_top_embedding_candidate(
             &mut top_candidates,
             ScoredEmbeddingCandidate { memory_id, score },
             limit,
         );
     }
-    top_candidates.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let mut scored = Vec::with_capacity(top_candidates.len());
-    for candidate in top_candidates {
-        let memory = get_memory_with_links(conn, &candidate.memory_id)?;
-        scored.push(EmbeddingRow {
-            memory,
-            score: candidate.score,
-        });
-    }
-    Ok(scored)
+    Ok(top_candidates)
 }
 
 pub(crate) fn semantic_rag_chunk_search(
@@ -306,6 +404,67 @@ pub(crate) fn semantic_rag_chunk_search(
     let limit = limit.max(1);
     let endpoint_key = embedding_endpoint_key(provider, endpoint);
     let query_embedding = fetch_embedding(provider, endpoint, model, query)?;
+    let mut top_candidates =
+        semantic_rag_candidates(conn, &endpoint_key, model, &query_embedding, scope, limit)?;
+    top_candidates.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.chunk_index.cmp(&b.chunk_index))
+    });
+    top_candidates.truncate(limit);
+    Ok(top_candidates)
+}
+
+#[cfg(feature = "vec")]
+fn semantic_rag_candidates(
+    conn: &Connection,
+    endpoint_key: &str,
+    model: &str,
+    query_embedding: &[f32],
+    scope: Option<&str>,
+    limit: usize,
+) -> Result<Vec<SemanticRagChunkRow>> {
+    let rows = sqlite_vec_rag_search(conn, endpoint_key, model, query_embedding, scope)?;
+    let mut candidates = Vec::with_capacity(limit);
+    for row in rows {
+        let current_hash = content_hash(&rag_chunk_embedding_content(
+            &row.path,
+            &row.scope,
+            row.start_line,
+            row.end_line,
+            &row.content,
+        ));
+        if row.content_hash != current_hash {
+            continue;
+        }
+        candidates.push(SemanticRagChunkRow {
+            id: row.id,
+            path: row.path,
+            scope: row.scope,
+            chunk_index: row.chunk_index,
+            start_line: row.start_line,
+            end_line: row.end_line,
+            content: row.content,
+            score: row.score,
+        });
+        if candidates.len() == limit {
+            break;
+        }
+    }
+    Ok(candidates)
+}
+
+#[cfg(not(feature = "vec"))]
+fn semantic_rag_candidates(
+    conn: &Connection,
+    endpoint_key: &str,
+    model: &str,
+    query_embedding: &[f32],
+    scope: Option<&str>,
+    limit: usize,
+) -> Result<Vec<SemanticRagChunkRow>> {
     let mut sql = String::from(
         r#"
         SELECT c.id, c.path, c.scope, c.chunk_index, c.start_line, c.end_line,
@@ -315,7 +474,7 @@ pub(crate) fn semantic_rag_chunk_search(
         WHERE e.endpoint = ? AND e.model = ?
         "#,
     );
-    let mut values = vec![endpoint_key, model.to_string()];
+    let mut values = vec![endpoint_key.to_string(), model.to_string()];
     if let Some(scope) = scope {
         sql.push_str(" AND c.scope = ?");
         values.push(scope.to_string());
@@ -357,13 +516,6 @@ pub(crate) fn semantic_rag_chunk_search(
         chunk.score = cosine_similarity(&query_embedding, &embedding);
         push_top_rag_chunk_candidate(&mut top_candidates, chunk, limit);
     }
-    top_candidates.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.path.cmp(&b.path))
-            .then_with(|| a.chunk_index.cmp(&b.chunk_index))
-    });
     Ok(top_candidates)
 }
 
