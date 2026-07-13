@@ -114,6 +114,7 @@ pub(crate) fn onboard_project(
                 source: Some("onboard".to_string()),
                 supersedes: None,
                 confidence: 0.8,
+                layer: None,
                 links: Vec::new(),
             },
         )?;
@@ -355,6 +356,7 @@ fn upsert_memory_contract_card(conn: &Connection, content: &str) -> Result<Strin
                 source: Some("memory_contract".to_string()),
                 supersedes: None,
                 confidence: 0.95,
+                layer: None,
                 links: vec!["file:.agent/MEMORY_CONTRACT.md".to_string()],
             },
         )

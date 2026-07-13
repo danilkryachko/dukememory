@@ -684,7 +684,7 @@ pub(crate) fn print_inbox(
 pub(crate) fn list_inbox(conn: &Connection, status: &str, limit: usize) -> Result<Vec<InboxItem>> {
     let mut stmt = conn.prepare(
         r#"
-        SELECT id, type, scope, title, body, source, confidence, status, created_at, updated_at
+        SELECT id, type, scope, title, body, source, confidence, status, created_at, updated_at, layer
         FROM memory_inbox
         WHERE status = ?1
         ORDER BY updated_at DESC
@@ -708,13 +708,14 @@ fn row_to_inbox(row: &Row<'_>) -> rusqlite::Result<InboxItem> {
         status: row.get("status")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
+        layer: row.get("layer")?,
     })
 }
 
 pub(crate) fn get_inbox_item(conn: &Connection, id: &str) -> Result<InboxItem> {
     conn.query_row(
         r#"
-        SELECT id, type, scope, title, body, source, confidence, status, created_at, updated_at
+        SELECT id, type, scope, title, body, source, confidence, status, created_at, updated_at, layer
         FROM memory_inbox
         WHERE id = ?1
         "#,
@@ -731,48 +732,53 @@ pub(crate) fn approve_inbox(conn: &Connection, id: &str, allow_sensitive: bool) 
         bail!("inbox item is not pending: {id}");
     }
     reject_sensitive(&item.title, &item.body, allow_sensitive)?;
-    let memory_id = add_memory(
-        conn,
-        AddMemory {
-            id: None,
-            memory_type: item.memory_type,
-            title: item.title,
-            body: item.body,
-            scope: item.scope,
-            status: "active".to_string(),
-            source: item.source.or_else(|| Some("inbox".to_string())),
-            supersedes: None,
-            confidence: item.confidence,
-            links: Vec::new(),
-        },
-    )?;
-    conn.execute(
-        "UPDATE memory_inbox SET status = 'approved', updated_at = ?1 WHERE id = ?2",
-        params![now_ms(), id],
-    )?;
-    log_event(
-        conn,
-        "inbox_approved",
-        Some(&memory_id),
-        &format!("approved inbox item {id}"),
-    )?;
-    Ok(memory_id)
+    transactional(conn, "approve_inbox", || {
+        let memory_id = add_memory(
+            conn,
+            AddMemory {
+                id: None,
+                memory_type: item.memory_type,
+                title: item.title,
+                body: item.body,
+                scope: item.scope,
+                status: "active".to_string(),
+                source: item.source.or_else(|| Some("inbox".to_string())),
+                supersedes: None,
+                confidence: item.confidence,
+                layer: item.layer,
+                links: Vec::new(),
+            },
+        )?;
+        conn.execute(
+            "UPDATE memory_inbox SET status = 'approved', updated_at = ?1 WHERE id = ?2",
+            params![now_ms(), id],
+        )?;
+        log_event(
+            conn,
+            "inbox_approved",
+            Some(&memory_id),
+            &format!("approved inbox item {id}"),
+        )?;
+        Ok(memory_id)
+    })
 }
 
 pub(crate) fn reject_inbox(conn: &Connection, id: &str) -> Result<()> {
-    let changed = conn.execute(
-        "UPDATE memory_inbox SET status = 'rejected', updated_at = ?1 WHERE id = ?2",
-        params![now_ms(), id],
-    )?;
-    if changed == 0 {
-        bail!("Inbox item not found: {id}");
-    }
-    log_event(
-        conn,
-        "inbox_rejected",
-        None,
-        &format!("rejected inbox item {id}"),
-    )?;
+    transactional(conn, "reject_inbox", || {
+        let changed = conn.execute(
+            "UPDATE memory_inbox SET status = 'rejected', updated_at = ?1 WHERE id = ?2",
+            params![now_ms(), id],
+        )?;
+        if changed == 0 {
+            bail!("Inbox item not found: {id}");
+        }
+        log_event(
+            conn,
+            "inbox_rejected",
+            None,
+            &format!("rejected inbox item {id}"),
+        )
+    })?;
     println!("{id}");
     Ok(())
 }
@@ -883,6 +889,7 @@ pub(crate) fn compact_task_state(
             source: Some("compact".to_string()),
             supersedes: None,
             confidence: 0.9,
+            layer: None,
             links: Vec::new(),
         },
     )?;
@@ -943,6 +950,7 @@ pub(crate) fn compact_v2(
                 source: Some("compact_v2".to_string()),
                 supersedes: None,
                 confidence: 0.9,
+                layer: None,
                 links: Vec::new(),
             },
         )?;

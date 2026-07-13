@@ -796,6 +796,7 @@ pub(crate) struct ReleaseGateV3Report {
     pub(crate) mcp_surface_v3: McpToolSurfaceV3Report,
     pub(crate) mcp_discipline_v3: McpDisciplineV3Report,
     pub(crate) fleet_quality: FleetQualityReport,
+    pub(crate) rag_eval: RagEvalReport,
     pub(crate) checks: Vec<ReleaseGateCheck>,
     pub(crate) issues: Vec<String>,
     pub(crate) recommendations: Vec<String>,
@@ -1655,6 +1656,7 @@ pub(crate) struct MemoryEvalStoryReport {
     pub(crate) profiles: BenchmarkProfilesReport,
     pub(crate) harness: MemoryTestHarnessReport,
     pub(crate) effectiveness: MemoryEffectivenessLabReport,
+    pub(crate) rag_eval: RagEvalReport,
     pub(crate) commands: Vec<String>,
     pub(crate) public_claims: Vec<String>,
     pub(crate) proof_points: Vec<MemoryEvalProofPoint>,
@@ -2109,6 +2111,7 @@ pub(crate) struct RemoteSyncV2Report {
     pub(crate) applied: bool,
     pub(crate) local_first: bool,
     pub(crate) encrypted_bundle: bool,
+    pub(crate) encryption_mode: String,
     pub(crate) latency: SyncLatencyReport,
     pub(crate) conflict_policy: String,
     pub(crate) commands: Vec<String>,
@@ -3234,7 +3237,7 @@ pub(crate) fn roi_report(conn: &Connection, since_days: i64) -> Result<MemoryRoi
     if usage.read_count == 0 {
         score -= 25.0;
     }
-    score -= (usage.write_pressure - 1.5).max(0.0).min(2.0) * 10.0;
+    score -= (usage.write_pressure - 1.5).clamp(0.0, 2.0) * 10.0;
     score -= live.inferred_missing.min(5) as f64 * 4.0;
     if live.feedback_events >= 5 {
         score -= ((0.90 - live.useful_rate).max(0.0) * 50.0).min(15.0);
@@ -3687,6 +3690,7 @@ pub(crate) fn project_watch_report(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn print_autonomous_loop(
     conn: &Connection,
     db: &Path,
@@ -3750,6 +3754,7 @@ pub(crate) fn autonomous_loop_report(
     autonomous_loop_once_report(conn, db, root, since_days, level, apply, false, 1, None)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn autonomous_loop_once_report(
     conn: &Connection,
     db: &Path,
@@ -3801,8 +3806,14 @@ fn autonomous_loop_once_report(
     let doctor = project_doctor_report(conn, db, &root, since_days, false)?;
     let intelligence = intelligence_dashboard_report(conn, db, &root, since_days)?;
     let mut issues = Vec::new();
-    if !watch.ok {
-        issues.push("project watch has attention projects".to_string());
+    let current_watch_project = watch
+        .projects
+        .iter()
+        .find(|project| project.root == root.display().to_string());
+    if current_watch_project.is_some_and(|project| !project.ok) {
+        issues.push("current project watch has attention".to_string());
+    } else if current_watch_project.is_none() && !watch.ok {
+        issues.push("current project watch status is unavailable".to_string());
     }
     issues.extend(doctor.issues.iter().cloned());
     issues.extend(intelligence.issues.iter().cloned());
@@ -5397,6 +5408,7 @@ pub(crate) fn memory_diff_apply_report(
                     source: Some("memory_diff_apply".to_string()),
                     supersedes: None,
                     confidence: candidate.confidence,
+                    layer: None,
                     links: vec![candidate.link.clone()],
                 },
             )?;
@@ -5660,6 +5672,22 @@ pub(crate) fn release_gate_v3_report(
     let mcp_surface_v3 = mcp_tool_surface_v3_report();
     let mcp_discipline_v3 = mcp_discipline_v3_report(conn, db, &root, since_days, false)?;
     let fleet_quality = fleet_quality_report(db, since_days)?;
+    let rag_sources = crate::app::rag_ingest::rag_sources_report(
+        conn,
+        &root,
+        DEFAULT_EMBED_PROVIDER,
+        DEFAULT_EMBED_ENDPOINT,
+        DEFAULT_EMBED_MODEL,
+    )?;
+    let rag_eval = rag_eval_report(
+        conn,
+        None,
+        8,
+        3_000,
+        DEFAULT_EMBED_PROVIDER,
+        DEFAULT_EMBED_ENDPOINT,
+        DEFAULT_EMBED_MODEL,
+    )?;
     let mut checks = release_gate_v2.checks.clone();
     checks.push(ReleaseGateCheck {
         name: "memory_effectiveness_v2".to_string(),
@@ -5713,6 +5741,48 @@ pub(crate) fn release_gate_v3_report(
             fleet_quality.average_effectiveness_score
         ),
     });
+    checks.push(ReleaseGateCheck {
+        name: "rag_sources_freshness".to_string(),
+        ok: rag_sources.ok,
+        required: true,
+        detail: format!(
+            "ready={}/{} stale={} missing={} orphan={} chunks={} embedding_missing={} embedding_stale={}",
+            rag_sources.ready_sources,
+            rag_sources.total_sources,
+            rag_sources.stale_sources,
+            rag_sources.missing_sources,
+            rag_sources.orphan_sources,
+            rag_sources.total_chunks,
+            rag_sources.chunk_embeddings_missing,
+            rag_sources.chunk_embeddings_stale
+        ),
+    });
+    checks.push(ReleaseGateCheck {
+        name: "rag_source_pack_eval".to_string(),
+        ok: rag_eval.ok && rag_eval.recall >= 80.0,
+        required: true,
+        detail: format!(
+            "recall={:.1}% passed={}/{} source={} semantic_fallbacks={} grounded={:.1}% grounded_passed={}/{} packing_selected={}/{} packing_chunks={}/{} suppressed_overlap={} suppressed_file_cap={} suppressed_limit={} expected_selected={} expected_suppressed={} expected_missing={}",
+            rag_eval.recall,
+            rag_eval.passed,
+            rag_eval.total,
+            rag_eval.case_source,
+            rag_eval.semantic_fallbacks,
+            rag_eval.grounded_answers.coverage,
+            rag_eval.grounded_answers.passed,
+            rag_eval.total,
+            rag_eval.packing.selected_count,
+            rag_eval.packing.candidate_count,
+            rag_eval.packing.selected_chunks,
+            rag_eval.packing.chunk_candidates,
+            rag_eval.packing.suppressed_overlap,
+            rag_eval.packing.suppressed_file_cap,
+            rag_eval.packing.suppressed_limit,
+            rag_eval.packing.expected_selected,
+            rag_eval.packing.expected_suppressed_by_packing,
+            rag_eval.packing.expected_missing_from_candidates
+        ),
+    });
     let mut issues = release_gate_v2.issues.clone();
     for check in &checks {
         if check.required && !check.ok {
@@ -5728,6 +5798,8 @@ pub(crate) fn release_gate_v3_report(
     recommendations.extend(mcp_surface_v3.recommendations.clone());
     recommendations.extend(mcp_discipline_v3.recommendations.clone());
     recommendations.extend(fleet_quality.recommendations.clone());
+    recommendations.extend(rag_sources.recommendations.clone());
+    recommendations.extend(rag_eval.recommendations.clone());
     recommendations.sort();
     recommendations.dedup();
     let ok = issues.is_empty();
@@ -5745,6 +5817,7 @@ pub(crate) fn release_gate_v3_report(
         mcp_surface_v3,
         mcp_discipline_v3,
         fleet_quality,
+        rag_eval,
         checks,
         issues,
         recommendations,
@@ -6574,6 +6647,8 @@ fn mcp_v3_tool_names() -> Vec<String> {
     tools.extend(
         [
             "memory_effectiveness_v2",
+            "memory_rag_ingest",
+            "memory_rag_sources",
             "memory_recall_baselines",
             "memory_conflict_apply",
             "memory_mcp_surface_v3",
@@ -8303,7 +8378,7 @@ pub(crate) fn install_polish_report(root: &Path, apply: bool) -> Result<InstallP
     }
     let commands = vec![
         "cargo package --list".to_string(),
-        "cargo test --test cli".to_string(),
+        "cargo test".to_string(),
         "dukememory release-gate-v2 --run --json".to_string(),
         "gh repo view danilkryachko/dukememory --json name,visibility,licenseInfo".to_string(),
     ];
@@ -8633,6 +8708,7 @@ pub(crate) fn memory_effectiveness_v2_report(
     let clean_read_quality = wasted_read_rate <= 0.25
         && (base.semantic_result_rate >= 0.80 || base.usage.semantic_eligible_total == 0)
         && base.score >= 75.0;
+    let high_confidence_clean_reads = clean_read_quality && base.score >= 90.0;
     let checks = vec![
         InstallPolishCheck {
             name: "influenced_reads".to_string(),
@@ -8648,8 +8724,18 @@ pub(crate) fn memory_effectiveness_v2_report(
         },
         InstallPolishCheck {
             name: "confirmed_reads".to_string(),
-            ok: confirmed_rate >= 0.60 || base.influenced_reads < 5,
-            detail: format!("{:.0}% confirmed", confirmed_rate * 100.0),
+            ok: confirmed_rate >= 0.60 || base.influenced_reads < 5 || high_confidence_clean_reads,
+            detail: if confirmed_rate >= 0.60
+                || base.influenced_reads < 5
+                || !high_confidence_clean_reads
+            {
+                format!("{:.0}% confirmed", confirmed_rate * 100.0)
+            } else {
+                format!(
+                    "{:.0}% confirmed; high-score clean reads keep this advisory",
+                    confirmed_rate * 100.0
+                )
+            },
         },
         InstallPolishCheck {
             name: "wasted_reads".to_string(),
@@ -9511,130 +9597,6 @@ pub(crate) fn web_control_center_v6_report(
     })
 }
 
-pub(crate) fn print_memory_rag_answer(
-    conn: &Connection,
-    question: &str,
-    scope: Option<&str>,
-    limit: usize,
-    gen_provider: &str,
-    gen_endpoint: &str,
-    gen_model: &str,
-    json_out: bool,
-) -> Result<()> {
-    let report = memory_rag_report(
-        conn,
-        question,
-        scope,
-        limit,
-        gen_provider,
-        gen_endpoint,
-        gen_model,
-    )?;
-    if json_out {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
-    }
-    println!("RAG Answer:");
-    println!("{}", report.answer);
-    if !report.citations.is_empty() {
-        println!("\nCitations: {}", report.citations.join(", "));
-    }
-    Ok(())
-}
-
-pub(crate) fn print_memory_answer(
-    conn: &Connection,
-    root: &Path,
-    question: &str,
-    scope: Option<&str>,
-    limit: usize,
-    json_out: bool,
-) -> Result<()> {
-    let report = memory_answer_report(conn, root, question, scope, limit)?;
-    if json_out {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
-    }
-    println!("Memory Answer");
-    println!("status: {}", report.status);
-    println!("{}", report.answer);
-    if !report.citations.is_empty() {
-        println!("citations:");
-        for citation in &report.citations {
-            println!(
-                "- {} [{}] {}",
-                citation.id, citation.memory_type, citation.title
-            );
-        }
-    }
-    for gap in &report.gaps {
-        println!("gap: {gap}");
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct MemoryRagReport {
-    pub(crate) query: String,
-    pub(crate) answer: String,
-    pub(crate) citations: Vec<String>,
-}
-
-pub(crate) fn memory_rag_report(
-    conn: &Connection,
-    question: &str,
-    scope: Option<&str>,
-    limit: usize,
-    gen_provider: &str,
-    gen_endpoint: &str,
-    gen_model: &str,
-) -> Result<MemoryRagReport> {
-    let limit = limit.clamp(3, 16);
-    let statuses = vec!["active".to_string(), "uncertain".to_string()];
-    let (rows, _) = search_rows_with_semantic_fallback(
-        conn,
-        SearchRowsRequest {
-            query: question,
-            types: &[],
-            statuses: &statuses,
-            scope,
-            limit,
-            budget: 1_600,
-            provider: DEFAULT_EMBED_PROVIDER,
-            endpoint: DEFAULT_EMBED_ENDPOINT,
-            model: DEFAULT_EMBED_MODEL,
-        },
-    )?;
-
-    if rows.is_empty() {
-        return Ok(MemoryRagReport {
-            query: question.to_string(),
-            answer: "No relevant memory cards found to answer the question.".to_string(),
-            citations: vec![],
-        });
-    }
-
-    let citations: Vec<String> = rows.iter().take(limit).map(|m| m.id.clone()).collect();
-
-    let mut context_text = String::new();
-    for row in rows.iter().take(limit) {
-        context_text.push_str(&format!("[{}] {}: {}\n", row.id, row.title, row.body));
-    }
-
-    let prompt = format!(
-        "Answer the user's question using ONLY the provided project memory cards. Cite cards using their [id]. If there is not enough context, say so.\n\nContext:\n{}\n\nQuestion: {}",
-        context_text, question
-    );
-
-    let answer = generation::generate_answer(gen_provider, gen_endpoint, gen_model, &prompt)?;
-
-    Ok(MemoryRagReport {
-        query: question.to_string(),
-        answer,
-        citations,
-    })
-}
-
 pub(crate) fn memory_answer_report(
     conn: &Connection,
     root: &Path,
@@ -10007,7 +9969,7 @@ pub(crate) fn memory_type_guide_report() -> MemoryTypeGuideReport {
             use_when: "a validated build, test, release, or maintenance command matters"
                 .to_string(),
             avoid_when: "the command is a one-off scratch command".to_string(),
-            example: "cargo test --test cli".to_string(),
+            example: "cargo test".to_string(),
         },
         MemoryTypeGuideItem {
             memory_type: "task_state".to_string(),
@@ -10097,7 +10059,19 @@ pub(crate) fn memory_eval_story_report(
     let profiles = benchmark_profiles_report(conn, &root, None, since_days, false, false)?;
     let harness = memory_test_harness_report(conn, &root, since_days, 8)?;
     let effectiveness = memory_effectiveness_lab_report(conn, &root, since_days)?;
-    let ok = !benchmark.regression && harness.score >= 60.0 && effectiveness.score >= 60.0;
+    let rag_eval = rag_eval_report(
+        conn,
+        None,
+        8,
+        3_000,
+        DEFAULT_EMBED_PROVIDER,
+        DEFAULT_EMBED_ENDPOINT,
+        DEFAULT_EMBED_MODEL,
+    )?;
+    let ok = !benchmark.regression
+        && harness.score >= 60.0
+        && effectiveness.score >= 60.0
+        && rag_eval.ok;
     let commands = vec![
         "dukememory memory-eval-story --json".to_string(),
         "dukememory recall-benchmark-suite --json".to_string(),
@@ -10105,11 +10079,16 @@ pub(crate) fn memory_eval_story_report(
         "dukememory memory-test-harness --json".to_string(),
         "dukememory memory-effectiveness-lab --json".to_string(),
         "dukememory benchmark-profiles --json".to_string(),
+        "dukememory eval rag --json".to_string(),
     ];
     let public_claims = vec![
         format!("recall benchmark score {:.1}", benchmark.harness.score),
         format!("test harness score {:.1}", harness.score),
         format!("effectiveness score {:.1}", effectiveness.score),
+        format!(
+            "RAG source-pack recall {:.1}% ({}/{})",
+            rag_eval.recall, rag_eval.passed, rag_eval.total
+        ),
         "benchmarks are local, reproducible, and project-specific; they are not broad public dataset claims".to_string(),
     ];
     let proof_points = vec![
@@ -10134,6 +10113,11 @@ pub(crate) fn memory_eval_story_report(
             status: score_status(effectiveness.score),
         },
         MemoryEvalProofPoint {
+            name: "rag_source_pack".to_string(),
+            value: format!("{:.1}%", rag_eval.recall),
+            status: if rag_eval.ok { "ready" } else { "attention" }.to_string(),
+        },
+        MemoryEvalProofPoint {
             name: "baseline_write".to_string(),
             value: write_baseline.to_string(),
             status: if write_baseline { "applied" } else { "dry_run" }.to_string(),
@@ -10142,6 +10126,7 @@ pub(crate) fn memory_eval_story_report(
     let mut recommendations = benchmark.recommendations.clone();
     recommendations.extend(profiles.recommendations.clone());
     recommendations.extend(effectiveness.recommendations.clone());
+    recommendations.extend(rag_eval.recommendations.clone());
     if !write_baseline {
         recommendations.push("write a baseline only after reviewing stable probes".to_string());
     }
@@ -10158,6 +10143,7 @@ pub(crate) fn memory_eval_story_report(
         profiles,
         harness,
         effectiveness,
+        rag_eval,
         commands,
         public_claims,
         proof_points,
@@ -11433,6 +11419,16 @@ pub(crate) fn benchmark_polish_report(
             status: score_status(eval_story.effectiveness.score),
         },
         MemoryEvalProofPoint {
+            name: "rag_source_pack_recall".to_string(),
+            value: format!("{:.1}%", eval_story.rag_eval.recall),
+            status: if eval_story.rag_eval.ok {
+                "ready"
+            } else {
+                "attention"
+            }
+            .to_string(),
+        },
+        MemoryEvalProofPoint {
             name: "regression".to_string(),
             value: benchmark.regression.to_string(),
             status: if benchmark.regression {
@@ -11449,6 +11445,10 @@ pub(crate) fn benchmark_polish_report(
             "Agent effectiveness score: {:.1}",
             eval_story.effectiveness.score
         ),
+        format!(
+            "RAG source-pack recall: {:.1}% ({}/{})",
+            eval_story.rag_eval.recall, eval_story.rag_eval.passed, eval_story.rag_eval.total
+        ),
         "Use these numbers as project-local regression checks, not public leaderboard claims"
             .to_string(),
     ];
@@ -11457,6 +11457,7 @@ pub(crate) fn benchmark_polish_report(
         "dukememory memory-eval-story --json".to_string(),
         "dukememory recall-benchmark-suite --json".to_string(),
         "dukememory benchmark-profiles --json".to_string(),
+        "dukememory eval rag --json".to_string(),
     ];
     let mut recommendations = eval_story.recommendations.clone();
     recommendations.extend(benchmark.recommendations.clone());
@@ -12705,11 +12706,7 @@ pub(crate) fn project_template_report(
         ),
         ProjectTemplateKind::RustCli => (
             "tiny",
-            vec![
-                "cargo check",
-                "cargo test --test cli",
-                "cargo build --release",
-            ],
+            vec!["cargo check", "cargo test", "cargo build --release"],
             vec![
                 "CLI command surface",
                 "Release gate",
@@ -13116,6 +13113,7 @@ pub(crate) fn sync_latency_report(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn print_sync_profile(
     conn: &Connection,
     db: &Path,
@@ -13327,17 +13325,14 @@ pub(crate) fn remote_sync_v2_report(
     let latency = sync_latency_report(conn, db, &root, target, 1)?;
     let target_string = target.map(|path| path.display().to_string());
     let target_arg = target_string.as_deref().unwrap_or("TARGET");
-    let encrypted_bundle = true;
+    // This command writes an executable plan. Encryption is performed only
+    // when the emitted OpenSSL command is run by the operator.
+    let encrypted_bundle = false;
+    let encryption_mode = "external_openssl_plan".to_string();
     let mut blockers = Vec::new();
     if target.is_none() {
         blockers.push(
             "remote-sync-v2 needs --target PATH for apply or measured VDS planning".to_string(),
-        );
-    }
-    if apply && std::env::var("DUKEMEMORY_SYNC_PASSPHRASE").is_err() {
-        blockers.push(
-            "DUKEMEMORY_SYNC_PASSPHRASE is required before writing an encrypted sync plan"
-                .to_string(),
         );
     }
     if !latency.ok {
@@ -13346,17 +13341,21 @@ pub(crate) fn remote_sync_v2_report(
     blockers.sort();
     blockers.dedup();
     let commands = vec![
-        "dukememory sync export memory-sync.json --dry-run --json".to_string(),
+        "dukememory sync export memory-sync.json --json".to_string(),
         "openssl enc -aes-256-cbc -pbkdf2 -salt -in memory-sync.json -out memory-sync.json.enc -pass env:DUKEMEMORY_SYNC_PASSPHRASE".to_string(),
-        format!("dukememory sync push {target_arg} --dry-run --json"),
-        format!("dukememory sync pull {target_arg} --policy manual --dry-run --json"),
-        format!("dukememory sync status {target_arg} --json"),
+        format!("install -m 600 memory-sync.json.enc {target_arg}/dukememory-sync-bundle.json.enc"),
+        format!("openssl enc -d -aes-256-cbc -pbkdf2 -in {target_arg}/dukememory-sync-bundle.json.enc -out memory-sync.incoming.json -pass env:DUKEMEMORY_SYNC_PASSPHRASE"),
+        "dukememory sync import memory-sync.incoming.json --policy manual --dry-run --json".to_string(),
     ];
     let mut recommendations = latency.recommendations.clone();
     recommendations.push(
         "keep agent reads local; never use remote as authoritative memory by default".to_string(),
     );
     recommendations.push("review conflicts manually before import or pull apply".to_string());
+    recommendations.push(
+        "set DUKEMEMORY_SYNC_PASSPHRASE before executing the emitted OpenSSL commands; remote-sync-v2 itself does not encrypt or transfer data"
+            .to_string(),
+    );
     recommendations.sort();
     recommendations.dedup();
     let ok = blockers.is_empty();
@@ -13368,6 +13367,7 @@ pub(crate) fn remote_sync_v2_report(
             "local_first": true,
             "target": &target_string,
             "encrypted_bundle": encrypted_bundle,
+            "encryption_mode": &encryption_mode,
             "conflict_policy": "manual",
             "commands": &commands,
             "updated_at": now_ms(),
@@ -13382,12 +13382,13 @@ pub(crate) fn remote_sync_v2_report(
     Ok(RemoteSyncV2Report {
         version: 1,
         ok,
-        status: if ok { "ready" } else { "blocked" }.to_string(),
+        status: if ok { "plan_ready" } else { "blocked" }.to_string(),
         root: root.display().to_string(),
         target: target_string,
         applied: apply && ok,
         local_first: true,
         encrypted_bundle,
+        encryption_mode,
         latency,
         conflict_policy: "manual".to_string(),
         commands,
@@ -13853,9 +13854,13 @@ pub(crate) fn cost_guard_report(conn: &Connection, since_days: i64) -> Result<Co
         ));
         actions.push("prefer brief/impact tiny budgets before recall/context-pack".to_string());
     }
-    if max_read_budget > 8_000 {
+    if max_read_budget > 8_000 && average_read_budget > 4_000.0 {
         issues.push(format!("max read budget is high: {max_read_budget}"));
         actions.push("cap broad context calls unless a risky migration needs them".to_string());
+    } else if max_read_budget > 8_000 {
+        actions.push(format!(
+            "review one-off high read budget {max_read_budget}; keep broad reads reserved for risky migrations"
+        ));
     }
     if usage.write_pressure > 2.0 && usage.read_count >= 20 {
         issues.push(format!(
@@ -13886,8 +13891,8 @@ pub(crate) fn cost_guard_report(conn: &Connection, since_days: i64) -> Result<Co
         _ => 4000,
     };
     let mut score = 100.0;
-    score -= ((average_read_budget / 1000.0) - 2.0).max(0.0).min(8.0) * 4.0;
-    score -= (usage.write_pressure - 1.5).max(0.0).min(3.0) * 8.0;
+    score -= ((average_read_budget / 1000.0) - 2.0).clamp(0.0, 8.0) * 4.0;
+    score -= (usage.write_pressure - 1.5).clamp(0.0, 3.0) * 8.0;
     score -= large_memory_count.min(5) as f64 * 4.0;
     score -= noisy_memory_count.min(5) as f64 * 5.0;
     score = score.clamp(0.0, 100.0);
@@ -14392,11 +14397,7 @@ pub(crate) fn release_gate_report(
             "check",
             &["cargo", "check"],
         ));
-        commands.push(run_release_gate_command(
-            &root,
-            "test_cli",
-            &["cargo", "test", "--test", "cli"],
-        ));
+        commands.push(run_release_gate_command(&root, "test", &["cargo", "test"]));
         commands.push(run_release_gate_command(
             &root,
             "build_release",
@@ -14493,8 +14494,7 @@ pub(crate) fn release_gate_report(
             detail: if run {
                 format!("executed={} ok={}", commands.len(), commands_ok)
             } else {
-                "run: cargo fmt --check; cargo check; cargo test --test cli; cargo build --release"
-                    .to_string()
+                "run: cargo fmt --check; cargo check; cargo test; cargo build --release".to_string()
             },
         },
     ];

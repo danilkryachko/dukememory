@@ -16,6 +16,7 @@ pub(crate) struct Memory {
     pub(crate) supersedes: Option<String>,
     pub(crate) superseded_by: Option<String>,
     pub(crate) confidence: f64,
+    pub(crate) layer: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,6 +184,8 @@ pub(crate) struct EmbeddingIndexReport {
     pub(crate) model: String,
     pub(crate) indexed: usize,
     pub(crate) skipped: usize,
+    pub(crate) rag_chunks_indexed: usize,
+    pub(crate) rag_chunks_skipped: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -209,6 +212,7 @@ pub(crate) struct InboxItem {
     pub(crate) status: String,
     pub(crate) created_at: i64,
     pub(crate) updated_at: i64,
+    pub(crate) layer: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

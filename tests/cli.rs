@@ -13,10 +13,10 @@ use tempfile::tempdir;
 fn cmd(db: &std::path::Path) -> Command {
     let mut command = Command::cargo_bin("dukememory").unwrap();
     command.arg("--db").arg(db);
-    command.env("DUKEMEMORY_EMBED_PROVIDER", "ollama");
-    command.env("DUKEMEMORY_GEN_PROVIDER", "ollama");
-    command.env("DUKEMEMORY_EMBED_ENDPOINT", "http://192.168.0.13:11434");
-    command.env("DUKEMEMORY_GEN_ENDPOINT", "http://192.168.0.13:11434");
+    // Integration tests must remain hermetic and fast. Individual provider-health
+    // tests override these defaults with their own local endpoints.
+    command.env("DUKEMEMORY_EMBED_PROVIDER", "mock");
+    command.env("DUKEMEMORY_GEN_PROVIDER", "mock");
     command
 }
 
@@ -95,18 +95,32 @@ fn insert_read_event_with_ids(db: &std::path::Path, command: &str, query: &str, 
 }
 
 fn http_once(db: &std::path::Path, request: &str) -> String {
-    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
+    http_once_configured(db, "127.0.0.1", None, request)
+}
+
+fn http_once_configured(
+    db: &std::path::Path,
+    host: &str,
+    auth_token: Option<&str>,
+    request: &str,
+) -> String {
+    let mut command = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"));
+    command
         .arg("--db")
         .arg(db)
         .arg("serve-http")
         .arg("--host")
-        .arg("127.0.0.1")
+        .arg(host)
         .arg("--port")
         .arg("0")
         .arg("--once")
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+        .env("DUKEMEMORY_EMBED_PROVIDER", "mock")
+        .env("DUKEMEMORY_GEN_PROVIDER", "mock")
+        .stdout(Stdio::piped());
+    if let Some(auth_token) = auth_token {
+        command.arg("--auth-token").arg(auth_token);
+    }
+    let mut child = command.spawn().unwrap();
     let stdout_pipe = child.stdout.take().unwrap();
     let mut reader = BufReader::new(stdout_pipe);
     let mut url = String::new();
@@ -727,6 +741,8 @@ fn export_import_backup_and_restore() {
             .arg("decision")
             .arg("Exported decision")
             .arg("This card should survive export and import.")
+            .arg("--layer")
+            .arg("architecture")
             .arg("--link")
             .arg("symbol:ExportedDecision"),
     )
@@ -754,6 +770,9 @@ fn export_import_backup_and_restore() {
         .assert()
         .success()
         .stdout(contains("Exported decision"));
+    let imported: Value =
+        serde_json::from_str(&stdout(cmd(&imported_db).arg("get").arg(&id).arg("--json"))).unwrap();
+    assert_eq!(imported["layer"], "architecture");
 
     let sync_dry_run = stdout(
         cmd(&db)
@@ -976,7 +995,10 @@ fn review_conflicts_links_session_and_vec_status() {
         .arg("vec-status")
         .assert()
         .success()
-        .stdout(contains("sqlite-vec feature:"))
+        .stdout(contains(
+            "retrieval backend: application-side cosine search",
+        ))
+        .stdout(contains("sqlite-vec probe feature:"))
         .stdout(contains("local"))
         .stdout(contains("paraphrase-multilingual-MiniLM-L12-v2"));
 }
@@ -2309,7 +2331,7 @@ fn v8_daemon_http_merge_profiles_and_sync() {
         .arg("json")
         .assert()
         .success()
-        .stdout(contains("json fallback"));
+        .stdout(contains("validated JSON embedding storage"));
 
     cmd(&db)
         .arg("profile")
@@ -2442,7 +2464,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .arg("status")
         .assert()
         .success()
-        .stdout(contains("expected: 15"));
+        .stdout(contains("expected: 18"));
     cmd(&db)
         .arg("schema")
         .arg("verify")
@@ -2515,7 +2537,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .assert()
         .success()
         .stdout(contains("version:"))
-        .stdout(contains("schema: 15"));
+        .stdout(contains("schema: 18"));
 
     let install_dir = dir.path().join("install");
     let target = install_dir.join("dukememory");
@@ -2692,7 +2714,6 @@ fn v10_runtime_config_and_http_error_statuses() {
         .success();
     let mut raw = fs::read_to_string(&config).unwrap();
     raw = raw.replace("provider = \"local\"", "provider = \"mock\"");
-    raw = raw.replace("endpoint = \"local\"", "endpoint = \"local\"");
     raw = raw.replace(
         "model = \"paraphrase-multilingual-MiniLM-L12-v2\"",
         "model = \"mock-small\"",
@@ -3033,7 +3054,7 @@ fn v11_release_bundle_bench_and_self_host() {
 
     let bench = stdout(cmd(&db).arg("bench").arg("--json"));
     let bench_json: Value = serde_json::from_str(&bench).unwrap();
-    assert_eq!(bench_json["schema"], 15);
+    assert_eq!(bench_json["schema"], 18);
     assert_eq!(bench_json["memory_count"], 4);
     assert!(bench_json["db_bytes"].as_u64().unwrap() > 0);
 
@@ -3049,7 +3070,7 @@ fn v11_release_bundle_bench_and_self_host() {
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(bundle.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(manifest["schema"], 15);
+    assert_eq!(manifest["schema"], 18);
     assert_eq!(manifest["memory_stats"]["total"], 4);
     assert_eq!(manifest["binary_sha256"].as_str().unwrap().len(), 64);
 }
@@ -3083,7 +3104,7 @@ fn v12_always_on_operations() {
     );
     let health_json: Value = serde_json::from_str(&health).unwrap();
     assert_eq!(health_json["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(health_json["schema"], 15);
+    assert_eq!(health_json["schema"], 18);
     assert_eq!(health_json["endpoint_ok"], true);
 
     for _ in 0..3 {
@@ -3157,7 +3178,7 @@ fn v13_stabilization_integrity_optimize_and_large_http_request() {
     let integrity = stdout(cmd(&db).arg("integrity").arg("--json"));
     let integrity_json: Value = serde_json::from_str(&integrity).unwrap();
     assert_eq!(integrity_json["ok"], true);
-    assert_eq!(integrity_json["schema"], 15);
+    assert_eq!(integrity_json["schema"], 18);
     assert_eq!(integrity_json["integrity_check"], "ok");
 
     let optimized = stdout(cmd(&db).arg("optimize").arg("--vacuum").arg("--json"));
@@ -11083,7 +11104,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
         "GET /remote-sync-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(remote_sync_v2.contains("\"remote_sync_v2\""));
-    assert!(remote_sync_v2.contains("\"encrypted_bundle\":true"));
+    assert!(remote_sync_v2.contains("\"encrypted_bundle\":false"));
+    assert!(remote_sync_v2.contains("\"encryption_mode\":\"external_openssl_plan\""));
     assert!(remote_sync_v2.contains("\"conflict_policy\":\"manual\""));
 
     let contract = http_once(
@@ -12145,7 +12167,12 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     let doctor_fix_json: Value = serde_json::from_str(&doctor_fix).unwrap();
     assert_eq!(doctor_fix_json["fixed"], true);
-    assert!(doctor_fix_json["fix_actions"].as_array().unwrap().len() >= 1);
+    assert!(
+        !doctor_fix_json["fix_actions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 
     let release_gate = stdout(
         cmd(&db)
@@ -13569,7 +13596,11 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let remote_sync_v2_json: Value = serde_json::from_str(&remote_sync_v2).unwrap();
     assert_eq!(remote_sync_v2_json["version"], 1);
     assert_eq!(remote_sync_v2_json["local_first"], true);
-    assert_eq!(remote_sync_v2_json["encrypted_bundle"], true);
+    assert_eq!(remote_sync_v2_json["encrypted_bundle"], false);
+    assert_eq!(
+        remote_sync_v2_json["encryption_mode"],
+        "external_openssl_plan"
+    );
 
     let agent_enforce = stdout(
         cmd(&db)
@@ -14851,4 +14882,136 @@ fn v14_7_memory_ui_selects_sibling_project_memory() {
     assert!(html.contains("id=\"project\""));
     assert!(html.contains("id=\"lang\""));
     assert!(html.contains("/projects"));
+}
+
+#[test]
+fn memory_mutations_roll_back_when_audit_logging_fails() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db).arg("stats").assert().success();
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        r#"
+        CREATE TRIGGER fail_memory_added
+        BEFORE INSERT ON memory_events
+        WHEN NEW.event_type = 'memory_added'
+        BEGIN
+            SELECT RAISE(ABORT, 'forced audit failure');
+        END;
+        "#,
+    )
+    .unwrap();
+    drop(conn);
+
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Must roll back")
+        .arg("The memory insert must not survive a failed audit event.")
+        .assert()
+        .failure()
+        .stderr(contains("transaction failed: add_memory"));
+
+    let conn = Connection::open(&db).unwrap();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memories WHERE title = 'Must roll back'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn inbox_approval_uses_nested_savepoint_and_rolls_back_as_one_unit() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db).arg("stats").assert().success();
+    let conn = Connection::open(&db).unwrap();
+    conn.execute(
+        r#"
+        INSERT INTO memory_inbox (
+            id, type, scope, title, body, source, confidence, status,
+            created_at, updated_at, layer
+        ) VALUES ('atomic-inbox', 'decision', 'project', 'Atomic approval',
+            'Approval must commit memory and inbox state together.', 'test', 1.0,
+            'pending', 1, 1, 'architecture')
+        "#,
+        [],
+    )
+    .unwrap();
+    conn.execute_batch(
+        r#"
+        CREATE TRIGGER fail_inbox_approved
+        BEFORE INSERT ON memory_events
+        WHEN NEW.event_type = 'inbox_approved'
+        BEGIN
+            SELECT RAISE(ABORT, 'forced approval audit failure');
+        END;
+        "#,
+    )
+    .unwrap();
+    drop(conn);
+
+    cmd(&db)
+        .arg("inbox-approve")
+        .arg("atomic-inbox")
+        .assert()
+        .failure()
+        .stderr(contains("transaction failed: approve_inbox"));
+
+    let conn = Connection::open(&db).unwrap();
+    let memory_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memories WHERE title = 'Atomic approval'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let inbox_status: String = conn
+        .query_row(
+            "SELECT status FROM memory_inbox WHERE id = 'atomic-inbox'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(memory_count, 0);
+    assert_eq!(inbox_status, "pending");
+}
+
+#[test]
+fn external_http_bind_requires_token_and_enforces_bearer_auth() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    cmd(&db)
+        .arg("serve-http")
+        .arg("--host")
+        .arg("0.0.0.0")
+        .arg("--port")
+        .arg("0")
+        .arg("--once")
+        .assert()
+        .failure()
+        .stderr(contains("external HTTP binds require"));
+
+    let unauthorized = http_once_configured(
+        &db,
+        "0.0.0.0",
+        Some("test-http-token"),
+        "GET /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(unauthorized.contains("401 Unauthorized"));
+
+    let authorized = http_once_configured(
+        &db,
+        "0.0.0.0",
+        Some("test-http-token"),
+        "GET /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-http-token\r\nConnection: close\r\n\r\n",
+    );
+    assert!(authorized.contains("200 OK"));
+    assert!(authorized.contains("\"memories\""));
 }

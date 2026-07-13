@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS memories (
     supersedes TEXT,
     superseded_by TEXT,
     confidence REAL NOT NULL DEFAULT 1.0,
+    layer TEXT,
     FOREIGN KEY (supersedes) REFERENCES memories(id) ON DELETE SET NULL,
     FOREIGN KEY (superseded_by) REFERENCES memories(id) ON DELETE SET NULL
 );
@@ -86,6 +87,19 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model ON memory_embeddings(model, endpoint);
 
+CREATE TABLE IF NOT EXISTS rag_chunk_embeddings (
+    chunk_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    dimensions INTEGER NOT NULL,
+    embedding TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (chunk_id, model, endpoint),
+    FOREIGN KEY (chunk_id) REFERENCES rag_chunks(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_rag_chunk_embeddings_model ON rag_chunk_embeddings(model, endpoint);
+
 CREATE TABLE IF NOT EXISTS embedding_provider_health (
     provider TEXT NOT NULL,
     endpoint TEXT NOT NULL,
@@ -108,7 +122,8 @@ CREATE TABLE IF NOT EXISTS memory_inbox (
     confidence REAL NOT NULL DEFAULT 0.7,
     status TEXT NOT NULL DEFAULT 'pending',
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    layer TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_memory_inbox_status ON memory_inbox(status);
 CREATE INDEX IF NOT EXISTS idx_memory_inbox_updated_at ON memory_inbox(updated_at);
@@ -166,6 +181,49 @@ CREATE TABLE IF NOT EXISTS memory_sources (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_sources_hash ON memory_sources(content_hash);
 CREATE INDEX IF NOT EXISTS idx_memory_sources_path_hash ON memory_sources(path, content_hash);
+
+CREATE TABLE IF NOT EXISTS rag_chunks (
+    id TEXT PRIMARY KEY,
+    source_id INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'project',
+    chunk_index INTEGER NOT NULL,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (source_id) REFERENCES memory_sources(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_source ON rag_chunks(source_id);
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_path_scope ON rag_chunks(path, scope);
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_hash ON rag_chunks(content_hash);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks_fts USING fts5(
+    path,
+    content,
+    scope,
+    content='rag_chunks',
+    content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS rag_chunks_ai AFTER INSERT ON rag_chunks BEGIN
+    INSERT INTO rag_chunks_fts(rowid, path, content, scope)
+    VALUES (new.rowid, new.path, new.content, new.scope);
+END;
+
+CREATE TRIGGER IF NOT EXISTS rag_chunks_ad AFTER DELETE ON rag_chunks BEGIN
+    INSERT INTO rag_chunks_fts(rag_chunks_fts, rowid, path, content, scope)
+    VALUES ('delete', old.rowid, old.path, old.content, old.scope);
+END;
+
+CREATE TRIGGER IF NOT EXISTS rag_chunks_au AFTER UPDATE ON rag_chunks BEGIN
+    INSERT INTO rag_chunks_fts(rag_chunks_fts, rowid, path, content, scope)
+    VALUES ('delete', old.rowid, old.path, old.content, old.scope);
+    INSERT INTO rag_chunks_fts(rowid, path, content, scope)
+    VALUES (new.rowid, new.path, new.content, new.scope);
+END;
 "#;
 
 pub(crate) fn open_db(path: &Path) -> Result<Connection> {
@@ -194,6 +252,8 @@ pub(crate) fn open_db(path: &Path) -> Result<Connection> {
 fn run_migrations(conn: &Connection) -> Result<()> {
     ensure_column(conn, "memories", "superseded_by", "TEXT")?;
     ensure_column(conn, "memories", "confidence", "REAL NOT NULL DEFAULT 1.0")?;
+    ensure_column(conn, "memories", "layer", "TEXT")?;
+    ensure_column(conn, "memory_inbox", "layer", "TEXT")?;
     let version: Option<i64> =
         conn.query_row("SELECT MAX(version) FROM schema_versions", [], |row| {
             row.get::<_, Option<i64>>(0)
@@ -277,6 +337,18 @@ fn migrations() -> &'static [Migration] {
             version: 15,
             name: "Production v15 embedding provider health cache schema",
         },
+        Migration {
+            version: 16,
+            name: "Production v16 layer schema",
+        },
+        Migration {
+            version: 17,
+            name: "Production v17 RAG source chunk schema",
+        },
+        Migration {
+            version: 18,
+            name: "Production v18 RAG source chunk embeddings schema",
+        },
     ]
 }
 
@@ -330,6 +402,7 @@ pub(crate) fn verify_schema(conn: &Connection) -> Result<()> {
         "memories",
         "memory_links",
         "memory_embeddings",
+        "rag_chunk_embeddings",
         "memory_inbox",
         "memory_events",
         "memory_read_events",
@@ -337,6 +410,8 @@ pub(crate) fn verify_schema(conn: &Connection) -> Result<()> {
         "memory_locks",
         "eval_cases",
         "memory_sources",
+        "rag_chunks",
+        "rag_chunks_fts",
     ] {
         let exists: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table','virtual table') AND name = ?1",

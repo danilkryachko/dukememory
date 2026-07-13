@@ -113,8 +113,8 @@ pub(crate) fn embed_local(text: &str) -> Result<Vec<f32>> {
     }
 
     if sum_mask > 0.0 {
-        for j in 0..384 {
-            pooled[j] /= sum_mask;
+        for value in &mut pooled {
+            *value /= sum_mask;
         }
     }
 

@@ -1435,7 +1435,7 @@ pub(crate) fn autonomous_run_once(
             ),
             memory_id: None,
         });
-        let doctor = project_doctor_report(conn, request.db, &project_root, 7, false)?;
+        let doctor = project_doctor_report(conn, request.db, project_root, 7, false)?;
         report.actions.push(AutonomousAction {
             kind: "project_doctor".to_string(),
             status: if doctor.ok { "ok" } else { "warn" }.to_string(),
@@ -1463,7 +1463,7 @@ pub(crate) fn autonomous_run_once(
             autonomous_repair_explicit_file_links(
                 conn,
                 effective_level,
-                &project_root,
+                project_root,
                 request.scope,
                 &mut report,
             )?;
@@ -2342,6 +2342,7 @@ fn autonomous_compact_release_history(
             source: Some("autonomous_release_compact".to_string()),
             supersedes: None,
             confidence: 0.9,
+            layer: None,
             links,
         },
     )?;
@@ -2913,6 +2914,7 @@ fn autonomous_compact_operational(
             source: Some("autonomous_compact".to_string()),
             supersedes: None,
             confidence: 0.9,
+            layer: None,
             links,
         },
     )?;

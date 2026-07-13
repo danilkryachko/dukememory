@@ -42,6 +42,8 @@ pub(crate) enum Command {
         supersedes: Option<String>,
         #[arg(long, default_value_t = 1.0)]
         confidence: f64,
+        #[arg(long)]
+        layer: Option<String>,
         #[arg(long = "link")]
         links: Vec<String>,
         #[arg(long)]
@@ -70,6 +72,8 @@ pub(crate) enum Command {
         source: Option<String>,
         #[arg(long)]
         confidence: Option<f64>,
+        #[arg(long)]
+        layer: Option<String>,
         #[arg(long = "link")]
         links: Vec<String>,
         #[arg(long)]
@@ -520,7 +524,7 @@ pub(crate) enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Build/update local embedding vectors for memory cards.
+    /// Build/update local embedding vectors for memory cards and RAG source chunks.
     EmbedIndex {
         #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
         provider: String,
@@ -1454,6 +1458,77 @@ pub(crate) enum Command {
         #[arg(long, default_value_t = 8)]
         limit: usize,
         #[arg(long)]
+        budget: Option<usize>,
+        #[arg(long, value_enum)]
+        budget_profile: Option<BudgetProfile>,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        model: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect the grounded RAG source pack without running generation.
+    RagDebug {
+        question: String,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        #[arg(long)]
+        budget: Option<usize>,
+        #[arg(long, value_enum)]
+        budget_profile: Option<BudgetProfile>,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        model: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Index text/code files as chunked RAG sources.
+    RagIngest {
+        input: PathBuf,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value = "project")]
+        scope: String,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        embed: bool,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        model: String,
+        #[arg(long, default_value_t = 900)]
+        chunk_chars: usize,
+        #[arg(long, default_value_t = 140)]
+        overlap_chars: usize,
+        #[arg(long, default_value_t = 200_000)]
+        max_file_bytes: usize,
+        #[arg(long, default_value_t = 128)]
+        max_files: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect indexed RAG source freshness and chunk counts.
+    RagSources {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        model: String,
+        #[arg(long)]
         json: bool,
     },
     /// Generate a pedagogical guided tour of the project memory.
@@ -1468,6 +1543,16 @@ pub(crate) enum Command {
         scope: Option<String>,
         #[arg(long, default_value_t = 12)]
         limit: usize,
+        #[arg(long)]
+        budget: Option<usize>,
+        #[arg(long, value_enum)]
+        budget_profile: Option<BudgetProfile>,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        model: String,
         #[arg(long)]
         json: bool,
     },
@@ -1968,7 +2053,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: AutonomousCommand,
     },
-    /// Serve a small local HTTP API.
+    /// Serve the local HTTP API; external binds require an auth token.
     ServeHttp {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
@@ -1976,8 +2061,10 @@ pub(crate) enum Command {
         port: u16,
         #[arg(long)]
         once: bool,
+        #[arg(long, env = "DUKEMEMORY_HTTP_TOKEN", hide_env_values = true)]
+        auth_token: Option<String>,
     },
-    /// Mark vector backend preference/migration status.
+    /// Validate the JSON backend or probe an externally loaded sqlite-vec extension.
     VecMigrate {
         #[arg(long, value_enum, default_value_t = VectorBackend::Json)]
         backend: VectorBackend,
@@ -2697,6 +2784,24 @@ pub(crate) enum EvalCommand {
         budget: usize,
     },
     Run {
+        #[arg(long)]
+        json: bool,
+    },
+    Rag {
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        #[arg(long)]
+        budget: Option<usize>,
+        #[arg(long, value_enum)]
+        budget_profile: Option<BudgetProfile>,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        model: String,
         #[arg(long)]
         json: bool,
     },

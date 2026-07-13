@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+#![allow(dead_code)]
 mod app;
 mod build_info;
 mod http_api;
