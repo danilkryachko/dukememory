@@ -1,2 +1,13 @@
 /target/
 /.agent/
+
+# Local compiler/scratch artifacts used during ad-hoc migrations.
+/check.json
+/errors.json
+/fix.py
+/fix_all.py
+/fix_errors.py
+/fix_errors_smart.py
+/fix_inbox.py
+/dummy_pdf.py
+/test.pdf

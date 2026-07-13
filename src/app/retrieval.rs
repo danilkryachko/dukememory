@@ -105,13 +105,18 @@ pub(crate) fn search_rows_with_semantic_fallback(
         let remaining = limit.saturating_sub(rows.len()).max(1);
         let max_additions = search_semantic_add_limit(remaining, request.budget);
         let mut added = 0;
-        let semantic = embeddings::semantic_search(
+        let semantic = embeddings::semantic_search_with_filters(
             conn,
-            request.provider,
-            request.endpoint,
-            request.model,
-            request.query,
-            search_semantic_candidate_scan_limit(limit, request.budget),
+            embeddings::SemanticSearchOptions {
+                provider: request.provider,
+                endpoint: request.endpoint,
+                model: request.model,
+                query: request.query,
+                limit: search_semantic_candidate_scan_limit(limit, request.budget),
+                types: request.types,
+                statuses: request.statuses,
+                scope: request.scope,
+            },
         )?;
         let semantic_floor = semantic_relative_score_floor(
             request.budget,
@@ -373,11 +378,12 @@ pub(crate) fn retrieve_report(
     let fts_candidate_limit =
         retrieval_fts_candidate_limit(request.limit, effective_limit, request.budget);
     let mut candidates: HashMap<String, (Memory, Option<f64>)> = HashMap::new();
+    let statuses = vec!["active".to_string(), "uncertain".to_string()];
     let fts_rows = query_memories(
         conn,
         Some(request.query),
         &[],
-        &["active".to_string(), "uncertain".to_string()],
+        &statuses,
         request.scope,
         fts_candidate_limit,
     )?;
@@ -425,17 +431,22 @@ pub(crate) fn retrieve_report(
             request.model,
         ) {
             Ok(readiness) if readiness.ready => {
-                match embeddings::semantic_search(
+                match embeddings::semantic_search_with_filters(
                     conn,
-                    request.provider,
-                    request.endpoint,
-                    request.model,
-                    request.query,
-                    retrieval_semantic_candidate_limit(
-                        request.limit,
-                        effective_limit,
-                        request.budget,
-                    ),
+                    embeddings::SemanticSearchOptions {
+                        provider: request.provider,
+                        endpoint: request.endpoint,
+                        model: request.model,
+                        query: request.query,
+                        limit: retrieval_semantic_candidate_limit(
+                            request.limit,
+                            effective_limit,
+                            request.budget,
+                        ),
+                        types: &[],
+                        statuses: &statuses,
+                        scope: request.scope,
+                    },
                 ) {
                     Ok(semantic) => {
                         let semantic_floor = semantic_relative_score_floor(
@@ -863,7 +874,7 @@ fn temporal_recall_report(conn: &Connection, request: &RecallRequest<'_>) -> Res
     .filter(|memory| temporal_recall_keeps(memory, as_of_ms, changed_since_ms))
     .collect::<Vec<_>>();
     if request.recent {
-        rows.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        rows.sort_by_key(|row| std::cmp::Reverse(row.updated_at));
     } else if as_of_ms.is_some() {
         rows.sort_by(|left, right| {
             right
@@ -872,7 +883,7 @@ fn temporal_recall_report(conn: &Connection, request: &RecallRequest<'_>) -> Res
                 .then_with(|| right.updated_at.cmp(&left.updated_at))
         });
     } else {
-        rows.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        rows.sort_by_key(|row| std::cmp::Reverse(row.updated_at));
     }
     rows.truncate(effective_limit);
     let raw_chars = rows
@@ -2343,13 +2354,19 @@ pub(crate) fn append_semantic_context_rows(
     let max_additions = semantic_context_add_limit(request.limit, request.budget);
     let quality_signals = retrieval_feedback_signals(conn, 30).unwrap_or_default();
     let mut added = 0;
-    let semantic = embeddings::semantic_search(
+    let statuses = vec!["active".to_string(), "uncertain".to_string()];
+    let semantic = embeddings::semantic_search_with_filters(
         conn,
-        request.provider,
-        request.endpoint,
-        request.model,
-        request.task,
-        semantic_context_candidate_scan_limit(request.limit, request.budget),
+        embeddings::SemanticSearchOptions {
+            provider: request.provider,
+            endpoint: request.endpoint,
+            model: request.model,
+            query: request.task,
+            limit: semantic_context_candidate_scan_limit(request.limit, request.budget),
+            types: &[],
+            statuses: &statuses,
+            scope: None,
+        },
     )?;
     let semantic_floor = semantic_relative_score_floor(
         request.budget,
@@ -2982,6 +2999,7 @@ mod tests {
                     supersedes: None,
                     superseded_by: None,
                     confidence: 1.0,
+                    layer: None,
                 },
                 links: Vec::new(),
             },
@@ -3134,6 +3152,7 @@ mod tests {
             supersedes: None,
             superseded_by: None,
             confidence: 1.0,
+            layer: None,
         };
         let note = Memory {
             id: "note".to_string(),
@@ -3148,6 +3167,7 @@ mod tests {
             supersedes: None,
             superseded_by: None,
             confidence: 1.0,
+            layer: None,
         };
         let context = |query_intent| RetrievalScoreContext {
             task_terms: &task_terms,

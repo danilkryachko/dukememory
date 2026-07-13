@@ -5,6 +5,37 @@ const PROVIDER_HEALTH_TIMEOUT_MS: u64 = 1_500;
 const PROVIDER_HEALTH_OK_CACHE_MS: i64 = 5_000;
 const PROVIDER_HEALTH_DOWN_COOLDOWN_MS: i64 = 60_000;
 
+#[derive(Debug, Clone)]
+struct RagChunkEmbeddingTarget {
+    id: String,
+    source_id: i64,
+    path: String,
+    scope: String,
+    start_line: usize,
+    end_line: usize,
+    content: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SemanticRagChunkRow {
+    pub(crate) id: String,
+    pub(crate) path: String,
+    pub(crate) scope: String,
+    pub(crate) chunk_index: usize,
+    pub(crate) start_line: usize,
+    pub(crate) end_line: usize,
+    pub(crate) content: String,
+    pub(crate) score: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RagChunkEmbeddingFreshness {
+    pub(crate) eligible: usize,
+    pub(crate) indexed: usize,
+    pub(crate) stale: usize,
+    pub(crate) missing: usize,
+}
+
 pub(crate) fn embed_index(
     conn: &Connection,
     provider: &str,
@@ -39,7 +70,25 @@ pub(crate) fn embed_index(
         }
         pending.push((memory, content, hash));
     }
-    let provider_health = if pending.is_empty() {
+    let chunk_rows = query_rag_chunk_embedding_targets(conn, limit)?;
+    let mut rag_chunks_skipped = 0;
+    let mut pending_chunks = Vec::new();
+    for chunk in chunk_rows {
+        let content = rag_chunk_embedding_content(
+            &chunk.path,
+            &chunk.scope,
+            chunk.start_line,
+            chunk.end_line,
+            &chunk.content,
+        );
+        let hash = content_hash(&content);
+        if !force && rag_chunk_embedding_is_current(conn, &chunk.id, &endpoint_key, model, &hash)? {
+            rag_chunks_skipped += 1;
+            continue;
+        }
+        pending_chunks.push((chunk, content, hash));
+    }
+    let provider_health = if pending.is_empty() && pending_chunks.is_empty() {
         None
     } else {
         Some(embedding_provider_health(conn, provider, endpoint))
@@ -60,12 +109,84 @@ pub(crate) fn embed_index(
         store_embedding(conn, &memory.id, &endpoint_key, model, &hash, &embedding)?;
         indexed += 1;
     }
+    let mut rag_chunks_indexed = 0;
+    for (chunk, content, hash) in pending_chunks {
+        let embedding = fetch_embedding(provider, endpoint, model, &content)
+            .with_context(|| format!("embedding failed for RAG chunk {}", chunk.id))?;
+        store_rag_chunk_embedding(conn, &chunk.id, &endpoint_key, model, &hash, &embedding)?;
+        rag_chunks_indexed += 1;
+    }
     Ok(EmbeddingIndexReport {
         provider: provider.to_string(),
         endpoint: endpoint.to_string(),
         model: model.to_string(),
         indexed,
         skipped,
+        rag_chunks_indexed,
+        rag_chunks_skipped,
+    })
+}
+
+pub(crate) fn embed_rag_chunks_for_paths(
+    conn: &Connection,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+    scope: &str,
+    paths: &[String],
+    force: bool,
+) -> Result<EmbeddingIndexReport> {
+    let mut unique_paths = Vec::new();
+    let mut seen = HashSet::new();
+    for path in paths {
+        if seen.insert(path.as_str()) {
+            unique_paths.push(path.clone());
+        }
+    }
+    let endpoint_key = embedding_endpoint_key(provider, endpoint);
+    let chunk_rows = query_rag_chunk_embedding_targets_for_paths(conn, scope, &unique_paths)?;
+    let mut rag_chunks_skipped = 0;
+    let mut pending_chunks = Vec::new();
+    for chunk in chunk_rows {
+        let content = rag_chunk_embedding_content(
+            &chunk.path,
+            &chunk.scope,
+            chunk.start_line,
+            chunk.end_line,
+            &chunk.content,
+        );
+        let hash = content_hash(&content);
+        if !force && rag_chunk_embedding_is_current(conn, &chunk.id, &endpoint_key, model, &hash)? {
+            rag_chunks_skipped += 1;
+            continue;
+        }
+        pending_chunks.push((chunk, content, hash));
+    }
+    if !pending_chunks.is_empty() {
+        let health = embedding_provider_health(conn, provider, endpoint);
+        if !health.reachable {
+            let detail = health
+                .error
+                .map(|error| format!(": {error}"))
+                .unwrap_or_default();
+            bail!("embedding provider is not reachable; skipping embed-index{detail}");
+        }
+    }
+    let mut rag_chunks_indexed = 0;
+    for (chunk, content, hash) in pending_chunks {
+        let embedding = fetch_embedding(provider, endpoint, model, &content)
+            .with_context(|| format!("embedding failed for RAG chunk {}", chunk.id))?;
+        store_rag_chunk_embedding(conn, &chunk.id, &endpoint_key, model, &hash, &embedding)?;
+        rag_chunks_indexed += 1;
+    }
+    Ok(EmbeddingIndexReport {
+        provider: provider.to_string(),
+        endpoint: endpoint.to_string(),
+        model: model.to_string(),
+        indexed: 0,
+        skipped: 0,
+        rag_chunks_indexed,
+        rag_chunks_skipped,
     })
 }
 
@@ -77,33 +198,230 @@ pub(crate) fn semantic_search(
     query: &str,
     limit: usize,
 ) -> Result<Vec<EmbeddingRow>> {
-    let endpoint_key = embedding_endpoint_key(provider, endpoint);
-    let query_embedding = fetch_embedding(provider, endpoint, model, query)?;
-    let mut stmt = conn.prepare(
-        r#"
-        SELECT memory_id, embedding
-        FROM memory_embeddings
-        WHERE endpoint = ?1 AND model = ?2
-        "#,
+    semantic_search_with_filters(
+        conn,
+        SemanticSearchOptions {
+            provider,
+            endpoint,
+            model,
+            query,
+            limit,
+            types: &[],
+            statuses: &[],
+            scope: None,
+        },
+    )
+}
+
+pub(crate) struct SemanticSearchOptions<'a> {
+    pub(crate) provider: &'a str,
+    pub(crate) endpoint: &'a str,
+    pub(crate) model: &'a str,
+    pub(crate) query: &'a str,
+    pub(crate) limit: usize,
+    pub(crate) types: &'a [String],
+    pub(crate) statuses: &'a [String],
+    pub(crate) scope: Option<&'a str>,
+}
+
+pub(crate) fn semantic_search_with_filters(
+    conn: &Connection,
+    options: SemanticSearchOptions<'_>,
+) -> Result<Vec<EmbeddingRow>> {
+    let limit = options.limit.max(1);
+    let endpoint_key = embedding_endpoint_key(options.provider, options.endpoint);
+    let query_embedding = fetch_embedding(
+        options.provider,
+        options.endpoint,
+        options.model,
+        options.query,
     )?;
-    let rows = stmt.query_map(params![endpoint_key, model], |row| {
+    let mut sql = String::from(
+        r#"
+        SELECT e.memory_id, e.embedding
+        FROM memory_embeddings e
+        JOIN memories m ON m.id = e.memory_id
+        WHERE e.endpoint = ? AND e.model = ?
+        "#,
+    );
+    let mut values = vec![endpoint_key, options.model.to_string()];
+    if !options.types.is_empty() {
+        sql.push_str(&format!(
+            " AND m.type IN ({})",
+            placeholders(options.types.len())
+        ));
+        values.extend(options.types.iter().cloned());
+    }
+    if !options.statuses.is_empty() {
+        sql.push_str(&format!(
+            " AND m.status IN ({})",
+            placeholders(options.statuses.len())
+        ));
+        values.extend(options.statuses.iter().cloned());
+    }
+    if let Some(scope) = options.scope {
+        sql.push_str(" AND m.scope = ?");
+        values.push(scope.to_string());
+    }
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values), |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
-    let mut scored = Vec::new();
+    let mut top_candidates = Vec::with_capacity(limit);
     for row in rows {
         let (memory_id, raw_embedding) = row?;
         let embedding: Vec<f32> = serde_json::from_str(&raw_embedding)?;
         let score = cosine_similarity(&query_embedding, &embedding);
-        let memory = get_memory_with_links(conn, &memory_id)?;
-        scored.push(EmbeddingRow { memory, score });
+        push_top_embedding_candidate(
+            &mut top_candidates,
+            ScoredEmbeddingCandidate { memory_id, score },
+            limit,
+        );
     }
-    scored.sort_by(|a, b| {
+    top_candidates.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    scored.truncate(limit);
+    let mut scored = Vec::with_capacity(top_candidates.len());
+    for candidate in top_candidates {
+        let memory = get_memory_with_links(conn, &candidate.memory_id)?;
+        scored.push(EmbeddingRow {
+            memory,
+            score: candidate.score,
+        });
+    }
     Ok(scored)
+}
+
+pub(crate) fn semantic_rag_chunk_search(
+    conn: &Connection,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+    query: &str,
+    scope: Option<&str>,
+    limit: usize,
+) -> Result<Vec<SemanticRagChunkRow>> {
+    let limit = limit.max(1);
+    let endpoint_key = embedding_endpoint_key(provider, endpoint);
+    let query_embedding = fetch_embedding(provider, endpoint, model, query)?;
+    let mut sql = String::from(
+        r#"
+        SELECT c.id, c.path, c.scope, c.chunk_index, c.start_line, c.end_line,
+               c.content, e.embedding, e.content_hash
+        FROM rag_chunk_embeddings e
+        JOIN rag_chunks c ON c.id = e.chunk_id
+        WHERE e.endpoint = ? AND e.model = ?
+        "#,
+    );
+    let mut values = vec![endpoint_key, model.to_string()];
+    if let Some(scope) = scope {
+        sql.push_str(" AND c.scope = ?");
+        values.push(scope.to_string());
+    }
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values), |row| {
+        let chunk_index = row.get::<_, i64>(3)?.max(0) as usize;
+        let start_line = row.get::<_, i64>(4)?.max(1) as usize;
+        let end_line = row.get::<_, i64>(5)?.max(start_line as i64) as usize;
+        Ok((
+            SemanticRagChunkRow {
+                id: row.get::<_, String>(0)?,
+                path: row.get::<_, String>(1)?,
+                scope: row.get::<_, String>(2)?,
+                chunk_index,
+                start_line,
+                end_line,
+                content: row.get::<_, String>(6)?,
+                score: 0.0,
+            },
+            row.get::<_, String>(7)?,
+            row.get::<_, String>(8)?,
+        ))
+    })?;
+    let mut top_candidates = Vec::with_capacity(limit);
+    for row in rows {
+        let (mut chunk, raw_embedding, stored_hash) = row?;
+        let current_hash = content_hash(&rag_chunk_embedding_content(
+            &chunk.path,
+            &chunk.scope,
+            chunk.start_line,
+            chunk.end_line,
+            &chunk.content,
+        ));
+        if stored_hash != current_hash {
+            continue;
+        }
+        let embedding: Vec<f32> = serde_json::from_str(&raw_embedding)?;
+        chunk.score = cosine_similarity(&query_embedding, &embedding);
+        push_top_rag_chunk_candidate(&mut top_candidates, chunk, limit);
+    }
+    top_candidates.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.chunk_index.cmp(&b.chunk_index))
+    });
+    Ok(top_candidates)
+}
+
+struct ScoredEmbeddingCandidate {
+    memory_id: String,
+    score: f64,
+}
+
+fn push_top_embedding_candidate(
+    candidates: &mut Vec<ScoredEmbeddingCandidate>,
+    candidate: ScoredEmbeddingCandidate,
+    limit: usize,
+) {
+    if candidates.len() < limit {
+        candidates.push(candidate);
+        return;
+    }
+    let Some((min_index, min_score)) = candidates
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| {
+            left.score
+                .partial_cmp(&right.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(index, item)| (index, item.score))
+    else {
+        return;
+    };
+    if candidate.score > min_score {
+        candidates[min_index] = candidate;
+    }
+}
+
+fn push_top_rag_chunk_candidate(
+    candidates: &mut Vec<SemanticRagChunkRow>,
+    candidate: SemanticRagChunkRow,
+    limit: usize,
+) {
+    if candidates.len() < limit {
+        candidates.push(candidate);
+        return;
+    }
+    let Some((min_index, min_score)) = candidates
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| {
+            left.score
+                .partial_cmp(&right.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(index, item)| (index, item.score))
+    else {
+        return;
+    };
+    if candidate.score > min_score {
+        candidates[min_index] = candidate;
+    }
 }
 
 pub(crate) fn semantic_index_ready(
@@ -162,6 +480,132 @@ fn embedding_content(memory: &Memory) -> String {
     )
 }
 
+fn rag_chunk_embedding_content(
+    path: &str,
+    scope: &str,
+    start_line: usize,
+    end_line: usize,
+    content: &str,
+) -> String {
+    format!(
+        "source_chunk\n{scope}\n{path}:{}-{}\n{content}",
+        start_line, end_line
+    )
+}
+
+fn query_rag_chunk_embedding_targets(
+    conn: &Connection,
+    limit: Option<usize>,
+) -> Result<Vec<RagChunkEmbeddingTarget>> {
+    query_rag_chunk_embedding_targets_filtered(conn, None, None, limit)
+}
+
+fn query_rag_chunk_embedding_targets_for_paths(
+    conn: &Connection,
+    scope: &str,
+    paths: &[String],
+) -> Result<Vec<RagChunkEmbeddingTarget>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    query_rag_chunk_embedding_targets_filtered(conn, Some(scope), Some(paths), None)
+}
+
+fn query_rag_chunk_embedding_targets_filtered(
+    conn: &Connection,
+    scope: Option<&str>,
+    paths: Option<&[String]>,
+    limit: Option<usize>,
+) -> Result<Vec<RagChunkEmbeddingTarget>> {
+    let mut sql = String::from(
+        r#"
+        SELECT id, source_id, path, scope, start_line, end_line, content
+        FROM rag_chunks
+        "#,
+    );
+    let mut values = Vec::new();
+    let mut clauses = Vec::new();
+    if let Some(scope) = scope {
+        clauses.push("scope = ?".to_string());
+        values.push(scope.to_string());
+    }
+    if let Some(paths) = paths
+        && !paths.is_empty()
+    {
+        clauses.push(format!("path IN ({})", placeholders(paths.len())));
+        values.extend(paths.iter().cloned());
+    }
+    if !clauses.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&clauses.join(" AND "));
+    }
+    sql.push_str(" ORDER BY updated_at DESC, path ASC, chunk_index ASC");
+    if limit.is_some() {
+        sql.push_str(" LIMIT ?");
+    }
+    let mut stmt = conn.prepare(&sql)?;
+    let map_row = |row: &Row<'_>| {
+        let start_line = row.get::<_, i64>(4)?.max(1) as usize;
+        let end_line = row.get::<_, i64>(5)?.max(start_line as i64) as usize;
+        Ok(RagChunkEmbeddingTarget {
+            id: row.get::<_, String>(0)?,
+            source_id: row.get::<_, i64>(1)?,
+            path: row.get::<_, String>(2)?,
+            scope: row.get::<_, String>(3)?,
+            start_line,
+            end_line,
+            content: row.get::<_, String>(6)?,
+        })
+    };
+    if let Some(limit) = limit {
+        values.push(limit.min(i64::MAX as usize).to_string());
+    }
+    stmt.query_map(rusqlite::params_from_iter(values), map_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+pub(crate) fn rag_chunk_embedding_freshness_by_source(
+    conn: &Connection,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> Result<HashMap<i64, RagChunkEmbeddingFreshness>> {
+    let endpoint_key = embedding_endpoint_key(provider, endpoint);
+    let mut by_source = HashMap::<i64, RagChunkEmbeddingFreshness>::new();
+    for chunk in query_rag_chunk_embedding_targets(conn, None)? {
+        let freshness = by_source.entry(chunk.source_id).or_default();
+        freshness.eligible += 1;
+        let content = rag_chunk_embedding_content(
+            &chunk.path,
+            &chunk.scope,
+            chunk.start_line,
+            chunk.end_line,
+            &chunk.content,
+        );
+        let hash = content_hash(&content);
+        let existing: Option<String> = conn
+            .query_row(
+                r#"
+                SELECT content_hash FROM rag_chunk_embeddings
+                WHERE chunk_id = ?1 AND endpoint = ?2 AND model = ?3
+                "#,
+                params![chunk.id, endpoint_key, model],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match existing {
+            Some(existing_hash) if existing_hash == hash => freshness.indexed += 1,
+            Some(_) => {
+                freshness.indexed += 1;
+                freshness.stale += 1;
+            }
+            None => freshness.missing += 1,
+        }
+    }
+    Ok(by_source)
+}
+
 pub(crate) fn content_hash(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
@@ -188,6 +632,26 @@ fn embedding_is_current(
     Ok(existing.as_deref() == Some(hash))
 }
 
+fn rag_chunk_embedding_is_current(
+    conn: &Connection,
+    chunk_id: &str,
+    endpoint: &str,
+    model: &str,
+    hash: &str,
+) -> Result<bool> {
+    let existing: Option<String> = conn
+        .query_row(
+            r#"
+            SELECT content_hash FROM rag_chunk_embeddings
+            WHERE chunk_id = ?1 AND endpoint = ?2 AND model = ?3
+            "#,
+            params![chunk_id, endpoint, model],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(existing.as_deref() == Some(hash))
+}
+
 fn store_embedding(
     conn: &Connection,
     memory_id: &str,
@@ -204,6 +668,33 @@ fn store_embedding(
         "#,
         params![
             memory_id,
+            model,
+            endpoint,
+            embedding.len() as i64,
+            serde_json::to_string(embedding)?,
+            hash,
+            now_ms(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn store_rag_chunk_embedding(
+    conn: &Connection,
+    chunk_id: &str,
+    endpoint: &str,
+    model: &str,
+    hash: &str,
+    embedding: &[f32],
+) -> Result<()> {
+    conn.execute(
+        r#"
+        INSERT OR REPLACE INTO rag_chunk_embeddings (
+            chunk_id, model, endpoint, dimensions, embedding, content_hash, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+        params![
+            chunk_id,
             model,
             endpoint,
             embedding.len() as i64,
@@ -301,6 +792,7 @@ fn fetch_mock_embedding(model: &str, text: &str) -> Vec<f32> {
 
 fn fetch_embedding(provider: &str, endpoint: &str, model: &str, text: &str) -> Result<Vec<f32>> {
     match provider.trim().to_lowercase().as_str() {
+        "local" => crate::app::local_embed::embed_local(text),
         "ollama" => fetch_ollama_embedding(endpoint, model, text),
         "openai" | "openai-compatible" | "openai_compatible" => {
             fetch_openai_embedding(endpoint, model, text)
@@ -347,6 +839,14 @@ pub(crate) fn print_provider_models(provider: &str, endpoint: &str, json_out: bo
 
 fn provider_models(provider: &str, endpoint: &str) -> Result<Vec<ProviderModel>> {
     match provider.trim().to_lowercase().as_str() {
+        "local" => Ok(vec![ProviderModel {
+            name: DEFAULT_EMBED_MODEL.to_string(),
+            details: Some(json!({
+                "endpoint": endpoint,
+                "repo": "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
+                "runtime": "tract-onnx"
+            })),
+        }]),
         "mock" => Ok(vec![ProviderModel {
             name: "mock-embedding".to_string(),
             details: None,
@@ -458,6 +958,10 @@ pub(crate) struct EmbedStatusReport {
     pub(crate) indexed: usize,
     pub(crate) stale: usize,
     pub(crate) missing: usize,
+    pub(crate) rag_chunks_eligible: usize,
+    pub(crate) rag_chunks_indexed: usize,
+    pub(crate) rag_chunks_stale: usize,
+    pub(crate) rag_chunks_missing: usize,
     pub(crate) provider_reachable: bool,
     pub(crate) provider_health_ms: Option<u128>,
     pub(crate) provider_error: Option<String>,
@@ -481,6 +985,10 @@ pub(crate) fn print_embed_status(
         println!("indexed: {}", report.indexed);
         println!("missing: {}", report.missing);
         println!("stale: {}", report.stale);
+        println!("rag_chunks_eligible: {}", report.rag_chunks_eligible);
+        println!("rag_chunks_indexed: {}", report.rag_chunks_indexed);
+        println!("rag_chunks_missing: {}", report.rag_chunks_missing);
+        println!("rag_chunks_stale: {}", report.rag_chunks_stale);
         println!("provider_reachable: {}", report.provider_reachable);
         println!(
             "provider_health_ms: {}",
@@ -536,6 +1044,38 @@ pub(crate) fn embed_status(
             None => missing += 1,
         }
     }
+    let chunk_rows = query_rag_chunk_embedding_targets(conn, None)?;
+    let mut rag_chunks_indexed = 0;
+    let mut rag_chunks_stale = 0;
+    let mut rag_chunks_missing = 0;
+    for chunk in &chunk_rows {
+        let content = rag_chunk_embedding_content(
+            &chunk.path,
+            &chunk.scope,
+            chunk.start_line,
+            chunk.end_line,
+            &chunk.content,
+        );
+        let hash = content_hash(&content);
+        let existing: Option<String> = conn
+            .query_row(
+                r#"
+                SELECT content_hash FROM rag_chunk_embeddings
+                WHERE chunk_id = ?1 AND endpoint = ?2 AND model = ?3
+                "#,
+                params![chunk.id, endpoint_key, model],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match existing {
+            Some(existing_hash) if existing_hash == hash => rag_chunks_indexed += 1,
+            Some(_) => {
+                rag_chunks_indexed += 1;
+                rag_chunks_stale += 1;
+            }
+            None => rag_chunks_missing += 1,
+        }
+    }
     let provider_health = embedding_provider_health(conn, provider, endpoint);
     Ok(EmbedStatusReport {
         provider: provider.to_string(),
@@ -545,6 +1085,10 @@ pub(crate) fn embed_status(
         indexed,
         stale,
         missing,
+        rag_chunks_eligible: chunk_rows.len(),
+        rag_chunks_indexed,
+        rag_chunks_stale,
+        rag_chunks_missing,
         provider_reachable: provider_health.reachable,
         provider_health_ms: provider_health.elapsed_ms,
         provider_error: provider_health.error,
@@ -564,7 +1108,7 @@ fn embedding_provider_health(
 ) -> EmbeddingProviderHealth {
     let provider_key = provider.trim().to_lowercase();
     let endpoint_key = endpoint.trim().trim_end_matches('/').to_string();
-    if provider_key == "mock" {
+    if matches!(provider_key.as_str(), "local" | "mock") {
         return EmbeddingProviderHealth {
             reachable: true,
             elapsed_ms: Some(0),

@@ -1388,6 +1388,27 @@ pub(crate) fn handle_eval(conn: &Connection, command: EvalCommand) -> Result<()>
             println!("{id}");
         }
         EvalCommand::Run { json } => run_eval(conn, json)?,
+        EvalCommand::Rag {
+            scope,
+            limit,
+            budget,
+            budget_profile,
+            provider,
+            endpoint,
+            model,
+            json,
+        } => run_rag_eval(
+            conn,
+            scope.as_deref(),
+            limit,
+            budget
+                .or_else(|| budget_profile_chars(budget_profile))
+                .unwrap_or(3000),
+            &provider,
+            &endpoint,
+            &model,
+            json,
+        )?,
         EvalCommand::Live { since_days, json } => print_live_eval(conn, since_days, json)?,
     }
     Ok(())
@@ -1451,6 +1472,568 @@ fn run_eval(conn: &Connection, json_out: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RagEvalReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) case_source: String,
+    pub(crate) total: usize,
+    pub(crate) passed: usize,
+    pub(crate) failed: usize,
+    pub(crate) recall: f64,
+    pub(crate) average_confidence: f64,
+    pub(crate) semantic_used: usize,
+    pub(crate) semantic_fallbacks: usize,
+    pub(crate) packing: RagEvalPackingSummary,
+    pub(crate) grounded_answers: RagEvalGroundedSummary,
+    pub(crate) cases: Vec<RagEvalCaseResult>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub(crate) struct RagEvalPackingSummary {
+    pub(crate) candidate_count: usize,
+    pub(crate) selected_count: usize,
+    pub(crate) memory_candidates: usize,
+    pub(crate) chunk_candidates: usize,
+    pub(crate) selected_memories: usize,
+    pub(crate) selected_chunks: usize,
+    pub(crate) suppressed_duplicate: usize,
+    pub(crate) suppressed_overlap: usize,
+    pub(crate) suppressed_file_cap: usize,
+    pub(crate) suppressed_limit: usize,
+    pub(crate) suppressed_sources: usize,
+    pub(crate) expected_selected: usize,
+    pub(crate) expected_suppressed_by_packing: usize,
+    pub(crate) expected_missing_from_candidates: usize,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub(crate) struct RagEvalGroundedSummary {
+    pub(crate) passed: usize,
+    pub(crate) failed: usize,
+    pub(crate) coverage: f64,
+    pub(crate) expected_in_answer: usize,
+    pub(crate) cited_answers: usize,
+    pub(crate) unknown_citation_cases: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RagEvalGroundedAnswer {
+    pub(crate) passed: bool,
+    pub(crate) detail: String,
+    pub(crate) answer: String,
+    pub(crate) expected_found: bool,
+    pub(crate) citation_count: usize,
+    pub(crate) citations: Vec<String>,
+    pub(crate) unknown_citations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RagEvalCaseResult {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) case_source: String,
+    pub(crate) query: String,
+    pub(crate) expected: String,
+    pub(crate) passed: bool,
+    pub(crate) detail: String,
+    pub(crate) confidence: String,
+    pub(crate) confidence_score: f64,
+    pub(crate) citation_count: usize,
+    pub(crate) citations: Vec<String>,
+    pub(crate) source_titles: Vec<String>,
+    pub(crate) packing: RagPackingReport,
+    pub(crate) expected_evidence_status: String,
+    pub(crate) expected_in_candidates: bool,
+    pub(crate) expected_suppressed_titles: Vec<String>,
+    pub(crate) semantic_used: bool,
+    pub(crate) semantic_error: Option<String>,
+    pub(crate) missing_evidence: Vec<String>,
+    pub(crate) grounded_answer: RagEvalGroundedAnswer,
+}
+
+struct RagEvalCase {
+    id: String,
+    name: String,
+    query: String,
+    expected: String,
+    budget: usize,
+    source: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_rag_eval(
+    conn: &Connection,
+    scope: Option<&str>,
+    limit: usize,
+    budget: usize,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+    json_out: bool,
+) -> Result<()> {
+    let report = rag_eval_report(conn, scope, limit, budget, provider, endpoint, model)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("RAG Eval");
+        println!(
+            "status: {} recall: {:.1}% passed: {}/{} average_confidence: {:.2}",
+            report.status, report.recall, report.passed, report.total, report.average_confidence
+        );
+        println!(
+            "packing: selected={}/{} chunks={}/{} suppressed_overlap={} suppressed_file_cap={} suppressed_limit={} expected_selected={} expected_suppressed={} expected_missing={}",
+            report.packing.selected_count,
+            report.packing.candidate_count,
+            report.packing.selected_chunks,
+            report.packing.chunk_candidates,
+            report.packing.suppressed_overlap,
+            report.packing.suppressed_file_cap,
+            report.packing.suppressed_limit,
+            report.packing.expected_selected,
+            report.packing.expected_suppressed_by_packing,
+            report.packing.expected_missing_from_candidates
+        );
+        println!(
+            "grounded_answers: coverage={:.1}% passed={}/{} expected_in_answer={} cited_answers={} unknown_citation_cases={}",
+            report.grounded_answers.coverage,
+            report.grounded_answers.passed,
+            report.total,
+            report.grounded_answers.expected_in_answer,
+            report.grounded_answers.cited_answers,
+            report.grounded_answers.unknown_citation_cases
+        );
+        for case in &report.cases {
+            println!(
+                "{}  {}  {}  confidence={} citations={}",
+                if case.passed { "pass" } else { "fail" },
+                case.id,
+                case.name,
+                case.confidence,
+                case.citation_count
+            );
+            println!("  {}", case.detail);
+            println!(
+                "  packing: selected={}/{} chunks={}/{} suppressed_overlap={} suppressed_file_cap={} suppressed_limit={} expected={}",
+                case.packing.selected_count,
+                case.packing.candidate_count,
+                case.packing.selected_chunks,
+                case.packing.chunk_candidates,
+                case.packing.suppressed_overlap,
+                case.packing.suppressed_file_cap,
+                case.packing.suppressed_limit,
+                case.expected_evidence_status
+            );
+            println!(
+                "  grounded_answer: {}  {}",
+                if case.grounded_answer.passed {
+                    "pass"
+                } else {
+                    "fail"
+                },
+                case.grounded_answer.detail
+            );
+        }
+        for item in &report.recommendations {
+            println!("recommendation: {item}");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn rag_eval_report(
+    conn: &Connection,
+    scope: Option<&str>,
+    limit: usize,
+    budget: usize,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> Result<RagEvalReport> {
+    let cases = load_rag_eval_cases(conn, budget)?;
+    let case_source = if cases.iter().any(|case| case.source == "stored") {
+        "stored"
+    } else if cases.is_empty() {
+        "empty"
+    } else {
+        "auto"
+    }
+    .to_string();
+    let mut results = Vec::new();
+    for case in cases {
+        let debug = memory_rag_debug_report(
+            conn,
+            &case.query,
+            scope,
+            limit,
+            case.budget,
+            provider,
+            endpoint,
+            model,
+        )?;
+        let haystack = debug
+            .source_pack
+            .iter()
+            .map(|source| {
+                format!(
+                    "{} {} {} {}",
+                    source.id,
+                    source.title,
+                    source.summary,
+                    source.reasons.join(" ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_lowercase();
+        let expected_lower = case.expected.to_lowercase();
+        let passed = !expected_lower.trim().is_empty() && haystack.contains(&expected_lower);
+        let expected_suppressed_titles =
+            rag_eval_expected_suppressed_titles(&case.expected, &debug.packing);
+        let expected_evidence_status =
+            rag_eval_expected_evidence_status(&case.expected, passed, &expected_suppressed_titles);
+        let expected_in_candidates = passed || !expected_suppressed_titles.is_empty();
+        let grounded_answer = rag_eval_grounded_answer(
+            &case.query,
+            &case.expected,
+            passed,
+            &debug.source_pack,
+            &debug.missing_evidence,
+        );
+        results.push(RagEvalCaseResult {
+            id: case.id,
+            name: case.name,
+            case_source: case.source,
+            query: case.query,
+            expected: case.expected,
+            passed,
+            detail: if passed {
+                "expected text found in RAG source pack".to_string()
+            } else if debug.source_pack.is_empty() {
+                "RAG source pack is empty".to_string()
+            } else {
+                "expected text missing from RAG source pack".to_string()
+            },
+            confidence: debug.confidence,
+            confidence_score: debug.confidence_score,
+            citation_count: debug.citation_count,
+            citations: debug.citations,
+            source_titles: debug
+                .source_pack
+                .iter()
+                .map(|source| source.title.clone())
+                .collect(),
+            packing: debug.packing,
+            expected_evidence_status,
+            expected_in_candidates,
+            expected_suppressed_titles,
+            semantic_used: debug.semantic_used,
+            semantic_error: debug.semantic_error,
+            missing_evidence: debug.missing_evidence,
+            grounded_answer,
+        });
+    }
+    let total = results.len();
+    let passed = results.iter().filter(|case| case.passed).count();
+    let failed = total.saturating_sub(passed);
+    let recall = eval_ratio_percent(passed, total);
+    let average_confidence = if total == 0 {
+        0.0
+    } else {
+        (results
+            .iter()
+            .map(|case| case.confidence_score)
+            .sum::<f64>()
+            / total as f64
+            * 100.0)
+            .round()
+            / 100.0
+    };
+    let semantic_used = results.iter().filter(|case| case.semantic_used).count();
+    let semantic_fallbacks = results
+        .iter()
+        .filter(|case| case.semantic_error.is_some())
+        .count();
+    let packing = rag_eval_packing_summary(&results);
+    let grounded_answers = rag_eval_grounded_summary(&results);
+    let mut recommendations = Vec::new();
+    if total == 0 {
+        recommendations
+            .push("add eval cases with `dukememory eval add-case NAME QUERY EXPECTED`".to_string());
+    } else if case_source == "auto" {
+        recommendations.push(
+            "add stored eval cases for project-critical questions before release gating"
+                .to_string(),
+        );
+    }
+    if failed > 0 {
+        recommendations.push(
+            "inspect failing cases with `dukememory rag-debug QUERY --json` before changing generation".to_string(),
+        );
+    }
+    if semantic_fallbacks > 0 {
+        recommendations.push(
+            "refresh embeddings or provider health before trusting semantic RAG scores".to_string(),
+        );
+    }
+    if grounded_answers.failed > 0 {
+        recommendations.push(
+            "inspect grounded_answer fields: retrieval found evidence that did not make it into the final grounded answer".to_string(),
+        );
+    }
+    let ok = total > 0 && failed == 0 && grounded_answers.failed == 0;
+    Ok(RagEvalReport {
+        version: 1,
+        ok,
+        status: if ok {
+            "ready"
+        } else if total == 0 {
+            "empty"
+        } else {
+            "attention"
+        }
+        .to_string(),
+        case_source,
+        total,
+        passed,
+        failed,
+        recall,
+        average_confidence,
+        semantic_used,
+        semantic_fallbacks,
+        packing,
+        grounded_answers,
+        cases: results,
+        recommendations,
+    })
+}
+
+fn rag_eval_packing_summary(cases: &[RagEvalCaseResult]) -> RagEvalPackingSummary {
+    let mut summary = RagEvalPackingSummary::default();
+    for case in cases {
+        summary.candidate_count += case.packing.candidate_count;
+        summary.selected_count += case.packing.selected_count;
+        summary.memory_candidates += case.packing.memory_candidates;
+        summary.chunk_candidates += case.packing.chunk_candidates;
+        summary.selected_memories += case.packing.selected_memories;
+        summary.selected_chunks += case.packing.selected_chunks;
+        summary.suppressed_duplicate += case.packing.suppressed_duplicate;
+        summary.suppressed_overlap += case.packing.suppressed_overlap;
+        summary.suppressed_file_cap += case.packing.suppressed_file_cap;
+        summary.suppressed_limit += case.packing.suppressed_limit;
+        summary.suppressed_sources += case.packing.suppressed_sources.len();
+        match case.expected_evidence_status.as_str() {
+            "selected" => summary.expected_selected += 1,
+            "suppressed_by_packing" => summary.expected_suppressed_by_packing += 1,
+            "missing_from_candidates" => summary.expected_missing_from_candidates += 1,
+            _ => {}
+        }
+    }
+    summary
+}
+
+fn rag_eval_grounded_summary(cases: &[RagEvalCaseResult]) -> RagEvalGroundedSummary {
+    let passed = cases
+        .iter()
+        .filter(|case| case.grounded_answer.passed)
+        .count();
+    let total = cases.len();
+    RagEvalGroundedSummary {
+        passed,
+        failed: total.saturating_sub(passed),
+        coverage: eval_ratio_percent(passed, total),
+        expected_in_answer: cases
+            .iter()
+            .filter(|case| case.grounded_answer.expected_found)
+            .count(),
+        cited_answers: cases
+            .iter()
+            .filter(|case| case.grounded_answer.citation_count > 0)
+            .count(),
+        unknown_citation_cases: cases
+            .iter()
+            .filter(|case| !case.grounded_answer.unknown_citations.is_empty())
+            .count(),
+    }
+}
+
+fn rag_eval_grounded_answer(
+    query: &str,
+    expected: &str,
+    source_pack_passed: bool,
+    source_pack: &[RagSource],
+    missing_evidence: &[String],
+) -> RagEvalGroundedAnswer {
+    let answer = rag_extractive_answer(query, source_pack, missing_evidence);
+    let expected = expected.trim();
+    let expected_found =
+        !expected.is_empty() && answer.to_lowercase().contains(&expected.to_lowercase());
+    let citations = rag_eval_answer_source_citations(&answer, source_pack);
+    let unknown_citations = rag_eval_unknown_answer_citations(&answer, source_pack);
+    let passed = source_pack_passed
+        && expected_found
+        && !citations.is_empty()
+        && unknown_citations.is_empty();
+    let detail = if passed {
+        "expected evidence is present in a cited grounded answer".to_string()
+    } else if !source_pack_passed {
+        "expected evidence was not selected into the source pack".to_string()
+    } else if !expected_found {
+        "expected evidence was selected but missing from the grounded answer".to_string()
+    } else if citations.is_empty() {
+        "grounded answer did not cite any selected source".to_string()
+    } else if !unknown_citations.is_empty() {
+        "grounded answer contains citation ids outside the selected source pack".to_string()
+    } else {
+        "grounded answer failed an unknown grounding check".to_string()
+    };
+    RagEvalGroundedAnswer {
+        passed,
+        detail,
+        answer,
+        expected_found,
+        citation_count: citations.len(),
+        citations,
+        unknown_citations,
+    }
+}
+
+fn rag_eval_answer_source_citations(answer: &str, source_pack: &[RagSource]) -> Vec<String> {
+    source_pack
+        .iter()
+        .filter(|source| rag_eval_answer_mentions_id(answer, &source.id))
+        .map(|source| source.id.clone())
+        .collect()
+}
+
+fn rag_eval_unknown_answer_citations(answer: &str, source_pack: &[RagSource]) -> Vec<String> {
+    let source_ids = source_pack
+        .iter()
+        .map(|source| source.id.as_str())
+        .collect::<HashSet<_>>();
+    rag_eval_bracketed_citations(answer)
+        .into_iter()
+        .filter(|id| !source_ids.contains(id.as_str()))
+        .collect()
+}
+
+fn rag_eval_answer_mentions_id(answer: &str, id: &str) -> bool {
+    answer.contains(&format!("[{id}]")) || answer.contains(id)
+}
+
+fn rag_eval_bracketed_citations(answer: &str) -> Vec<String> {
+    let mut citations = Vec::new();
+    let mut rest = answer;
+    while let Some(start) = rest.find('[') {
+        rest = &rest[start + 1..];
+        let Some(end) = rest.find(']') else {
+            break;
+        };
+        let candidate = rest[..end].trim();
+        if !candidate.is_empty()
+            && candidate.chars().count() <= 96
+            && candidate
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':' | '/' | '.'))
+            && !citations.iter().any(|existing| existing == candidate)
+        {
+            citations.push(candidate.to_string());
+        }
+        rest = &rest[end + 1..];
+    }
+    citations
+}
+
+fn rag_eval_expected_suppressed_titles(expected: &str, packing: &RagPackingReport) -> Vec<String> {
+    let expected = expected.trim().to_lowercase();
+    if expected.is_empty() {
+        return Vec::new();
+    }
+    packing
+        .suppressed_sources
+        .iter()
+        .filter(|source| {
+            format!(
+                "{} {} {} {}",
+                source.id, source.title, source.summary, source.reason
+            )
+            .to_lowercase()
+            .contains(&expected)
+        })
+        .map(|source| source.title.clone())
+        .collect()
+}
+
+fn rag_eval_expected_evidence_status(
+    expected: &str,
+    selected_match: bool,
+    suppressed_titles: &[String],
+) -> String {
+    if expected.trim().is_empty() {
+        "empty_expected".to_string()
+    } else if selected_match {
+        "selected".to_string()
+    } else if !suppressed_titles.is_empty() {
+        "suppressed_by_packing".to_string()
+    } else {
+        "missing_from_candidates".to_string()
+    }
+}
+
+fn load_rag_eval_cases(conn: &Connection, default_budget: usize) -> Result<Vec<RagEvalCase>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, query, expected, budget FROM eval_cases ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let budget = row.get::<_, i64>(4)?;
+        Ok(RagEvalCase {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            query: row.get(2)?,
+            expected: row.get(3)?,
+            budget: if budget > 0 {
+                budget as usize
+            } else {
+                default_budget
+            },
+            source: "stored".to_string(),
+        })
+    })?;
+    let mut cases = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    if !cases.is_empty() {
+        return Ok(cases);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id, title FROM memories \
+         WHERE status IN ('active','uncertain') \
+         ORDER BY updated_at DESC LIMIT 12",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let id: String = row.get(0)?;
+        let title: String = row.get(1)?;
+        Ok(RagEvalCase {
+            id: format!("auto-{id}"),
+            name: truncate_chars(&title, 80),
+            query: title,
+            expected: id,
+            budget: default_budget,
+            source: "auto".to_string(),
+        })
+    })?;
+    cases = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(cases)
+}
+
+fn eval_ratio_percent(part: usize, total: usize) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        (part as f64 / total as f64 * 1000.0).round() / 10.0
+    }
 }
 
 fn print_live_eval(conn: &Connection, since_days: i64, json_out: bool) -> Result<()> {
@@ -1743,7 +2326,7 @@ pub(crate) fn unresolved_memory_gap(conn: &Connection, query: &str) -> Result<bo
     if memory_link_resolves_query(conn, query)? {
         return Ok(false);
     }
-    let normalized = query.replace('_', " ").replace('-', " ");
+    let normalized = query.replace(['_', '-'], " ");
     if normalized != query {
         let rows = query_memories(
             conn,
@@ -2478,6 +3061,68 @@ mod tests {
         }
     }
 
+    fn rag_eval_source(id: &str, summary: &str) -> RagSource {
+        RagSource {
+            id: id.to_string(),
+            source_kind: "memory".to_string(),
+            memory_type: "design_note".to_string(),
+            scope: "project".to_string(),
+            title: format!("source {id}"),
+            status: "active".to_string(),
+            score: 10.0,
+            utility_score: 1.0,
+            semantic_score: Some(0.8),
+            confidence: 1.0,
+            reasons: vec!["test".to_string()],
+            summary: summary.to_string(),
+            links: Vec::new(),
+            path: None,
+            chunk_index: None,
+            start_line: None,
+            end_line: None,
+        }
+    }
+
+    fn rag_eval_case_with_packing(
+        expected_evidence_status: &str,
+        packing: RagPackingReport,
+    ) -> RagEvalCaseResult {
+        RagEvalCaseResult {
+            id: "case".to_string(),
+            name: "case".to_string(),
+            case_source: "stored".to_string(),
+            query: "query".to_string(),
+            expected: "expected".to_string(),
+            passed: expected_evidence_status == "selected",
+            detail: "detail".to_string(),
+            confidence: "medium".to_string(),
+            confidence_score: 0.5,
+            citation_count: 0,
+            citations: Vec::new(),
+            source_titles: Vec::new(),
+            packing,
+            expected_evidence_status: expected_evidence_status.to_string(),
+            expected_in_candidates: expected_evidence_status != "missing_from_candidates",
+            expected_suppressed_titles: Vec::new(),
+            semantic_used: true,
+            semantic_error: None,
+            missing_evidence: Vec::new(),
+            grounded_answer: RagEvalGroundedAnswer {
+                passed: expected_evidence_status == "selected",
+                detail: "detail".to_string(),
+                answer: "answer [case]".to_string(),
+                expected_found: expected_evidence_status == "selected",
+                citation_count: usize::from(expected_evidence_status == "selected"),
+                citations: if expected_evidence_status == "selected" {
+                    vec!["case".to_string()]
+                } else {
+                    Vec::new()
+                },
+                unknown_citations: Vec::new(),
+            },
+        }
+    }
+
     #[test]
     fn impact_effective_limit_follows_budget() {
         assert_eq!(impact_effective_limit(30, 1_200), 8);
@@ -2489,6 +3134,234 @@ mod tests {
         assert_eq!(impact_candidate_limit(30, 24, 3_000), 30);
         assert_eq!(impact_candidate_limit(100, 24, 3_000), 48);
         assert_eq!(impact_candidate_limit(30, 30, 8_000), 30);
+    }
+
+    #[test]
+    fn eval_ratio_percent_rounds_to_one_decimal() {
+        assert_eq!(eval_ratio_percent(0, 0), 0.0);
+        assert_eq!(eval_ratio_percent(1, 3), 33.3);
+        assert_eq!(eval_ratio_percent(2, 3), 66.7);
+        assert_eq!(eval_ratio_percent(3, 3), 100.0);
+    }
+
+    #[test]
+    fn rag_eval_case_serializes_packing_diagnostics() {
+        let case = RagEvalCaseResult {
+            id: "case-1".to_string(),
+            name: "packing visible".to_string(),
+            case_source: "stored".to_string(),
+            query: "how is RAG packed?".to_string(),
+            expected: "packing".to_string(),
+            passed: true,
+            detail: "expected text found in RAG source pack".to_string(),
+            confidence: "medium".to_string(),
+            confidence_score: 0.74,
+            citation_count: 1,
+            citations: vec!["abc123".to_string()],
+            source_titles: vec!["README.md:1-10".to_string()],
+            packing: RagPackingReport {
+                candidate_count: 4,
+                selected_count: 2,
+                memory_candidates: 1,
+                chunk_candidates: 3,
+                selected_memories: 1,
+                selected_chunks: 1,
+                suppressed_duplicate: 0,
+                suppressed_overlap: 1,
+                suppressed_file_cap: 1,
+                suppressed_limit: 0,
+                suppressed_sources: vec![RagPackingSuppressedSource {
+                    id: "suppressed".to_string(),
+                    source_kind: "chunk".to_string(),
+                    title: "README.md:20-30".to_string(),
+                    reason: "overlap".to_string(),
+                    score: 3.0,
+                    semantic_score: Some(0.5),
+                    location: Some("README.md:20-30".to_string()),
+                    summary: "packing candidate was suppressed".to_string(),
+                }],
+                chunk_files: vec![RagPackingFileReport {
+                    path: "README.md".to_string(),
+                    candidates: 3,
+                    selected: 1,
+                    suppressed_overlap: 1,
+                    suppressed_file_cap: 1,
+                }],
+            },
+            expected_evidence_status: "selected".to_string(),
+            expected_in_candidates: true,
+            expected_suppressed_titles: Vec::new(),
+            semantic_used: true,
+            semantic_error: None,
+            missing_evidence: Vec::new(),
+            grounded_answer: RagEvalGroundedAnswer {
+                passed: true,
+                detail: "expected evidence is present in a cited grounded answer".to_string(),
+                answer: "packing [abc123]".to_string(),
+                expected_found: true,
+                citation_count: 1,
+                citations: vec!["abc123".to_string()],
+                unknown_citations: Vec::new(),
+            },
+        };
+
+        let value = serde_json::to_value(case).expect("serialize eval case");
+
+        assert_eq!(value["packing"]["candidate_count"], 4);
+        assert_eq!(value["packing"]["suppressed_overlap"], 1);
+        assert_eq!(value["packing"]["chunk_files"][0]["path"], "README.md");
+        assert_eq!(
+            value["packing"]["suppressed_sources"][0]["reason"],
+            "overlap"
+        );
+        assert_eq!(value["expected_evidence_status"], "selected");
+        assert_eq!(value["grounded_answer"]["passed"], true);
+        assert_eq!(value["grounded_answer"]["citation_count"], 1);
+    }
+
+    #[test]
+    fn rag_eval_expected_status_detects_suppressed_candidates() {
+        let packing = RagPackingReport {
+            suppressed_sources: vec![RagPackingSuppressedSource {
+                id: "chunk-a".to_string(),
+                source_kind: "chunk".to_string(),
+                title: "README.md:10-20".to_string(),
+                reason: "file_cap".to_string(),
+                score: 4.0,
+                semantic_score: None,
+                location: Some("README.md:10-20".to_string()),
+                summary: "This candidate contains memory_rag_ingest evidence.".to_string(),
+            }],
+            ..RagPackingReport::default()
+        };
+
+        let titles = rag_eval_expected_suppressed_titles("memory_rag_ingest", &packing);
+        let status = rag_eval_expected_evidence_status("memory_rag_ingest", false, &titles);
+
+        assert_eq!(titles, vec!["README.md:10-20".to_string()]);
+        assert_eq!(status, "suppressed_by_packing");
+    }
+
+    #[test]
+    fn rag_eval_packing_summary_totals_cases() {
+        let cases = vec![
+            rag_eval_case_with_packing(
+                "selected",
+                RagPackingReport {
+                    candidate_count: 4,
+                    selected_count: 2,
+                    memory_candidates: 1,
+                    chunk_candidates: 3,
+                    selected_memories: 1,
+                    selected_chunks: 1,
+                    suppressed_overlap: 1,
+                    suppressed_sources: vec![RagPackingSuppressedSource {
+                        id: "overlap".to_string(),
+                        source_kind: "chunk".to_string(),
+                        title: "README.md:1-8".to_string(),
+                        reason: "overlap".to_string(),
+                        score: 1.0,
+                        semantic_score: None,
+                        location: Some("README.md:1-8".to_string()),
+                        summary: "overlap".to_string(),
+                    }],
+                    ..RagPackingReport::default()
+                },
+            ),
+            rag_eval_case_with_packing(
+                "missing_from_candidates",
+                RagPackingReport {
+                    candidate_count: 3,
+                    selected_count: 1,
+                    chunk_candidates: 2,
+                    selected_chunks: 1,
+                    suppressed_limit: 2,
+                    suppressed_sources: vec![
+                        RagPackingSuppressedSource {
+                            id: "limit-a".to_string(),
+                            source_kind: "chunk".to_string(),
+                            title: "README.md:10-20".to_string(),
+                            reason: "limit".to_string(),
+                            score: 1.0,
+                            semantic_score: None,
+                            location: Some("README.md:10-20".to_string()),
+                            summary: "limit".to_string(),
+                        },
+                        RagPackingSuppressedSource {
+                            id: "limit-b".to_string(),
+                            source_kind: "chunk".to_string(),
+                            title: "README.md:30-40".to_string(),
+                            reason: "limit".to_string(),
+                            score: 1.0,
+                            semantic_score: None,
+                            location: Some("README.md:30-40".to_string()),
+                            summary: "limit".to_string(),
+                        },
+                    ],
+                    ..RagPackingReport::default()
+                },
+            ),
+        ];
+
+        let summary = rag_eval_packing_summary(&cases);
+
+        assert_eq!(summary.candidate_count, 7);
+        assert_eq!(summary.selected_count, 3);
+        assert_eq!(summary.selected_chunks, 2);
+        assert_eq!(summary.suppressed_overlap, 1);
+        assert_eq!(summary.suppressed_limit, 2);
+        assert_eq!(summary.suppressed_sources, 3);
+        assert_eq!(summary.expected_selected, 1);
+        assert_eq!(summary.expected_missing_from_candidates, 1);
+
+        let grounded = rag_eval_grounded_summary(&cases);
+        assert_eq!(grounded.passed, 1);
+        assert_eq!(grounded.failed, 1);
+        assert_eq!(grounded.coverage, 50.0);
+        assert_eq!(grounded.expected_in_answer, 1);
+        assert_eq!(grounded.cited_answers, 1);
+    }
+
+    #[test]
+    fn rag_eval_grounded_answer_requires_expected_evidence_and_valid_citation() {
+        let sources = vec![rag_eval_source(
+            "abc123",
+            "Agents use `dukememory rag-ingest --apply` to index source chunks.",
+        )];
+
+        let grounded = rag_eval_grounded_answer(
+            "How do agents index source chunks?",
+            "rag-ingest",
+            true,
+            &sources,
+            &[],
+        );
+
+        assert!(grounded.passed);
+        assert!(grounded.expected_found);
+        assert_eq!(grounded.citations, vec!["abc123".to_string()]);
+        assert!(grounded.unknown_citations.is_empty());
+
+        let missing = rag_eval_grounded_answer(
+            "How do agents index source chunks?",
+            "memory_rag_ingest",
+            true,
+            &sources,
+            &[],
+        );
+
+        assert!(!missing.passed);
+        assert!(missing.detail.contains("missing from the grounded answer"));
+    }
+
+    #[test]
+    fn rag_eval_unknown_answer_citations_detects_ids_outside_source_pack() {
+        let sources = vec![rag_eval_source("abc123", "grounded source")];
+
+        let unknown =
+            rag_eval_unknown_answer_citations("Use [abc123] but not [missing456].", &sources);
+
+        assert_eq!(unknown, vec!["missing456".to_string()]);
     }
 
     #[test]

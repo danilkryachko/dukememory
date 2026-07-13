@@ -31,6 +31,22 @@ impl HttpResponse {
         )
     }
 
+    pub fn unauthorized() -> Self {
+        Self::json(
+            401,
+            "Unauthorized",
+            json!({"error": {"code": "unauthorized", "message": "missing or invalid HTTP bearer token"}}),
+        )
+    }
+
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::json(
+            403,
+            "Forbidden",
+            json!({"error": {"code": "forbidden", "message": message.into()}}),
+        )
+    }
+
     pub fn not_found() -> Self {
         Self::json(
             404,

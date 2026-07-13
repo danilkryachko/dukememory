@@ -605,10 +605,22 @@
     }
 
     async function api(path, options = {}) {
+      const token = sessionStorage.getItem("dukememory_http_token") || "";
       const response = await fetch(path, {
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { "Authorization": `Bearer ${token}` } : {})
+        },
         ...options
       });
+      if (response.status === 401) {
+        sessionStorage.removeItem("dukememory_http_token");
+        const supplied = window.prompt("dukememory HTTP token");
+        if (supplied) {
+          sessionStorage.setItem("dukememory_http_token", supplied);
+          return api(path, options);
+        }
+      }
       const text = await response.text();
       let data = {};
       try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { raw: text }; }
@@ -1718,7 +1730,7 @@
       <div class="card"><div class="title">auto ranking tune</div><div class="body">profile ${escapeHtml(autoRanking.selected_profile || "-")}<br>qa ${Number(autoRanking.qa_score || 0).toFixed(1)} / useful ${formatPercent(autoRanking.useful_rate)}<br>missing ${Number(autoRanking.inferred_missing || 0)} / semantic empty ${Number(autoRanking.semantic_empty || 0)} / noisy ${Number(autoRanking.noisy_cards || 0)}<br>${autoRanking.reasons?.length ? autoRanking.reasons.map(escapeHtml).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">watch control</div><div class="body">installed ${watchControl.installed ? "yes" : "no"} / running ${watchControl.running ? "yes" : "no"}<br>plist ${escapeHtml(watchControl.plist || "-")}<br>${watchControl.issues?.length ? watchControl.issues.map(escapeHtml).join("<br>") : "issues -"}<br>${watchControl.recommendations?.length ? watchControl.recommendations.map(escapeHtml).join("<br>") : ""}</div></div>
       <div class="card"><div class="title">autonomy control center</div><div class="body">status ${escapeHtml(autonomyCenter.status || "-")}<br>qa ${Number(autonomyCenter.qa?.score || 0).toFixed(1)}<br>ranking ${escapeHtml(autonomyCenter.ranking?.selected_profile || "-")}<br>watch ${autonomyCenter.watch?.running ? "running" : autonomyCenter.watch?.installed ? "installed" : "-"}<br>${autonomyCenter.issues?.length ? autonomyCenter.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
-      <div class="card"><div class="title">remote sync v2</div><div class="body">status ${escapeHtml(remoteSyncV2.status || "-")}<br>local first ${remoteSyncV2.local_first ? "yes" : "no"} / encrypted ${remoteSyncV2.encrypted_bundle ? "yes" : "no"}<br>policy ${escapeHtml(remoteSyncV2.conflict_policy || "-")}<br>${remoteSyncV2.blockers?.length ? remoteSyncV2.blockers.map(escapeHtml).join("<br>") : "blockers -"}</div></div>
+      <div class="card"><div class="title">remote sync v2</div><div class="body">status ${escapeHtml(remoteSyncV2.status || "-")}<br>local first ${remoteSyncV2.local_first ? "yes" : "no"} / encrypted now ${remoteSyncV2.encrypted_bundle ? "yes" : "no"}<br>encryption ${escapeHtml(remoteSyncV2.encryption_mode || "-")}<br>policy ${escapeHtml(remoteSyncV2.conflict_policy || "-")}<br>${remoteSyncV2.blockers?.length ? remoteSyncV2.blockers.map(escapeHtml).join("<br>") : "blockers -"}</div></div>
       <div class="card"><div class="title">memory health score</div><div class="body">status ${escapeHtml(memoryHealth.status || "-")} / grade ${escapeHtml(memoryHealth.grade || "-")}<br>qa ${Number(memoryHealth.qa_score || 0).toFixed(1)} / roi ${Number(memoryHealth.roi_score || 0).toFixed(1)} / agent ${Number(memoryHealth.agent_score || 0).toFixed(1)} / cost ${Number(memoryHealth.cost_score || 0).toFixed(1)}<br>semantic ${memoryHealth.semantic_ready ? "ready" : "attention"} / autonomy ${memoryHealth.autonomy_ready ? "ready" : "attention"}<br>${memoryHealth.recommendations?.length ? memoryHealth.recommendations.slice(0, 5).map(escapeHtml).join("<br>") : "recommendations -"}</div></div>
       <div class="card"><div class="title">explainable recall</div><div class="body">query ${escapeHtml(explainRecall.query || "-")}<br>${explainRecall.hits?.length ? explainRecall.hits.slice(0, 5).map((hit) => `${Number(hit.score || 0).toFixed(1)} ${escapeHtml(hit.title)}: ${escapeHtml(hit.explanation || "")}`).join("<br>") : "-"}<br>${explainRecall.missing_signals?.length ? explainRecall.missing_signals.map(escapeHtml).join("<br>") : ""}</div></div>
       <div class="card"><div class="title">project intent map</div><div class="body">goals ${Number(intentMap.goals?.length || 0)} / decisions ${Number(intentMap.decisions?.length || 0)} / constraints ${Number(intentMap.constraints?.length || 0)} / tasks ${Number(intentMap.active_tasks?.length || 0)}<br>${intentMap.goals?.length ? intentMap.goals.slice(0, 3).map((item) => `goal: ${escapeHtml(item.title)}`).join("<br>") : ""}${intentMap.decisions?.length ? "<br>" + intentMap.decisions.slice(0, 4).map((item) => `decision: ${escapeHtml(item.title)}`).join("<br>") : ""}<br>${intentMap.gaps?.length ? intentMap.gaps.map(escapeHtml).join("<br>") : "gaps -"}</div></div>

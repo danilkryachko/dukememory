@@ -63,7 +63,7 @@ pub(crate) fn explain_component(
                 child.body.lines().next().unwrap_or("")
             ));
         }
-        prompt.push_str("\n");
+        prompt.push('\n');
     }
 
     if !connected_nodes.is_empty() {
@@ -77,7 +77,7 @@ pub(crate) fn explain_component(
                 node.body.lines().next().unwrap_or("")
             ));
         }
-        prompt.push_str("\n");
+        prompt.push('\n');
     }
 
     if !relevant_edges.is_empty() {
@@ -88,7 +88,7 @@ pub(crate) fn explain_component(
                 memory_id, edge.kind, edge.target
             ));
         }
-        prompt.push_str("\n");
+        prompt.push('\n');
     }
 
     prompt.push_str("---\n\n");

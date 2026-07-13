@@ -9,19 +9,45 @@ pub(crate) fn write_file(path: &Path, content: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn transactional(
+pub(crate) fn transactional<T>(
     conn: &Connection,
     label: &str,
-    f: impl FnOnce() -> Result<()>,
-) -> Result<()> {
-    conn.execute_batch("BEGIN IMMEDIATE TRANSACTION;")?;
+    f: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let nested = !conn.is_autocommit();
+    let savepoint = format!("dukememory_{}", Uuid::new_v4().simple());
+    if nested {
+        conn.execute_batch(&format!("SAVEPOINT {savepoint};"))?;
+    } else {
+        conn.execute_batch("BEGIN IMMEDIATE TRANSACTION;")?;
+    }
     match f() {
-        Ok(()) => {
-            conn.execute_batch("COMMIT;")?;
-            Ok(())
+        Ok(value) => {
+            let finish = if nested {
+                conn.execute_batch(&format!("RELEASE SAVEPOINT {savepoint};"))
+            } else {
+                conn.execute_batch("COMMIT;")
+            };
+            if let Err(err) = finish {
+                let _ = if nested {
+                    conn.execute_batch(&format!(
+                        "ROLLBACK TO SAVEPOINT {savepoint}; RELEASE SAVEPOINT {savepoint};"
+                    ))
+                } else {
+                    conn.execute_batch("ROLLBACK;")
+                };
+                return Err(err).with_context(|| format!("failed to commit transaction: {label}"));
+            }
+            Ok(value)
         }
         Err(err) => {
-            let _ = conn.execute_batch("ROLLBACK;");
+            let _ = if nested {
+                conn.execute_batch(&format!(
+                    "ROLLBACK TO SAVEPOINT {savepoint}; RELEASE SAVEPOINT {savepoint};"
+                ))
+            } else {
+                conn.execute_batch("ROLLBACK;")
+            };
             Err(err).with_context(|| format!("transaction failed: {label}"))
         }
     }

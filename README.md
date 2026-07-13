@@ -33,7 +33,7 @@ Transcript-based memory quickly turns into noise.
 - **Agent-native access** through an MCP server, Codex skill, CLI, and web UI.
 - **Structured memory cards** for decisions, constraints, commands, issues, and task state.
 - **Small context briefs** before coding, including file and symbol impact checks.
-- **Optional semantic recall** with Ollama or OpenAI-compatible embeddings.
+- **Local semantic recall** with MiniLM embeddings, plus optional Ollama or OpenAI-compatible providers.
 - **Autonomous maintenance** for freshness, backups, repair hints, gap review, and safe cleanup.
 - **Grounded answers** from memory with cited card ids and explicit gaps.
 - **One-command Codex wiring** so future chats know memory is installed.
@@ -96,6 +96,10 @@ dukememory recall "checkout validation" --changed-since-days 7 --json
 dukememory drift --root . --json
 dukememory context-governor "fix checkout validation" --target src/checkout.ts --json
 dukememory answer "what should we remember about checkout validation?" --json
+dukememory rag-debug "what should we remember about checkout validation?" --json
+dukememory rag-answer "what should we remember about checkout validation?" --json
+dukememory graph-rag "what decisions affect checkout validation?" --json
+dukememory eval rag --json
 dukememory explain-recall "checkout validation" --json
 dukememory memory-health-score --json
 dukememory memory-eval-story --json
@@ -137,7 +141,9 @@ dukememory embed-index
 .agent/MEMORY_CONTRACT.md
 ```
 
-No cloud service is required. Embeddings are optional.
+No cloud service is required. The default local profile uses MiniLM embeddings
+stored in SQLite; semantic recall remains optional for projects that only need
+FTS.
 
 ## Local-First Sync
 
@@ -152,10 +158,119 @@ dukememory sync status /mnt/vds/dukememory --json
 dukememory sync pull /mnt/vds/dukememory --policy manual --dry-run --json
 ```
 
+The basic `sync export` and `sync push` bundle is plaintext JSON. Keep its
+target private and permission-restricted. `remote-sync-v2` only writes an
+experimental external OpenSSL encryption/transfer plan; it does not encrypt or
+transfer a bundle by itself. Its report is deliberately marked
+`experimental: true`, `plan_only: true`, `executed: false`, and
+`encrypted_bundle: false`.
+
 `web-control-center-v5` exposes the same model for UI buttons: preview first,
 apply only guarded reversible actions, and keep rollback hints visible.
 
-## Embeddings
+## Embeddings And Local RAG
+
+```bash
+export DUKEMEMORY_EMBED_PROVIDER=local
+export DUKEMEMORY_EMBED_ENDPOINT=local
+export DUKEMEMORY_EMBED_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+
+dukememory embed-index
+dukememory embed-status --json
+dukememory vec-validate --backend json
+```
+
+`vec-validate --backend sqlite-vec` only probes an extension already loaded
+into SQLite. Retrieval continues to use application-side cosine search over
+the JSON embeddings; the legacy `vec-migrate` spelling remains a hidden CLI
+alias for compatibility.
+
+RAG commands use the same embedding provider for memory cards and can be
+inspected before generation. `embed-index` also embeds indexed source chunks,
+so semantic RAG can retrieve file evidence even when exact FTS terms are weak.
+Text/code files can also be indexed as local source chunks:
+
+```bash
+dukememory rag-ingest README.md --json
+dukememory rag-ingest README.md --apply --embed --json
+dukememory rag-sources --json
+
+dukememory rag-debug "what changed in checkout validation?" \
+  --budget-profile tiny \
+  --json
+
+dukememory rag-answer "what changed in checkout validation?" \
+  --budget-profile normal \
+  --json
+
+dukememory graph-rag "which memory cards are related to checkout validation?" \
+  --budget-profile normal \
+  --json
+
+dukememory eval rag \
+  --budget-profile tiny \
+  --json
+```
+
+`eval rag` checks the retrieval/source-pack half of RAG without running
+generation. Stored eval cases are used when present; otherwise it runs temporary
+self-probes from active memory cards so a project can still detect source-pack
+regressions before explicit benchmark cases are written. Each case reports the
+same packed source selection diagnostics as `rag-debug`, including selected
+chunk counts and overlap/file-cap suppression. Failing cases also distinguish
+expected evidence that was selected, suppressed by packing, or missing from the
+retrieved candidates. It also builds a deterministic grounded answer from the
+selected source pack and checks that expected evidence reaches the answer with a
+valid selected citation. The top-level `packing` and `grounded_answers`
+summaries aggregate those counts across the whole eval run for release-gate
+inspection.
+Chunked RAG sources provide file/document evidence for answers, while durable
+decisions and constraints should still be saved as reviewed memory cards.
+The same source-chunk indexing path is exposed to agents as MCP
+`memory_rag_ingest` and to the local web API as `POST /rag-ingest`; both remain
+dry-run unless `apply` is explicitly true.
+Use `rag-sources`, MCP `memory_rag_sources`, or HTTP `GET /rag-sources` to
+verify that indexed files are still present, fresh, backed by chunks, and backed
+by current semantic chunk embeddings for the configured embedding provider.
+If `--embed` is omitted during ingest, run `dukememory embed-index` before
+relying on semantic chunk recall. `--embed` refreshes only the source chunks
+touched by that ingest pass. Re-ingesting unchanged sources leaves existing
+chunks in place and preserves current chunk embeddings; `embed-index` remains
+the full repair command.
+The same RAG source-pack recall is surfaced in `memory-eval-story`,
+`benchmark-polish`, and the required `release-gate-v3` check
+`rag_source_pack_eval`, whose detail includes the aggregate `eval rag` packing
+and grounded-answer summaries.
+`rag-answer`, `rag-debug`, and `graph-rag` JSON reports include a compact
+`trace` array with ranked evidence ids, scores, reasons, and chunk file
+locations when source chunks are used. RAG source packing also suppresses
+heavily overlapping chunks from the same file and caps selected chunks per file
+so the prompt carries broader evidence instead of repeated context. The JSON
+`packing` report shows candidate/selected counts and chunk suppression counts
+overall and per file. Generated RAG answers expose a `generation_guard` report
+with `answer_source`, selected citations seen in generated text, and the
+fallback reason when the local model output is empty, prompt-shaped, or uncited.
+
+For fully local generation, configure `provider = "local-llama"` in
+`.agent/config.toml` and build with local generation support:
+
+```bash
+CMAKE_C_COMPILER_LAUNCHER=/usr/bin/env \
+CMAKE_CXX_COMPILER_LAUNCHER=/usr/bin/env \
+CMAKE_OBJC_COMPILER_LAUNCHER=/usr/bin/env \
+CMAKE_OBJCXX_COMPILER_LAUNCHER=/usr/bin/env \
+CMAKE_BUILD_PARALLEL_LEVEL=4 \
+cargo build --features local-embeddings,local-generation
+```
+
+The current lightweight local generation profile uses
+`HuggingFaceTB/SmolLM2-360M-Instruct-GGUF` with
+`smollm2-360m-instruct-q8_0.gguf`. Tiny models can produce short or uncited
+answers, so `rag-answer` and `graph-rag` require selected citation ids and
+return a grounded extractive fallback with citations when generated output is
+too weak or uncited.
+
+Ollama and OpenAI-compatible embedding providers are still supported:
 
 ```bash
 export DUKEMEMORY_EMBED_PROVIDER=ollama
@@ -163,7 +278,6 @@ export DUKEMEMORY_EMBED_ENDPOINT=http://localhost:11434
 export DUKEMEMORY_EMBED_MODEL=bge-m3:latest
 
 dukememory embed-index
-dukememory embed-status --json
 ```
 
 ## Web UI
@@ -173,6 +287,31 @@ dukememory serve-http --host 127.0.0.1 --port 8765
 ```
 
 Open `http://127.0.0.1:8765/`.
+
+Loopback access needs no token. Binding to a non-loopback address is refused
+unless a bearer token is configured. Prefer a permission-restricted token file
+so the secret does not appear in the process list:
+
+```bash
+umask 077
+openssl rand -hex 32 > .agent/http-token
+dukememory serve-http --host 0.0.0.0 --port 8765 \
+  --auth-token-file .agent/http-token
+```
+
+`--auth-token` and `DUKEMEMORY_HTTP_TOKEN` remain available for compatibility;
+`DUKEMEMORY_HTTP_TOKEN_FILE` is the environment equivalent of the file option.
+API clients send `Authorization: Bearer ...`; the web UI asks once and keeps it
+in session storage. State-changing browser requests are restricted to the
+request host. Extra trusted origins can be listed, comma-separated, in
+`DUKEMEMORY_HTTP_ALLOWED_ORIGINS`.
+
+The built-in server is plain HTTP. Terminate TLS at a trusted reverse proxy
+(for example Caddy or nginx) whenever traffic leaves the host, preserve the
+original `Host` header, and restrict network access with a firewall. Access
+events are emitted as one-line JSON on stderr. SIGINT, SIGTERM, and SIGHUP stop
+accepting new connections, drain the bounded worker queue, and join workers
+before exit.
 
 Use it to search memory, inspect evidence, review inbox items, watch usage,
 check autonomous health, explain recall, inspect the project intent map, run

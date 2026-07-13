@@ -114,12 +114,12 @@ fn mcp_tools() -> Value {
         {"name":"memory_budget_plan","description":"Choose the smallest useful memory budget for a task","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"scope":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_feedback","description":"Record lightweight useful/useless/missing feedback for memory reads","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"rating":{"type":"string"},"command":{"type":"string"},"query":{"type":"string"},"note":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["rating"]}},
         {"name":"memory_drift","description":"Detect cheap local memory drift before coding as bounded summary by default","inputSchema":{"type":"object","properties":{"changed_only":{"type":"boolean"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"}}}},
-        {"name":"memory_add","description":"Add a typed memory card","inputSchema":{"type":"object","properties":{"type":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"scope":{"type":"string"},"source":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["type","title","body"]}},
-        {"name":"memory_remember","description":"Remember plain text as local memory","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"type":{"type":"string"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["text"]}},
+        {"name":"memory_add","description":"Add a typed memory card","inputSchema":{"type":"object","properties":{"type":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"scope":{"type":"string"},"source":{"type":"string"},"layer":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["type","title","body"]}},
+        {"name":"memory_remember","description":"Remember plain text as local memory","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"type":{"type":"string"},"scope":{"type":"string"},"layer":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["text"]}},
         {"name":"memory_search","description":"Search local memory with compact query-focused summaries","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
         {"name":"memory_context_pack","description":"Return a compact relevant memory pack","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
-        {"name":"memory_rag_answer","description":"Answer a question using grounded project memory via LLM generation","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"scope":{"type":"string"},"gen_provider":{"type":"string"},"gen_endpoint":{"type":"string"},"gen_model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
-        {"name":"memory_graph_rag_answer","description":"Answer a question using 1-hop graph-expanded RAG via LLM generation","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"scope":{"type":"string"},"gen_provider":{"type":"string"},"gen_endpoint":{"type":"string"},"gen_model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
+        {"name":"memory_rag_answer","description":"Answer a question using grounded project memory via LLM generation","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"scope":{"type":"string"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"gen_provider":{"type":"string"},"gen_endpoint":{"type":"string"},"gen_model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
+        {"name":"memory_graph_rag_answer","description":"Answer a question using 1-hop graph-expanded RAG via LLM generation","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"scope":{"type":"string"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"gen_provider":{"type":"string"},"gen_endpoint":{"type":"string"},"gen_model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
         {"name":"memory_guided_tour","description":"Generate a pedagogical guided tour of the project memory via LLM generation","inputSchema":{"type":"object","properties":{"gen_provider":{"type":"string"},"gen_endpoint":{"type":"string"},"gen_model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":[]}},
         {"name":"memory_explain_component","description":"Perform a Deep Dive explanation of a specific memory component using its neighbors","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"gen_provider":{"type":"string"},"gen_endpoint":{"type":"string"},"gen_model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_onboard_guide","description":"Generate a comprehensive Onboarding Guide from the knowledge graph","inputSchema":{"type":"object","properties":{"gen_provider":{"type":"string"},"gen_endpoint":{"type":"string"},"gen_model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":[]}},
@@ -148,6 +148,8 @@ fn mcp_tools() -> Value {
         items.extend([
             json!({"name":"memory_recall","description":"Return compressed recall, including recent/as-of/changed-since temporal modes","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"scope":{"type":"string"},"recent":{"type":"boolean"},"as_of":{"type":"string"},"as_of_days_ago":{"type":"number"},"changed_since":{"type":"string"},"changed_since_days":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}}),
             json!({"name":"memory_upload","description":"Review a local text/markdown/json/csv file as inbox-first memory candidates","inputSchema":{"type":"object","properties":{"input":{"type":"string"},"scope":{"type":"string"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["input"]}}),
+            json!({"name":"memory_rag_ingest","description":"Index text/code files as chunked local RAG sources; dry-run unless apply=true; set embed=true to refresh semantic chunk embeddings after apply","inputSchema":{"type":"object","properties":{"input":{"type":"string"},"scope":{"type":"string"},"apply":{"type":"boolean"},"embed":{"type":"boolean"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"chunk_chars":{"type":"number"},"overlap_chars":{"type":"number"},"max_file_bytes":{"type":"number"},"max_files":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["input"]}}),
+            json!({"name":"memory_rag_sources","description":"Inspect indexed RAG source freshness, stale files, chunk counts, and semantic chunk embedding freshness","inputSchema":{"type":"object","properties":{"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_memanto_gap","description":"Report Memanto-style capability coverage for dukememory","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_timeline","description":"Show one memory card timeline with audit events and real agent reads","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}}),
             json!({"name":"memory_conflict_review","description":"Review duplicate, stale, superseded, and contradiction-prone memory groups","inputSchema":{"type":"object","properties":{"stale_days":{"type":"number"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
@@ -195,6 +197,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     source: json_string(&args, "source"),
                     supersedes: None,
                     confidence: 1.0,
+                    layer: json_string(&args, "layer"),
                     links: Vec::new(),
                 },
             )
@@ -219,6 +222,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     source: Some("mcp".to_string()),
                     supersedes: None,
                     confidence: 0.8,
+                    layer: json_string(&args, "layer"),
                     links: Vec::new(),
                 },
             )
@@ -275,7 +279,14 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let started = Instant::now();
             let query = json_string(&args, "query").ok_or_else(|| "missing query".to_string())?;
             let limit = json_usize(&args, "limit").unwrap_or(12);
+            let budget = json_usize(&args, "budget").unwrap_or(3000);
             let scope = json_string(&args, "scope");
+            let embed_provider = json_string(&args, "provider")
+                .unwrap_or_else(|| DEFAULT_EMBED_PROVIDER.to_string());
+            let embed_endpoint = json_string(&args, "endpoint")
+                .unwrap_or_else(|| DEFAULT_EMBED_ENDPOINT.to_string());
+            let embed_model =
+                json_string(&args, "model").unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
 
             let gen_provider = json_string(&args, "gen_provider").unwrap_or_else(|| {
                 std::env::var("DUKEMEMORY_GEN_PROVIDER").unwrap_or_else(|_| "ollama".to_string())
@@ -293,6 +304,10 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 &query,
                 scope.as_deref(),
                 limit,
+                budget,
+                &embed_provider,
+                &embed_endpoint,
+                &embed_model,
                 &gen_provider,
                 &gen_endpoint,
                 &gen_model,
@@ -305,9 +320,9 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     command: "memory_rag_answer",
                     query: &query,
                     ids: &report.citations,
-                    semantic_used: true,
+                    semantic_used: report.semantic_used,
                     result_count: report.citations.len(),
-                    budget: 1600,
+                    budget,
                     elapsed_ms: started.elapsed().as_millis(),
                 },
             )
@@ -319,7 +334,14 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let started = Instant::now();
             let query = json_string(&args, "query").ok_or_else(|| "missing query".to_string())?;
             let limit = json_usize(&args, "limit").unwrap_or(12);
+            let budget = json_usize(&args, "budget").unwrap_or(3000);
             let scope = json_string(&args, "scope");
+            let embed_provider = json_string(&args, "provider")
+                .unwrap_or_else(|| DEFAULT_EMBED_PROVIDER.to_string());
+            let embed_endpoint = json_string(&args, "endpoint")
+                .unwrap_or_else(|| DEFAULT_EMBED_ENDPOINT.to_string());
+            let embed_model =
+                json_string(&args, "model").unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
 
             let gen_provider = json_string(&args, "gen_provider").unwrap_or_else(|| {
                 std::env::var("DUKEMEMORY_GEN_PROVIDER").unwrap_or_else(|_| "ollama".to_string())
@@ -343,7 +365,11 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 &query,
                 scope.as_deref(),
                 limit,
+                budget,
                 &config,
+                &embed_provider,
+                &embed_endpoint,
+                &embed_model,
             )
             .map_err(|err| err.to_string())?;
 
@@ -353,9 +379,9 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     command: "memory_graph_rag_answer",
                     query: &query,
                     ids: &report.citations,
-                    semantic_used: true,
+                    semantic_used: report.semantic_used,
                     result_count: report.citations.len(),
-                    budget: 1600,
+                    budget,
                     elapsed_ms: started.elapsed().as_millis(),
                 },
             )
@@ -952,6 +978,63 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     .map_err(|err| err.to_string())?;
             budgeted_mcp_json_response(&report, max_chars, &["candidates", "quality_checks"])
                 .map_err(|err| err.to_string())?
+        }
+        "memory_rag_ingest" => {
+            let input = json_string(&args, "input").ok_or_else(|| "missing input".to_string())?;
+            let scope = json_string(&args, "scope").unwrap_or_else(|| "project".to_string());
+            let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            let embed = args.get("embed").and_then(Value::as_bool).unwrap_or(false);
+            let provider = json_string(&args, "provider")
+                .unwrap_or_else(|| DEFAULT_EMBED_PROVIDER.to_string());
+            let endpoint = json_string(&args, "endpoint")
+                .unwrap_or_else(|| DEFAULT_EMBED_ENDPOINT.to_string());
+            let model =
+                json_string(&args, "model").unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let report = crate::app::rag_ingest::rag_ingest_report(
+                &conn,
+                crate::app::rag_ingest::RagIngestRequest {
+                    root: &selected_root,
+                    input: Path::new(&input),
+                    scope: &scope,
+                    apply,
+                    embed,
+                    provider: &provider,
+                    endpoint: &endpoint,
+                    model: &model,
+                    chunk_chars: json_usize(&args, "chunk_chars").unwrap_or(900),
+                    overlap_chars: json_usize(&args, "overlap_chars").unwrap_or(140),
+                    max_file_bytes: json_usize(&args, "max_file_bytes").unwrap_or(200_000),
+                    max_files: json_usize(&args, "max_files").unwrap_or(128),
+                    json: true,
+                },
+            )
+            .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&report, max_chars, &["sources", "skipped", "actions"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_rag_sources" => {
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
+            let provider = json_string(&args, "provider")
+                .unwrap_or_else(|| DEFAULT_EMBED_PROVIDER.to_string());
+            let endpoint = json_string(&args, "endpoint")
+                .unwrap_or_else(|| DEFAULT_EMBED_ENDPOINT.to_string());
+            let model =
+                json_string(&args, "model").unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
+            let report = crate::app::rag_ingest::rag_sources_report(
+                &conn,
+                &selected_root,
+                &provider,
+                &endpoint,
+                &model,
+            )
+            .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(
+                &report,
+                max_chars,
+                &["sources", "issues", "recommendations"],
+            )
+            .map_err(|err| err.to_string())?
         }
         "memory_memanto_gap" => {
             let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);

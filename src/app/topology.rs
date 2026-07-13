@@ -50,10 +50,10 @@ pub(crate) fn compute_topology(conn: &Connection) -> Result<TopologyResult> {
 
     // 3. Compute rankings
     let mut fan_in: Vec<_> = fan_in_counts.clone().into_iter().collect();
-    fan_in.sort_by(|a, b| b.1.cmp(&a.1)); // descending
+    fan_in.sort_by_key(|item| std::cmp::Reverse(item.1));
 
     let mut fan_out: Vec<_> = fan_out_counts.clone().into_iter().collect();
-    fan_out.sort_by(|a, b| b.1.cmp(&a.1)); // descending
+    fan_out.sort_by_key(|item| std::cmp::Reverse(item.1));
 
     // 4. Find Entry Points (Heuristics: low fan_in, high fan_out, or specific types)
     let mut entry_candidates: Vec<(String, isize)> = Vec::new();
@@ -73,7 +73,7 @@ pub(crate) fn compute_topology(conn: &Connection) -> Result<TopologyResult> {
         }
         entry_candidates.push((id.clone(), score));
     }
-    entry_candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    entry_candidates.sort_by_key(|item| std::cmp::Reverse(item.1));
     let entry_points: Vec<String> = entry_candidates
         .into_iter()
         .take(5)

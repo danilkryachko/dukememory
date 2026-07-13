@@ -61,9 +61,22 @@ pub(crate) fn generate_answer(
         "openai" | "openai-compatible" | "openai_compatible" => {
             fetch_openai_completion(endpoint, model, prompt)
         }
+        "local" | "local-llama" | "local_llama" | "llama-cpp" | "llama_cpp" => {
+            generate_local_completion(endpoint, model, prompt)
+        }
         "mock" => Ok(format!("Mock response for: {}", truncate_chars(prompt, 50))),
         other => bail!("unsupported generation provider: {other}"),
     }
+}
+
+#[cfg(feature = "local-generation")]
+fn generate_local_completion(endpoint: &str, model: &str, prompt: &str) -> Result<String> {
+    crate::app::local_generation::generate_local(endpoint, model, prompt)
+}
+
+#[cfg(not(feature = "local-generation"))]
+fn generate_local_completion(_endpoint: &str, _model: &str, _prompt: &str) -> Result<String> {
+    bail!("local generation provider requires building dukememory with --features local-generation")
 }
 
 fn fetch_ollama_completion(endpoint: &str, model: &str, prompt: &str) -> Result<String> {
