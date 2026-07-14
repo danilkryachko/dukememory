@@ -24,6 +24,11 @@ pub(crate) enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Print the stable operation contract shared by CLI, MCP, and HTTP.
+    Operations {
+        #[arg(long)]
+        json: bool,
+    },
     /// Add a typed memory card.
     Add {
         memory_type: MemoryType,

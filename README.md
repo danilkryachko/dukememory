@@ -11,7 +11,10 @@
 
 [GitHub](https://github.com/danilkryachko/dukememory)
 
-[Architecture](docs/architecture.md) · [Core operation catalog](docs/operations.md) · [Production deployment](docs/production-deployment.md)
+[Architecture](docs/architecture.md) · [Operation catalog](docs/operations.md) · [Production deployment](docs/production-deployment.md)
+
+Run `dukememory operations --json` to inspect the same stable contract exposed
+by MCP `memory_operations` and HTTP `GET /operations`.
 
 `dukememory` is a Rust CLI, MCP server, and Codex skill that gives Codex,
 Claude, Cursor, and other AI coding agents durable project memory. It stores

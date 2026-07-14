@@ -14,7 +14,7 @@ pub(crate) fn route_memory_operation(
     let response = match (method, path) {
         ("GET", HTTP_OPERATIONS) => HttpResponse::ok(json!({
             "version": 1,
-            "operations": CORE_OPERATION_CATALOG,
+            "operations": OPERATION_CATALOG,
         })),
         ("GET", HTTP_MEMORY_GET) => list_memories(conn, query)?,
         ("POST", HTTP_REMEMBER) => remember(memory_app, body)?,

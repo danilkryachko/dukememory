@@ -126,6 +126,7 @@ fn mcp_tools() -> Value {
         {"name":"memory_session_trace","description":"Show recalled memory, actions, validation, and outcome for an agent session","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_runner_profiles","description":"List named Codex, Gemini, Antigravity, and local runner profiles with PATH readiness","inputSchema":{"type":"object","properties":{"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_drift","description":"Detect cheap local memory drift before coding as bounded summary by default","inputSchema":{"type":"object","properties":{"changed_only":{"type":"boolean"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"}}}},
+        {"name":MCP_OPERATIONS,"description":"Return the stable operation contract shared by CLI, MCP, and HTTP","inputSchema":{"type":"object","properties":{}}},
         {"name":MCP_MEMORY_ADD,"description":"Add a typed memory card","inputSchema":{"type":"object","properties":{"type":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"scope":{"type":"string"},"source":{"type":"string"},"layer":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["type","title","body"]}},
         {"name":MCP_MEMORY_REMEMBER,"description":"Remember plain text as local memory","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"type":{"type":"string"},"scope":{"type":"string"},"layer":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["text"]}},
         {"name":MCP_MEMORY_SEARCH,"description":"Search local memory with compact query-focused summaries","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
@@ -398,6 +399,9 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         "memory_runner_profiles" => {
             let profiles = runner_profiles_status(&selected_root).map_err(|err| err.to_string())?;
             serde_json::to_string_pretty(&profiles).map_err(|err| err.to_string())?
+        }
+        MCP_OPERATIONS => {
+            serde_json::to_string_pretty(OPERATION_CATALOG).map_err(|err| err.to_string())?
         }
         MCP_MEMORY_ADD => {
             let memory_type = json_string(&args, "type").unwrap_or_else(|| "note".to_string());

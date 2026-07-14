@@ -6951,6 +6951,7 @@ pub(crate) fn mcp_tool_surface_v2_report() -> McpToolSurfaceV2Report {
 
 fn mcp_v2_tool_names() -> Vec<String> {
     [
+        MCP_OPERATIONS,
         "memory_health_score",
         "memory_explain_recall",
         "memory_control_center_v2",

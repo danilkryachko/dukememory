@@ -12,6 +12,10 @@ pub(crate) fn run() -> Result<()> {
     )?;
 
     match cli.command {
+        Command::Operations { json } => {
+            print_operation_catalog(json)?;
+            return Ok(());
+        }
         Command::Restore {
             input,
             force,
@@ -55,6 +59,7 @@ pub(crate) fn run() -> Result<()> {
 
     match cli.command {
         Command::Init { config, force } => init_project(&conn, &cli.db, &config, force)?,
+        Command::Operations { .. } => unreachable!("handled before database open"),
         Command::Add {
             memory_type,
             title,

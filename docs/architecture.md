@@ -20,7 +20,7 @@ flowchart LR
 - `src/domain.rs` owns memory type, scope, and status values. Invalid values cannot enter a mutation use case.
 - `src/application.rs` is the adapter-facing use-case layer. Core create, update, status, delete, retrieval, and maintenance calls pass through it.
 - `src/storage.rs` exposes the crate-private `MemoryStore`; SQLite details stay under `src/app/`.
-- `src/operation_catalog.rs` maps stable core operations across CLI, MCP, and HTTP. The checked-in table is in [operations.md](operations.md).
+- `src/operation_catalog.rs` maps stable memory, retrieval, RAG, release, and agent-session operations across CLI, MCP, and HTTP. The checked-in table is in [operations.md](operations.md).
 - `src/http_api.rs` owns transport-neutral HTTP responses, status mapping, and response security headers.
 
 Legacy maintenance and observability commands remain grouped under `src/app/`. New cross-surface behavior should enter through the application layer instead of adding independent mutation logic to each adapter.
@@ -65,7 +65,7 @@ Custom `hf://` generation models support `hf://owner/repo@revision:file.gguf`. U
 ## Extension rules
 
 - Add domain values and invariants in `src/domain.rs` or the relevant application use case.
-- Add a stable cross-surface operation to `CORE_OPERATION_CATALOG`, then update CLI/MCP/HTTP adapters from that definition and refresh `docs/operations.md`.
+- Add a stable cross-surface operation to `OPERATION_CATALOG`, then update CLI/MCP/HTTP adapters from that definition and refresh `docs/operations.md`.
 - Add schema changes as a new numbered migration and extend structural verification and migration tests.
 - Keep external model downloads pinned and checksummed; keep their dependencies behind a Cargo feature.
 - Put focused integration tests in a dedicated file under `tests/` rather than expanding the legacy compatibility matrix in `tests/cli.rs`.

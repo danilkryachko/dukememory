@@ -3470,6 +3470,7 @@ fn print_completions(shell: CompletionShell) {
     let _ = Cli::command();
     let commands = [
         "init",
+        "operations",
         CLI_ADD,
         CLI_REMEMBER,
         "what-do-we-know",
@@ -3686,6 +3687,7 @@ fn print_manpage() {
     println!("SYNOPSIS");
     println!("  dukememory <command> [options]");
     println!("AGENT-NATIVE COMMANDS");
+    println!("  operations --json             stable CLI/MCP/HTTP operation catalog");
     println!("  remember TEXT                 store durable memory");
     println!("  what-do-we-know QUERY         search memory");
     println!("  what-next                     print current next actions");

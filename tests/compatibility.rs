@@ -324,7 +324,14 @@ fn core_cli_mcp_and_http_contracts_remain_callable() {
 
     let help = stdout(command(&db).arg("--help"));
     for command_name in [
-        "add", "remember", "get", "search", "update", "status", "delete",
+        "operations",
+        "add",
+        "remember",
+        "get",
+        "search",
+        "update",
+        "status",
+        "delete",
     ] {
         assert!(
             help.contains(command_name),
@@ -334,6 +341,7 @@ fn core_cli_mcp_and_http_contracts_remain_callable() {
 
     let mcp_tools = mcp_tool_names(&db);
     for tool in [
+        "memory_operations",
         "memory_add",
         "memory_remember",
         "memory_get",
@@ -352,7 +360,16 @@ fn core_cli_mcp_and_http_contracts_remain_callable() {
         .iter()
         .filter_map(|operation| operation["id"].as_str())
         .collect::<Vec<_>>();
-    assert_eq!(operation_ids, CORE_OPERATION_IDS);
+    assert!(operation_ids.len() >= 25);
+    for operation_id in CORE_OPERATION_IDS {
+        assert!(
+            operation_ids.contains(operation_id),
+            "missing core operation {operation_id}"
+        );
+    }
+    let cli_catalog: Value =
+        serde_json::from_str(&stdout(command(&db).arg("operations").arg("--json"))).unwrap();
+    assert_eq!(cli_catalog, catalog["operations"]);
 
     let remembered = http_json(
         &db,
