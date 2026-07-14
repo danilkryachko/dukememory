@@ -682,12 +682,15 @@ For every new chat or coding task in this repository:
 - To run the V2 autonomous memory loop with governance and quality gates, run `dukememory autonomous-loop-v2 --json`; use `--apply` only when governance is ready.
 - To enforce autonomous memory governance, run `dukememory governance-enforce --json`; use `--apply` to log a clean enforcement pass.
 - To run a CI-friendly memory quality gate, run `dukememory memory-quality-ci --json`.
+- To run grounded RAG eval with matrix, retrieval tuning, and baseline comparison, run `dukememory eval rag --json`; write a reviewed baseline with `dukememory eval rag --write-baseline --json`.
+- To run graph-RAG eval over memory relationships, run `dukememory eval graph-rag --json`.
 - To inspect all discovered project memories with V2 quality metrics, run `dukememory fleet-dashboard-v2 --json`.
 - To plan guarded remote sync apply, run `dukememory remote-sync-apply-flow --json`; use `--target` and a mode-600 sync passphrase file before `--apply`.
 - To inspect MCP V2 memory tool exposure, run `dukememory mcp-tool-surface-v2 --json`.
 - To inspect MCP V3 memory tool exposure, run `dukememory mcp-tool-surface-v3 --json`.
 - To run the V3 autonomous memory autopilot, run `dukememory autopilot-v3 --json`; use `--apply` for guarded reversible actions.
 - To tune retrieval from live usefulness, run `dukememory self-learning-retrieval --json`; use `--apply` to write the selected ranking profile.
+- To explain/apply retrieval ranking from QA and RAG eval signals, run `dukememory auto-ranking-tune --json`; use `--apply` only when `safe_to_apply` is true.
 - To detect/apply project-specific memory defaults, run `dukememory project-role-profile --json`; use `--apply` after reviewing inferred kind.
 - To review inbox suggestions with confidence explanations, run `dukememory inbox-ai-reviewer --json`; use `--apply` only for safe high-confidence groups.
 - To inspect the simplified web control model, run `dukememory web-control-center-v3 --json`.

@@ -2078,6 +2078,9 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
     assert!(stdout.contains("memory_timeline"));
     assert!(stdout.contains("memory_conflict_review"));
     assert!(stdout.contains("memory_release_gate_v3"));
+    assert!(stdout.contains("memory_rag_eval"));
+    assert!(stdout.contains("memory_graph_rag_eval"));
+    assert!(stdout.contains("memory_auto_ranking_tune"));
     assert!(stdout.contains("memory_mcp_surface_v3"));
     assert!(stdout.contains("memory_session_start"));
     assert!(stdout.contains("memory_session_context"));
@@ -10952,12 +10955,16 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "autonomous-loop-v2",
         "governance-enforce",
         "memory-quality-ci",
+        "eval rag",
+        "eval rag --write-baseline",
+        "eval graph-rag",
         "fleet-dashboard-v2",
         "remote-sync-apply-flow",
         "mcp-tool-surface-v2",
         "mcp-tool-surface-v3",
         "autopilot-v3",
         "self-learning-retrieval",
+        "auto-ranking-tune",
         "project-role-profile",
         "inbox-ai-reviewer",
         "web-control-center-v3",
@@ -11067,12 +11074,16 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         "autonomous-loop-v2",
         "governance-enforce",
         "memory-quality-ci",
+        "eval rag",
+        "eval rag --write-baseline",
+        "eval graph-rag",
         "fleet-dashboard-v2",
         "remote-sync-apply-flow",
         "mcp-tool-surface-v2",
         "mcp-tool-surface-v3",
         "autopilot-v3",
         "self-learning-retrieval",
+        "auto-ranking-tune",
         "project-role-profile",
         "inbox-ai-reviewer",
         "web-control-center-v3",
@@ -14536,6 +14547,12 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(memory_quality_ci_json["version"], 1);
     assert!(memory_quality_ci_json["failed_checks"].as_array().is_some());
     assert!(memory_quality_ci_json["release_gate_v2"].is_null());
+    assert!(memory_quality_ci_json["rag_eval_status"].as_str().is_some());
+    assert!(
+        memory_quality_ci_json["graph_rag_eval_status"]
+            .as_str()
+            .is_some()
+    );
 
     let fleet_dashboard_v2 = stdout(
         cmd(&db)
@@ -15346,6 +15363,27 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .iter()
             .any(|item| item.as_str() == Some("memory_release_gate_v3"))
     );
+    assert!(
+        mcp_surface_v3_json["expected_tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("memory_rag_eval"))
+    );
+    assert!(
+        mcp_surface_v3_json["expected_tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("memory_graph_rag_eval"))
+    );
+    assert!(
+        mcp_surface_v3_json["expected_tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("memory_auto_ranking_tune"))
+    );
 
     let mcp_discipline_v3 = stdout(
         cmd(&db)
@@ -15387,6 +15425,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let release_gate_v3_json: Value = serde_json::from_str(&release_gate_v3).unwrap();
     assert_eq!(release_gate_v3_json["version"], 1);
     assert!(release_gate_v3_json["mcp_discipline_v3"].is_object());
+    assert!(release_gate_v3_json["graph_rag_eval"].is_object());
 
     let web_control_v12 = stdout(
         cmd(&db)

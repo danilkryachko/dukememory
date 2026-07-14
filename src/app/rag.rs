@@ -1309,9 +1309,12 @@ fn rag_extractive_answer_sources(source_pack: &[RagSource]) -> Vec<&RagSource> {
     const CHUNK_SOURCE_LIMIT: usize = 2;
     const TOTAL_SOURCE_LIMIT: usize = 6;
 
-    let mut selected = BTreeSet::new();
+    let mut selected = Vec::new();
     for index in 0..source_pack.len().min(PRIMARY_SOURCE_LIMIT) {
-        selected.insert(index);
+        if selected.len() >= TOTAL_SOURCE_LIMIT {
+            break;
+        }
+        selected.push(index);
     }
     for index in source_pack
         .iter()
@@ -1320,11 +1323,23 @@ fn rag_extractive_answer_sources(source_pack: &[RagSource]) -> Vec<&RagSource> {
         .map(|(index, _)| index)
         .take(CHUNK_SOURCE_LIMIT)
     {
-        selected.insert(index);
+        if selected.len() >= TOTAL_SOURCE_LIMIT {
+            break;
+        }
+        if !selected.contains(&index) {
+            selected.push(index);
+        }
+    }
+    for index in 0..source_pack.len() {
+        if selected.len() >= TOTAL_SOURCE_LIMIT {
+            break;
+        }
+        if !selected.contains(&index) {
+            selected.push(index);
+        }
     }
     selected
         .into_iter()
-        .take(TOTAL_SOURCE_LIMIT)
         .map(|index| &source_pack[index])
         .collect()
 }
@@ -1503,6 +1518,23 @@ mod rag_tests {
 
         assert!(answer.contains("memory_rag_ingest"));
         assert!(answer.contains("[chunk-b]"));
+    }
+
+    #[test]
+    fn rag_extractive_answer_fills_remaining_slots_after_chunks() {
+        let sources = vec![
+            source("mem-a", "active", 90.0),
+            source("mem-b", "active", 89.0),
+            source("mem-c", "active", 88.0),
+            source("mem-d", "active", 87.0),
+            source("expected-card", "active", 86.0),
+            chunk_source("chunk-a", "README.md", 10, 20, 80.0),
+        ];
+
+        let answer = rag_extractive_answer("Which relationship supports evidence?", &sources, &[]);
+
+        assert!(answer.contains("[chunk-a]"));
+        assert!(answer.contains("[expected-card]"));
     }
 
     #[test]

@@ -889,6 +889,7 @@ pub(crate) struct ReleaseGateV3Report {
     pub(crate) mcp_discipline_v3: McpDisciplineV3Report,
     pub(crate) fleet_quality: FleetQualityReport,
     pub(crate) rag_eval: RagEvalReport,
+    pub(crate) graph_rag_eval: GraphRagEvalReport,
     pub(crate) checks: Vec<ReleaseGateCheck>,
     pub(crate) issues: Vec<String>,
     pub(crate) recommendations: Vec<String>,
@@ -979,6 +980,12 @@ pub(crate) struct MemoryQualityCiReport {
     pub(crate) health_score: f64,
     pub(crate) benchmark_score: f64,
     pub(crate) audit_score: f64,
+    pub(crate) rag_eval_status: String,
+    pub(crate) rag_eval_recall: f64,
+    pub(crate) rag_eval_grounded_coverage: f64,
+    pub(crate) graph_rag_eval_status: String,
+    pub(crate) graph_rag_eval_recall: f64,
+    pub(crate) graph_rag_eval_edges: usize,
     pub(crate) failed_checks: Vec<String>,
     pub(crate) release_gate_v2: Option<ReleaseGateV2Report>,
     pub(crate) recommendations: Vec<String>,
@@ -6029,6 +6036,21 @@ pub(crate) fn release_gate_v3_report(
         Some(&root),
         false,
     )?;
+    let graph_generation = crate::runtime_config::GenerationConfig {
+        provider: "mock".to_string(),
+        endpoint: "local".to_string(),
+        model: "extractive-fallback".to_string(),
+    };
+    let graph_rag_eval = graph_rag_eval_report(
+        conn,
+        None,
+        8,
+        3_000,
+        &graph_generation,
+        DEFAULT_EMBED_PROVIDER,
+        DEFAULT_EMBED_ENDPOINT,
+        DEFAULT_EMBED_MODEL,
+    )?;
     let mut checks = release_gate_v2.checks.clone();
     checks.push(ReleaseGateCheck {
         name: "memory_effectiveness_v2".to_string(),
@@ -6149,6 +6171,21 @@ pub(crate) fn release_gate_v3_report(
                 .unwrap_or("-")
         ),
     });
+    checks.push(ReleaseGateCheck {
+        name: "graph_rag_eval".to_string(),
+        ok: graph_rag_eval.ok || graph_rag_eval.total == 0,
+        required: true,
+        detail: format!(
+            "status={} recall={:.1}% grounded={:.1}% passed={}/{} edges={} relationship_coverage={:.1}%",
+            graph_rag_eval.status,
+            graph_rag_eval.recall,
+            graph_rag_eval.grounded_coverage,
+            graph_rag_eval.passed,
+            graph_rag_eval.total,
+            graph_rag_eval.graph.total_edges,
+            graph_rag_eval.graph.average_relationship_coverage
+        ),
+    });
     let mut issues = release_gate_v2.issues.clone();
     for check in &checks {
         if check.required && !check.ok {
@@ -6165,6 +6202,7 @@ pub(crate) fn release_gate_v3_report(
     recommendations.extend(mcp_discipline_v3.recommendations.clone());
     recommendations.extend(fleet_quality.recommendations.clone());
     recommendations.extend(rag_sources.recommendations.clone());
+    recommendations.extend(graph_rag_eval.recommendations.clone());
     recommendations.sort();
     recommendations.dedup();
     let ok = issues.is_empty();
@@ -6183,6 +6221,7 @@ pub(crate) fn release_gate_v3_report(
         mcp_discipline_v3,
         fleet_quality,
         rag_eval,
+        graph_rag_eval,
         checks,
         issues,
         recommendations,
@@ -6595,6 +6634,32 @@ pub(crate) fn memory_quality_ci_report(
 ) -> Result<MemoryQualityCiReport> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let gate = release_gate_v2_report(conn, db, &root, since_days, true, false)?;
+    let rag_eval = rag_eval_report_with_baseline(
+        conn,
+        None,
+        8,
+        3_000,
+        DEFAULT_EMBED_PROVIDER,
+        DEFAULT_EMBED_ENDPOINT,
+        DEFAULT_EMBED_MODEL,
+        Some(&root),
+        false,
+    )?;
+    let graph_generation = crate::runtime_config::GenerationConfig {
+        provider: "mock".to_string(),
+        endpoint: "local".to_string(),
+        model: "extractive-fallback".to_string(),
+    };
+    let graph_rag_eval = graph_rag_eval_report(
+        conn,
+        None,
+        8,
+        3_000,
+        &graph_generation,
+        DEFAULT_EMBED_PROVIDER,
+        DEFAULT_EMBED_ENDPOINT,
+        DEFAULT_EMBED_MODEL,
+    )?;
     let mut failed_checks = gate
         .checks
         .iter()
@@ -6605,12 +6670,24 @@ pub(crate) fn memory_quality_ci_report(
         })
         .map(|check| check.name.clone())
         .collect::<Vec<_>>();
+    if !(rag_eval.ok && rag_eval.recall >= 80.0) {
+        failed_checks.push("rag_source_pack_eval".to_string());
+    }
+    if matches!(rag_eval.baseline.status.as_str(), "invalid" | "regressed") {
+        failed_checks.push("rag_eval_baseline".to_string());
+    }
+    if graph_rag_eval.total > 0 && !graph_rag_eval.ok {
+        failed_checks.push("graph_rag_eval".to_string());
+    }
     failed_checks.sort();
     failed_checks.dedup();
     let ok = failed_checks.is_empty()
         && gate.health.score >= 85.0
         && gate.benchmark.score >= 80.0
-        && gate.audit_v2.score >= 80.0;
+        && gate.audit_v2.score >= 80.0
+        && rag_eval.ok
+        && !matches!(rag_eval.baseline.status.as_str(), "invalid" | "regressed")
+        && (graph_rag_eval.total == 0 || graph_rag_eval.ok);
     Ok(MemoryQualityCiReport {
         version: 1,
         ok,
@@ -6621,12 +6698,18 @@ pub(crate) fn memory_quality_ci_report(
         health_score: gate.health.score,
         benchmark_score: gate.benchmark.score,
         audit_score: gate.audit_v2.score,
+        rag_eval_status: rag_eval.status.clone(),
+        rag_eval_recall: rag_eval.recall,
+        rag_eval_grounded_coverage: rag_eval.grounded_answers.coverage,
+        graph_rag_eval_status: graph_rag_eval.status.clone(),
+        graph_rag_eval_recall: graph_rag_eval.recall,
+        graph_rag_eval_edges: graph_rag_eval.graph.total_edges,
         failed_checks,
         release_gate_v2: if minimal { None } else { Some(gate) },
         recommendations: if ok {
             vec!["memory quality CI passed".to_string()]
         } else {
-            vec!["inspect release-gate-v2 failed checks before publishing".to_string()]
+            vec!["inspect memory-quality-ci failed checks before publishing".to_string()]
         },
     })
 }
@@ -7012,6 +7095,9 @@ fn mcp_v3_tool_names() -> Vec<String> {
             "memory_effectiveness_v2",
             "memory_rag_ingest",
             "memory_rag_sources",
+            "memory_rag_eval",
+            "memory_graph_rag_eval",
+            "memory_auto_ranking_tune",
             "memory_recall_baselines",
             "memory_conflict_apply",
             "memory_mcp_surface_v3",
@@ -14963,12 +15049,16 @@ fn agent_required_commands() -> &'static [&'static str] {
         "autonomous-loop-v2",
         "governance-enforce",
         "memory-quality-ci",
+        "eval rag",
+        "eval rag --write-baseline",
+        "eval graph-rag",
         "fleet-dashboard-v2",
         "remote-sync-apply-flow",
         "mcp-tool-surface-v2",
         "mcp-tool-surface-v3",
         "autopilot-v3",
         "self-learning-retrieval",
+        "auto-ranking-tune",
         "project-role-profile",
         "inbox-ai-reviewer",
         "web-control-center-v3",

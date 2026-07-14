@@ -162,6 +162,9 @@ fn mcp_tools() -> Value {
             json!({"name":"memory_upload","description":"Review a local text/markdown/json/csv file as inbox-first memory candidates","inputSchema":{"type":"object","properties":{"input":{"type":"string"},"scope":{"type":"string"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["input"]}}),
             json!({"name":"memory_rag_ingest","description":"Index text/code files as chunked local RAG sources; dry-run unless apply=true; set embed=true to refresh semantic chunk embeddings after apply","inputSchema":{"type":"object","properties":{"input":{"type":"string"},"scope":{"type":"string"},"apply":{"type":"boolean"},"embed":{"type":"boolean"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"chunk_chars":{"type":"number"},"overlap_chars":{"type":"number"},"max_file_bytes":{"type":"number"},"max_files":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["input"]}}),
             json!({"name":"memory_rag_sources","description":"Inspect indexed RAG source freshness, stale files, chunk counts, and semantic chunk embedding freshness","inputSchema":{"type":"object","properties":{"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_rag_eval","description":"Run RAG eval with matrix, grounded-answer, retrieval tuning, and optional baseline write","inputSchema":{"type":"object","properties":{"scope":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"write_baseline":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_graph_rag_eval","description":"Run deterministic graph-RAG eval for connected memory relationships and grounded graph answers","inputSchema":{"type":"object","properties":{"scope":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_auto_ranking_tune","description":"Explain or apply the selected memory retrieval ranking profile from live QA and RAG eval signals","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_memanto_gap","description":"Report Memanto-style capability coverage for dukememory","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_timeline","description":"Show one memory card timeline with audit events and real agent reads","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}}),
             json!({"name":"memory_conflict_review","description":"Review duplicate, stale, superseded, and contradiction-prone memory groups","inputSchema":{"type":"object","properties":{"stale_days":{"type":"number"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
@@ -1250,6 +1253,83 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 &report,
                 max_chars,
                 &["sources", "issues", "recommendations"],
+            )
+            .map_err(|err| err.to_string())?
+        }
+        "memory_rag_eval" => {
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(2200);
+            let provider = json_string(&args, "provider")
+                .unwrap_or_else(|| DEFAULT_EMBED_PROVIDER.to_string());
+            let endpoint = json_string(&args, "endpoint")
+                .unwrap_or_else(|| DEFAULT_EMBED_ENDPOINT.to_string());
+            let model =
+                json_string(&args, "model").unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
+            let scope = json_string(&args, "scope");
+            let report = rag_eval_report_with_baseline(
+                &conn,
+                scope.as_deref(),
+                json_usize(&args, "limit").unwrap_or(8),
+                json_usize(&args, "budget").unwrap_or(3_000),
+                &provider,
+                &endpoint,
+                &model,
+                Some(&selected_root),
+                args.get("write_baseline")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            )
+            .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(
+                &report,
+                max_chars,
+                &[
+                    "cases",
+                    "recommendations",
+                    "baseline",
+                    "eval_matrix",
+                    "retrieval_tuning",
+                ],
+            )
+            .map_err(|err| err.to_string())?
+        }
+        "memory_graph_rag_eval" => {
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(2200);
+            let provider = json_string(&args, "provider")
+                .unwrap_or_else(|| DEFAULT_EMBED_PROVIDER.to_string());
+            let endpoint = json_string(&args, "endpoint")
+                .unwrap_or_else(|| DEFAULT_EMBED_ENDPOINT.to_string());
+            let model =
+                json_string(&args, "model").unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
+            let scope = json_string(&args, "scope");
+            let gen_config = crate::runtime_config::GenerationConfig {
+                provider: "mock".to_string(),
+                endpoint: "local".to_string(),
+                model: "extractive-fallback".to_string(),
+            };
+            let report = graph_rag_eval_report(
+                &conn,
+                scope.as_deref(),
+                json_usize(&args, "limit").unwrap_or(8),
+                json_usize(&args, "budget").unwrap_or(3_000),
+                &gen_config,
+                &provider,
+                &endpoint,
+                &model,
+            )
+            .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&report, max_chars, &["cases", "recommendations"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_auto_ranking_tune" => {
+            let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
+            let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1800);
+            let report = auto_ranking_tune_report(&conn, &selected_root, since_days, apply)
+                .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(
+                &report,
+                max_chars,
+                &["signals", "apply_plan", "reasons", "ranking"],
             )
             .map_err(|err| err.to_string())?
         }

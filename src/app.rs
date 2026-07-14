@@ -2745,6 +2745,10 @@ Use `dukememory governance-enforce --json` to enforce autonomous memory governan
 
 Use `dukememory memory-quality-ci --json` to run a CI-friendly memory quality gate.
 
+Use `dukememory eval rag --json` to run grounded RAG eval with matrix, retrieval tuning, and baseline comparison; use `dukememory eval rag --write-baseline --json` only after reviewing stable results.
+
+Use `dukememory eval graph-rag --json` to run graph-RAG eval over memory relationships and grounded graph answers.
+
 Use `dukememory fleet-dashboard-v2 --json` to inspect all discovered project memories with V2 quality metrics.
 
 Use `dukememory remote-sync-apply-flow --json` to plan guarded remote sync apply; use `--target` and a mode-600 sync passphrase file before `--apply`.
@@ -2756,6 +2760,8 @@ Use `dukememory mcp-tool-surface-v3 --json` to inspect MCP V3 memory tool exposu
 Use `dukememory autopilot-v3 --json` to run the V3 autonomous memory autopilot across learning, role profile, inbox review, sync, web control, and MCP quality.
 
 Use `dukememory self-learning-retrieval --json` to tune retrieval from live usefulness, feedback, quality, and ranking signals.
+
+Use `dukememory auto-ranking-tune --json` to explain retrieval ranking from QA and RAG eval signals; use `--apply` only when `safe_to_apply` is true.
 
 Use `dukememory project-role-profile --json` to detect project-specific memory defaults; use `--apply` after reviewing inferred kind.
 
@@ -2885,7 +2891,7 @@ Use `dukememory usefulness-engine --json` to rank useful/noisy memory and previe
 
 Use `dukememory ranking-profile --profile balanced|strict|recall-heavy|precision-heavy --json` to inspect retrieval ranking weights; use `--apply` to make the profile durable for a project.
 
-Use `dukememory auto-ranking-tune --json` to adapt retrieval strictness from live usefulness, semantic, and quality signals.
+Use `dukememory auto-ranking-tune --json` to adapt retrieval strictness from live usefulness, semantic, quality, and RAG eval signals; use `--apply` only when `safe_to_apply` is true.
 
 Use `dukememory project-template --kind rust-cli|frontend-app|game-mod|electronics-cad|docs-research --json` to seed project-type memory defaults.
 
@@ -2958,6 +2964,9 @@ dukememory memory-governance-policy --json
 dukememory autonomous-loop-v2 --json
 dukememory governance-enforce --json
 dukememory memory-quality-ci --json
+dukememory eval rag --json
+dukememory eval rag --write-baseline --json
+dukememory eval graph-rag --json
 dukememory fleet-dashboard-v2 --json
 dukememory remote-sync-apply-flow --json
 dukememory mcp-tool-surface-v2 --json
