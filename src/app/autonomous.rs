@@ -3487,8 +3487,48 @@ fn print_autonomous_explain(report: &AutonomousReport, json_out: bool) -> Result
 pub(crate) fn read_autonomous_status(path: &Path) -> Result<AutonomousReport> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read autonomous status {}", path.display()))?;
-    serde_json::from_str(&raw)
+    let mut value: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("invalid autonomous status {}", path.display()))?;
+    normalize_autonomous_status_json(&mut value);
+    serde_json::from_value(value)
         .with_context(|| format!("invalid autonomous status {}", path.display()))
+}
+
+fn normalize_autonomous_status_json(value: &mut Value) {
+    let Some(quality) = value.get_mut("quality").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for key in ["strongest", "weakest", "items"] {
+        let Some(items) = quality.get_mut(key).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for item in items {
+            normalize_legacy_memory_quality(item);
+        }
+    }
+}
+
+fn normalize_legacy_memory_quality(value: &mut Value) {
+    let Some(item) = value.as_object_mut() else {
+        return;
+    };
+    item.entry("score").or_insert_with(|| json!(0.0));
+    item.entry("usefulness_score").or_insert_with(|| json!(0.0));
+    item.entry("token_saving_score")
+        .or_insert_with(|| json!(0.0));
+    item.entry("risk_score").or_insert_with(|| json!(0.0));
+    item.entry("request_count").or_insert_with(|| json!(0));
+    item.entry("positive_feedback").or_insert_with(|| json!(0));
+    item.entry("negative_feedback").or_insert_with(|| json!(0));
+    item.entry("body_chars").or_insert_with(|| json!(0));
+    item.entry("links").or_insert_with(|| json!(0));
+    item.entry("age_days").or_insert_with(|| json!(0));
+    item.entry("classification")
+        .or_insert_with(|| json!("legacy"));
+    item.entry("evidence_state")
+        .or_insert_with(|| json!("unknown"));
+    item.entry("recommended_action").or_insert(Value::Null);
+    item.entry("reasons").or_insert_with(|| json!([]));
 }
 
 pub(crate) fn write_autonomous_status(path: &Path, report: &AutonomousReport) -> Result<()> {

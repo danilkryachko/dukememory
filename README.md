@@ -452,11 +452,14 @@ and grounded-answer summaries.
 `trace` array with ranked evidence ids, scores, reasons, and chunk file
 locations when source chunks are used. RAG source packing also suppresses
 heavily overlapping chunks from the same file and caps selected chunks per file
-so the prompt carries broader evidence instead of repeated context. The JSON
-`packing` report shows candidate/selected counts and chunk suppression counts
-overall and per file. Generated RAG answers expose a `generation_guard` report
-with `answer_source`, selected citations seen in generated text, and the
-fallback reason when the local model output is empty, prompt-shaped, or uncited.
+so the prompt carries broader evidence instead of repeated context. When the
+pack is memory-heavy and a strong chunk from a new file is available, the
+selector can promote that chunk over a weaker memory card while preserving the
+same limit, overlap, and file-cap guardrails. The JSON `packing` report shows
+candidate/selected counts and chunk suppression counts overall and per file.
+Generated RAG answers expose a `generation_guard` report with `answer_source`,
+selected citations seen in generated text, and the fallback reason when the
+local model output is empty, prompt-shaped, or uncited.
 
 For fully local generation, configure `provider = "local-llama"` in
 `.agent/config.toml` and build with local generation support:
@@ -561,6 +564,11 @@ dukememory watch-control --json
 dukememory autonomous status --json
 dukememory autonomous rollback --json
 ```
+
+`autonomous status` is backward-compatible with older status snapshots whose
+embedded quality report predates current fields such as `age_days`,
+`classification`, and `actionable_count`; missing legacy fields are normalized
+when the status file is read.
 
 ## Control Surfaces
 

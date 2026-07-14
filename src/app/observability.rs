@@ -96,34 +96,70 @@ pub(crate) struct MemoryQuality {
     #[serde(rename = "type")]
     pub(crate) memory_type: String,
     pub(crate) title: String,
+    #[serde(default)]
     pub(crate) score: f64,
+    #[serde(default)]
     pub(crate) usefulness_score: f64,
+    #[serde(default)]
     pub(crate) token_saving_score: f64,
+    #[serde(default)]
     pub(crate) risk_score: f64,
+    #[serde(default)]
     pub(crate) request_count: usize,
+    #[serde(default)]
     pub(crate) positive_feedback: usize,
+    #[serde(default)]
     pub(crate) negative_feedback: usize,
+    #[serde(default)]
     pub(crate) body_chars: usize,
+    #[serde(default)]
     pub(crate) links: usize,
+    #[serde(default)]
     pub(crate) age_days: i64,
+    #[serde(default = "legacy_quality_classification")]
     pub(crate) classification: String,
+    #[serde(default = "legacy_quality_evidence_state")]
     pub(crate) evidence_state: String,
+    #[serde(default)]
     pub(crate) recommended_action: Option<String>,
+    #[serde(default)]
     pub(crate) reasons: Vec<String>,
+}
+
+fn legacy_quality_classification() -> String {
+    "legacy".to_string()
+}
+
+fn legacy_quality_evidence_state() -> String {
+    "unknown".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct QualityReport {
+    #[serde(default = "quality_report_version_default")]
     pub(crate) version: u32,
+    #[serde(default)]
     pub(crate) since_days: i64,
+    #[serde(default)]
     pub(crate) total: usize,
+    #[serde(default)]
     pub(crate) average_score: f64,
+    #[serde(default)]
     pub(crate) actionable_count: usize,
+    #[serde(default)]
     pub(crate) classifications: BTreeMap<String, usize>,
+    #[serde(default)]
     pub(crate) strongest: Vec<MemoryQuality>,
+    #[serde(default)]
     pub(crate) weakest: Vec<MemoryQuality>,
+    #[serde(default)]
     pub(crate) items: Vec<MemoryQuality>,
+    #[serde(default)]
     pub(crate) suggestions: Vec<UsefulnessSuggestion>,
+}
+
+fn quality_report_version_default() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize)]

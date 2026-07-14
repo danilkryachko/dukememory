@@ -710,7 +710,9 @@ fn select_rag_sources(
             .find(|source| source.source_kind == "chunk" && !seen.contains(&source.id))
             .cloned()
     {
-        selected.pop();
+        if let Some(removed) = selected.pop() {
+            packing.record_skip(&removed, RagSourceSkipReason::Limit);
+        }
         selected.push(chunk);
         selected.sort_by(|a, b| {
             b.score
@@ -718,8 +720,100 @@ fn select_rag_sources(
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
     }
+    promote_diverse_chunk_source(&sources, &mut selected, &mut packing);
     packing.finalize(&selected);
     (selected, packing)
+}
+
+fn promote_diverse_chunk_source(
+    sources: &[RagSource],
+    selected: &mut Vec<RagSource>,
+    packing: &mut RagPackingReport,
+) {
+    if selected.len() < 3 {
+        return;
+    }
+    let selected_chunks = selected
+        .iter()
+        .filter(|source| source.source_kind == "chunk")
+        .count();
+    let selected_memories = selected.len().saturating_sub(selected_chunks);
+    if selected_memories <= selected_chunks {
+        return;
+    }
+    let Some((weakest_memory_index, weakest_memory)) = selected
+        .iter()
+        .enumerate()
+        .filter(|(_, source)| source.source_kind != "chunk")
+        .min_by(|(_, left), (_, right)| {
+            left.score
+                .partial_cmp(&right.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| right.id.cmp(&left.id))
+        })
+    else {
+        return;
+    };
+    let selected_ids = selected
+        .iter()
+        .map(|source| source.id.as_str())
+        .collect::<HashSet<_>>();
+    let selected_paths = selected
+        .iter()
+        .filter_map(|source| source.path.as_deref())
+        .collect::<HashSet<_>>();
+    let (chunk_ranges_by_path, chunk_count_by_path) = rag_selected_chunk_context(selected);
+    let candidate = sources
+        .iter()
+        .filter(|source| source.source_kind == "chunk")
+        .filter(|source| !selected_ids.contains(source.id.as_str()))
+        .filter(|source| {
+            source
+                .path
+                .as_deref()
+                .is_some_and(|path| !selected_paths.contains(path))
+        })
+        .filter(|source| {
+            rag_source_skip_reason(source, &chunk_ranges_by_path, &chunk_count_by_path).is_none()
+        })
+        .filter(|source| rag_diversity_candidate_is_strong(source, weakest_memory.score))
+        .max_by(|left, right| {
+            left.score
+                .partial_cmp(&right.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| right.id.cmp(&left.id))
+        })
+        .cloned();
+    let Some(candidate) = candidate else {
+        return;
+    };
+    let removed = std::mem::replace(&mut selected[weakest_memory_index], candidate);
+    packing.record_skip(&removed, RagSourceSkipReason::Limit);
+    selected.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.source_kind.cmp(&b.source_kind))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+}
+
+fn rag_diversity_candidate_is_strong(candidate: &RagSource, replaced_score: f64) -> bool {
+    candidate.score >= replaced_score * 0.72 || candidate.score + 12.0 >= replaced_score
+}
+
+type RagChunkRangesByPath = HashMap<String, Vec<(usize, usize)>>;
+type RagChunkCountByPath = HashMap<String, usize>;
+
+fn rag_selected_chunk_context(
+    selected: &[RagSource],
+) -> (RagChunkRangesByPath, RagChunkCountByPath) {
+    let mut chunk_ranges_by_path = HashMap::new();
+    let mut chunk_count_by_path = HashMap::new();
+    for source in selected {
+        remember_rag_source_context(source, &mut chunk_ranges_by_path, &mut chunk_count_by_path);
+    }
+    (chunk_ranges_by_path, chunk_count_by_path)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1490,5 +1584,53 @@ mod rag_tests {
         assert_eq!(readme.candidates, 4);
         assert_eq!(readme.selected, 3);
         assert_eq!(readme.suppressed_file_cap, 1);
+    }
+
+    #[test]
+    fn select_rag_sources_promotes_strong_chunks_from_new_files_under_limit_pressure() {
+        let sources = vec![
+            source("memory-a", "active", 100.0),
+            source("memory-b", "active", 99.0),
+            source("memory-c", "active", 98.0),
+            chunk_source("chunk-a", "README.md", 10, 20, 97.0),
+            chunk_source("chunk-b", "src/app.rs", 10, 20, 96.0),
+        ];
+
+        let (selected, packing) = select_rag_sources(sources, 3);
+        let ids = selected
+            .iter()
+            .map(|source| source.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(ids.contains(&"memory-a"));
+        assert!(ids.contains(&"chunk-a"));
+        assert!(ids.contains(&"chunk-b"));
+        assert_eq!(packing.selected_memories, 1);
+        assert_eq!(packing.selected_chunks, 2);
+        assert!(packing.suppressed_limit >= 2);
+    }
+
+    #[test]
+    fn select_rag_sources_does_not_promote_weak_diversity_chunks() {
+        let sources = vec![
+            source("memory-a", "active", 100.0),
+            source("memory-b", "active", 99.0),
+            source("memory-c", "active", 98.0),
+            chunk_source("chunk-a", "README.md", 10, 20, 97.0),
+            chunk_source("chunk-b", "src/app.rs", 10, 20, 40.0),
+        ];
+
+        let (selected, packing) = select_rag_sources(sources, 3);
+        let ids = selected
+            .iter()
+            .map(|source| source.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(ids.contains(&"memory-a"));
+        assert!(ids.contains(&"memory-b"));
+        assert!(ids.contains(&"chunk-a"));
+        assert!(!ids.contains(&"chunk-b"));
+        assert_eq!(packing.selected_memories, 2);
+        assert_eq!(packing.selected_chunks, 1);
     }
 }

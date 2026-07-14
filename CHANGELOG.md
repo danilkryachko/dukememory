@@ -15,6 +15,10 @@
   `.agent/config.toml`.
 - Dedicated control-plane integration coverage outside the historical
   monolithic CLI compatibility test file.
+- RAG source packing promotes strong chunks from new files over weaker memory
+  cards when the selected pack is memory-heavy and already at its limit.
+- Legacy autonomous status snapshots with older embedded quality-report fields
+  are normalized on read instead of blocking status, ops, or control surfaces.
 
 ### Changed
 
@@ -37,6 +41,8 @@
   readiness in the stable control result.
 - Prevent unbounded session history reads and one-size-fits-all cleanup windows
   for unsuccessful or abandoned work.
+- Prevent stale autonomous status JSON from failing after quality-report schema
+  additions such as `age_days`, `classification`, or `actionable_count`.
 
 ## 0.41.0 — 2026-07-14 (local development)
 

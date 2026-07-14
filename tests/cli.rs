@@ -6871,6 +6871,73 @@ fn autonomous_run_skips_embed_index_when_provider_is_unreachable() {
 }
 
 #[test]
+fn autonomous_status_reads_legacy_quality_items() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let status_file = dir.path().join(".agent/autonomous-status.json");
+    fs::create_dir_all(status_file.parent().unwrap()).unwrap();
+    fs::write(
+        &status_file,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 1,
+            "ok": true,
+            "level": "normal",
+            "updated_at": now_ms(),
+            "rollback_backup": null,
+            "actions": [],
+            "rollback": [],
+            "quality": {
+                "version": 1,
+                "since_days": 7,
+                "total": 1,
+                "average_score": 100.0,
+                "strongest": [{
+                    "id": "legacy-quality",
+                    "type": "design_note",
+                    "title": "Legacy quality row",
+                    "score": 100.0,
+                    "usefulness_score": 100.0,
+                    "token_saving_score": 10.0,
+                    "risk_score": 0.0,
+                    "request_count": 1,
+                    "positive_feedback": 1,
+                    "negative_feedback": 0,
+                    "body_chars": 240,
+                    "links": 1,
+                    "reasons": ["legacy status file"]
+                }],
+                "weakest": [],
+                "items": [],
+                "suggestions": []
+            },
+            "error": null
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let status: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("autonomous")
+            .arg("status")
+            .arg("--status-file")
+            .arg(&status_file)
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(status["ok"], true);
+    assert_eq!(status["quality"]["strongest"][0]["age_days"], 0);
+    assert_eq!(
+        status["quality"]["strongest"][0]["classification"],
+        "legacy"
+    );
+    assert_eq!(
+        status["quality"]["strongest"][0]["evidence_state"],
+        "unknown"
+    );
+}
+
+#[test]
 fn v14_retrieve_filters_weak_semantic_candidates() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
