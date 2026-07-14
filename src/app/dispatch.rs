@@ -2005,7 +2005,10 @@ pub(crate) fn run() -> Result<()> {
                 audit_read: true,
             },
         )?,
-        Command::Eval { command } => handle_eval(&conn, command)?,
+        Command::Eval { command } => {
+            let eval_root = app_project_root_for_db(&cli.db).unwrap_or_else(|| PathBuf::from("."));
+            handle_eval(&conn, command, &runtime.config.generation, &eval_root)?
+        }
         Command::BuildInfo => print_build_info(&runtime),
         Command::ReleaseBundle { output } => {
             release_ops::write_release_bundle(&conn, &cli.db, &output)?

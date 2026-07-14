@@ -2247,6 +2247,60 @@ pub(super) fn handle_http_request(
                 true,
             )?}))
         }
+        ("GET", "/rag-eval") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            HttpResponse::ok(json!({"rag_eval": rag_eval_report_with_baseline(
+                &conn,
+                None,
+                8,
+                3_000,
+                DEFAULT_EMBED_PROVIDER,
+                DEFAULT_EMBED_ENDPOINT,
+                DEFAULT_EMBED_MODEL,
+                Some(&ctx.root),
+                false,
+            )?}))
+        }
+        ("POST", "/rag-eval/baseline") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let conn = open_db(&ctx.db)?;
+            HttpResponse::ok(json!({"rag_eval": rag_eval_report_with_baseline(
+                &conn,
+                None,
+                8,
+                3_000,
+                DEFAULT_EMBED_PROVIDER,
+                DEFAULT_EMBED_ENDPOINT,
+                DEFAULT_EMBED_MODEL,
+                Some(&ctx.root),
+                true,
+            )?}))
+        }
+        ("GET", "/graph-rag-eval") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let conn = open_db(&ctx.db)?;
+            let gen_config = crate::runtime_config::GenerationConfig {
+                provider: "mock".to_string(),
+                endpoint: "local".to_string(),
+                model: "extractive-fallback".to_string(),
+            };
+            HttpResponse::ok(json!({"graph_rag_eval": graph_rag_eval_report(
+                &conn,
+                None,
+                8,
+                3_000,
+                &gen_config,
+                DEFAULT_EMBED_PROVIDER,
+                DEFAULT_EMBED_ENDPOINT,
+                DEFAULT_EMBED_MODEL,
+            )?}))
+        }
         ("GET", "/web-control-center") | ("GET", "/web-control-center-v12") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);

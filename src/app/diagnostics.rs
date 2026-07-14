@@ -1372,7 +1372,12 @@ fn stale_active_memories(conn: &Connection, limit: usize) -> Result<Vec<Memory>>
         .map_err(Into::into)
 }
 
-pub(crate) fn handle_eval(conn: &Connection, command: EvalCommand) -> Result<()> {
+pub(crate) fn handle_eval(
+    conn: &Connection,
+    command: EvalCommand,
+    gen_config: &crate::runtime_config::GenerationConfig,
+    root: &Path,
+) -> Result<()> {
     match command {
         EvalCommand::AddCase {
             name,
@@ -1396,14 +1401,39 @@ pub(crate) fn handle_eval(conn: &Connection, command: EvalCommand) -> Result<()>
             provider,
             endpoint,
             model,
+            write_baseline,
             json,
         } => run_rag_eval(
+            conn,
+            root,
+            scope.as_deref(),
+            limit,
+            budget
+                .or_else(|| budget_profile_chars(budget_profile))
+                .unwrap_or(3000),
+            &provider,
+            &endpoint,
+            &model,
+            write_baseline,
+            json,
+        )?,
+        EvalCommand::GraphRag {
+            scope,
+            limit,
+            budget,
+            budget_profile,
+            provider,
+            endpoint,
+            model,
+            json,
+        } => run_graph_rag_eval(
             conn,
             scope.as_deref(),
             limit,
             budget
                 .or_else(|| budget_profile_chars(budget_profile))
                 .unwrap_or(3000),
+            gen_config,
             &provider,
             &endpoint,
             &model,
@@ -1492,6 +1522,7 @@ pub(crate) struct RagEvalReport {
     pub(crate) grounded_answers: RagEvalGroundedSummary,
     pub(crate) eval_matrix: RagEvalMatrixSummary,
     pub(crate) retrieval_tuning: RagEvalRetrievalTuningSummary,
+    pub(crate) baseline: RagEvalBaselineSummary,
     pub(crate) cases: Vec<RagEvalCaseResult>,
     pub(crate) recommendations: Vec<String>,
 }
@@ -1576,6 +1607,39 @@ pub(crate) struct RagEvalRetrievalTuningSummary {
     pub(crate) reasons: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Default)]
+pub(crate) struct RagEvalBaselineSummary {
+    pub(crate) status: String,
+    pub(crate) path: String,
+    pub(crate) present: bool,
+    pub(crate) written: bool,
+    pub(crate) regression: bool,
+    pub(crate) current_signature: String,
+    pub(crate) baseline_signature: Option<String>,
+    pub(crate) baseline_recall: Option<f64>,
+    pub(crate) baseline_grounded_coverage: Option<f64>,
+    pub(crate) baseline_matrix_coverage: Option<f64>,
+    pub(crate) baseline_candidate_recall: Option<f64>,
+    pub(crate) baseline_selection_recall: Option<f64>,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RagEvalBaselineFile {
+    version: u32,
+    signature: String,
+    total: usize,
+    passed: usize,
+    recall: f64,
+    grounded_coverage: f64,
+    matrix_coverage: f64,
+    candidate_recall: f64,
+    selection_recall: f64,
+    covered_dimensions: usize,
+    dimensions: std::collections::BTreeMap<String, usize>,
+    written_at: i64,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct RagEvalGroundedAnswer {
     pub(crate) passed: bool,
@@ -1621,18 +1685,83 @@ struct RagEvalCase {
     source: String,
 }
 
+#[derive(Debug, Serialize)]
+pub(crate) struct GraphRagEvalReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) case_source: String,
+    pub(crate) total: usize,
+    pub(crate) passed: usize,
+    pub(crate) failed: usize,
+    pub(crate) recall: f64,
+    pub(crate) grounded_coverage: f64,
+    pub(crate) graph: GraphRagEvalGraphSummary,
+    pub(crate) cases: Vec<GraphRagEvalCaseResult>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub(crate) struct GraphRagEvalGraphSummary {
+    pub(crate) total_nodes: usize,
+    pub(crate) total_edges: usize,
+    pub(crate) connected_cases: usize,
+    pub(crate) isolated_cases: usize,
+    pub(crate) missing_graph_cases: usize,
+    pub(crate) average_relationship_coverage: f64,
+    pub(crate) average_edge_density: f64,
+    pub(crate) relationship_kinds: std::collections::BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct GraphRagEvalCaseResult {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) case_source: String,
+    pub(crate) query: String,
+    pub(crate) expected: String,
+    pub(crate) passed: bool,
+    pub(crate) detail: String,
+    pub(crate) graph_status: String,
+    pub(crate) confidence: String,
+    pub(crate) confidence_score: f64,
+    pub(crate) node_count: usize,
+    pub(crate) edge_count: usize,
+    pub(crate) relationship_coverage: f64,
+    pub(crate) relationship_kinds: std::collections::BTreeMap<String, usize>,
+    pub(crate) expected_in_graph: bool,
+    pub(crate) expected_in_answer: bool,
+    pub(crate) citation_count: usize,
+    pub(crate) citations: Vec<String>,
+    pub(crate) answer: String,
+    pub(crate) ranked_node_titles: Vec<String>,
+    pub(crate) missing_evidence: Vec<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_rag_eval(
     conn: &Connection,
+    root: &Path,
     scope: Option<&str>,
     limit: usize,
     budget: usize,
     provider: &str,
     endpoint: &str,
     model: &str,
+    write_baseline: bool,
     json_out: bool,
 ) -> Result<()> {
-    let report = rag_eval_report(conn, scope, limit, budget, provider, endpoint, model)?;
+    let report = rag_eval_report_with_baseline(
+        conn,
+        scope,
+        limit,
+        budget,
+        provider,
+        endpoint,
+        model,
+        Some(root),
+        write_baseline,
+    )?;
     if json_out {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -1690,6 +1819,15 @@ fn run_rag_eval(
             report.retrieval_tuning.memory_selection_rate,
             report.retrieval_tuning.semantic_fallback_rate
         );
+        println!(
+            "baseline: status={} present={} written={} regression={} path={} detail={}",
+            report.baseline.status,
+            report.baseline.present,
+            report.baseline.written,
+            report.baseline.regression,
+            report.baseline.path,
+            report.baseline.detail
+        );
         for case in &report.cases {
             println!(
                 "{}  {}  {}  confidence={} citations={}",
@@ -1728,6 +1866,59 @@ fn run_rag_eval(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn run_graph_rag_eval(
+    conn: &Connection,
+    scope: Option<&str>,
+    limit: usize,
+    budget: usize,
+    gen_config: &crate::runtime_config::GenerationConfig,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+    json_out: bool,
+) -> Result<()> {
+    let report = graph_rag_eval_report(
+        conn, scope, limit, budget, gen_config, provider, endpoint, model,
+    )?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("Graph RAG Eval");
+        println!(
+            "status: {} recall: {:.1}% grounded: {:.1}% passed: {}/{}",
+            report.status, report.recall, report.grounded_coverage, report.passed, report.total
+        );
+        println!(
+            "graph: nodes={} edges={} connected_cases={} isolated_cases={} avg_relationship_coverage={:.1}% kinds={:?}",
+            report.graph.total_nodes,
+            report.graph.total_edges,
+            report.graph.connected_cases,
+            report.graph.isolated_cases,
+            report.graph.average_relationship_coverage,
+            report.graph.relationship_kinds
+        );
+        for case in &report.cases {
+            println!(
+                "{}  {}  {}  graph={} confidence={} nodes={} edges={} coverage={:.1}%",
+                if case.passed { "pass" } else { "fail" },
+                case.id,
+                case.name,
+                case.graph_status,
+                case.confidence,
+                case.node_count,
+                case.edge_count,
+                case.relationship_coverage
+            );
+            println!("  {}", case.detail);
+        }
+        for item in &report.recommendations {
+            println!("recommendation: {item}");
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn rag_eval_report(
     conn: &Connection,
     scope: Option<&str>,
@@ -1736,6 +1927,23 @@ pub(crate) fn rag_eval_report(
     provider: &str,
     endpoint: &str,
     model: &str,
+) -> Result<RagEvalReport> {
+    rag_eval_report_with_baseline(
+        conn, scope, limit, budget, provider, endpoint, model, None, false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rag_eval_report_with_baseline(
+    conn: &Connection,
+    scope: Option<&str>,
+    limit: usize,
+    budget: usize,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+    baseline_root: Option<&Path>,
+    write_baseline: bool,
 ) -> Result<RagEvalReport> {
     let cases = load_rag_eval_cases(conn, budget)?;
     let case_source = if cases.iter().any(|case| case.source == "stored") {
@@ -1861,6 +2069,16 @@ pub(crate) fn rag_eval_report(
         &packing,
         semantic_fallbacks,
     );
+    let baseline = rag_eval_baseline_summary(
+        baseline_root,
+        write_baseline,
+        total,
+        passed,
+        recall,
+        grounded_answers.coverage,
+        &eval_matrix,
+        &retrieval_tuning,
+    )?;
     let mut recommendations = Vec::new();
     if total == 0 {
         recommendations
@@ -1916,6 +2134,15 @@ pub(crate) fn rag_eval_report(
             eval_matrix.missing_dimensions.join(", ")
         ));
     }
+    if baseline.status == "missing" {
+        recommendations.push(
+            "write a RAG eval matrix baseline with `dukememory eval rag --write-baseline --json` after reviewing cases"
+                .to_string(),
+        );
+    }
+    if baseline.regression {
+        recommendations.push("RAG eval regressed against baseline; inspect failed cases, grounded answers, and matrix coverage before release".to_string());
+    }
     for reason in &retrieval_tuning.reasons {
         if retrieval_tuning.status != "ready" {
             recommendations.push(format!("retrieval tuning: {reason}"));
@@ -1923,7 +2150,7 @@ pub(crate) fn rag_eval_report(
     }
     let ok = total > 0 && failed == 0 && grounded_answers.failed == 0;
     Ok(RagEvalReport {
-        version: 3,
+        version: 4,
         ok,
         status: if ok {
             "ready"
@@ -1946,9 +2173,388 @@ pub(crate) fn rag_eval_report(
         grounded_answers,
         eval_matrix,
         retrieval_tuning,
+        baseline,
         cases: results,
         recommendations,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rag_eval_baseline_summary(
+    baseline_root: Option<&Path>,
+    write_baseline: bool,
+    total: usize,
+    passed: usize,
+    recall: f64,
+    grounded_coverage: f64,
+    eval_matrix: &RagEvalMatrixSummary,
+    retrieval_tuning: &RagEvalRetrievalTuningSummary,
+) -> Result<RagEvalBaselineSummary> {
+    let current = rag_eval_baseline_file(
+        total,
+        passed,
+        recall,
+        grounded_coverage,
+        eval_matrix,
+        retrieval_tuning,
+    )?;
+    let Some(root) = baseline_root else {
+        return Ok(RagEvalBaselineSummary {
+            status: "unconfigured".to_string(),
+            path: String::new(),
+            present: false,
+            written: false,
+            regression: false,
+            current_signature: current.signature,
+            baseline_signature: None,
+            baseline_recall: None,
+            baseline_grounded_coverage: None,
+            baseline_matrix_coverage: None,
+            baseline_candidate_recall: None,
+            baseline_selection_recall: None,
+            detail: "no project root was supplied for RAG eval baseline comparison".to_string(),
+        });
+    };
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let path = root.join(".agent/rag-eval-baseline.json");
+    if write_baseline {
+        write_file(&path, serde_json::to_string_pretty(&current)?.as_bytes())?;
+        return Ok(RagEvalBaselineSummary {
+            status: "written".to_string(),
+            path: path.display().to_string(),
+            present: true,
+            written: true,
+            regression: false,
+            current_signature: current.signature.clone(),
+            baseline_signature: Some(current.signature),
+            baseline_recall: Some(current.recall),
+            baseline_grounded_coverage: Some(current.grounded_coverage),
+            baseline_matrix_coverage: Some(current.matrix_coverage),
+            baseline_candidate_recall: Some(current.candidate_recall),
+            baseline_selection_recall: Some(current.selection_recall),
+            detail: "wrote current RAG eval matrix baseline".to_string(),
+        });
+    }
+
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return Ok(RagEvalBaselineSummary {
+            status: "missing".to_string(),
+            path: path.display().to_string(),
+            present: false,
+            written: false,
+            regression: false,
+            current_signature: current.signature,
+            baseline_signature: None,
+            baseline_recall: None,
+            baseline_grounded_coverage: None,
+            baseline_matrix_coverage: None,
+            baseline_candidate_recall: None,
+            baseline_selection_recall: None,
+            detail: "no RAG eval baseline has been written for this project".to_string(),
+        });
+    };
+    let Ok(baseline) = serde_json::from_str::<RagEvalBaselineFile>(&raw) else {
+        return Ok(RagEvalBaselineSummary {
+            status: "invalid".to_string(),
+            path: path.display().to_string(),
+            present: true,
+            written: false,
+            regression: false,
+            current_signature: current.signature,
+            baseline_signature: None,
+            baseline_recall: None,
+            baseline_grounded_coverage: None,
+            baseline_matrix_coverage: None,
+            baseline_candidate_recall: None,
+            baseline_selection_recall: None,
+            detail: "RAG eval baseline file exists but could not be parsed".to_string(),
+        });
+    };
+
+    let regression = current.recall + 0.1 < baseline.recall
+        || current.grounded_coverage + 0.1 < baseline.grounded_coverage
+        || current.matrix_coverage + 0.1 < baseline.matrix_coverage
+        || current.candidate_recall + 0.1 < baseline.candidate_recall
+        || current.selection_recall + 0.1 < baseline.selection_recall
+        || current.passed < baseline.passed
+        || current.covered_dimensions < baseline.covered_dimensions;
+    let status = if regression {
+        "regressed"
+    } else if current.signature == baseline.signature {
+        "matched"
+    } else {
+        "changed"
+    }
+    .to_string();
+    let detail = if regression {
+        format!(
+            "current recall {:.1}% / matrix {:.1}% is below baseline recall {:.1}% / matrix {:.1}%",
+            current.recall, current.matrix_coverage, baseline.recall, baseline.matrix_coverage
+        )
+    } else if current.signature == baseline.signature {
+        "current RAG eval matrix matches baseline".to_string()
+    } else {
+        "current RAG eval matrix differs from baseline without metric regression".to_string()
+    };
+    Ok(RagEvalBaselineSummary {
+        status,
+        path: path.display().to_string(),
+        present: true,
+        written: false,
+        regression,
+        current_signature: current.signature,
+        baseline_signature: Some(baseline.signature),
+        baseline_recall: Some(baseline.recall),
+        baseline_grounded_coverage: Some(baseline.grounded_coverage),
+        baseline_matrix_coverage: Some(baseline.matrix_coverage),
+        baseline_candidate_recall: Some(baseline.candidate_recall),
+        baseline_selection_recall: Some(baseline.selection_recall),
+        detail,
+    })
+}
+
+fn rag_eval_baseline_file(
+    total: usize,
+    passed: usize,
+    recall: f64,
+    grounded_coverage: f64,
+    eval_matrix: &RagEvalMatrixSummary,
+    retrieval_tuning: &RagEvalRetrievalTuningSummary,
+) -> Result<RagEvalBaselineFile> {
+    let payload = json!({
+        "total": total,
+        "passed": passed,
+        "recall": recall,
+        "grounded_coverage": grounded_coverage,
+        "matrix_coverage": eval_matrix.coverage,
+        "covered_dimensions": eval_matrix.covered_dimensions,
+        "dimensions": eval_matrix.dimensions,
+        "candidate_recall": retrieval_tuning.candidate_recall,
+        "selection_recall": retrieval_tuning.selection_recall,
+    });
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(&payload)?);
+    Ok(RagEvalBaselineFile {
+        version: 1,
+        signature: format!("{:x}", hasher.finalize())[..16].to_string(),
+        total,
+        passed,
+        recall,
+        grounded_coverage,
+        matrix_coverage: eval_matrix.coverage,
+        candidate_recall: retrieval_tuning.candidate_recall,
+        selection_recall: retrieval_tuning.selection_recall,
+        covered_dimensions: eval_matrix.covered_dimensions,
+        dimensions: eval_matrix.dimensions.clone(),
+        written_at: now_ms(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn graph_rag_eval_report(
+    conn: &Connection,
+    scope: Option<&str>,
+    limit: usize,
+    budget: usize,
+    _gen_config: &crate::runtime_config::GenerationConfig,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> Result<GraphRagEvalReport> {
+    let cases = load_graph_rag_eval_cases(conn, budget)?;
+    let case_source = if cases.iter().any(|case| case.source == "stored_graph") {
+        "stored_graph"
+    } else if cases.is_empty() {
+        "empty"
+    } else {
+        "auto_graph"
+    }
+    .to_string();
+    let mut results = Vec::new();
+    let eval_generation = crate::runtime_config::GenerationConfig {
+        provider: "mock".to_string(),
+        endpoint: "local".to_string(),
+        model: "extractive-fallback".to_string(),
+    };
+
+    for case in cases {
+        let report = crate::app::graph_rag::compute_graph_rag(
+            conn,
+            &case.query,
+            scope,
+            limit,
+            case.budget,
+            &eval_generation,
+            provider,
+            endpoint,
+            model,
+        )?;
+        let expected = case.expected.trim().to_lowercase();
+        let graph_haystack = graph_rag_eval_haystack(&report);
+        let expected_in_graph = !expected.is_empty() && graph_haystack.contains(&expected);
+        let answer_lower = report.answer.to_lowercase();
+        let expected_in_answer = !expected.is_empty() && answer_lower.contains(&expected);
+        let graph_connected =
+            report.graph_summary.edge_count > 0 && report.graph_summary.connected_node_count > 0;
+        let passed =
+            expected_in_graph && expected_in_answer && report.citation_count > 0 && graph_connected;
+        let detail = if passed {
+            "expected evidence is present in connected graph nodes and cited answer"
+        } else if !expected_in_graph {
+            "expected evidence is missing from selected graph nodes and relationships"
+        } else if !graph_connected {
+            "expected evidence was selected but graph relationships are missing"
+        } else if !expected_in_answer {
+            "expected evidence was selected but missing from graph answer"
+        } else if report.citation_count == 0 {
+            "graph answer did not cite selected memory nodes"
+        } else {
+            "graph eval failed an unknown grounding check"
+        }
+        .to_string();
+        results.push(GraphRagEvalCaseResult {
+            id: case.id,
+            name: case.name,
+            case_source: case.source,
+            query: case.query,
+            expected: case.expected,
+            passed,
+            detail,
+            graph_status: report.graph_summary.status,
+            confidence: report.confidence,
+            confidence_score: report.confidence_score,
+            node_count: report.graph_summary.node_count,
+            edge_count: report.graph_summary.edge_count,
+            relationship_coverage: report.graph_summary.relationship_coverage,
+            relationship_kinds: report.graph_summary.relationship_kinds,
+            expected_in_graph,
+            expected_in_answer,
+            citation_count: report.citation_count,
+            citations: report.citations,
+            answer: report.answer,
+            ranked_node_titles: report
+                .ranked_nodes
+                .iter()
+                .map(|node| node.title.clone())
+                .collect(),
+            missing_evidence: report.missing_evidence,
+        });
+    }
+
+    let total = results.len();
+    let passed = results.iter().filter(|case| case.passed).count();
+    let failed = total.saturating_sub(passed);
+    let recall = eval_ratio_percent(passed, total);
+    let grounded_coverage = eval_ratio_percent(
+        results
+            .iter()
+            .filter(|case| case.expected_in_answer && case.citation_count > 0)
+            .count(),
+        total,
+    );
+    let graph = graph_rag_eval_graph_summary(&results);
+    let mut recommendations = Vec::new();
+    if total == 0 {
+        recommendations.push(
+            "add graph-focused eval cases or memory links before relying on graph-rag eval"
+                .to_string(),
+        );
+    } else if case_source == "auto_graph" {
+        recommendations.push(
+            "add stored graph eval cases for project-critical relationship questions".to_string(),
+        );
+    }
+    if failed > 0 {
+        recommendations.push(
+            "inspect failing graph cases with `dukememory graph-rag QUERY --json`".to_string(),
+        );
+    }
+    if graph.missing_graph_cases > 0 || graph.isolated_cases > 0 {
+        recommendations.push(
+            "add or repair memory links for graph cases with isolated selected nodes".to_string(),
+        );
+    }
+    let ok = total > 0 && failed == 0;
+    Ok(GraphRagEvalReport {
+        version: 1,
+        ok,
+        status: if ok {
+            "ready"
+        } else if total == 0 {
+            "empty"
+        } else {
+            "attention"
+        }
+        .to_string(),
+        case_source,
+        total,
+        passed,
+        failed,
+        recall,
+        grounded_coverage,
+        graph,
+        cases: results,
+        recommendations,
+    })
+}
+
+fn graph_rag_eval_haystack(report: &crate::app::graph_rag::GraphRagReport) -> String {
+    let mut parts = Vec::new();
+    parts.push(report.answer.clone());
+    for node in &report.ranked_nodes {
+        parts.push(format!(
+            "{} {} {} {} {}",
+            node.id, node.title, node.memory_type, node.status, node.summary
+        ));
+    }
+    for edge in &report.relevant_edges {
+        parts.push(format!("{} {} {}", edge.source, edge.kind, edge.target));
+    }
+    parts.join("\n").to_lowercase()
+}
+
+fn graph_rag_eval_graph_summary(cases: &[GraphRagEvalCaseResult]) -> GraphRagEvalGraphSummary {
+    let mut summary = GraphRagEvalGraphSummary::default();
+    for case in cases {
+        summary.total_nodes += case.node_count;
+        summary.total_edges += case.edge_count;
+        if case.edge_count > 0 {
+            summary.connected_cases += 1;
+        } else if case.node_count > 0 {
+            summary.isolated_cases += 1;
+        } else {
+            summary.missing_graph_cases += 1;
+        }
+        for (kind, count) in &case.relationship_kinds {
+            *summary.relationship_kinds.entry(kind.clone()).or_insert(0) += count;
+        }
+    }
+    if !cases.is_empty() {
+        summary.average_relationship_coverage = ((cases
+            .iter()
+            .map(|case| case.relationship_coverage)
+            .sum::<f64>()
+            / cases.len() as f64)
+            * 10.0)
+            .round()
+            / 10.0;
+        summary.average_edge_density = ((cases
+            .iter()
+            .map(|case| {
+                if case.node_count <= 1 {
+                    0.0
+                } else {
+                    case.edge_count as f64
+                        / case.node_count.saturating_mul(case.node_count - 1) as f64
+                }
+            })
+            .sum::<f64>()
+            / cases.len() as f64)
+            * 1000.0)
+            .round()
+            / 1000.0;
+    }
+    summary
 }
 
 fn rag_eval_packing_summary(cases: &[RagEvalCaseResult]) -> RagEvalPackingSummary {
@@ -2421,6 +3027,69 @@ fn load_rag_eval_cases(conn: &Connection, default_budget: usize) -> Result<Vec<R
     })?;
     cases = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(cases)
+}
+
+fn load_graph_rag_eval_cases(conn: &Connection, default_budget: usize) -> Result<Vec<RagEvalCase>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, query, expected, budget FROM eval_cases \
+         WHERE lower(name || ' ' || query || ' ' || expected) LIKE '%graph%' \
+            OR lower(name || ' ' || query || ' ' || expected) LIKE '%relationship%' \
+            OR lower(name || ' ' || query || ' ' || expected) LIKE '% related%' \
+            OR lower(name || ' ' || query || ' ' || expected) LIKE '% link%' \
+         ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let budget = row.get::<_, i64>(4)?;
+        Ok(RagEvalCase {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            query: row.get(2)?,
+            expected: row.get(3)?,
+            budget: if budget > 0 {
+                budget as usize
+            } else {
+                default_budget
+            },
+            source: "stored_graph".to_string(),
+        })
+    })?;
+    let cases = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    if !cases.is_empty() {
+        return Ok(cases);
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT l.id, l.memory_id, l.kind, l.target, source.title, target.title \
+         FROM memory_links l \
+         JOIN memories source ON source.id = l.memory_id \
+         JOIN memories target ON target.id = l.target \
+         WHERE source.status IN ('active','uncertain') \
+           AND target.status IN ('active','uncertain') \
+         ORDER BY l.id ASC \
+         LIMIT 12",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let link_id: i64 = row.get(0)?;
+        let source_id: String = row.get(1)?;
+        let kind: String = row.get(2)?;
+        let target_id: String = row.get(3)?;
+        let source_title: String = row.get(4)?;
+        let target_title: String = row.get(5)?;
+        Ok(RagEvalCase {
+            id: format!("auto-graph-{link_id}"),
+            name: truncate_chars(&format!("{source_title} -> {target_title}"), 80),
+            query: format!("Which memory cards are related to {source_title} through {kind}?"),
+            expected: if target_id.is_empty() {
+                source_id
+            } else {
+                target_id
+            },
+            budget: default_budget,
+            source: "auto_graph".to_string(),
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 fn eval_ratio_percent(part: usize, total: usize) -> f64 {
@@ -3850,6 +4519,70 @@ mod tests {
                 .iter()
                 .any(|reason| reason.contains("suppressed by packing"))
         );
+    }
+
+    #[test]
+    fn graph_rag_eval_graph_summary_counts_connected_cases() {
+        let mut kinds = std::collections::BTreeMap::new();
+        kinds.insert("relates_to".to_string(), 2);
+        let cases = vec![
+            GraphRagEvalCaseResult {
+                id: "case-a".to_string(),
+                name: "case a".to_string(),
+                case_source: "auto_graph".to_string(),
+                query: "query".to_string(),
+                expected: "expected".to_string(),
+                passed: true,
+                detail: "detail".to_string(),
+                graph_status: "connected".to_string(),
+                confidence: "high".to_string(),
+                confidence_score: 0.9,
+                node_count: 3,
+                edge_count: 2,
+                relationship_coverage: 100.0,
+                relationship_kinds: kinds,
+                expected_in_graph: true,
+                expected_in_answer: true,
+                citation_count: 2,
+                citations: vec!["a".to_string(), "b".to_string()],
+                answer: "answer".to_string(),
+                ranked_node_titles: vec!["a".to_string()],
+                missing_evidence: Vec::new(),
+            },
+            GraphRagEvalCaseResult {
+                id: "case-b".to_string(),
+                name: "case b".to_string(),
+                case_source: "auto_graph".to_string(),
+                query: "query".to_string(),
+                expected: "expected".to_string(),
+                passed: false,
+                detail: "detail".to_string(),
+                graph_status: "isolated".to_string(),
+                confidence: "low".to_string(),
+                confidence_score: 0.2,
+                node_count: 2,
+                edge_count: 0,
+                relationship_coverage: 0.0,
+                relationship_kinds: std::collections::BTreeMap::new(),
+                expected_in_graph: true,
+                expected_in_answer: false,
+                citation_count: 1,
+                citations: vec!["c".to_string()],
+                answer: "answer".to_string(),
+                ranked_node_titles: vec!["c".to_string()],
+                missing_evidence: vec!["missing edge".to_string()],
+            },
+        ];
+
+        let summary = graph_rag_eval_graph_summary(&cases);
+
+        assert_eq!(summary.total_nodes, 5);
+        assert_eq!(summary.total_edges, 2);
+        assert_eq!(summary.connected_cases, 1);
+        assert_eq!(summary.isolated_cases, 1);
+        assert_eq!(summary.missing_graph_cases, 0);
+        assert_eq!(summary.average_relationship_coverage, 50.0);
+        assert_eq!(summary.relationship_kinds.get("relates_to"), Some(&2));
     }
 
     #[test]

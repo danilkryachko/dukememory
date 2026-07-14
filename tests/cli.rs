@@ -15404,6 +15404,26 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let web_control_v12_json: Value = serde_json::from_str(&web_control_v12).unwrap();
     assert_eq!(web_control_v12_json["version"], 1);
     assert!(web_control_v12_json["panels"].as_array().is_some());
+    let web_control_v12_panels = web_control_v12_json["panels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|panel| panel["name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(web_control_v12_panels.contains(&"rag_eval_cases"));
+    assert!(web_control_v12_panels.contains(&"rag_eval_baseline"));
+    assert!(web_control_v12_panels.contains(&"graph_rag_eval"));
+    assert!(web_control_v12_panels.contains(&"import_write_quality"));
+    assert!(
+        web_control_v12_json["rag_eval"]["status"]
+            .as_str()
+            .is_some()
+    );
+    assert!(
+        web_control_v12_json["graph_rag_eval"]["status"]
+            .as_str()
+            .is_some()
+    );
 
     let web_control = stdout(
         cmd(&db)

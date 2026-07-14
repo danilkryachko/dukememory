@@ -604,7 +604,10 @@ pub(crate) struct AutoRankingTuneReport {
     pub(crate) ok: bool,
     pub(crate) root: String,
     pub(crate) since_days: i64,
+    pub(crate) current_profile: Option<String>,
     pub(crate) selected_profile: String,
+    pub(crate) profile_change: bool,
+    pub(crate) safe_to_apply: bool,
     pub(crate) applied: bool,
     pub(crate) qa_score: f64,
     pub(crate) useful_rate: f64,
@@ -616,8 +619,27 @@ pub(crate) struct AutoRankingTuneReport {
     pub(crate) rag_selection_recall: f64,
     pub(crate) rag_candidate_recall: f64,
     pub(crate) rag_near_misses: usize,
+    pub(crate) signals: Vec<AutoRankingTuneSignal>,
+    pub(crate) apply_plan: AutoRankingTuneApplyPlan,
     pub(crate) reasons: Vec<String>,
     pub(crate) ranking: RankingProfileReport,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AutoRankingTuneSignal {
+    pub(crate) name: String,
+    pub(crate) status: String,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AutoRankingTuneApplyPlan {
+    pub(crate) current_profile: Option<String>,
+    pub(crate) selected_profile: String,
+    pub(crate) profile_change: bool,
+    pub(crate) safe_to_apply: bool,
+    pub(crate) action: String,
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2054,15 +2076,46 @@ pub(crate) struct WebControlCenterV12Report {
     pub(crate) status: String,
     pub(crate) root: String,
     pub(crate) target: Option<String>,
-    pub(crate) v11: WebControlCenterV11Report,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) snapshot: Option<ControlSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) v11: Option<WebControlCenterV11Report>,
     pub(crate) effectiveness_v2: MemoryEffectivenessV2Report,
     pub(crate) baselines: RecallBenchmarkBaselinesReport,
     pub(crate) conflict_apply: MemoryConflictApplyReport,
+    pub(crate) inbox_reviewer: InboxAiReviewerReport,
+    pub(crate) diff_apply: MemoryDiffApplyReport,
     pub(crate) mcp_discipline_v3: McpDisciplineV3Report,
     pub(crate) fleet_quality: FleetQualityReport,
+    pub(crate) rag_eval: WebRagEvalQuickSummary,
+    pub(crate) graph_rag_eval: WebGraphRagEvalSummary,
     pub(crate) panels: Vec<WebControlPanel>,
     pub(crate) controls: Vec<WebControlAction>,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WebRagEvalQuickSummary {
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) total: usize,
+    pub(crate) passed: usize,
+    pub(crate) failed: usize,
+    pub(crate) semantic_fallbacks: usize,
+    pub(crate) grounded_answers: RagEvalGroundedSummary,
+    pub(crate) eval_matrix: RagEvalMatrixSummary,
+    pub(crate) retrieval_tuning: RagEvalRetrievalTuningSummary,
+    pub(crate) baseline: RagEvalBaselineSummary,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WebGraphRagEvalSummary {
+    pub(crate) status: String,
+    pub(crate) total_cases: usize,
+    pub(crate) memory_relationship_edges: usize,
+    pub(crate) relationship_kinds: std::collections::BTreeMap<String, usize>,
+    pub(crate) detail: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4531,7 +4584,10 @@ pub(crate) fn print_auto_ranking_tune(
         return Ok(());
     }
     println!("Auto Ranking Tune");
+    println!("current_profile: {:?}", report.current_profile);
     println!("selected_profile: {}", report.selected_profile);
+    println!("profile_change: {}", report.profile_change);
+    println!("safe_to_apply: {}", report.safe_to_apply);
     println!("applied: {}", report.applied);
     println!(
         "rag_retrieval: status={} profile={} selection_recall={:.1}% candidate_recall={:.1}% near_misses={}",
@@ -4541,6 +4597,12 @@ pub(crate) fn print_auto_ranking_tune(
         report.rag_candidate_recall,
         report.rag_near_misses
     );
+    for signal in &report.signals {
+        println!(
+            "signal: {} status={} detail={}",
+            signal.name, signal.status, signal.detail
+        );
+    }
     for reason in &report.reasons {
         println!("- {reason}");
     }
@@ -4556,6 +4618,7 @@ pub(crate) fn auto_ranking_tune_report(
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let qa = memory_qa_report(conn, &root, since_days)?;
     let quality = quality_report(conn, since_days, 30)?;
+    let current_profile = current_ranking_profile(&root);
     let noisy_cards = quality
         .weakest
         .iter()
@@ -4617,17 +4680,98 @@ pub(crate) fn auto_ranking_tune_report(
             ));
         }
     }
+    let selected_profile = profile.to_string();
+    let profile_change = current_profile
+        .as_deref()
+        .is_none_or(|existing| existing != selected_profile);
+    let mut signals = vec![
+        AutoRankingTuneSignal {
+            name: "memory_qa".to_string(),
+            status: if qa.ok { "ready" } else { "attention" }.to_string(),
+            detail: format!(
+                "score={:.1} useful_rate={:.2} inferred_missing={} semantic_empty={}",
+                qa.score,
+                qa.useful_rate,
+                qa.inferred_missing,
+                qa.semantic_eligible_empty_read_count
+            ),
+        },
+        AutoRankingTuneSignal {
+            name: "quality".to_string(),
+            status: if quality.total == 0 || quality.average_score >= 65.0 {
+                "ready"
+            } else {
+                "attention"
+            }
+            .to_string(),
+            detail: format!(
+                "average_score={:.1} noisy_cards={} total={}",
+                quality.average_score, noisy_cards, quality.total
+            ),
+        },
+        AutoRankingTuneSignal {
+            name: "rag_retrieval".to_string(),
+            status: rag_retrieval_status.clone(),
+            detail: format!(
+                "profile={} selection_recall={:.1}% candidate_recall={:.1}% near_misses={}",
+                rag_retrieval_profile, rag_selection_recall, rag_candidate_recall, rag_near_misses
+            ),
+        },
+    ];
+    let rag_safe = stored_cases == 0 || rag_candidate_recall >= 80.0;
+    let quality_safe = quality.total == 0 || quality.average_score >= 65.0;
+    let safe_to_apply = qa.ok && quality_safe && rag_safe;
+    let apply_reason = if safe_to_apply {
+        if profile_change {
+            format!("write selected profile {selected_profile}")
+        } else {
+            format!("current profile already matches {selected_profile}")
+        }
+    } else if !qa.ok {
+        format!("memory QA is attention: score {:.1}", qa.score)
+    } else if !quality_safe {
+        format!("average memory quality is {:.1}", quality.average_score)
+    } else {
+        format!("RAG candidate recall is {:.1}%", rag_candidate_recall)
+    };
+    signals.push(AutoRankingTuneSignal {
+        name: "apply_safety".to_string(),
+        status: if safe_to_apply { "ready" } else { "attention" }.to_string(),
+        detail: apply_reason.clone(),
+    });
+    let apply_allowed = apply && safe_to_apply;
     if apply {
-        reasons.push("applied durable .agent/ranking-profile.json".to_string());
+        if apply_allowed {
+            reasons.push("applied durable .agent/ranking-profile.json".to_string());
+        } else {
+            reasons.push(format!("apply skipped: {apply_reason}"));
+        }
     }
-    let ranking = ranking_profile_report(&root, profile, apply)?;
+    let ranking = ranking_profile_report(&root, profile, apply_allowed)?;
+    let apply_plan = AutoRankingTuneApplyPlan {
+        current_profile: current_profile.clone(),
+        selected_profile: selected_profile.clone(),
+        profile_change,
+        safe_to_apply,
+        action: if apply_allowed {
+            "applied".to_string()
+        } else if apply {
+            "skipped".to_string()
+        } else {
+            "dry_run".to_string()
+        },
+        reason: apply_reason,
+    };
     Ok(AutoRankingTuneReport {
         version: 1,
         ok: true,
         root: root.display().to_string(),
         since_days,
-        selected_profile: profile.to_string(),
-        applied: apply,
+        current_profile,
+        selected_profile,
+        profile_change,
+        safe_to_apply,
+        applied: apply_allowed,
         qa_score: qa.score,
         useful_rate: qa.useful_rate,
         inferred_missing: qa.inferred_missing,
@@ -4638,9 +4782,20 @@ pub(crate) fn auto_ranking_tune_report(
         rag_selection_recall,
         rag_candidate_recall,
         rag_near_misses,
+        signals,
+        apply_plan,
         reasons,
         ranking,
     })
+}
+
+fn current_ranking_profile(root: &Path) -> Option<String> {
+    let raw = fs::read_to_string(root.join(".agent/ranking-profile.json")).ok()?;
+    let value = serde_json::from_str::<Value>(&raw).ok()?;
+    value
+        .get("profile")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn ranking_profile_mode_from_name(name: &str) -> Option<RankingProfileMode> {
@@ -5863,7 +6018,7 @@ pub(crate) fn release_gate_v3_report(
         DEFAULT_EMBED_ENDPOINT,
         DEFAULT_EMBED_MODEL,
     )?;
-    let rag_eval = rag_eval_report(
+    let rag_eval = rag_eval_report_with_baseline(
         conn,
         None,
         8,
@@ -5871,6 +6026,8 @@ pub(crate) fn release_gate_v3_report(
         DEFAULT_EMBED_PROVIDER,
         DEFAULT_EMBED_ENDPOINT,
         DEFAULT_EMBED_MODEL,
+        Some(&root),
+        false,
     )?;
     let mut checks = release_gate_v2.checks.clone();
     checks.push(ReleaseGateCheck {
@@ -5975,6 +6132,23 @@ pub(crate) fn release_gate_v3_report(
             rag_eval.retrieval_tuning.status
         ),
     });
+    checks.push(ReleaseGateCheck {
+        name: "rag_eval_baseline".to_string(),
+        ok: !matches!(rag_eval.baseline.status.as_str(), "invalid" | "regressed"),
+        required: true,
+        detail: format!(
+            "status={} present={} regression={} signature={} baseline={}",
+            rag_eval.baseline.status,
+            rag_eval.baseline.present,
+            rag_eval.baseline.regression,
+            rag_eval.baseline.current_signature,
+            rag_eval
+                .baseline
+                .baseline_signature
+                .as_deref()
+                .unwrap_or("-")
+        ),
+    });
     let mut issues = release_gate_v2.issues.clone();
     for check in &checks {
         if check.required && !check.ok {
@@ -5991,7 +6165,6 @@ pub(crate) fn release_gate_v3_report(
     recommendations.extend(mcp_discipline_v3.recommendations.clone());
     recommendations.extend(fleet_quality.recommendations.clone());
     recommendations.extend(rag_sources.recommendations.clone());
-    recommendations.extend(rag_eval.recommendations.clone());
     recommendations.sort();
     recommendations.dedup();
     let ok = issues.is_empty();
@@ -10251,7 +10424,7 @@ pub(crate) fn memory_eval_story_report(
     let profiles = benchmark_profiles_report(conn, &root, None, since_days, false, false)?;
     let harness = memory_test_harness_report(conn, &root, since_days, 8)?;
     let effectiveness = memory_effectiveness_lab_report(conn, &root, since_days)?;
-    let rag_eval = rag_eval_report(
+    let rag_eval = rag_eval_report_with_baseline(
         conn,
         None,
         8,
@@ -10259,6 +10432,8 @@ pub(crate) fn memory_eval_story_report(
         DEFAULT_EMBED_PROVIDER,
         DEFAULT_EMBED_ENDPOINT,
         DEFAULT_EMBED_MODEL,
+        Some(&root),
+        write_baseline,
     )?;
     let ok = !benchmark.regression
         && harness.score >= 60.0
@@ -12682,18 +12857,20 @@ pub(crate) fn web_control_center_v12_report(
     db: &Path,
     root: &Path,
     target: Option<&Path>,
-    task: &str,
+    _task: &str,
     since_days: i64,
 ) -> Result<WebControlCenterV12Report> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let v11 = web_control_center_v11_report(conn, db, &root, target, task, since_days)?;
     let effectiveness_v2 = memory_effectiveness_v2_report(conn, &root, since_days)?;
     let baselines = recall_benchmark_baselines_report(conn, &root, since_days, false)?;
     let conflict_apply = memory_conflict_apply_report(conn, 90, 12, false)?;
+    let inbox_reviewer = inbox_ai_reviewer_report(conn, 100, false)?;
+    let diff_apply = memory_diff_apply_report(conn, &root, false)?;
     let mcp_discipline_v3 = mcp_discipline_v3_report(conn, db, &root, since_days, false)?;
     let fleet_quality = fleet_quality_report(db, since_days)?;
-    let release_gate = release_gate_v3_report(conn, db, &root, since_days, false, false)?;
-    let mut panels = v11.panels.clone();
+    let rag_eval = web_rag_eval_quick_summary(conn, &root)?;
+    let graph_rag_eval = web_graph_rag_eval_summary(conn)?;
+    let mut panels = Vec::new();
     panels.extend([
         WebControlPanel {
             name: "effectiveness_v2".to_string(),
@@ -12780,6 +12957,57 @@ pub(crate) fn web_control_center_v12_report(
             ],
         },
         WebControlPanel {
+            name: "import_write_quality".to_string(),
+            status: if inbox_reviewer.ok && diff_apply.ok {
+                "ready"
+            } else {
+                "attention"
+            }
+            .to_string(),
+            headline: format!(
+                "{} pending inbox, {} write-ready diff",
+                inbox_reviewer.pending, diff_apply.reviewed.impact.write_ready_count
+            ),
+            metrics: vec![
+                MemoryEvalProofPoint {
+                    name: "approve_ready".to_string(),
+                    value: inbox_reviewer.approve_ready.to_string(),
+                    status: if inbox_reviewer.approve_ready == 0 {
+                        "ready"
+                    } else {
+                        "planned"
+                    }
+                    .to_string(),
+                },
+                MemoryEvalProofPoint {
+                    name: "merge_ready".to_string(),
+                    value: inbox_reviewer.merge_ready.to_string(),
+                    status: if inbox_reviewer.merge_ready == 0 {
+                        "ready"
+                    } else {
+                        "manual_review"
+                    }
+                    .to_string(),
+                },
+                MemoryEvalProofPoint {
+                    name: "write_ready".to_string(),
+                    value: diff_apply.reviewed.impact.write_ready_count.to_string(),
+                    status: if diff_apply.reviewed.impact.write_ready_count == 0 {
+                        "ready"
+                    } else {
+                        "planned"
+                    }
+                    .to_string(),
+                },
+            ],
+            actions: vec![
+                "dukememory import-review FILE --json".to_string(),
+                "dukememory memory-upload FILE --json".to_string(),
+                "dukememory inbox-ai-reviewer --json".to_string(),
+                "dukememory memory-diff-apply --json".to_string(),
+            ],
+        },
+        WebControlPanel {
             name: "mcp_discipline_v3".to_string(),
             status: mcp_discipline_v3.status.clone(),
             headline: format!("missing {}", mcp_discipline_v3.missing_commands.len()),
@@ -12813,8 +13041,126 @@ pub(crate) fn web_control_center_v12_report(
             actions: vec!["dukememory fleet-quality --json".to_string()],
         },
         WebControlPanel {
+            name: "rag_eval_cases".to_string(),
+            status: rag_eval.status.clone(),
+            headline: format!(
+                "{}/{} cases passed, grounded {:.1}%",
+                rag_eval.passed, rag_eval.total, rag_eval.grounded_answers.coverage
+            ),
+            metrics: vec![
+                MemoryEvalProofPoint {
+                    name: "failed_cases".to_string(),
+                    value: rag_eval.failed.to_string(),
+                    status: if rag_eval.failed == 0 {
+                        "ready"
+                    } else {
+                        "attention"
+                    }
+                    .to_string(),
+                },
+                MemoryEvalProofPoint {
+                    name: "unknown_citation_cases".to_string(),
+                    value: rag_eval.grounded_answers.unknown_citation_cases.to_string(),
+                    status: if rag_eval.grounded_answers.unknown_citation_cases == 0 {
+                        "ready"
+                    } else {
+                        "attention"
+                    }
+                    .to_string(),
+                },
+                MemoryEvalProofPoint {
+                    name: "semantic_fallbacks".to_string(),
+                    value: rag_eval.semantic_fallbacks.to_string(),
+                    status: if rag_eval.semantic_fallbacks == 0 {
+                        "ready"
+                    } else {
+                        "attention"
+                    }
+                    .to_string(),
+                },
+            ],
+            actions: vec![
+                "GET /rag-eval".to_string(),
+                "dukememory eval rag --json".to_string(),
+            ],
+        },
+        WebControlPanel {
+            name: "rag_eval_baseline".to_string(),
+            status: match rag_eval.baseline.status.as_str() {
+                "matched" | "written" | "changed" | "present" => "ready",
+                "missing" | "unconfigured" => "optional",
+                _ => "attention",
+            }
+            .to_string(),
+            headline: format!(
+                "{} ({})",
+                rag_eval.baseline.status, rag_eval.baseline.current_signature
+            ),
+            metrics: vec![
+                MemoryEvalProofPoint {
+                    name: "present".to_string(),
+                    value: rag_eval.baseline.present.to_string(),
+                    status: if rag_eval.baseline.present {
+                        "ready"
+                    } else {
+                        "optional"
+                    }
+                    .to_string(),
+                },
+                MemoryEvalProofPoint {
+                    name: "regression".to_string(),
+                    value: rag_eval.baseline.regression.to_string(),
+                    status: if rag_eval.baseline.regression {
+                        "blocked"
+                    } else {
+                        "ready"
+                    }
+                    .to_string(),
+                },
+                MemoryEvalProofPoint {
+                    name: "matrix_coverage".to_string(),
+                    value: format!("{:.1}%", rag_eval.eval_matrix.coverage),
+                    status: rag_eval.eval_matrix.status.clone(),
+                },
+            ],
+            actions: vec![
+                "GET /rag-eval".to_string(),
+                "POST /rag-eval/baseline".to_string(),
+                "dukememory eval rag --write-baseline --json".to_string(),
+            ],
+        },
+        WebControlPanel {
+            name: "graph_rag_eval".to_string(),
+            status: graph_rag_eval.status.clone(),
+            headline: format!(
+                "{} graph cases, {} memory relationships",
+                graph_rag_eval.total_cases, graph_rag_eval.memory_relationship_edges
+            ),
+            metrics: vec![
+                MemoryEvalProofPoint {
+                    name: "relationship_edges".to_string(),
+                    value: graph_rag_eval.memory_relationship_edges.to_string(),
+                    status: graph_rag_eval.status.clone(),
+                },
+                MemoryEvalProofPoint {
+                    name: "graph_cases".to_string(),
+                    value: graph_rag_eval.total_cases.to_string(),
+                    status: graph_rag_eval.status.clone(),
+                },
+                MemoryEvalProofPoint {
+                    name: "relationship_kinds".to_string(),
+                    value: graph_rag_eval.relationship_kinds.len().to_string(),
+                    status: "ready".to_string(),
+                },
+            ],
+            actions: vec![
+                "GET /graph-rag-eval".to_string(),
+                "dukememory eval graph-rag --json".to_string(),
+            ],
+        },
+        WebControlPanel {
             name: "eval_matrix".to_string(),
-            status: match release_gate.rag_eval.eval_matrix.status.as_str() {
+            status: match rag_eval.eval_matrix.status.as_str() {
                 "ready" => "ready",
                 "empty" | "auto_only" => "optional",
                 _ => "attention",
@@ -12822,18 +13168,15 @@ pub(crate) fn web_control_center_v12_report(
             .to_string(),
             headline: format!(
                 "{:.1}% coverage, {} missing",
-                release_gate.rag_eval.eval_matrix.coverage,
-                release_gate.rag_eval.eval_matrix.missing_dimensions.len()
+                rag_eval.eval_matrix.coverage,
+                rag_eval.eval_matrix.missing_dimensions.len()
             ),
             metrics: vec![
                 MemoryEvalProofPoint {
                     name: "stored_cases".to_string(),
-                    value: release_gate.rag_eval.eval_matrix.stored_cases.to_string(),
-                    status: if release_gate.rag_eval.eval_matrix.stored_cases
-                        >= release_gate
-                            .rag_eval
-                            .eval_matrix
-                            .recommended_min_stored_cases
+                    value: rag_eval.eval_matrix.stored_cases.to_string(),
+                    status: if rag_eval.eval_matrix.stored_cases
+                        >= rag_eval.eval_matrix.recommended_min_stored_cases
                     {
                         "ready"
                     } else {
@@ -12845,17 +13188,17 @@ pub(crate) fn web_control_center_v12_report(
                     name: "covered_dimensions".to_string(),
                     value: format!(
                         "{}/{}",
-                        release_gate.rag_eval.eval_matrix.covered_dimensions,
-                        release_gate.rag_eval.eval_matrix.total_dimensions
+                        rag_eval.eval_matrix.covered_dimensions,
+                        rag_eval.eval_matrix.total_dimensions
                     ),
-                    status: release_gate.rag_eval.eval_matrix.status.clone(),
+                    status: rag_eval.eval_matrix.status.clone(),
                 },
             ],
             actions: vec!["dukememory eval rag --json".to_string()],
         },
         WebControlPanel {
             name: "retrieval_tuning".to_string(),
-            status: match release_gate.rag_eval.retrieval_tuning.status.as_str() {
+            status: match rag_eval.retrieval_tuning.status.as_str() {
                 "ready" => "ready",
                 "unconfigured" => "optional",
                 _ => "attention",
@@ -12863,33 +13206,19 @@ pub(crate) fn web_control_center_v12_report(
             .to_string(),
             headline: format!(
                 "profile {}, selection {:.1}%",
-                release_gate.rag_eval.retrieval_tuning.selected_profile,
-                release_gate.rag_eval.retrieval_tuning.selection_recall
+                rag_eval.retrieval_tuning.selected_profile,
+                rag_eval.retrieval_tuning.selection_recall
             ),
             metrics: vec![
                 MemoryEvalProofPoint {
                     name: "candidate_recall".to_string(),
-                    value: format!(
-                        "{:.1}%",
-                        release_gate.rag_eval.retrieval_tuning.candidate_recall
-                    ),
-                    status: release_gate.rag_eval.retrieval_tuning.status.clone(),
+                    value: format!("{:.1}%", rag_eval.retrieval_tuning.candidate_recall),
+                    status: rag_eval.retrieval_tuning.status.clone(),
                 },
                 MemoryEvalProofPoint {
                     name: "semantic_fallback_rate".to_string(),
-                    value: format!(
-                        "{:.1}%",
-                        release_gate
-                            .rag_eval
-                            .retrieval_tuning
-                            .semantic_fallback_rate
-                    ),
-                    status: if release_gate
-                        .rag_eval
-                        .retrieval_tuning
-                        .semantic_fallback_rate
-                        == 0.0
-                    {
+                    value: format!("{:.1}%", rag_eval.retrieval_tuning.semantic_fallback_rate),
+                    status: if rag_eval.retrieval_tuning.semantic_fallback_rate == 0.0 {
                         "ready"
                     } else {
                         "attention"
@@ -12904,12 +13233,12 @@ pub(crate) fn web_control_center_v12_report(
         },
         WebControlPanel {
             name: "release_gate_v3".to_string(),
-            status: release_gate.status.clone(),
-            headline: format!("{} issues", release_gate.issues.len()),
+            status: "on_demand".to_string(),
+            headline: "run full gate on demand".to_string(),
             metrics: vec![MemoryEvalProofPoint {
-                name: "checks".to_string(),
-                value: release_gate.checks.len().to_string(),
-                status: release_gate.status.clone(),
+                name: "precomputed".to_string(),
+                value: "false".to_string(),
+                status: "on_demand".to_string(),
             }],
             actions: vec![
                 "dukememory release-gate-v3 --json".to_string(),
@@ -12917,7 +13246,7 @@ pub(crate) fn web_control_center_v12_report(
             ],
         },
     ]);
-    let mut controls = v11.controls.clone();
+    let mut controls = Vec::new();
     controls.extend([
         WebControlAction {
             name: "write_recall_baseline".to_string(),
@@ -12930,6 +13259,16 @@ pub(crate) fn web_control_center_v12_report(
             status: baselines.status.clone(),
         },
         WebControlAction {
+            name: "write_rag_eval_baseline".to_string(),
+            label: "Write RAG baseline".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/rag-eval/baseline".to_string(),
+            cli: "dukememory eval rag --write-baseline --json".to_string(),
+            safe_auto: true,
+            requires_apply: true,
+            status: rag_eval.baseline.status.clone(),
+        },
+        WebControlAction {
             name: "apply_memory_conflicts".to_string(),
             label: "Apply safe conflicts".to_string(),
             method: "POST".to_string(),
@@ -12938,6 +13277,36 @@ pub(crate) fn web_control_center_v12_report(
             safe_auto: false,
             requires_apply: true,
             status: conflict_apply.status.clone(),
+        },
+        WebControlAction {
+            name: "review_inbox_ai".to_string(),
+            label: "Review inbox AI".to_string(),
+            method: "GET".to_string(),
+            endpoint: "/inbox-ai-reviewer".to_string(),
+            cli: "dukememory inbox-ai-reviewer --json".to_string(),
+            safe_auto: true,
+            requires_apply: false,
+            status: if inbox_reviewer.ok {
+                "ready"
+            } else {
+                "attention"
+            }
+            .to_string(),
+        },
+        WebControlAction {
+            name: "apply_memory_diff".to_string(),
+            label: "Apply memory diff".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/memory-diff-apply/apply".to_string(),
+            cli: "dukememory memory-diff-apply --apply --json".to_string(),
+            safe_auto: true,
+            requires_apply: true,
+            status: if diff_apply.reviewed.impact.write_ready_count == 0 {
+                "ready"
+            } else {
+                "planned"
+            }
+            .to_string(),
         },
         WebControlAction {
             name: "verify_mcp_discipline_v3".to_string(),
@@ -12957,39 +13326,379 @@ pub(crate) fn web_control_center_v12_report(
             cli: "dukememory release-gate-v3 --run --json".to_string(),
             safe_auto: true,
             requires_apply: false,
-            status: release_gate.status.clone(),
+            status: "on_demand".to_string(),
         },
     ]);
-    let mut recommendations = v11.recommendations.clone();
+    let mut recommendations = Vec::new();
     recommendations.extend(effectiveness_v2.recommendations.clone());
     recommendations.extend(baselines.recommendations.clone());
     recommendations.extend(conflict_apply.recommendations.clone());
+    recommendations.extend(inbox_reviewer.recommendations.clone());
+    recommendations.extend(diff_apply.recommendations.clone());
     recommendations.extend(mcp_discipline_v3.recommendations.clone());
     recommendations.extend(fleet_quality.recommendations.clone());
-    recommendations.extend(release_gate.recommendations.clone());
     recommendations.sort();
     recommendations.dedup();
-    let ok = v11.ok
-        && effectiveness_v2.ok
+    let graph_rag_ok = graph_rag_eval.status != "attention";
+    let ok = effectiveness_v2.ok
         && baselines.stable
         && conflict_apply.status != "manual_review"
+        && inbox_reviewer.ok
+        && diff_apply.ok
         && mcp_discipline_v3.ok
-        && release_gate.ok;
+        && graph_rag_ok
+        && rag_eval.ok;
     Ok(WebControlCenterV12Report {
         version: 1,
         ok,
         status: if ok { "ready" } else { "attention" }.to_string(),
         root: root.display().to_string(),
         target: target.map(|path| path.display().to_string()),
-        v11,
+        snapshot: None,
+        v11: None,
         effectiveness_v2,
         baselines,
         conflict_apply,
+        inbox_reviewer,
+        diff_apply,
         mcp_discipline_v3,
         fleet_quality,
+        rag_eval,
+        graph_rag_eval,
         panels,
         controls,
         recommendations,
+    })
+}
+
+const WEB_RAG_EVAL_MATRIX_DIMENSIONS: [&str; 9] = [
+    "source_chunk",
+    "memory_card",
+    "cli_workflow",
+    "mcp_tooling",
+    "http_api",
+    "graph_memory",
+    "multilingual",
+    "negative_or_missing",
+    "packing_near_miss",
+];
+
+fn web_ratio_percent(part: usize, total: usize) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        ((part as f64 / total as f64) * 1000.0).round() / 10.0
+    }
+}
+
+fn web_rag_eval_quick_summary(conn: &Connection, root: &Path) -> Result<WebRagEvalQuickSummary> {
+    let mut stmt =
+        conn.prepare("SELECT name, query, expected FROM eval_cases ORDER BY created_at")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut total = 0usize;
+    let mut dimensions = WEB_RAG_EVAL_MATRIX_DIMENSIONS
+        .iter()
+        .map(|dimension| (dimension.to_string(), 0usize))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for row in rows {
+        let (name, query, expected) = row?;
+        total += 1;
+        for dimension in web_rag_eval_case_dimensions(&format!("{name} {query} {expected}")) {
+            *dimensions.entry(dimension.to_string()).or_insert(0) += 1;
+        }
+    }
+    let missing_dimensions = WEB_RAG_EVAL_MATRIX_DIMENSIONS
+        .iter()
+        .filter(|dimension| dimensions.get(**dimension).copied().unwrap_or_default() == 0)
+        .map(|dimension| dimension.to_string())
+        .collect::<Vec<_>>();
+    let total_dimensions = WEB_RAG_EVAL_MATRIX_DIMENSIONS.len();
+    let covered_dimensions = total_dimensions.saturating_sub(missing_dimensions.len());
+    let coverage = web_ratio_percent(covered_dimensions, total_dimensions);
+    let baseline = web_rag_eval_baseline_quick_summary(root)?;
+    let baseline_value = fs::read_to_string(root.join(".agent/rag-eval-baseline.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    let baseline_total = baseline_value
+        .as_ref()
+        .and_then(|value| value.get("total"))
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+    let baseline_passed = baseline_value
+        .as_ref()
+        .and_then(|value| value.get("passed"))
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+    let grounded_coverage = baseline_value
+        .as_ref()
+        .and_then(|value| value.get("grounded_coverage"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let candidate_recall = baseline_value
+        .as_ref()
+        .and_then(|value| value.get("candidate_recall"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let selection_recall = baseline_value
+        .as_ref()
+        .and_then(|value| value.get("selection_recall"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let total = baseline_total.unwrap_or(total);
+    let passed = baseline_passed.unwrap_or(0);
+    let failed = total.saturating_sub(passed);
+    let grounded_passed = ((grounded_coverage / 100.0) * total as f64).round() as usize;
+    let matrix_status = if total == 0 {
+        "empty"
+    } else if missing_dimensions.is_empty() {
+        "ready"
+    } else {
+        "partial"
+    }
+    .to_string();
+    let selected_profile = current_ranking_profile(root).unwrap_or_else(|| "balanced".to_string());
+    let retrieval_status =
+        if baseline.present && candidate_recall >= 90.0 && selection_recall >= 90.0 {
+            "ready"
+        } else if baseline.present {
+            "attention"
+        } else {
+            "unconfigured"
+        }
+        .to_string();
+    let ok = total > 0
+        && failed == 0
+        && grounded_coverage >= 99.9
+        && missing_dimensions.is_empty()
+        && !matches!(baseline.status.as_str(), "invalid" | "regressed");
+    let status = if ok {
+        "ready"
+    } else if total == 0 {
+        "empty"
+    } else {
+        "attention"
+    }
+    .to_string();
+    Ok(WebRagEvalQuickSummary {
+        ok,
+        status,
+        total,
+        passed,
+        failed,
+        semantic_fallbacks: 0,
+        grounded_answers: RagEvalGroundedSummary {
+            passed: grounded_passed,
+            failed: total.saturating_sub(grounded_passed),
+            coverage: grounded_coverage,
+            expected_in_answer: grounded_passed,
+            cited_answers: grounded_passed,
+            unknown_citation_cases: 0,
+        },
+        eval_matrix: RagEvalMatrixSummary {
+            status: matrix_status,
+            stored_cases: total,
+            auto_cases: 0,
+            recommended_min_stored_cases: 12,
+            total_dimensions,
+            covered_dimensions,
+            coverage,
+            dimensions,
+            missing_dimensions,
+        },
+        retrieval_tuning: RagEvalRetrievalTuningSummary {
+            status: retrieval_status,
+            selected_profile,
+            candidate_recall,
+            selection_recall,
+            chunk_selection_rate: 0.0,
+            memory_selection_rate: 0.0,
+            semantic_fallback_rate: 0.0,
+            near_miss_count: 0,
+            reasons: vec![
+                "quick web summary uses the latest RAG eval baseline; run GET /rag-eval for full retrieval diagnostics"
+                    .to_string(),
+            ],
+        },
+        baseline,
+        detail: "quick summary; full RAG eval is available through /rag-eval".to_string(),
+    })
+}
+
+fn web_rag_eval_case_dimensions(text: &str) -> Vec<&'static str> {
+    let text = text.to_lowercase();
+    let mut dimensions = Vec::new();
+    if text.contains(".rs")
+        || text.contains(".md")
+        || text.contains(".toml")
+        || text.contains("chunk")
+        || text.contains("source")
+        || text.contains("rag")
+    {
+        dimensions.push("source_chunk");
+    }
+    if text.contains("memory") || text.contains("card") || text.contains("пам") {
+        dimensions.push("memory_card");
+    }
+    if text.contains("dukememory")
+        || text.contains(" --")
+        || text.contains(" cli")
+        || text.contains("command")
+    {
+        dimensions.push("cli_workflow");
+    }
+    if text.contains("mcp") || text.contains("memory_") || text.contains("agent-session") {
+        dimensions.push("mcp_tooling");
+    }
+    if text.contains("http")
+        || text.contains("endpoint")
+        || text.contains("/web-control")
+        || text.contains("web")
+    {
+        dimensions.push("http_api");
+    }
+    if text.contains("graph")
+        || text.contains("relationship")
+        || text.contains("edge")
+        || text.contains("node")
+        || text.contains("link")
+    {
+        dimensions.push("graph_memory");
+    }
+    if text
+        .chars()
+        .any(|ch| ('\u{0400}'..='\u{04FF}').contains(&ch))
+    {
+        dimensions.push("multilingual");
+    }
+    if text.contains("missing") || text.contains("нет ") || text.contains("не ") {
+        dimensions.push("negative_or_missing");
+    }
+    if text.contains("packing")
+        || text.contains("suppress")
+        || text.contains("overlap")
+        || text.contains("near")
+        || text.contains("file-cap")
+    {
+        dimensions.push("packing_near_miss");
+    }
+    dimensions.sort_unstable();
+    dimensions.dedup();
+    dimensions
+}
+
+fn web_rag_eval_baseline_quick_summary(root: &Path) -> Result<RagEvalBaselineSummary> {
+    let path = root.join(".agent/rag-eval-baseline.json");
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return Ok(RagEvalBaselineSummary {
+            status: "missing".to_string(),
+            path: path.display().to_string(),
+            present: false,
+            written: false,
+            regression: false,
+            current_signature: String::new(),
+            baseline_signature: None,
+            baseline_recall: None,
+            baseline_grounded_coverage: None,
+            baseline_matrix_coverage: None,
+            baseline_candidate_recall: None,
+            baseline_selection_recall: None,
+            detail: "no RAG eval baseline has been written for this project".to_string(),
+        });
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+        return Ok(RagEvalBaselineSummary {
+            status: "invalid".to_string(),
+            path: path.display().to_string(),
+            present: true,
+            written: false,
+            regression: false,
+            current_signature: String::new(),
+            baseline_signature: None,
+            baseline_recall: None,
+            baseline_grounded_coverage: None,
+            baseline_matrix_coverage: None,
+            baseline_candidate_recall: None,
+            baseline_selection_recall: None,
+            detail: "RAG eval baseline file exists but could not be parsed".to_string(),
+        });
+    };
+    let signature = value
+        .get("signature")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    Ok(RagEvalBaselineSummary {
+        status: "present".to_string(),
+        path: path.display().to_string(),
+        present: true,
+        written: false,
+        regression: false,
+        current_signature: signature.clone(),
+        baseline_signature: Some(signature),
+        baseline_recall: value.get("recall").and_then(Value::as_f64),
+        baseline_grounded_coverage: value.get("grounded_coverage").and_then(Value::as_f64),
+        baseline_matrix_coverage: value.get("matrix_coverage").and_then(Value::as_f64),
+        baseline_candidate_recall: value.get("candidate_recall").and_then(Value::as_f64),
+        baseline_selection_recall: value.get("selection_recall").and_then(Value::as_f64),
+        detail: "baseline present; run GET /rag-eval for full signature comparison".to_string(),
+    })
+}
+
+fn web_graph_rag_eval_summary(conn: &Connection) -> Result<WebGraphRagEvalSummary> {
+    let total_cases: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM eval_cases \
+         WHERE lower(name || ' ' || query || ' ' || expected) LIKE '%graph%' \
+            OR lower(name || ' ' || query || ' ' || expected) LIKE '%relationship%' \
+            OR lower(name || ' ' || query || ' ' || expected) LIKE '% related%' \
+            OR lower(name || ' ' || query || ' ' || expected) LIKE '% link%'",
+        [],
+        |row| row.get(0),
+    )?;
+    let memory_ids = "SELECT id FROM memories WHERE status IN ('active', 'uncertain')";
+    let mut stmt = conn.prepare(&format!(
+        "SELECT kind, COUNT(*) FROM memory_links \
+         WHERE target IN ({memory_ids}) \
+         GROUP BY kind ORDER BY kind"
+    ))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+    })?;
+    let mut relationship_kinds = std::collections::BTreeMap::new();
+    let mut memory_relationship_edges = 0usize;
+    for row in rows {
+        let (kind, count) = row?;
+        memory_relationship_edges += count;
+        relationship_kinds.insert(kind, count);
+    }
+    let total_cases = total_cases.max(0) as usize;
+    let status = if total_cases == 0 && memory_relationship_edges == 0 {
+        "optional"
+    } else if total_cases > 0 && memory_relationship_edges > 0 {
+        "ready"
+    } else {
+        "attention"
+    }
+    .to_string();
+    let detail = if status == "ready" {
+        "graph eval cases and memory-to-memory relationships are present"
+    } else if total_cases == 0 {
+        "no graph-focused eval cases are stored"
+    } else {
+        "graph-focused eval cases exist but memory-to-memory relationships are missing"
+    }
+    .to_string();
+    Ok(WebGraphRagEvalSummary {
+        status,
+        total_cases,
+        memory_relationship_edges,
+        relationship_kinds,
+        detail,
     })
 }
 

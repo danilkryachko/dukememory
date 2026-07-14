@@ -1587,6 +1587,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Run Graph RAG on the project memory.
+    #[command(name = "graph-rag")]
     GraphRag {
         query: String,
         #[arg(long)]
@@ -3106,6 +3107,27 @@ pub(crate) enum EvalCommand {
         json: bool,
     },
     Rag {
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        #[arg(long)]
+        budget: Option<usize>,
+        #[arg(long, value_enum)]
+        budget_profile: Option<BudgetProfile>,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        model: String,
+        #[arg(long)]
+        write_baseline: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(name = "graph-rag")]
+    GraphRag {
         #[arg(long)]
         scope: Option<String>,
         #[arg(long, default_value_t = 8)]
