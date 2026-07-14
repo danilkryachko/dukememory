@@ -100,6 +100,24 @@ fn stable_control_snapshot_is_cached_and_concurrency_safe() {
         first["compatibility"]["canonical_endpoint"],
         "/web-control-center"
     );
+    let panel_names = first["panels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|panel| panel["name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(panel_names.contains(&"rag_eval"));
+    assert!(panel_names.contains(&"diff_impact"));
+    assert!(
+        first["summary"]["rag"]["near_miss_count"]
+            .as_u64()
+            .is_some()
+    );
+    assert!(
+        first["summary"]["diff_impact"]["write_ready_count"]
+            .as_u64()
+            .is_some()
+    );
 
     let second = server.request("/web-control-center?since_days=7");
     assert_eq!(second["cache"]["hit"], true);

@@ -300,8 +300,24 @@ pub(crate) struct ProjectDiffReport {
     pub(crate) conflicts: usize,
     pub(crate) stale_active: usize,
     pub(crate) new_or_changed_memory_ids: Vec<String>,
+    pub(crate) impact: ProjectDiffImpactSummary,
     pub(crate) drift: DriftReport,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ProjectDiffImpactSummary {
+    pub(crate) changed_files: usize,
+    pub(crate) changed_files_with_memory: usize,
+    pub(crate) unlinked_changed_files: Vec<String>,
+    pub(crate) linked_memory_count: usize,
+    pub(crate) affected_memory_ids: Vec<String>,
+    pub(crate) new_or_changed_memory_count: usize,
+    pub(crate) missing_links: usize,
+    pub(crate) conflicts: usize,
+    pub(crate) stale_active: usize,
+    pub(crate) severity: String,
+    pub(crate) suggested_action: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1918,6 +1934,7 @@ pub(crate) struct AutonomousSupervisorReport {
     pub(crate) quality_before: f64,
     pub(crate) quality_after: f64,
     pub(crate) quality_delta: f64,
+    pub(crate) readiness: AutonomousSupervisorReadiness,
     pub(crate) guardrails: Vec<String>,
     pub(crate) doctor_before: ProjectDoctorReport,
     pub(crate) planned_actions: Vec<AutonomousSupervisorAction>,
@@ -1928,6 +1945,17 @@ pub(crate) struct AutonomousSupervisorReport {
     pub(crate) contract_v2: MemoryContractV2Report,
     pub(crate) doctor_after: ProjectDoctorReport,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AutonomousSupervisorReadiness {
+    pub(crate) rag_eval_status: String,
+    pub(crate) rag_eval_recall: f64,
+    pub(crate) rag_eval_near_misses: usize,
+    pub(crate) diff_impact_severity: String,
+    pub(crate) diff_write_ready_count: usize,
+    pub(crate) diff_unlinked_changed_files: usize,
+    pub(crate) safe_to_apply: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2057,6 +2085,7 @@ pub(crate) struct MemoryDiffReviewReport {
     pub(crate) root: String,
     pub(crate) applied: bool,
     pub(crate) changed_files: Vec<String>,
+    pub(crate) impact: MemoryDiffImpactSummary,
     pub(crate) suggested_memory: Vec<String>,
     pub(crate) candidate_cards: Vec<MemoryDiffCandidate>,
     pub(crate) write_ready: Vec<MemoryDiffCandidate>,
@@ -2064,6 +2093,19 @@ pub(crate) struct MemoryDiffReviewReport {
     pub(crate) conflict_count: usize,
     pub(crate) actions: Vec<String>,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemoryDiffImpactSummary {
+    pub(crate) changed_files: usize,
+    pub(crate) candidate_count: usize,
+    pub(crate) write_ready_count: usize,
+    pub(crate) stale_memory_count: usize,
+    pub(crate) conflict_count: usize,
+    pub(crate) unlinked_changed_files: Vec<String>,
+    pub(crate) affected_memory_ids: Vec<String>,
+    pub(crate) severity: String,
+    pub(crate) suggested_action: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -5837,7 +5879,7 @@ pub(crate) fn release_gate_v3_report(
         ok: rag_eval.ok && rag_eval.recall >= 80.0,
         required: true,
         detail: format!(
-            "recall={:.1}% passed={}/{} source={} semantic_fallbacks={} grounded={:.1}% grounded_passed={}/{} packing_selected={}/{} packing_chunks={}/{} suppressed_overlap={} suppressed_file_cap={} suppressed_limit={} expected_selected={} expected_suppressed={} expected_missing={}",
+            "recall={:.1}% passed={}/{} source={} semantic_fallbacks={} grounded={:.1}% grounded_passed={}/{} packing_selected={}/{} packing_chunks={}/{} suppressed_overlap={} suppressed_file_cap={} suppressed_limit={} expected_selected={} expected_suppressed={} expected_missing={} evidence_selection={:.1}% evidence_candidate={:.1}% near_misses={}",
             rag_eval.recall,
             rag_eval.passed,
             rag_eval.total,
@@ -5855,7 +5897,10 @@ pub(crate) fn release_gate_v3_report(
             rag_eval.packing.suppressed_limit,
             rag_eval.packing.expected_selected,
             rag_eval.packing.expected_suppressed_by_packing,
-            rag_eval.packing.expected_missing_from_candidates
+            rag_eval.packing.expected_missing_from_candidates,
+            rag_eval.evidence_placement.selection_recall,
+            rag_eval.evidence_placement.candidate_recall,
+            rag_eval.evidence_placement.near_miss_count
         ),
     });
     let mut issues = release_gate_v2.issues.clone();
@@ -11702,6 +11747,14 @@ pub(crate) fn print_autonomous_supervisor(
     println!("quality_before: {:.1}", report.quality_before);
     println!("quality_after: {:.1}", report.quality_after);
     println!("quality_delta: {:+.1}", report.quality_delta);
+    println!(
+        "readiness: rag={} near_misses={} diff={} write_ready={} safe_to_apply={}",
+        report.readiness.rag_eval_status,
+        report.readiness.rag_eval_near_misses,
+        report.readiness.diff_impact_severity,
+        report.readiness.diff_write_ready_count,
+        report.readiness.safe_to_apply
+    );
     for action in &report.planned_actions {
         println!("plan: {} - {}", action.name, action.reason);
     }
@@ -11721,6 +11774,7 @@ pub(crate) fn autonomous_supervisor_report(
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let quality_before = quality_report(conn, since_days, 100)?.average_score;
     let doctor_before = project_doctor_report(conn, db, &root, since_days, false)?;
+    let readiness = autonomous_supervisor_readiness(conn, &root)?;
     let planned_actions = autonomous_supervisor_plan(&doctor_before);
     let mut executed_actions = Vec::new();
     let mut embed_index = None;
@@ -11807,6 +11861,12 @@ pub(crate) fn autonomous_supervisor_report(
     recommendations.extend(autonomous_loop.recommendations.clone());
     recommendations.extend(agent_enforce.recommendations.clone());
     recommendations.extend(contract_v2.recommendations.clone());
+    if !readiness.safe_to_apply {
+        recommendations.push(
+            "review RAG eval or diff impact readiness before applying autonomous supervisor"
+                .to_string(),
+        );
+    }
     if !apply && !planned_actions.is_empty() {
         recommendations
             .push("rerun autonomous-supervisor --apply --json to execute safe actions".to_string());
@@ -11841,6 +11901,7 @@ pub(crate) fn autonomous_supervisor_report(
         quality_before,
         quality_after,
         quality_delta,
+        readiness,
         guardrails,
         doctor_before,
         planned_actions,
@@ -11851,6 +11912,44 @@ pub(crate) fn autonomous_supervisor_report(
         contract_v2,
         doctor_after,
         recommendations,
+    })
+}
+
+fn autonomous_supervisor_readiness(
+    conn: &Connection,
+    root: &Path,
+) -> Result<AutonomousSupervisorReadiness> {
+    let stored_cases: i64 =
+        conn.query_row("SELECT COUNT(*) FROM eval_cases", [], |row| row.get(0))?;
+    let (rag_eval_status, rag_eval_recall, rag_eval_near_misses) = if stored_cases == 0 {
+        ("unconfigured".to_string(), 0.0, 0)
+    } else {
+        let report = rag_eval_report(
+            conn,
+            None,
+            8,
+            3_000,
+            DEFAULT_EMBED_PROVIDER,
+            DEFAULT_EMBED_ENDPOINT,
+            DEFAULT_EMBED_MODEL,
+        )?;
+        (
+            report.status,
+            report.recall,
+            report.evidence_placement.near_miss_count,
+        )
+    };
+    let diff_review = memory_diff_review_report(conn, root, false)?;
+    let rag_ready = matches!(rag_eval_status.as_str(), "ready" | "unconfigured");
+    let diff_ready = diff_review.impact.severity != "high";
+    Ok(AutonomousSupervisorReadiness {
+        rag_eval_status,
+        rag_eval_recall,
+        rag_eval_near_misses,
+        diff_impact_severity: diff_review.impact.severity,
+        diff_write_ready_count: diff_review.impact.write_ready_count,
+        diff_unlinked_changed_files: diff_review.impact.unlinked_changed_files.len(),
+        safe_to_apply: rag_ready && diff_ready,
     })
 }
 
@@ -12899,6 +12998,10 @@ pub(crate) fn print_memory_diff_review(
     }
     println!("Memory Diff Review");
     println!("changed_files: {}", report.changed_files.len());
+    println!(
+        "impact: severity={} candidates={} write_ready={}",
+        report.impact.severity, report.impact.candidate_count, report.impact.write_ready_count
+    );
     for item in &report.suggested_memory {
         println!("suggest: {item}");
     }
@@ -12930,6 +13033,13 @@ pub(crate) fn memory_diff_review_report(
         .filter(|candidate| candidate.confidence >= 0.85)
         .cloned()
         .collect::<Vec<_>>();
+    let impact = memory_diff_impact_summary(
+        &diff.impact,
+        candidate_cards.len(),
+        write_ready.len(),
+        diff.drift.stale_active.len(),
+        diff.conflicts,
+    );
     let stale_memory_ids = diff
         .drift
         .stale_active
@@ -12944,6 +13054,7 @@ pub(crate) fn memory_diff_review_report(
             serde_json::to_string_pretty(&json!({
                 "version": 1,
                 "changed_files": &diff.changed_files,
+                "impact": &impact,
                 "suggested_memory": &suggested_memory,
                 "candidate_cards": &candidate_cards,
                 "write_ready": &write_ready,
@@ -12963,6 +13074,7 @@ pub(crate) fn memory_diff_review_report(
         root: diff.root,
         applied: apply,
         changed_files: diff.changed_files,
+        impact,
         suggested_memory,
         candidate_cards,
         write_ready,
@@ -12971,6 +13083,45 @@ pub(crate) fn memory_diff_review_report(
         actions,
         recommendations: diff.recommendations,
     })
+}
+
+fn memory_diff_impact_summary(
+    project: &ProjectDiffImpactSummary,
+    candidate_count: usize,
+    write_ready_count: usize,
+    stale_memory_count: usize,
+    conflict_count: usize,
+) -> MemoryDiffImpactSummary {
+    let severity = if conflict_count > 0 || stale_memory_count > 0 {
+        "high"
+    } else if write_ready_count > 0 || !project.unlinked_changed_files.is_empty() {
+        "medium"
+    } else if candidate_count > 0 {
+        "low"
+    } else {
+        "none"
+    }
+    .to_string();
+    let suggested_action = if conflict_count > 0 || stale_memory_count > 0 {
+        "resolve stale or conflicting memory before applying new diff notes".to_string()
+    } else if write_ready_count > 0 {
+        "review write_ready candidates and apply only durable project facts".to_string()
+    } else if candidate_count > 0 {
+        "review candidates; skip writes for transient code churn".to_string()
+    } else {
+        "no memory write suggested for this diff".to_string()
+    };
+    MemoryDiffImpactSummary {
+        changed_files: project.changed_files,
+        candidate_count,
+        write_ready_count,
+        stale_memory_count,
+        conflict_count,
+        unlinked_changed_files: project.unlinked_changed_files.clone(),
+        affected_memory_ids: project.affected_memory_ids.clone(),
+        severity,
+        suggested_action,
+    }
 }
 
 fn memory_diff_candidate_for_file(file: &str) -> MemoryDiffCandidate {
@@ -14178,6 +14329,12 @@ pub(crate) fn print_project_diff(
     println!("missing_links: {}", report.missing_links);
     println!("conflicts: {}", report.conflicts);
     println!("stale_active: {}", report.stale_active);
+    println!(
+        "impact: severity={} linked_memories={} unlinked_changed_files={}",
+        report.impact.severity,
+        report.impact.linked_memory_count,
+        report.impact.unlinked_changed_files.len()
+    );
     for file in &report.changed_files {
         println!("changed: {file}");
     }
@@ -14200,6 +14357,7 @@ pub(crate) fn project_diff_report(
     let new_or_changed_memory_ids = stmt
         .query_map(params![since_ms], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let impact = project_diff_impact_summary(conn, &drift, &new_or_changed_memory_ids)?;
     let mut recommendations = Vec::new();
     if !drift.missing_links.is_empty() {
         recommendations.push("repair or remove memory links pointing at missing files".to_string());
@@ -14223,9 +14381,104 @@ pub(crate) fn project_diff_report(
         conflicts: drift.conflicts.len(),
         stale_active: drift.stale_active.len(),
         new_or_changed_memory_ids,
+        impact,
         drift,
         recommendations,
     })
+}
+
+fn project_diff_impact_summary(
+    conn: &Connection,
+    drift: &DriftReport,
+    new_or_changed_memory_ids: &[String],
+) -> Result<ProjectDiffImpactSummary> {
+    let mut affected_memory_ids = Vec::new();
+    let mut changed_files_with_memory = HashSet::new();
+    if !drift.changed_files.is_empty() {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT l.memory_id, l.target FROM memory_links l \
+             JOIN memories m ON m.id = l.memory_id \
+             WHERE m.status IN ('active', 'uncertain') \
+             ORDER BY l.memory_id, l.target",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (memory_id, target) = row?;
+            for file in &drift.changed_files {
+                if project_diff_link_matches_file(&target, file) {
+                    changed_files_with_memory.insert(file.clone());
+                    if !affected_memory_ids.iter().any(|id| id == &memory_id) {
+                        affected_memory_ids.push(memory_id.clone());
+                    }
+                }
+            }
+        }
+    }
+    affected_memory_ids.truncate(20);
+    let unlinked_changed_files = drift
+        .changed_files
+        .iter()
+        .filter(|file| !changed_files_with_memory.contains(*file))
+        .take(20)
+        .cloned()
+        .collect::<Vec<_>>();
+    let severity = if !drift.missing_links.is_empty()
+        || !drift.conflicts.is_empty()
+        || !drift.stale_active.is_empty()
+    {
+        "high"
+    } else if !drift.changed_files.is_empty() && !unlinked_changed_files.is_empty() {
+        "medium"
+    } else if !drift.changed_files.is_empty() || !new_or_changed_memory_ids.is_empty() {
+        "low"
+    } else {
+        "none"
+    }
+    .to_string();
+    let suggested_action = if severity == "high" {
+        "resolve memory drift before release".to_string()
+    } else if !unlinked_changed_files.is_empty() {
+        "run memory-diff-review and save only durable changed-file knowledge".to_string()
+    } else if !drift.changed_files.is_empty() {
+        "review affected memory ids for stale facts".to_string()
+    } else {
+        "no diff-linked memory action required".to_string()
+    };
+    Ok(ProjectDiffImpactSummary {
+        changed_files: drift.changed_files.len(),
+        changed_files_with_memory: changed_files_with_memory.len(),
+        unlinked_changed_files,
+        linked_memory_count: affected_memory_ids.len(),
+        affected_memory_ids,
+        new_or_changed_memory_count: new_or_changed_memory_ids.len(),
+        missing_links: drift.missing_links.len(),
+        conflicts: drift.conflicts.len(),
+        stale_active: drift.stale_active.len(),
+        severity,
+        suggested_action,
+    })
+}
+
+fn project_diff_link_matches_file(target: &str, file: &str) -> bool {
+    let target = project_diff_normalized_link_target(target);
+    let file = project_diff_normalized_link_target(file);
+    target == file || target.ends_with(&format!("/{file}"))
+}
+
+fn project_diff_normalized_link_target(target: &str) -> String {
+    let mut value = target.trim().trim_start_matches("file:").replace('\\', "/");
+    if let Some(stripped) = value.strip_prefix("./") {
+        value = stripped.to_string();
+    }
+    if let Some((path, suffix)) = value.rsplit_once(':') {
+        let line_suffix = suffix.chars().all(|ch| ch.is_ascii_digit() || ch == '-');
+        if line_suffix {
+            value = path.to_string();
+        }
+    }
+    value
 }
 
 pub(crate) fn print_intelligence_dashboard(
@@ -14668,11 +14921,14 @@ pub(crate) fn release_gate_report(
             ok: project_diff.ok,
             required: true,
             detail: format!(
-                "changed={} missing_links={} conflicts={} stale={}",
+                "changed={} missing_links={} conflicts={} stale={} impact={} linked_memories={} unlinked_changed={}",
                 project_diff.changed_files.len(),
                 project_diff.missing_links,
                 project_diff.conflicts,
-                project_diff.stale_active
+                project_diff.stale_active,
+                project_diff.impact.severity,
+                project_diff.impact.linked_memory_count,
+                project_diff.impact.unlinked_changed_files.len()
             ),
         },
         ReleaseGateCheck {

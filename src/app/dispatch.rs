@@ -1487,6 +1487,15 @@ pub(crate) fn run() -> Result<()> {
                     "status: {} confidence: {} ({:.2})",
                     report.status, report.confidence, report.confidence_score
                 );
+                println!(
+                    "graph: {} nodes={} seeds={} expanded={} edges={} isolated={}",
+                    report.graph_summary.status,
+                    report.graph_summary.node_count,
+                    report.graph_summary.seed_count,
+                    report.graph_summary.expanded_count,
+                    report.graph_summary.edge_count,
+                    report.graph_summary.isolated_node_count
+                );
                 println!("{}", report.answer);
                 if !report.missing_evidence.is_empty() {
                     println!("\nmissing evidence:");

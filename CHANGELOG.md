@@ -19,6 +19,17 @@
   cards when the selected pack is memory-heavy and already at its limit.
 - Legacy autonomous status snapshots with older embedded quality-report fields
   are normalized on read instead of blocking status, ops, or control surfaces.
+- RAG Eval v2 now reports `evidence_placement` with selection recall,
+  candidate recall, near-miss count, and suppression reasons.
+- `project-diff` and `memory-diff-review` now include compact impact summaries
+  with affected memory ids, unlinked changed files, severity, and suggested
+  action.
+- `graph-rag` now returns `graph_summary` with seed/expanded nodes, edge
+  density, isolated nodes, and relationship kind counts.
+- The stable `web-control-center` snapshot now includes `rag_eval` and
+  `diff_impact` panels while keeping unconfigured RAG eval cheap.
+- `autonomous-supervisor` now reports a `readiness` block for RAG eval and
+  diff-impact pressure before apply.
 
 ### Changed
 

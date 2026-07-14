@@ -1488,6 +1488,7 @@ pub(crate) struct RagEvalReport {
     pub(crate) semantic_used: usize,
     pub(crate) semantic_fallbacks: usize,
     pub(crate) packing: RagEvalPackingSummary,
+    pub(crate) evidence_placement: RagEvalEvidencePlacementSummary,
     pub(crate) grounded_answers: RagEvalGroundedSummary,
     pub(crate) cases: Vec<RagEvalCaseResult>,
     pub(crate) recommendations: Vec<String>,
@@ -1509,6 +1510,19 @@ pub(crate) struct RagEvalPackingSummary {
     pub(crate) expected_selected: usize,
     pub(crate) expected_suppressed_by_packing: usize,
     pub(crate) expected_missing_from_candidates: usize,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub(crate) struct RagEvalEvidencePlacementSummary {
+    pub(crate) expected_total: usize,
+    pub(crate) selected: usize,
+    pub(crate) suppressed_by_packing: usize,
+    pub(crate) missing_from_candidates: usize,
+    pub(crate) empty_expected: usize,
+    pub(crate) selection_recall: f64,
+    pub(crate) candidate_recall: f64,
+    pub(crate) near_miss_count: usize,
+    pub(crate) suppression_reasons: std::collections::BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -1550,6 +1564,7 @@ pub(crate) struct RagEvalCaseResult {
     pub(crate) expected_evidence_status: String,
     pub(crate) expected_in_candidates: bool,
     pub(crate) expected_suppressed_titles: Vec<String>,
+    pub(crate) expected_suppressed_reasons: Vec<String>,
     pub(crate) semantic_used: bool,
     pub(crate) semantic_error: Option<String>,
     pub(crate) missing_evidence: Vec<String>,
@@ -1597,6 +1612,13 @@ fn run_rag_eval(
             report.packing.expected_selected,
             report.packing.expected_suppressed_by_packing,
             report.packing.expected_missing_from_candidates
+        );
+        println!(
+            "evidence_placement: selection_recall={:.1}% candidate_recall={:.1}% near_misses={} suppression_reasons={:?}",
+            report.evidence_placement.selection_recall,
+            report.evidence_placement.candidate_recall,
+            report.evidence_placement.near_miss_count,
+            report.evidence_placement.suppression_reasons
         );
         println!(
             "grounded_answers: coverage={:.1}% passed={}/{} expected_in_answer={} cited_answers={} unknown_citation_cases={}",
@@ -1692,8 +1714,17 @@ pub(crate) fn rag_eval_report(
             .to_lowercase();
         let expected_lower = case.expected.to_lowercase();
         let passed = !expected_lower.trim().is_empty() && haystack.contains(&expected_lower);
-        let expected_suppressed_titles =
-            rag_eval_expected_suppressed_titles(&case.expected, &debug.packing);
+        let expected_suppressed_sources =
+            rag_eval_expected_suppressed_sources(&case.expected, &debug.packing);
+        let expected_suppressed_titles = expected_suppressed_sources
+            .iter()
+            .map(|source| source.title.clone())
+            .collect::<Vec<_>>();
+        let expected_suppressed_reasons = rag_eval_unique_suppressed_reasons(
+            expected_suppressed_sources
+                .iter()
+                .map(|source| source.reason.as_str()),
+        );
         let expected_evidence_status =
             rag_eval_expected_evidence_status(&case.expected, passed, &expected_suppressed_titles);
         let expected_in_candidates = passed || !expected_suppressed_titles.is_empty();
@@ -1731,6 +1762,7 @@ pub(crate) fn rag_eval_report(
             expected_evidence_status,
             expected_in_candidates,
             expected_suppressed_titles,
+            expected_suppressed_reasons,
             semantic_used: debug.semantic_used,
             semantic_error: debug.semantic_error,
             missing_evidence: debug.missing_evidence,
@@ -1759,6 +1791,7 @@ pub(crate) fn rag_eval_report(
         .filter(|case| case.semantic_error.is_some())
         .count();
     let packing = rag_eval_packing_summary(&results);
+    let evidence_placement = rag_eval_evidence_placement_summary(&results);
     let grounded_answers = rag_eval_grounded_summary(&results);
     let mut recommendations = Vec::new();
     if total == 0 {
@@ -1785,9 +1818,19 @@ pub(crate) fn rag_eval_report(
             "inspect grounded_answer fields: retrieval found evidence that did not make it into the final grounded answer".to_string(),
         );
     }
+    if evidence_placement.near_miss_count > 0 {
+        recommendations.push(
+            "inspect expected_suppressed_reasons: expected evidence was retrievable but suppressed by source packing".to_string(),
+        );
+    }
+    if evidence_placement.missing_from_candidates > 0 {
+        recommendations.push(
+            "ingest or relink source chunks for cases where expected evidence is missing from candidates".to_string(),
+        );
+    }
     let ok = total > 0 && failed == 0 && grounded_answers.failed == 0;
     Ok(RagEvalReport {
-        version: 1,
+        version: 2,
         ok,
         status: if ok {
             "ready"
@@ -1806,6 +1849,7 @@ pub(crate) fn rag_eval_report(
         semantic_used,
         semantic_fallbacks,
         packing,
+        evidence_placement,
         grounded_answers,
         cases: results,
         recommendations,
@@ -1833,6 +1877,37 @@ fn rag_eval_packing_summary(cases: &[RagEvalCaseResult]) -> RagEvalPackingSummar
             _ => {}
         }
     }
+    summary
+}
+
+fn rag_eval_evidence_placement_summary(
+    cases: &[RagEvalCaseResult],
+) -> RagEvalEvidencePlacementSummary {
+    let mut summary = RagEvalEvidencePlacementSummary::default();
+    for case in cases {
+        match case.expected_evidence_status.as_str() {
+            "selected" => summary.selected += 1,
+            "suppressed_by_packing" => {
+                summary.suppressed_by_packing += 1;
+                for reason in &case.expected_suppressed_reasons {
+                    *summary
+                        .suppression_reasons
+                        .entry(reason.clone())
+                        .or_insert(0) += 1;
+                }
+            }
+            "missing_from_candidates" => summary.missing_from_candidates += 1,
+            "empty_expected" => summary.empty_expected += 1,
+            _ => {}
+        }
+    }
+    summary.expected_total = cases.len().saturating_sub(summary.empty_expected);
+    summary.selection_recall = eval_ratio_percent(summary.selected, summary.expected_total);
+    summary.candidate_recall = eval_ratio_percent(
+        summary.selected + summary.suppressed_by_packing,
+        summary.expected_total,
+    );
+    summary.near_miss_count = summary.suppressed_by_packing;
     summary
 }
 
@@ -1948,7 +2023,10 @@ fn rag_eval_bracketed_citations(answer: &str) -> Vec<String> {
     citations
 }
 
-fn rag_eval_expected_suppressed_titles(expected: &str, packing: &RagPackingReport) -> Vec<String> {
+fn rag_eval_expected_suppressed_sources<'a>(
+    expected: &str,
+    packing: &'a RagPackingReport,
+) -> Vec<&'a RagPackingSuppressedSource> {
     let expected = expected.trim().to_lowercase();
     if expected.is_empty() {
         return Vec::new();
@@ -1964,8 +2042,25 @@ fn rag_eval_expected_suppressed_titles(expected: &str, packing: &RagPackingRepor
             .to_lowercase()
             .contains(&expected)
         })
+        .collect()
+}
+
+fn rag_eval_expected_suppressed_titles(expected: &str, packing: &RagPackingReport) -> Vec<String> {
+    rag_eval_expected_suppressed_sources(expected, packing)
+        .into_iter()
         .map(|source| source.title.clone())
         .collect()
+}
+
+fn rag_eval_unique_suppressed_reasons<'a>(reasons: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut unique = Vec::new();
+    for reason in reasons {
+        if seen.insert(reason) {
+            unique.push(reason.to_string());
+        }
+    }
+    unique
 }
 
 fn rag_eval_expected_evidence_status(
@@ -3091,6 +3186,16 @@ mod tests {
         expected_evidence_status: &str,
         packing: RagPackingReport,
     ) -> RagEvalCaseResult {
+        let expected_suppressed_reasons = if expected_evidence_status == "suppressed_by_packing" {
+            rag_eval_unique_suppressed_reasons(
+                packing
+                    .suppressed_sources
+                    .iter()
+                    .map(|source| source.reason.as_str()),
+            )
+        } else {
+            Vec::new()
+        };
         RagEvalCaseResult {
             id: "case".to_string(),
             name: "case".to_string(),
@@ -3108,6 +3213,7 @@ mod tests {
             expected_evidence_status: expected_evidence_status.to_string(),
             expected_in_candidates: expected_evidence_status != "missing_from_candidates",
             expected_suppressed_titles: Vec::new(),
+            expected_suppressed_reasons,
             semantic_used: true,
             semantic_error: None,
             missing_evidence: Vec::new(),
@@ -3195,6 +3301,7 @@ mod tests {
             expected_evidence_status: "selected".to_string(),
             expected_in_candidates: true,
             expected_suppressed_titles: Vec::new(),
+            expected_suppressed_reasons: Vec::new(),
             semantic_used: true,
             semantic_error: None,
             missing_evidence: Vec::new(),
@@ -3219,6 +3326,13 @@ mod tests {
             "overlap"
         );
         assert_eq!(value["expected_evidence_status"], "selected");
+        assert_eq!(
+            value["expected_suppressed_reasons"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
         assert_eq!(value["grounded_answer"]["passed"], true);
         assert_eq!(value["grounded_answer"]["citation_count"], 1);
     }
@@ -3324,6 +3438,41 @@ mod tests {
         assert_eq!(grounded.coverage, 50.0);
         assert_eq!(grounded.expected_in_answer, 1);
         assert_eq!(grounded.cited_answers, 1);
+    }
+
+    #[test]
+    fn rag_eval_evidence_placement_summarizes_near_misses() {
+        let cases = vec![
+            rag_eval_case_with_packing("selected", RagPackingReport::default()),
+            rag_eval_case_with_packing(
+                "suppressed_by_packing",
+                RagPackingReport {
+                    suppressed_sources: vec![RagPackingSuppressedSource {
+                        id: "chunk-a".to_string(),
+                        source_kind: "chunk".to_string(),
+                        title: "README.md:1-8".to_string(),
+                        reason: "file_cap".to_string(),
+                        score: 1.0,
+                        semantic_score: None,
+                        location: Some("README.md:1-8".to_string()),
+                        summary: "expected evidence".to_string(),
+                    }],
+                    ..RagPackingReport::default()
+                },
+            ),
+            rag_eval_case_with_packing("missing_from_candidates", RagPackingReport::default()),
+        ];
+
+        let summary = rag_eval_evidence_placement_summary(&cases);
+
+        assert_eq!(summary.expected_total, 3);
+        assert_eq!(summary.selected, 1);
+        assert_eq!(summary.suppressed_by_packing, 1);
+        assert_eq!(summary.missing_from_candidates, 1);
+        assert_eq!(summary.selection_recall, 33.3);
+        assert_eq!(summary.candidate_recall, 66.7);
+        assert_eq!(summary.near_miss_count, 1);
+        assert_eq!(summary.suppression_reasons.get("file_cap"), Some(&1));
     }
 
     #[test]

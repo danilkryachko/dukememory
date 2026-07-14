@@ -12743,6 +12743,7 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(autonomous_supervisor.contains("\"supervisor\""));
     assert!(autonomous_supervisor.contains("\"planned_actions\""));
+    assert!(autonomous_supervisor.contains("\"readiness\""));
 
     let web_control_v9 = server.request("GET /web-control-center-v9?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
@@ -13971,6 +13972,12 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert_eq!(project_diff_json["version"], 1);
     assert!(project_diff_json["changed_files"].as_array().is_some());
     assert!(project_diff_json["drift"]["warnings"].as_array().is_some());
+    assert!(project_diff_json["impact"]["severity"].as_str().is_some());
+    assert!(
+        project_diff_json["impact"]["affected_memory_ids"]
+            .as_array()
+            .is_some()
+    );
 
     let remote_sync = stdout(
         cmd(&db)
@@ -15177,6 +15184,21 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(autonomous_supervisor_json["quality_after"].is_number());
     assert!(autonomous_supervisor_json["quality_delta"].is_number());
     assert!(
+        autonomous_supervisor_json["readiness"]["rag_eval_status"]
+            .as_str()
+            .is_some()
+    );
+    assert!(
+        autonomous_supervisor_json["readiness"]["diff_impact_severity"]
+            .as_str()
+            .is_some()
+    );
+    assert!(
+        autonomous_supervisor_json["readiness"]["safe_to_apply"]
+            .as_bool()
+            .is_some()
+    );
+    assert!(
         autonomous_supervisor_json["guardrails"]
             .as_array()
             .unwrap()
@@ -15405,6 +15427,24 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     assert!(web_control_json["cache"]["compute_ms"].is_number());
     assert!(web_control_json["panels"].as_array().unwrap().len() >= 5);
+    let panel_names = web_control_json["panels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|panel| panel["name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(panel_names.contains(&"rag_eval"));
+    assert!(panel_names.contains(&"diff_impact"));
+    assert!(
+        web_control_json["summary"]["rag"]["candidate_recall"]
+            .as_f64()
+            .is_some()
+    );
+    assert!(
+        web_control_json["summary"]["diff_impact"]["severity"]
+            .as_str()
+            .is_some()
+    );
 
     let project_template = stdout(
         cmd(&db)
@@ -15529,6 +15569,16 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     let memory_diff_review_json: Value = serde_json::from_str(&memory_diff_review).unwrap();
     assert_eq!(memory_diff_review_json["version"], 1);
     assert_eq!(memory_diff_review_json["applied"], true);
+    assert!(
+        memory_diff_review_json["impact"]["severity"]
+            .as_str()
+            .is_some()
+    );
+    assert!(
+        memory_diff_review_json["impact"]["write_ready_count"]
+            .as_u64()
+            .is_some()
+    );
     assert!(
         memory_diff_review_json["suggested_memory"]
             .as_array()

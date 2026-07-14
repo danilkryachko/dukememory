@@ -1443,17 +1443,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let max_chars = json_usize(&args, "max_chars").unwrap_or(1400);
             let report = control_snapshot_report(&conn, &selected_db, &selected_root, since_days)
                 .map_err(|err| err.to_string())?;
-            budgeted_mcp_json_response(
-                &report,
-                max_chars,
-                &[
-                    "agent_sessions",
-                    "runner_profiles",
-                    "panels",
-                    "recommendations",
-                ],
-            )
-            .map_err(|err| err.to_string())?
+            compact_mcp_status_response(&report, max_chars).map_err(|err| err.to_string())?
         }
         "memory_should_write" => {
             let text = json_string(&args, "text").ok_or_else(|| "missing text".to_string())?;
@@ -1624,6 +1614,22 @@ fn budgeted_mcp_json_response<T: Serialize>(
     sections: &[&str],
 ) -> Result<String> {
     render_budgeted_json_value(serde_json::to_value(report)?, max_chars, sections)
+}
+
+fn compact_mcp_status_response(report: &ControlSnapshot, max_chars: usize) -> Result<String> {
+    let value = json!({
+        "version": report.version,
+        "ok": report.ok,
+        "status": report.status,
+        "revision": report.revision,
+        "current_version": report.current_version,
+        "cache": report.cache,
+        "panels": report.panels,
+        "summary": report.summary,
+        "request_budget": report.request_budget,
+        "details_endpoint": report.compatibility.details_endpoint,
+    });
+    render_budgeted_json_value(value, max_chars, &["panels"])
 }
 
 fn budgeted_mcp_memory_brief_response(

@@ -50,6 +50,8 @@ pub(crate) struct ControlSignalSummary {
     pub(crate) health: ControlHealthSignal,
     pub(crate) quality: ControlQualitySignal,
     pub(crate) recall: ControlRecallSignal,
+    pub(crate) rag: ControlRagSignal,
+    pub(crate) diff_impact: ControlDiffImpactSignal,
     pub(crate) autonomy: ControlAutonomySignal,
     pub(crate) sessions: ControlSessionSignal,
     pub(crate) profiles: ControlProfileSignal,
@@ -102,6 +104,24 @@ pub(crate) struct ControlRecallSignal {
     pub(crate) baseline_compatible: bool,
     pub(crate) baseline_stale: bool,
     pub(crate) probe_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ControlRagSignal {
+    pub(crate) status: String,
+    pub(crate) recall: f64,
+    pub(crate) grounded_coverage: f64,
+    pub(crate) candidate_recall: f64,
+    pub(crate) near_miss_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ControlDiffImpactSignal {
+    pub(crate) severity: String,
+    pub(crate) changed_files: usize,
+    pub(crate) linked_memory_count: usize,
+    pub(crate) unlinked_changed_files: usize,
+    pub(crate) write_ready_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -219,6 +239,8 @@ pub(crate) fn control_snapshot_report(
     let quality = quality_report(conn, 30, 20)?;
     let recall = recall_benchmark_suite_report(conn, &root, since_days, 8, false)?;
     let autonomy = autonomy_control_center_report(conn, db, &root, since_days)?;
+    let rag_signal = control_rag_signal(conn)?;
+    let diff_impact = autonomy.diff_review.impact.clone();
 
     let active_sessions = sessions
         .iter()
@@ -270,6 +292,32 @@ pub(crate) fn control_snapshot_report(
             headline: format!(
                 "score {:.1} / regression {}",
                 recall.score, recall.regression
+            ),
+        },
+        ControlSnapshotPanel {
+            name: "rag_eval".to_string(),
+            status: match rag_signal.status.as_str() {
+                "ready" => "ready",
+                "unconfigured" => "optional",
+                _ => "attention",
+            }
+            .to_string(),
+            headline: format!(
+                "recall {:.1}% / grounded {:.1}% / near_misses {}",
+                rag_signal.recall, rag_signal.grounded_coverage, rag_signal.near_miss_count
+            ),
+        },
+        ControlSnapshotPanel {
+            name: "diff_impact".to_string(),
+            status: if diff_impact.severity == "high" {
+                "attention"
+            } else {
+                "ready"
+            }
+            .to_string(),
+            headline: format!(
+                "{} / {} changed / {} write-ready",
+                diff_impact.severity, diff_impact.changed_files, diff_impact.write_ready_count
             ),
         },
         ControlSnapshotPanel {
@@ -368,6 +416,14 @@ pub(crate) fn control_snapshot_report(
             baseline_stale: recall.baseline_stale,
             probe_count: recall.current_probe_ids.len(),
         },
+        rag: rag_signal,
+        diff_impact: ControlDiffImpactSignal {
+            severity: diff_impact.severity,
+            changed_files: diff_impact.changed_files,
+            linked_memory_count: diff_impact.affected_memory_ids.len(),
+            unlinked_changed_files: diff_impact.unlinked_changed_files.len(),
+            write_ready_count: diff_impact.write_ready_count,
+        },
         autonomy: ControlAutonomySignal {
             local_ready: autonomy.local_ready,
             optional_sync_ready: autonomy.optional_sync_ready,
@@ -457,6 +513,36 @@ pub(crate) fn control_snapshot_report(
 
 fn readiness(value: bool) -> &'static str {
     if value { "ready" } else { "attention" }
+}
+
+fn control_rag_signal(conn: &Connection) -> Result<ControlRagSignal> {
+    let stored_cases: i64 =
+        conn.query_row("SELECT COUNT(*) FROM eval_cases", [], |row| row.get(0))?;
+    if stored_cases == 0 {
+        return Ok(ControlRagSignal {
+            status: "unconfigured".to_string(),
+            recall: 0.0,
+            grounded_coverage: 0.0,
+            candidate_recall: 0.0,
+            near_miss_count: 0,
+        });
+    }
+    let report = rag_eval_report(
+        conn,
+        None,
+        8,
+        3_000,
+        DEFAULT_EMBED_PROVIDER,
+        DEFAULT_EMBED_ENDPOINT,
+        DEFAULT_EMBED_MODEL,
+    )?;
+    Ok(ControlRagSignal {
+        status: report.status,
+        recall: report.recall,
+        grounded_coverage: report.grounded_answers.coverage,
+        candidate_recall: report.evidence_placement.candidate_recall,
+        near_miss_count: report.evidence_placement.near_miss_count,
+    })
 }
 
 fn control_snapshot_revision(conn: &Connection, root: &Path) -> Result<String> {

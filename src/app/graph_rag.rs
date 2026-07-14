@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::app::generation;
 use crate::app::memory::{get_links, get_memory};
@@ -27,11 +27,25 @@ pub(crate) struct GraphRagReport {
     pub(crate) confidence_score: f64,
     pub(crate) semantic_used: bool,
     pub(crate) missing_evidence: Vec<String>,
+    pub(crate) graph_summary: GraphRagSummary,
     pub(crate) trace: Vec<GraphRagTraceEntry>,
     pub(crate) ranked_nodes: Vec<GraphRagNodeEvidence>,
     pub(crate) relevant_nodes: Vec<Memory>,
     pub(crate) relevant_edges: Vec<GraphRagEdge>,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct GraphRagSummary {
+    pub(crate) node_count: usize,
+    pub(crate) seed_count: usize,
+    pub(crate) expanded_count: usize,
+    pub(crate) edge_count: usize,
+    pub(crate) connected_node_count: usize,
+    pub(crate) isolated_node_count: usize,
+    pub(crate) edge_density: f64,
+    pub(crate) relationship_kinds: BTreeMap<String, usize>,
+    pub(crate) status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +142,7 @@ pub(crate) fn compute_graph_rag(
             confidence_score: 0.0,
             semantic_used,
             missing_evidence,
+            graph_summary: graph_summary(&[], &[]),
             trace: vec![],
             ranked_nodes: vec![],
             relevant_nodes: vec![],
@@ -216,6 +231,7 @@ pub(crate) fn compute_graph_rag(
     let (confidence, confidence_score) = graph_confidence(&ranked_nodes, &final_edges);
     let ok = !ranked_nodes.is_empty();
     let trace = graph_trace_entries(&ranked_nodes, &final_edges);
+    let graph_summary = graph_summary(&ranked_nodes, &final_edges);
     let status = if !ok {
         "missing_evidence"
     } else if confidence == "low" {
@@ -308,6 +324,7 @@ pub(crate) fn compute_graph_rag(
         confidence_score,
         semantic_used,
         missing_evidence,
+        graph_summary,
         trace,
         ranked_nodes,
         relevant_nodes,
@@ -542,6 +559,55 @@ fn graph_trace_entries(
             }
         })
         .collect()
+}
+
+fn graph_summary(nodes: &[GraphRagNodeEvidence], edges: &[GraphRagEdge]) -> GraphRagSummary {
+    let node_ids = nodes
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect::<HashSet<_>>();
+    let mut connected_ids = HashSet::new();
+    let mut relationship_kinds = BTreeMap::new();
+    for edge in edges {
+        if node_ids.contains(edge.source.as_str()) {
+            connected_ids.insert(edge.source.as_str());
+        }
+        if node_ids.contains(edge.target.as_str()) {
+            connected_ids.insert(edge.target.as_str());
+        }
+        *relationship_kinds.entry(edge.kind.clone()).or_insert(0) += 1;
+    }
+    let node_count = nodes.len();
+    let seed_count = nodes.iter().filter(|node| node.seed).count();
+    let connected_node_count = connected_ids.len();
+    let isolated_node_count = node_count.saturating_sub(connected_node_count);
+    let possible_directed_edges = node_count.saturating_mul(node_count.saturating_sub(1));
+    let edge_density = if possible_directed_edges == 0 {
+        0.0
+    } else {
+        ((edges.len() as f64 / possible_directed_edges as f64) * 1000.0).round() / 1000.0
+    };
+    let status = if node_count == 0 {
+        "missing"
+    } else if edges.is_empty() {
+        "isolated"
+    } else if isolated_node_count == 0 {
+        "connected"
+    } else {
+        "partial"
+    }
+    .to_string();
+    GraphRagSummary {
+        node_count,
+        seed_count,
+        expanded_count: node_count.saturating_sub(seed_count),
+        edge_count: edges.len(),
+        connected_node_count,
+        isolated_node_count,
+        edge_density,
+        relationship_kinds,
+        status,
+    }
 }
 
 fn graph_confidence(nodes: &[GraphRagNodeEvidence], edges: &[GraphRagEdge]) -> (String, f64) {
@@ -823,6 +889,34 @@ mod graph_rag_tests {
                 .iter()
                 .any(|relationship| relationship == "a --[relates_to]--> b")
         );
+    }
+
+    #[test]
+    fn graph_summary_reports_connectivity_and_relationship_kinds() {
+        let mut expanded = node("c", "active", 70.0);
+        expanded.seed = false;
+        let nodes = vec![
+            node("a", "active", 100.0),
+            node("b", "active", 80.0),
+            expanded,
+        ];
+        let edges = vec![GraphRagEdge {
+            source: "a".to_string(),
+            target: "b".to_string(),
+            kind: "relates_to".to_string(),
+        }];
+
+        let summary = graph_summary(&nodes, &edges);
+
+        assert_eq!(summary.node_count, 3);
+        assert_eq!(summary.seed_count, 2);
+        assert_eq!(summary.expanded_count, 1);
+        assert_eq!(summary.edge_count, 1);
+        assert_eq!(summary.connected_node_count, 2);
+        assert_eq!(summary.isolated_node_count, 1);
+        assert_eq!(summary.edge_density, 0.167);
+        assert_eq!(summary.relationship_kinds.get("relates_to"), Some(&1));
+        assert_eq!(summary.status, "partial");
     }
 
     #[test]
