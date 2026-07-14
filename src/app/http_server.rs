@@ -9,6 +9,11 @@ const HTTP_WORKERS: usize = 4;
 const HTTP_QUEUE_CAPACITY: usize = 64;
 const HTTP_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
+struct HttpAppState {
+    default_db: PathBuf,
+    auth_token: Option<String>,
+}
+
 pub(crate) fn serve_http(
     db: &Path,
     host: &str,
@@ -26,10 +31,14 @@ pub(crate) fn serve_http(
         .with_context(|| format!("failed to bind http server on {host}:{port}"))?;
     let addr = listener.local_addr()?;
     println!("http://{addr}");
+    let state = std::sync::Arc::new(HttpAppState {
+        default_db: db.to_path_buf(),
+        auth_token: auth_token.map(ToOwned::to_owned),
+    });
 
     if once {
         let (stream, _) = listener.accept()?;
-        return handle_http_stream(db, stream, auth_token);
+        return handle_http_stream(&state, stream);
     }
 
     let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -45,8 +54,7 @@ pub(crate) fn serve_http(
     let mut workers = Vec::with_capacity(HTTP_WORKERS);
     for worker_index in 0..HTTP_WORKERS {
         let receiver = std::sync::Arc::clone(&receiver);
-        let db = db.to_path_buf();
-        let auth_token = auth_token.map(ToOwned::to_owned);
+        let state = std::sync::Arc::clone(&state);
         let worker = std::thread::Builder::new()
             .name(format!("dukememory-http-{worker_index}"))
             .stack_size(HTTP_WORKER_STACK_BYTES)
@@ -59,7 +67,7 @@ pub(crate) fn serve_http(
                     let Ok(stream) = stream else {
                         return;
                     };
-                    if let Err(err) = handle_http_stream(&db, stream, auth_token.as_deref()) {
+                    if let Err(err) = handle_http_stream(&state, stream) {
                         eprintln!("HTTP request failed: {err:#}");
                     }
                 }
@@ -94,15 +102,19 @@ pub(crate) fn resolve_http_auth_token(
     security::resolve_auth_token(inline_token, token_file)
 }
 
-fn handle_http_stream(db: &Path, mut stream: TcpStream, auth_token: Option<&str>) -> Result<()> {
+fn handle_http_stream(state: &HttpAppState, mut stream: TcpStream) -> Result<()> {
     let started = std::time::Instant::now();
     let peer = stream
         .peer_addr()
         .map(|address| address.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
-    let response = match routes::handle_http_request(db, &mut stream, auth_token) {
+    let response = match routes::handle_http_request(
+        &state.default_db,
+        &mut stream,
+        state.auth_token.as_deref(),
+    ) {
         Ok(response) => response,
-        Err(err) => HttpResponse::internal_error(err.to_string()),
+        Err(err) => HttpResponse::from_error(&err),
     };
     let status = response.status;
     crate::http_api::write_response(&mut stream, response)?;
@@ -289,12 +301,6 @@ fn percent_decode(value: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-fn open_selected_db(default_db: &Path, query: &str, body: Option<&Value>) -> Result<Connection> {
-    let selected = selected_project_key(query, body);
-    let db = resolve_project_db(default_db, selected.as_deref())?;
-    open_db(&db)
 }
 
 fn selected_project_from_body(default_db: &Path, body: &Value) -> Result<UiProjectContext> {

@@ -826,7 +826,6 @@ pub(crate) struct MemoryDiffApplyReport {
     pub(crate) actions: Vec<String>,
     pub(crate) recommendations: Vec<String>,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RecallBenchmarkBaseline {
     pub(crate) version: u32,
@@ -4381,8 +4380,7 @@ pub(crate) fn ranking_profile_report(
         path: path.display().to_string(),
         weights,
         recommendations: vec![
-            "profile is read from DUKEMEMORY_RANKING_PROFILE or .agent/ranking-profile.json"
-                .to_string(),
+            "profile is resolved once per retrieval from DUKEMEMORY_RANKING_PROFILE or the selected project's .agent/ranking-profile.json".to_string(),
         ],
     })
 }
@@ -5715,16 +5713,17 @@ pub(crate) fn memory_diff_apply_report(
                 conn,
                 AddMemory {
                     id: None,
-                    memory_type: candidate.memory_type.clone(),
+                    memory_type: candidate.memory_type.parse()?,
                     title: candidate.title.clone(),
                     body: candidate.body.clone(),
-                    scope: "project".to_string(),
-                    status: "active".to_string(),
+                    scope: MemoryScope::Project,
+                    status: MemoryStatus::Active,
                     source: Some("memory_diff_apply".to_string()),
                     supersedes: None,
                     confidence: candidate.confidence,
                     layer: None,
                     links: vec![candidate.link.clone()],
+                    allow_sensitive: false,
                 },
             )?;
             written_ids.push(id.clone());

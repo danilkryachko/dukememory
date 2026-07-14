@@ -52,7 +52,6 @@ enum VecIndexKind {
 
 #[cfg(feature = "vec")]
 struct VecIndexHealth {
-    table_exists: bool,
     table_valid: bool,
     source_rows: i64,
     indexed_rows: i64,
@@ -233,7 +232,6 @@ fn vec_index_health(
     dimensions: usize,
 ) -> Result<VecIndexHealth> {
     let structure = vec_index_structure_health(conn, table_name)?;
-    let table_exists = structure.table_exists;
     let table_valid = structure.table_valid;
     let trigger_count = structure.trigger_count;
     let source_rows = conn.query_row(
@@ -243,7 +241,6 @@ fn vec_index_health(
     )?;
     if !table_valid {
         return Ok(VecIndexHealth {
-            table_exists,
             table_valid,
             source_rows,
             indexed_rows: 0,
@@ -282,7 +279,6 @@ fn vec_index_health(
         |row| row.get::<_, i64>(0),
     )?;
     Ok(VecIndexHealth {
-        table_exists,
         table_valid,
         source_rows,
         indexed_rows,

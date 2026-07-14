@@ -1,5 +1,6 @@
 #![cfg(feature = "local-generation")]
 
+use crate::app::model_artifact::download_hf_model;
 use anyhow::{Context, Result, bail};
 use hf_hub::api::sync::Api;
 use llama_cpp_2::context::params::LlamaContextParams;
@@ -10,11 +11,17 @@ use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::{LogOptions, send_logs_to_tracing};
 use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 const DEFAULT_REPO_ID: &str = "HuggingFaceTB/SmolLM2-360M-Instruct-GGUF";
 const DEFAULT_FILE_NAME: &str = "smollm2-360m-instruct-q8_0.gguf";
+const DEFAULT_REVISION: &str = "2633adad3eb0aec759aec7f41db367d974571ecf";
+const DEFAULT_SHA256: &str = "48ab3034d0dd401fbc721eb1df3217902fee7dab9078992d66431f09b7750201";
+const Q4_REPO_ID: &str = "bartowski/SmolLM2-360M-Instruct-GGUF";
+const Q4_FILE_NAME: &str = "SmolLM2-360M-Instruct-Q4_0.gguf";
+const Q4_REVISION: &str = "56e32585e089f5cb84f0e4f8d64e8319332ea9a3";
+const Q4_SHA256: &str = "c3608933eb6e5763b87f769bda40c204dc158333668c7af214644fe39da58627";
 const DEFAULT_CONTEXT_TOKENS: u32 = 2048;
 const DEFAULT_MAX_NEW_TOKENS: usize = 192;
 
@@ -79,41 +86,59 @@ fn resolve_model_spec(endpoint: &str, model: &str) -> Result<LocalModelSpec> {
         }
     }
 
-    let (repo_id, file_name) = match model {
-        "" | "smollm2:360m" | "smollm2:360m-instruct" | "smollm2:360m-instruct-q8_0" => {
-            (DEFAULT_REPO_ID.to_string(), DEFAULT_FILE_NAME.to_string())
-        }
-        "smollm2:360m-instruct-q4_0" => (
-            "bartowski/SmolLM2-360M-Instruct-GGUF".to_string(),
-            "SmolLM2-360M-Instruct-Q4_0.gguf".to_string(),
+    let (repo_id, file_name, revision, expected_sha256) = match model {
+        "" | "smollm2:360m" | "smollm2:360m-instruct" | "smollm2:360m-instruct-q8_0" => (
+            DEFAULT_REPO_ID.to_string(),
+            DEFAULT_FILE_NAME.to_string(),
+            DEFAULT_REVISION.to_string(),
+            Some(DEFAULT_SHA256),
         ),
-        value if value.starts_with("hf://") => parse_hf_model_spec(value)?,
+        "smollm2:360m-instruct-q4_0" => (
+            Q4_REPO_ID.to_string(),
+            Q4_FILE_NAME.to_string(),
+            Q4_REVISION.to_string(),
+            Some(Q4_SHA256),
+        ),
+        value if value.starts_with("hf://") => {
+            let (repo_id, file_name, revision) = parse_hf_model_spec(value)?;
+            (repo_id, file_name, revision, None)
+        }
         value if value.ends_with(".gguf") => {
             let repo = if endpoint.is_empty() || endpoint == "local" {
                 DEFAULT_REPO_ID
             } else {
                 endpoint
             };
-            (repo.to_string(), value.to_string())
+            (
+                repo.to_string(),
+                value.to_string(),
+                "main".to_string(),
+                None,
+            )
         }
-        value if value.contains('/') && (endpoint.is_empty() || endpoint == "local") => {
-            (value.to_string(), DEFAULT_FILE_NAME.to_string())
-        }
+        value if value.contains('/') && (endpoint.is_empty() || endpoint == "local") => (
+            value.to_string(),
+            DEFAULT_FILE_NAME.to_string(),
+            "main".to_string(),
+            None,
+        ),
         value => {
             let repo = if endpoint.is_empty() || endpoint == "local" {
                 DEFAULT_REPO_ID
             } else {
                 endpoint
             };
-            (repo.to_string(), value.to_string())
+            (
+                repo.to_string(),
+                value.to_string(),
+                "main".to_string(),
+                None,
+            )
         }
     };
 
     let api = Api::new().context("failed to initialize hf_hub Api")?;
-    let model_path = api
-        .model(repo_id.clone())
-        .get(&file_name)
-        .with_context(|| format!("failed to download {repo_id}/{file_name}"))?;
+    let model_path = download_hf_model(&api, &repo_id, &revision, &file_name, expected_sha256)?;
 
     Ok(LocalModelSpec {
         repo_id,
@@ -122,15 +147,20 @@ fn resolve_model_spec(endpoint: &str, model: &str) -> Result<LocalModelSpec> {
     })
 }
 
-fn parse_hf_model_spec(value: &str) -> Result<(String, String)> {
+fn parse_hf_model_spec(value: &str) -> Result<(String, String, String)> {
     let spec = value.trim_start_matches("hf://");
-    if let Some((repo, file)) = spec.rsplit_once(':')
-        && !repo.trim().is_empty()
+    if let Some((repo_spec, file)) = spec.rsplit_once(':')
+        && !repo_spec.trim().is_empty()
         && !file.trim().is_empty()
     {
-        return Ok((repo.to_string(), file.to_string()));
+        let (repo, revision) = repo_spec
+            .rsplit_once('@')
+            .filter(|(repo, revision)| !repo.trim().is_empty() && !revision.trim().is_empty())
+            .map(|(repo, revision)| (repo.to_string(), revision.to_string()))
+            .unwrap_or_else(|| (repo_spec.to_string(), "main".to_string()));
+        return Ok((repo, file.to_string(), revision));
     }
-    bail!("expected hf://repo/name:file.gguf for local generation model")
+    bail!("expected hf://repo/name[@revision]:file.gguf for local generation model")
 }
 
 fn init_engine(spec: &LocalModelSpec) -> Result<LocalGenerationEngine> {
@@ -276,10 +306,17 @@ fn local_thread_count() -> i32 {
         })
 }
 
-#[allow(dead_code)]
-fn is_local_model_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.eq_ignore_ascii_case("gguf"))
-        .unwrap_or(false)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hf_model_spec_supports_an_explicit_revision() -> Result<()> {
+        let (repo, file, revision) =
+            parse_hf_model_spec("hf://owner/model@immutable-commit:model.gguf")?;
+        assert_eq!(repo, "owner/model");
+        assert_eq!(file, "model.gguf");
+        assert_eq!(revision, "immutable-commit");
+        Ok(())
+    }
 }

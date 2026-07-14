@@ -26,7 +26,6 @@ pub(crate) enum Command {
     },
     /// Add a typed memory card.
     Add {
-        #[arg(value_enum)]
         memory_type: MemoryType,
         title: String,
         body: String,
@@ -34,7 +33,7 @@ pub(crate) enum Command {
         id: Option<String>,
         #[arg(long, default_value = "project")]
         scope: String,
-        #[arg(long, value_enum, default_value_t = MemoryStatus::Active)]
+        #[arg(long, default_value_t = MemoryStatus::Active)]
         status: MemoryStatus,
         #[arg(long)]
         source: Option<String>,
@@ -58,7 +57,7 @@ pub(crate) enum Command {
     /// Update fields on an existing card.
     Update {
         id: String,
-        #[arg(long = "type", value_enum)]
+        #[arg(long = "type")]
         memory_type: Option<MemoryType>,
         #[arg(long)]
         title: Option<String>,
@@ -66,7 +65,7 @@ pub(crate) enum Command {
         body: Option<String>,
         #[arg(long)]
         scope: Option<String>,
-        #[arg(long, value_enum)]
+        #[arg(long)]
         status: Option<MemoryStatus>,
         #[arg(long)]
         source: Option<String>,
@@ -117,11 +116,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Change memory status.
-    Status {
-        id: String,
-        #[arg(value_enum)]
-        status: MemoryStatus,
-    },
+    Status { id: String, status: MemoryStatus },
     /// Return a small relevant memory pack.
     ContextPack {
         task: String,
@@ -465,7 +460,7 @@ pub(crate) enum Command {
     /// Remember plain user text as a typed memory card.
     Remember {
         text: String,
-        #[arg(long = "type", value_enum)]
+        #[arg(long = "type")]
         memory_type: Option<MemoryType>,
         #[arg(long, default_value = "project")]
         scope: String,
@@ -1082,6 +1077,17 @@ pub(crate) enum Command {
     MemoryDiffApply {
         #[arg(long, default_value = ".")]
         root: PathBuf,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Infer/apply high-confidence memory-to-memory graph links.
+    MemoryGraphLinks {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
         #[arg(long)]
         apply: bool,
         #[arg(long)]
@@ -3167,58 +3173,4 @@ pub(crate) enum InboxV2Command {
         #[arg(long)]
         json: bool,
     },
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-#[value(rename_all = "snake_case")]
-pub(crate) enum MemoryType {
-    ProductGoal,
-    UserPreference,
-    Decision,
-    DesignNote,
-    KnownIssue,
-    Command,
-    TaskState,
-    DomainFact,
-    Constraint,
-    Note,
-}
-
-impl fmt::Display for MemoryType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = match self {
-            Self::ProductGoal => "product_goal",
-            Self::UserPreference => "user_preference",
-            Self::Decision => "decision",
-            Self::DesignNote => "design_note",
-            Self::KnownIssue => "known_issue",
-            Self::Command => "command",
-            Self::TaskState => "task_state",
-            Self::DomainFact => "domain_fact",
-            Self::Constraint => "constraint",
-            Self::Note => "note",
-        };
-        f.write_str(value)
-    }
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-#[value(rename_all = "snake_case")]
-pub(crate) enum MemoryStatus {
-    Active,
-    Superseded,
-    Rejected,
-    Uncertain,
-}
-
-impl fmt::Display for MemoryStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = match self {
-            Self::Active => "active",
-            Self::Superseded => "superseded",
-            Self::Rejected => "rejected",
-            Self::Uncertain => "uncertain",
-        };
-        f.write_str(value)
-    }
 }

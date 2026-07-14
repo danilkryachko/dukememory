@@ -106,16 +106,17 @@ pub(crate) fn onboard_project(
             &conn,
             AddMemory {
                 id: None,
-                memory_type: "product_goal".to_string(),
+                memory_type: MemoryType::ProductGoal,
                 title,
                 body: "Project memory was onboarded automatically; future agents should keep recall token-light and save only durable decisions, constraints, commands, risks, and task state.".to_string(),
-                scope: "project".to_string(),
-                status: "active".to_string(),
+                scope: MemoryScope::Project,
+                status: MemoryStatus::Active,
                 source: Some("onboard".to_string()),
                 supersedes: None,
                 confidence: 0.8,
                 layer: None,
                 links: Vec::new(),
+                allow_sensitive: false,
             },
         )?;
         actions.push("seed_project_goal".to_string());
@@ -348,16 +349,17 @@ fn upsert_memory_contract_card(conn: &Connection, content: &str) -> Result<Strin
             conn,
             AddMemory {
                 id: None,
-                memory_type: "design_note".to_string(),
+                memory_type: MemoryType::DesignNote,
                 title: "Project memory contract".to_string(),
                 body: content.to_string(),
-                scope: "project".to_string(),
-                status: "active".to_string(),
+                scope: MemoryScope::Project,
+                status: MemoryStatus::Active,
                 source: Some("memory_contract".to_string()),
                 supersedes: None,
                 confidence: 0.95,
                 layer: None,
                 links: vec!["file:.agent/MEMORY_CONTRACT.md".to_string()],
+                allow_sensitive: false,
             },
         )
     }
@@ -672,6 +674,7 @@ For every new chat or coding task in this repository:
 - To aggregate health, intent, probes, audit, recall explanations, and autonomy, run `dukememory memory-control-center --json`; `memory-control-center-v2` remains available for pinned clients.
 - To safely supersede duplicate/obsolete cards, run `dukememory auto-supersede-v2 --json`; use `--apply` only for high-confidence reversible status changes.
 - To write high-confidence changed-file memory candidates, run `dukememory memory-diff-apply --json`; use `--apply` only after reviewing write-ready cards.
+- To infer high-confidence memory-to-memory graph links, run `dukememory memory-graph-links --json`; use `--apply` only after reviewing safe candidates.
 - To detect retrieval regressions, run `dukememory recall-benchmark-suite --json`; use `--write-baseline` after reviewing stable probes.
 - To gate releases with health, recall benchmark, audit v2, and control-center checks, run `dukememory release-gate-v2 --json`.
 - To measure memory usefulness with influence, wasted reads, and semantic-read signals, run `dukememory memory-effectiveness-v2 --json`.

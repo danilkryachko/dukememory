@@ -1424,6 +1424,49 @@ pub(crate) struct RetrievalQualitySignals {
     useless: HashMap<String, usize>,
     useless_query_terms: HashMap<String, Vec<HashSet<String>>>,
     intent_type_feedback: HashMap<(QueryIntent, String), TypeFeedback>,
+    policy: RetrievalPolicy,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RetrievalPolicy {
+    profile: String,
+    read_weight: f64,
+    useful_weight: f64,
+    useless_weight: f64,
+    trusted_boost: f64,
+    suppress_penalty: f64,
+}
+
+impl Default for RetrievalPolicy {
+    fn default() -> Self {
+        Self::from_profile("balanced")
+    }
+}
+
+impl RetrievalPolicy {
+    fn load_for_connection(conn: &Connection) -> Self {
+        let root = retrieval_project_root(conn);
+        let profile = std::env::var("DUKEMEMORY_RANKING_PROFILE")
+            .ok()
+            .map(|value| normalize_ranking_profile(&value))
+            .or_else(|| root.as_deref().and_then(ranking_profile_from_root))
+            .unwrap_or_else(|| "balanced".to_string());
+        Self::from_profile(&profile)
+    }
+
+    fn from_profile(profile: &str) -> Self {
+        let profile = normalize_ranking_profile(profile);
+        let (read_weight, useful_weight, useless_weight, trusted_boost, suppress_penalty) =
+            ranking_profile_weights(&profile);
+        Self {
+            profile,
+            read_weight,
+            useful_weight,
+            useless_weight,
+            trusted_boost,
+            suppress_penalty,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1536,6 +1579,7 @@ fn retrieval_feedback_signals_since(
         useless,
         useless_query_terms,
         intent_type_feedback,
+        policy: RetrievalPolicy::load_for_connection(conn),
     })
 }
 
@@ -1569,43 +1613,38 @@ pub(crate) fn retrieval_quality_adjustment(
     let reads = signals.reads.get(memory_id).copied().unwrap_or_default();
     let useful = signals.useful.get(memory_id).copied().unwrap_or_default();
     let useless = signals.useless.get(memory_id).copied().unwrap_or_default();
-    let profile = active_ranking_profile();
-    let (read_weight, useful_weight, useless_weight, trusted_boost, suppress_penalty) =
-        ranking_profile_weights(&profile);
+    let policy = &signals.policy;
     let mut score = 0.0;
     if reads > 0 {
-        let boost = (reads.min(12) as f64) * read_weight;
+        let boost = (reads.min(12) as f64) * policy.read_weight;
         reasons.push(format!("ranking_v2_recent_reads:+{reads}"));
         score += boost;
     }
     if useful > 0 {
-        let boost = (useful.min(8) as f64) * useful_weight;
+        let boost = (useful.min(8) as f64) * policy.useful_weight;
         reasons.push(format!("ranking_v2_useful_feedback:+{useful}"));
         score += boost;
     }
     if useless > 0 {
-        let penalty = (useless.min(8) as f64) * useless_weight;
+        let penalty = (useless.min(8) as f64) * policy.useless_weight;
         reasons.push(format!("ranking_v2_useless_feedback:-{useless}"));
         score -= penalty;
     }
     if useful > 0 && useless == 0 && reads >= 2 {
-        reasons.push(format!("ranking_v2_trusted_card:{profile}"));
-        score += trusted_boost;
+        reasons.push(format!("ranking_v2_trusted_card:{}", policy.profile));
+        score += policy.trusted_boost;
     }
     if useless > useful && useless >= 2 {
-        reasons.push(format!("ranking_v2_soft_suppress:{profile}"));
-        score -= suppress_penalty;
+        reasons.push(format!("ranking_v2_soft_suppress:{}", policy.profile));
+        score -= policy.suppress_penalty;
     }
     score
 }
 
-fn active_ranking_profile() -> String {
-    if let Ok(value) = std::env::var("DUKEMEMORY_RANKING_PROFILE") {
-        return normalize_ranking_profile(&value);
-    }
-    let path = PathBuf::from(".agent/ranking-profile.json");
+fn ranking_profile_from_root(root: &Path) -> Option<String> {
+    let path = root.join(".agent/ranking-profile.json");
     let Ok(content) = fs::read_to_string(path) else {
-        return "balanced".to_string();
+        return None;
     };
     serde_json::from_str::<Value>(&content)
         .ok()
@@ -1616,7 +1655,24 @@ fn active_ranking_profile() -> String {
                 .map(str::to_string)
         })
         .map(|value| normalize_ranking_profile(&value))
-        .unwrap_or_else(|| "balanced".to_string())
+}
+
+fn retrieval_project_root(conn: &Connection) -> Option<PathBuf> {
+    let db_path = conn
+        .query_row(
+            "SELECT file FROM pragma_database_list WHERE name = 'main'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)?;
+    let parent = db_path.parent()?;
+    if parent.file_name().is_some_and(|name| name == ".agent") {
+        parent.parent().map(Path::to_path_buf)
+    } else {
+        Some(parent.to_path_buf())
+    }
 }
 
 fn normalize_ranking_profile(value: &str) -> String {
@@ -3252,5 +3308,54 @@ mod tests {
             &mut reasons,
         );
         assert_eq!(penalty, -4.0);
+    }
+
+    #[test]
+    fn retrieval_policy_follows_the_selected_database_project() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let strict_root = temp.path().join("strict-project");
+        let recall_root = temp.path().join("recall-project");
+        fs::create_dir_all(strict_root.join(".agent"))?;
+        fs::create_dir_all(recall_root.join(".agent"))?;
+        fs::write(
+            strict_root.join(".agent/ranking-profile.json"),
+            r#"{"profile":"strict"}"#,
+        )?;
+        fs::write(
+            recall_root.join(".agent/ranking-profile.json"),
+            r#"{"profile":"recall_heavy"}"#,
+        )?;
+        let strict_conn = Connection::open(strict_root.join(".agent/memory.db"))?;
+        let recall_conn = Connection::open(recall_root.join(".agent/memory.db"))?;
+
+        assert_eq!(
+            RetrievalPolicy::load_for_connection(&strict_conn).profile,
+            "strict"
+        );
+        assert_eq!(
+            RetrievalPolicy::load_for_connection(&recall_conn).profile,
+            "recall_heavy"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retrieval_adjustment_uses_the_policy_captured_in_signals() {
+        let mut signals = RetrievalQualitySignals {
+            policy: RetrievalPolicy::from_profile("strict"),
+            ..RetrievalQualitySignals::default()
+        };
+        signals.reads.insert("card".to_string(), 2);
+        signals.useful.insert("card".to_string(), 1);
+        let mut reasons = Vec::new();
+
+        let score = retrieval_quality_adjustment("card", Some(&signals), &mut reasons);
+
+        assert!((score - 6.2).abs() < f64::EPSILON);
+        assert!(
+            reasons
+                .iter()
+                .any(|reason| reason == "ranking_v2_trusted_card:strict")
+        );
     }
 }

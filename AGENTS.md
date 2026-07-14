@@ -53,6 +53,7 @@ For every new chat or coding task in this repository:
 - To aggregate health, intent, probes, audit, recall explanations, and autonomy, run `dukememory memory-control-center --json`; `memory-control-center-v2` remains available for pinned clients.
 - To safely supersede duplicate/obsolete cards, run `dukememory auto-supersede-v2 --json`; use `--apply` only for high-confidence reversible status changes.
 - To write high-confidence changed-file memory candidates, run `dukememory memory-diff-apply --json`; use `--apply` only after reviewing write-ready cards.
+- To infer high-confidence memory-to-memory graph links, run `dukememory memory-graph-links --json`; use `--apply` only after reviewing safe candidates.
 - To detect retrieval regressions, run `dukememory recall-benchmark-suite --json`; use `--write-baseline` after reviewing stable probes.
 - Recall probes follow explicit `superseded_by` chains to the active successor; rewrite a benchmark baseline only after reviewing a reported stale probe set.
 - Quality Score v2 separates dormant history from actionable stale, obsolete, noisy, oversized, and evidence-missing cards; inspect `dukememory quality-report --json` before cleanup.

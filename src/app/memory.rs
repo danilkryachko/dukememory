@@ -1,6 +1,7 @@
 use super::{
-    Memory, MemoryLink, MemoryWithLinks, log_event, now_ms, placeholders, relevance_terms,
-    sanitize_fts_any_query, sanitize_fts_query, transactional,
+    Memory, MemoryLink, MemoryScope, MemoryStatus, MemoryType, MemoryWithLinks, log_event, now_ms,
+    placeholders, reject_sensitive, relevance_terms, sanitize_fts_any_query, sanitize_fts_query,
+    transactional,
 };
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -8,34 +9,38 @@ use uuid::Uuid;
 
 pub(crate) struct AddMemory {
     pub(crate) id: Option<String>,
-    pub(crate) memory_type: String,
+    pub(crate) memory_type: MemoryType,
     pub(crate) title: String,
     pub(crate) body: String,
-    pub(crate) scope: String,
-    pub(crate) status: String,
+    pub(crate) scope: MemoryScope,
+    pub(crate) status: MemoryStatus,
     pub(crate) source: Option<String>,
     pub(crate) supersedes: Option<String>,
     pub(crate) confidence: f64,
     pub(crate) layer: Option<String>,
     pub(crate) links: Vec<String>,
+    pub(crate) allow_sensitive: bool,
 }
 
 pub(crate) struct UpdateMemory {
     pub(crate) id: String,
-    pub(crate) memory_type: Option<String>,
+    pub(crate) memory_type: Option<MemoryType>,
     pub(crate) title: Option<String>,
     pub(crate) body: Option<String>,
-    pub(crate) scope: Option<String>,
-    pub(crate) status: Option<String>,
+    pub(crate) scope: Option<MemoryScope>,
+    pub(crate) status: Option<MemoryStatus>,
     pub(crate) source: Option<String>,
     pub(crate) confidence: Option<f64>,
     pub(crate) layer: Option<String>,
     pub(crate) links: Vec<String>,
     pub(crate) replace_links: bool,
+    pub(crate) allow_sensitive: bool,
 }
 
 pub(crate) fn add_memory(conn: &Connection, input: AddMemory) -> Result<String> {
     validate_confidence(input.confidence)?;
+    validate_memory_text(&input.title, &input.body)?;
+    reject_sensitive(&input.title, &input.body, input.allow_sensitive)?;
     let id = input
         .id
         .unwrap_or_else(|| Uuid::new_v4().simple().to_string()[..12].to_string());
@@ -52,11 +57,11 @@ pub(crate) fn add_memory(conn: &Connection, input: AddMemory) -> Result<String> 
             "#,
             params![
                 id,
-                input.memory_type,
-                input.scope,
+                input.memory_type.as_str(),
+                input.scope.as_str(),
                 input.title,
                 input.body,
-                input.status,
+                input.status.as_str(),
                 input.source,
                 ts,
                 ts,
@@ -85,7 +90,7 @@ pub(crate) fn update_memory(conn: &Connection, input: UpdateMemory) -> Result<()
     transactional(conn, "update_memory", || {
         let mut memory = get_memory(conn, &input.id)?;
         if let Some(value) = input.memory_type {
-            memory.memory_type = value;
+            memory.memory_type = value.as_str().to_string();
         }
         if let Some(value) = input.title {
             memory.title = value;
@@ -94,10 +99,10 @@ pub(crate) fn update_memory(conn: &Connection, input: UpdateMemory) -> Result<()
             memory.body = value;
         }
         if let Some(value) = input.scope {
-            memory.scope = value;
+            memory.scope = value.as_str().to_string();
         }
         if let Some(value) = input.status {
-            memory.status = value;
+            memory.status = value.as_str().to_string();
         }
         if let Some(value) = input.source {
             memory.source = Some(value);
@@ -109,6 +114,8 @@ pub(crate) fn update_memory(conn: &Connection, input: UpdateMemory) -> Result<()
         if let Some(value) = input.layer {
             memory.layer = normalize_layer(Some(value));
         }
+        validate_memory_text(&memory.title, &memory.body)?;
+        reject_sensitive(&memory.title, &memory.body, input.allow_sensitive)?;
         memory.updated_at = now_ms();
 
         conn.execute(
@@ -162,7 +169,8 @@ pub(crate) fn delete_memory(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn set_status(conn: &Connection, id: &str, status: String) -> Result<()> {
+pub(crate) fn set_status(conn: &Connection, id: &str, status: MemoryStatus) -> Result<()> {
+    let status = status.as_str();
     transactional(conn, "set_memory_status", || {
         let changed = conn.execute(
             "UPDATE memories SET status = ?1, updated_at = ?2 WHERE id = ?3",
@@ -371,6 +379,16 @@ pub(crate) fn insert_links(conn: &Connection, memory_id: &str, links: &[MemoryLi
 pub(crate) fn validate_confidence(confidence: f64) -> Result<()> {
     if !(0.0..=1.0).contains(&confidence) {
         bail!("confidence must be between 0.0 and 1.0");
+    }
+    Ok(())
+}
+
+fn validate_memory_text(title: &str, body: &str) -> Result<()> {
+    if title.trim().is_empty() {
+        bail!("memory title must not be empty");
+    }
+    if body.trim().is_empty() {
+        bail!("memory body must not be empty");
     }
     Ok(())
 }

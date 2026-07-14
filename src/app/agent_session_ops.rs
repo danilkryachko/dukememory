@@ -110,22 +110,6 @@ pub(crate) fn list_agent_sessions_page(
     })
 }
 
-pub(crate) fn cleanup_agent_sessions(
-    conn: &Connection,
-    older_than_days: i64,
-    limit: usize,
-    apply: bool,
-) -> Result<AgentSessionCleanupReport> {
-    cleanup_agent_sessions_with_policy(
-        conn,
-        &AgentSessionConfig::default(),
-        &["completed".to_string()],
-        Some(older_than_days),
-        limit,
-        apply,
-    )
-}
-
 pub(crate) fn cleanup_agent_sessions_with_policy(
     conn: &Connection,
     policy: &AgentSessionConfig,

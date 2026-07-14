@@ -36,7 +36,7 @@ struct ReleaseBundleManifest {
     binary_sha256: String,
     config_template: String,
     database: String,
-    memory_stats: services::MemoryStats,
+    memory_stats: crate::application::MemoryStats,
 }
 
 pub(crate) fn write_release_bundle(conn: &Connection, db: &Path, output: &Path) -> Result<()> {
@@ -65,7 +65,7 @@ pub(crate) fn write_release_bundle(conn: &Connection, db: &Path, output: &Path) 
     }
 
     let store = MemoryStore::new(conn);
-    let service = MemoryService::new(store);
+    let service = MemoryApplication::new(store);
     let manifest = ReleaseBundleManifest {
         name: "dukememory".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -120,14 +120,14 @@ struct BenchReport {
 
 pub(crate) fn print_bench(conn: &Connection, db: &Path, json_out: bool) -> Result<()> {
     let store = MemoryStore::new(conn);
-    let service = MemoryService::new(store);
+    let service = MemoryApplication::new(store);
 
     let stats_start = std::time::Instant::now();
     let stats = service.stats()?;
     let stats_ms = stats_start.elapsed().as_millis();
 
     let fts_start = std::time::Instant::now();
-    let retrieval = RetrievalService::new(service.store());
+    let retrieval = RetrievalApplication::new(service.store());
     let fts_probe_rows = retrieval.fts_probe("memory", 25)?;
     let fts_probe_ms = fts_start.elapsed().as_millis();
 
@@ -229,7 +229,7 @@ pub(crate) fn self_host_memory(conn: &Connection, force: bool) -> Result<()> {
         added += 1;
     }
     let maintenance_store = MemoryStore::new(conn);
-    let maintenance = MaintenanceService::new(&maintenance_store);
+    let maintenance = MaintenanceApplication::new(&maintenance_store);
     let report = SelfHostReport {
         added,
         skipped,

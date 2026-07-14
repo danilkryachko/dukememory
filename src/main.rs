@@ -1,10 +1,11 @@
 #![recursion_limit = "256"]
-#![allow(dead_code)]
 mod app;
+mod application;
 mod build_info;
+mod domain;
 mod http_api;
+mod operation_catalog;
 mod runtime_config;
-mod services;
 mod storage;
 
 fn main() -> anyhow::Result<()> {

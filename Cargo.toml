@@ -2,6 +2,7 @@
 name = "dukememory"
 version = "0.42.0"
 edition = "2024"
+rust-version = "1.91"
 license = "Apache-2.0"
 description = "Local project memory for AI coding agents: durable context, SQLite, MCP, Codex skill, embeddings, and autonomous maintenance."
 repository = "https://github.com/danilkryachko/dukememory"
@@ -24,19 +25,18 @@ serde_json = "1.0"
 sha2 = "0.10"
 toml = "0.8"
 uuid = { version = "1.11", features = ["v4"] }
-tract-onnx = "0.23.3"
-tokenizers = "0.23.1"
-hf-hub = "0.5.0"
-lazy_static = "1.5.0"
-ndarray = "0.17.2"
+tract-onnx = { version = "0.23.3", optional = true }
+tokenizers = { version = "0.23.1", optional = true }
+hf-hub = { version = "0.5.0", default-features = false, features = ["ureq"], optional = true }
 encoding_rs = { version = "0.8.35", optional = true }
 llama-cpp-2 = { version = "0.1.150", optional = true, features = ["sampler"] }
 
 [features]
-default = []
-# Compatibility marker: local MiniLM embeddings are part of the default build.
-local-embeddings = []
-local-generation = ["dep:encoding_rs", "dep:llama-cpp-2"]
+default = ["local-embeddings"]
+# Keep the local-first default while allowing minimal builds with
+# `--no-default-features` to omit the ONNX/tokenizer download stack.
+local-embeddings = ["dep:hf-hub", "dep:tokenizers", "dep:tract-onnx"]
+local-generation = ["dep:encoding_rs", "dep:hf-hub", "dep:llama-cpp-2"]
 # Statically registers sqlite-vec and runs semantic distance queries in SQLite.
 vec = ["dep:sqlite-vec"]
 

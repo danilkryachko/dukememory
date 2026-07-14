@@ -737,16 +737,17 @@ pub(crate) fn approve_inbox(conn: &Connection, id: &str, allow_sensitive: bool) 
             conn,
             AddMemory {
                 id: None,
-                memory_type: item.memory_type,
+                memory_type: item.memory_type.parse()?,
                 title: item.title,
                 body: item.body,
-                scope: item.scope,
-                status: "active".to_string(),
+                scope: item.scope.parse()?,
+                status: MemoryStatus::Active,
                 source: item.source.or_else(|| Some("inbox".to_string())),
                 supersedes: None,
                 confidence: item.confidence,
                 layer: item.layer,
                 links: Vec::new(),
+                allow_sensitive: false,
             },
         )?;
         conn.execute(
@@ -881,16 +882,17 @@ pub(crate) fn compact_task_state(
         conn,
         AddMemory {
             id: None,
-            memory_type: "task_state".to_string(),
+            memory_type: MemoryType::TaskState,
             title: format!("Compacted {scope} task state"),
             body,
-            scope: scope.to_string(),
-            status: "active".to_string(),
+            scope: scope.parse()?,
+            status: MemoryStatus::Active,
             source: Some("compact".to_string()),
             supersedes: None,
             confidence: 0.9,
             layer: None,
             links: Vec::new(),
+            allow_sensitive: false,
         },
     )?;
     for row in rows {
@@ -942,16 +944,17 @@ pub(crate) fn compact_v2(
             conn,
             AddMemory {
                 id: None,
-                memory_type: "task_state".to_string(),
+                memory_type: MemoryType::TaskState,
                 title: format!("Compacted v2 {scope} operational memory"),
                 body: body.clone(),
-                scope: scope.to_string(),
-                status: "active".to_string(),
+                scope: scope.parse()?,
+                status: MemoryStatus::Active,
                 source: Some("compact_v2".to_string()),
                 supersedes: None,
                 confidence: 0.9,
                 layer: None,
                 links: Vec::new(),
+                allow_sensitive: false,
             },
         )?;
         for row in &rows {

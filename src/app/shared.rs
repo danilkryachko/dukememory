@@ -67,14 +67,7 @@ pub(crate) fn log_event(
 }
 
 pub(crate) fn validate_scope(scope: &str) -> Result<()> {
-    if VALID_SCOPES.contains(&scope) {
-        Ok(())
-    } else {
-        bail!(
-            "invalid scope: {scope}. Expected one of: {}",
-            VALID_SCOPES.join(", ")
-        )
-    }
+    scope.parse::<MemoryScope>().map(|_| ()).map_err(Into::into)
 }
 
 pub(crate) fn tokenize(text: &str) -> HashSet<String> {

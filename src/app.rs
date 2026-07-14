@@ -1,10 +1,11 @@
+use crate::application::{MaintenanceApplication, MemoryApplication, RetrievalApplication};
 use crate::build_info::BuildInfo;
+use crate::domain::{MemoryScope, MemoryStatus, MemoryType};
 use crate::http_api::HttpResponse;
+use crate::operation_catalog::*;
 use crate::runtime_config::{
     AgentConfig, AgentSessionConfig, load_runtime_config, parse_agent_config_with_compat_defaults,
 };
-use crate::services;
-use crate::services::{MaintenanceService, MemoryService, RetrievalService};
 use crate::storage::MemoryStore;
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -30,9 +31,8 @@ const DEFAULT_EMBED_ENDPOINT: &str = "local";
 const DEFAULT_EMBED_MODEL: &str = "paraphrase-multilingual-MiniLM-L12-v2";
 const DEFAULT_EMBED_PROVIDER: &str = "local";
 const DEFAULT_INSTALL_BACKUP_KEEP: usize = 3;
-const CURRENT_SCHEMA_VERSION: i64 = 21;
+const CURRENT_SCHEMA_VERSION: i64 = 22;
 const EXPORT_VERSION: u32 = 1;
-const VALID_SCOPES: &[&str] = &["global", "user", "project", "repo", "thread", "task"];
 
 mod agent_session;
 mod agent_session_ops;
@@ -46,13 +46,17 @@ mod embeddings;
 mod explain;
 mod generation;
 mod graph_rag;
+mod graph_store;
 mod http_server;
 mod local_embed;
 mod local_generation;
 mod maintenance;
 mod mcp_server;
-mod memory;
-mod model;
+pub(crate) mod memory;
+mod memory_graph;
+pub(crate) mod model;
+#[cfg(any(feature = "local-embeddings", feature = "local-generation"))]
+mod model_artifact;
 mod observability;
 mod onboard;
 mod ops;
@@ -75,8 +79,10 @@ use control_snapshot::*;
 use db::*;
 use diagnostics::*;
 pub(crate) use dispatch::run;
+use graph_store::*;
 use maintenance::*;
 use memory::*;
+use memory_graph::*;
 use model::*;
 use observability::*;
 use project::*;
@@ -2254,22 +2260,20 @@ fn remember_text(
         .map(|s| s.title)
         .unwrap_or_else(|| truncate_words(text, 8));
     reject_sensitive(&title, text, allow_sensitive)?;
-    let id = add_memory(
-        conn,
-        AddMemory {
-            id: None,
-            memory_type: kind,
-            title,
-            body: text.to_string(),
-            scope: scope.to_string(),
-            status: "active".to_string(),
-            source: Some("remember".to_string()),
-            supersedes: None,
-            confidence: 0.8,
-            layer: None,
-            links: Vec::new(),
-        },
-    )?;
+    let id = MemoryApplication::new(MemoryStore::new(conn)).create(AddMemory {
+        id: None,
+        memory_type: kind.parse()?,
+        title,
+        body: text.to_string(),
+        scope: scope.parse()?,
+        status: MemoryStatus::Active,
+        source: Some("remember".to_string()),
+        supersedes: None,
+        confidence: 0.8,
+        layer: None,
+        links: Vec::new(),
+        allow_sensitive,
+    })?;
     println!("{id}");
     Ok(())
 }
@@ -2725,6 +2729,8 @@ Use `dukememory auto-supersede-v2 --json` to safely supersede duplicate/obsolete
 
 Use `dukememory memory-diff-apply --json` to write high-confidence changed-file memory candidates after review.
 
+Use `dukememory memory-graph-links --json` to infer high-confidence memory-to-memory graph links; use `--apply` only after reviewing safe candidates.
+
 Use `dukememory recall-benchmark-suite --json` to detect retrieval regressions; use `--write-baseline` after reviewing stable probes.
 
 Use `dukememory release-gate-v2 --json` to gate releases with health, recall benchmark, audit v2, and control-center checks.
@@ -2954,6 +2960,7 @@ dukememory agent-audit-v2 --json
 dukememory memory-control-center --json
 dukememory auto-supersede-v2 --json
 dukememory memory-diff-apply --json
+dukememory memory-graph-links --json
 dukememory recall-benchmark-suite --json
 dukememory release-gate-v2 --json
 dukememory memory-effectiveness-v2 --json
@@ -3459,8 +3466,8 @@ fn print_completions(shell: CompletionShell) {
     let _ = Cli::command();
     let commands = [
         "init",
-        "add",
-        "remember",
+        CLI_ADD,
+        CLI_REMEMBER,
         "what-do-we-know",
         "what-next",
         "forget",
@@ -3473,11 +3480,11 @@ fn print_completions(shell: CompletionShell) {
         "doctor",
         "policy-check",
         "policy-apply",
-        "search",
+        CLI_SEARCH,
         "list",
-        "get",
-        "update",
-        "delete",
+        CLI_GET,
+        CLI_UPDATE,
+        CLI_DELETE,
         "review",
         "stale",
         "conflicts",
@@ -3522,6 +3529,7 @@ fn print_completions(shell: CompletionShell) {
         "memory-control-center",
         "auto-supersede-v2",
         "memory-diff-apply",
+        "memory-graph-links",
         "recall-benchmark-suite",
         "release-gate-v2",
         "memory-effectiveness-v2",
@@ -3722,6 +3730,7 @@ fn print_manpage() {
     println!("  memory-control-center         aggregate health, recall, tests, autonomy");
     println!("  auto-supersede-v2 --json      safely supersede duplicate memory");
     println!("  memory-diff-apply --json      write high-confidence diff memory cards");
+    println!("  memory-graph-links --json     infer safe memory-to-memory graph links");
     println!("  recall-benchmark-suite        compare retrieval probes against baseline");
     println!("  release-gate-v2 --json        release gate with memory health checks");
     println!("  remote-sync-wizard --json     guided local-first remote sync setup");

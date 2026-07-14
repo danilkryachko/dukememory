@@ -1,5 +1,8 @@
 use super::*;
 
+static INITIALIZED_DATABASES: std::sync::OnceLock<std::sync::Mutex<HashSet<PathBuf>>> =
+    std::sync::OnceLock::new();
+
 const SCHEMA: &str = r#"
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
@@ -40,6 +43,21 @@ CREATE TABLE IF NOT EXISTS memory_links (
     FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS memory_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    provenance TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE (source_id, target_id, kind),
+    CHECK (source_id <> target_id),
+    CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    FOREIGN KEY (source_id) REFERENCES memories(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     title,
     body,
@@ -73,6 +91,8 @@ CREATE INDEX IF NOT EXISTS idx_memories_updated_at ON memories(updated_at);
 CREATE INDEX IF NOT EXISTS idx_memories_superseded_by ON memories(superseded_by);
 CREATE INDEX IF NOT EXISTS idx_memories_status_scope_updated_at ON memories(status, scope, updated_at);
 CREATE INDEX IF NOT EXISTS idx_memory_links_memory_id ON memory_links(memory_id);
+CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(source_id);
+CREATE INDEX IF NOT EXISTS idx_memory_edges_target ON memory_edges(target_id);
 
 CREATE TABLE IF NOT EXISTS memory_embeddings (
     memory_id TEXT NOT NULL,
@@ -300,30 +320,104 @@ pub(crate) fn open_db(path: &Path) -> Result<Connection> {
     conn.execute_batch(
         r#"
         PRAGMA foreign_keys = ON;
-        PRAGMA journal_mode = WAL;
         PRAGMA synchronous = NORMAL;
         PRAGMA temp_store = MEMORY;
         PRAGMA cache_size = -20000;
         PRAGMA mmap_size = 268435456;
         "#,
     )?;
-    conn.execute_batch(SCHEMA)?;
-    run_migrations(&conn)?;
-    initialize_sqlite_vec_indexes(&conn)?;
+    let key = database_registry_key(path);
+    let initialized = INITIALIZED_DATABASES.get_or_init(|| std::sync::Mutex::new(HashSet::new()));
+    let mut initialized = initialized
+        .lock()
+        .map_err(|_| anyhow::anyhow!("database initialization registry is poisoned"))?;
+    let schema_is_current = conn
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_versions",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .is_ok_and(|version| version == CURRENT_SCHEMA_VERSION);
+    if !initialized.contains(&key) || !schema_is_current {
+        conn.execute_batch(SCHEMA)?;
+        run_migrations(&conn)?;
+        verify_schema(&conn)?;
+        initialize_sqlite_vec_indexes(&conn)?;
+        initialized.insert(key);
+    }
     Ok(conn)
 }
 
 fn run_migrations(conn: &Connection) -> Result<()> {
-    ensure_column(conn, "memories", "superseded_by", "TEXT")?;
-    ensure_column(conn, "memories", "confidence", "REAL NOT NULL DEFAULT 1.0")?;
-    ensure_column(conn, "memories", "layer", "TEXT")?;
-    ensure_column(conn, "memory_inbox", "layer", "TEXT")?;
-    ensure_column(
-        conn,
-        "vector_index_registry",
-        "trigger_version",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
+    transactional(conn, "schema_migrations", || {
+        let mut version = conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_versions",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        if version < 1 {
+            conn.execute(
+                "INSERT INTO schema_versions (version, applied_at, description) VALUES (1, ?1, 'Initial production schema')",
+                params![now_ms()],
+            )?;
+            version = 1;
+        }
+        for migration in migrations()
+            .iter()
+            .filter(|migration| migration.version > version)
+        {
+            apply_migration(conn, migration.version)?;
+            conn.execute(
+                "INSERT INTO schema_versions (version, applied_at, description) VALUES (?1, ?2, ?3)",
+                params![migration.version, now_ms(), migration.name],
+            )?;
+        }
+        Ok(())
+    })
+}
+
+fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
+    match version {
+        2 => {
+            ensure_column(conn, "memories", "superseded_by", "TEXT")?;
+            ensure_column(conn, "memories", "confidence", "REAL NOT NULL DEFAULT 1.0")?;
+        }
+        16 => {
+            ensure_column(conn, "memories", "layer", "TEXT")?;
+            ensure_column(conn, "memory_inbox", "layer", "TEXT")?;
+        }
+        19 => ensure_column(
+            conn,
+            "vector_index_registry",
+            "trigger_version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?,
+        20 => {}
+        21 => migrate_agent_session_leases(conn)?,
+        22 => conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS memory_edges (\
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                 source_id TEXT NOT NULL,\
+                 target_id TEXT NOT NULL,\
+                 kind TEXT NOT NULL,\
+                 confidence REAL NOT NULL,\
+                 provenance TEXT NOT NULL,\
+                 created_at INTEGER NOT NULL,\
+                 UNIQUE (source_id, target_id, kind),\
+                 CHECK (source_id <> target_id),\
+                 CHECK (confidence >= 0.0 AND confidence <= 1.0),\
+                 FOREIGN KEY (source_id) REFERENCES memories(id) ON DELETE CASCADE,\
+                 FOREIGN KEY (target_id) REFERENCES memories(id) ON DELETE CASCADE\
+             );\
+             CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(source_id);\
+             CREATE INDEX IF NOT EXISTS idx_memory_edges_target ON memory_edges(target_id);",
+        )?,
+        _ => {}
+    }
+    Ok(())
+}
+
+fn migrate_agent_session_leases(conn: &Connection) -> Result<()> {
     ensure_column(conn, "memory_read_events", "session_id", "TEXT")?;
     ensure_column(conn, "agent_sessions", "lease_owner", "TEXT")?;
     ensure_column(conn, "agent_sessions", "lease_token", "TEXT")?;
@@ -374,23 +468,19 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_session_events_sequence ON agent_session_events(session_id, sequence)",
         [],
     )?;
-    let version: Option<i64> =
-        conn.query_row("SELECT MAX(version) FROM schema_versions", [], |row| {
-            row.get::<_, Option<i64>>(0)
-        })?;
-    if version.unwrap_or(0) < 1 {
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_versions (version, applied_at, description) VALUES (1, ?1, 'Initial production schema')",
-            params![now_ms()],
-        )?;
-    }
-    for migration in migrations() {
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_versions (version, applied_at, description) VALUES (?1, ?2, ?3)",
-            params![migration.version, now_ms(), migration.name],
-        )?;
-    }
     Ok(())
+}
+
+fn database_registry_key(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        }
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -481,6 +571,10 @@ fn migrations() -> &'static [Migration] {
             version: 21,
             name: "Production v21 leased idempotent agent orchestration",
         },
+        Migration {
+            version: 22,
+            name: "Production v22 typed memory graph edges",
+        },
     ]
 }
 
@@ -533,6 +627,7 @@ pub(crate) fn verify_schema(conn: &Connection) -> Result<()> {
     for table in [
         "memories",
         "memory_links",
+        "memory_edges",
         "memory_embeddings",
         "rag_chunk_embeddings",
         "vector_index_registry",
@@ -556,6 +651,81 @@ pub(crate) fn verify_schema(conn: &Connection) -> Result<()> {
         )?;
         if exists == 0 {
             bail!("missing table: {table}");
+        }
+    }
+    verify_columns(
+        conn,
+        "memories",
+        &[
+            "id",
+            "type",
+            "scope",
+            "title",
+            "body",
+            "status",
+            "superseded_by",
+            "confidence",
+            "layer",
+        ],
+    )?;
+    verify_columns(
+        conn,
+        "memory_edges",
+        &[
+            "source_id",
+            "target_id",
+            "kind",
+            "confidence",
+            "provenance",
+            "created_at",
+        ],
+    )?;
+    verify_columns(
+        conn,
+        "agent_sessions",
+        &[
+            "lease_owner",
+            "lease_token",
+            "current_attempt_id",
+            "lease_expires_at",
+            "last_event_sequence",
+        ],
+    )?;
+    for (object_type, name) in [
+        ("index", "idx_memory_edges_source"),
+        ("index", "idx_memory_edges_target"),
+        ("index", "idx_agent_session_events_event_id"),
+        ("trigger", "memories_ai"),
+        ("trigger", "memories_ad"),
+        ("trigger", "memories_au"),
+        ("trigger", "rag_chunks_ai"),
+        ("trigger", "rag_chunks_ad"),
+        ("trigger", "rag_chunks_au"),
+    ] {
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2",
+            params![object_type, name],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            bail!("missing {object_type}: {name}");
+        }
+    }
+    let version = schema_version(conn)?;
+    if version != CURRENT_SCHEMA_VERSION {
+        bail!("schema version mismatch: current={version} expected={CURRENT_SCHEMA_VERSION}");
+    }
+    Ok(())
+}
+
+fn verify_columns(conn: &Connection, table: &str, expected: &[&str]) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
+    for column in expected {
+        if !columns.contains(*column) {
+            bail!("missing column: {table}.{column}");
         }
     }
     Ok(())
@@ -653,4 +823,38 @@ pub(crate) fn optimize_db_report(conn: &Connection, vacuum: bool) -> Result<Opti
         page_count: conn.query_row("PRAGMA page_count", [], |row| row.get(0))?,
         freelist_count: conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrations_are_versioned_and_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        run_migrations(&conn).unwrap();
+        let first_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_versions", [], |row| row.get(0))
+            .unwrap();
+        run_migrations(&conn).unwrap();
+        let second_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_versions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), CURRENT_SCHEMA_VERSION);
+        assert_eq!(first_count, second_count);
+        assert_eq!(first_count, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn schema_verification_checks_structural_objects() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        run_migrations(&conn).unwrap();
+        verify_schema(&conn).unwrap();
+        conn.execute_batch("DROP INDEX idx_memory_edges_target")
+            .unwrap();
+        let error = verify_schema(&conn).unwrap_err().to_string();
+        assert!(error.contains("idx_memory_edges_target"));
+    }
 }

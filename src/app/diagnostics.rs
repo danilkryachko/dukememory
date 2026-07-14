@@ -2951,6 +2951,7 @@ fn rag_eval_expected_suppressed_sources<'a>(
         .collect()
 }
 
+#[cfg(test)]
 fn rag_eval_expected_suppressed_titles(expected: &str, packing: &RagPackingReport) -> Vec<String> {
     rag_eval_expected_suppressed_sources(expected, packing)
         .into_iter()

@@ -1,24 +1,25 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-pub struct MemoryStore<'a> {
+#[derive(Clone, Copy)]
+pub(crate) struct MemoryStore<'a> {
     conn: &'a Connection,
 }
 
 impl<'a> MemoryStore<'a> {
-    pub fn new(conn: &'a Connection) -> Self {
+    pub(crate) fn new(conn: &'a Connection) -> Self {
         Self { conn }
     }
 
-    pub fn connection(&self) -> &'a Connection {
+    pub(crate) fn connection(&self) -> &'a Connection {
         self.conn
     }
 
-    pub fn memory_count(&self) -> Result<i64> {
+    pub(crate) fn memory_count(&self) -> Result<i64> {
         self.count_table("memories")
     }
 
-    pub fn active_memory_count(&self) -> Result<i64> {
+    pub(crate) fn active_memory_count(&self) -> Result<i64> {
         self.conn
             .query_row(
                 "SELECT COUNT(*) FROM memories WHERE status = 'active'",
@@ -28,11 +29,11 @@ impl<'a> MemoryStore<'a> {
             .map_err(Into::into)
     }
 
-    pub fn event_count(&self) -> Result<i64> {
+    pub(crate) fn event_count(&self) -> Result<i64> {
         self.count_table("memory_events")
     }
 
-    pub fn inbox_pending_count(&self) -> Result<i64> {
+    pub(crate) fn inbox_pending_count(&self) -> Result<i64> {
         self.conn
             .query_row(
                 "SELECT COUNT(*) FROM memory_inbox WHERE status = 'pending'",
@@ -42,11 +43,11 @@ impl<'a> MemoryStore<'a> {
             .map_err(Into::into)
     }
 
-    pub fn embedding_count(&self) -> Result<i64> {
+    pub(crate) fn embedding_count(&self) -> Result<i64> {
         self.count_table("memory_embeddings")
     }
 
-    pub fn schema_version(&self) -> Result<i64> {
+    pub(crate) fn schema_version(&self) -> Result<i64> {
         self.conn
             .query_row(
                 "SELECT COALESCE(MAX(version), 0) FROM schema_versions",

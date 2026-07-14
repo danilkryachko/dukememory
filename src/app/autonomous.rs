@@ -2339,16 +2339,17 @@ fn autonomous_compact_release_history(
         conn,
         AddMemory {
             id: None,
-            memory_type: "task_state".to_string(),
+            memory_type: MemoryType::TaskState,
             title: format!("Autonomous compacted {scope} release history"),
             body: render_release_history_body(&rows),
-            scope: scope.to_string(),
-            status: "active".to_string(),
+            scope: scope.parse()?,
+            status: MemoryStatus::Active,
             source: Some("autonomous_release_compact".to_string()),
             supersedes: None,
             confidence: 0.9,
             layer: None,
             links,
+            allow_sensitive: false,
         },
     )?;
     report
@@ -2911,16 +2912,17 @@ fn autonomous_compact_operational(
         conn,
         AddMemory {
             id: None,
-            memory_type: "task_state".to_string(),
+            memory_type: MemoryType::TaskState,
             title: format!("Autonomous compacted {scope} operational memory"),
             body,
-            scope: scope.to_string(),
-            status: "active".to_string(),
+            scope: scope.parse()?,
+            status: MemoryStatus::Active,
             source: Some("autonomous_compact".to_string()),
             supersedes: None,
             confidence: 0.9,
             layer: None,
             links,
+            allow_sensitive: false,
         },
     )?;
     report

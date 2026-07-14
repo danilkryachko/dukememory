@@ -126,9 +126,9 @@ fn mcp_tools() -> Value {
         {"name":"memory_session_trace","description":"Show recalled memory, actions, validation, and outcome for an agent session","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_runner_profiles","description":"List named Codex, Gemini, Antigravity, and local runner profiles with PATH readiness","inputSchema":{"type":"object","properties":{"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_drift","description":"Detect cheap local memory drift before coding as bounded summary by default","inputSchema":{"type":"object","properties":{"changed_only":{"type":"boolean"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"}}}},
-        {"name":"memory_add","description":"Add a typed memory card","inputSchema":{"type":"object","properties":{"type":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"scope":{"type":"string"},"source":{"type":"string"},"layer":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["type","title","body"]}},
-        {"name":"memory_remember","description":"Remember plain text as local memory","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"type":{"type":"string"},"scope":{"type":"string"},"layer":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["text"]}},
-        {"name":"memory_search","description":"Search local memory with compact query-focused summaries","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
+        {"name":MCP_MEMORY_ADD,"description":"Add a typed memory card","inputSchema":{"type":"object","properties":{"type":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"scope":{"type":"string"},"source":{"type":"string"},"layer":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["type","title","body"]}},
+        {"name":MCP_MEMORY_REMEMBER,"description":"Remember plain text as local memory","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"type":{"type":"string"},"scope":{"type":"string"},"layer":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["text"]}},
+        {"name":MCP_MEMORY_SEARCH,"description":"Search local memory with compact query-focused summaries","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
         {"name":"memory_context_pack","description":"Return a compact relevant memory pack","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_rag_answer","description":"Answer a question using grounded project memory via LLM generation","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"scope":{"type":"string"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"gen_provider":{"type":"string"},"gen_endpoint":{"type":"string"},"gen_model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
         {"name":"memory_graph_rag_answer","description":"Answer a question using 1-hop graph-expanded RAG via LLM generation","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"scope":{"type":"string"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"gen_provider":{"type":"string"},"gen_endpoint":{"type":"string"},"gen_model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}},
@@ -140,7 +140,7 @@ fn mcp_tools() -> Value {
         {"name":"memory_doctrine","description":"Return compact active decision doctrine by default","inputSchema":{"type":"object","properties":{"scope":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_evidence","description":"Return compact provenance for one memory card by default","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_auto_ingest","description":"Scan agent session files into pending inbox suggestions without duplicates as bounded summary","inputSchema":{"type":"object","properties":{"input":{"type":"string"},"scope":{"type":"string"},"dry_run":{"type":"boolean"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"}}}},
-        {"name":"memory_get","description":"Get one memory card as compact summary by default","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
+        {"name":MCP_MEMORY_GET,"description":"Get one memory card as compact summary by default","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_review","description":"Review stale/conflicting memory as a bounded summary","inputSchema":{"type":"object","properties":{"limit":{"type":"number"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_doctor","description":"Run compact memory health checks","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_inbox_list","description":"List pending inbox items as compact summaries by default","inputSchema":{"type":"object","properties":{"limit":{"type":"number"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
@@ -191,6 +191,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         .unwrap_or_else(|| json!({}));
     let selected_db = mcp_selected_db(db, &args);
     let conn = open_db(&selected_db).map_err(|err| err.to_string())?;
+    let memory_app = MemoryApplication::new(MemoryStore::new(&conn));
     let selected_root = mcp_selected_root(&selected_db, &args);
     let text = match name {
         "memory_session_start" => {
@@ -398,57 +399,63 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let profiles = runner_profiles_status(&selected_root).map_err(|err| err.to_string())?;
             serde_json::to_string_pretty(&profiles).map_err(|err| err.to_string())?
         }
-        "memory_add" => {
+        MCP_MEMORY_ADD => {
             let memory_type = json_string(&args, "type").unwrap_or_else(|| "note".to_string());
             let title = json_string(&args, "title").ok_or_else(|| "missing title".to_string())?;
             let body = json_string(&args, "body").ok_or_else(|| "missing body".to_string())?;
             let scope = json_string(&args, "scope").unwrap_or_else(|| "project".to_string());
             validate_scope(&scope).map_err(|err| err.to_string())?;
             reject_sensitive(&title, &body, false).map_err(|err| err.to_string())?;
-            add_memory(
-                &conn,
-                AddMemory {
+            memory_app
+                .create(AddMemory {
                     id: None,
-                    memory_type,
+                    memory_type: memory_type
+                        .parse::<MemoryType>()
+                        .map_err(|err| err.to_string())?,
                     title,
                     body,
-                    scope,
-                    status: "active".to_string(),
+                    scope: scope
+                        .parse::<MemoryScope>()
+                        .map_err(|err| err.to_string())?,
+                    status: MemoryStatus::Active,
                     source: json_string(&args, "source"),
                     supersedes: None,
                     confidence: 1.0,
                     layer: json_string(&args, "layer"),
                     links: Vec::new(),
-                },
-            )
-            .map_err(|err| err.to_string())?
+                    allow_sensitive: false,
+                })
+                .map_err(|err| err.to_string())?
         }
-        "memory_remember" => {
+        MCP_MEMORY_REMEMBER => {
             let text = json_string(&args, "text").ok_or_else(|| "missing text".to_string())?;
             let scope = json_string(&args, "scope").unwrap_or_else(|| "project".to_string());
             validate_scope(&scope).map_err(|err| err.to_string())?;
             let memory_type = json_string(&args, "type").unwrap_or_else(|| "note".to_string());
             reject_sensitive(&truncate_words(&text, 8), &text, false)
                 .map_err(|err| err.to_string())?;
-            add_memory(
-                &conn,
-                AddMemory {
+            memory_app
+                .create(AddMemory {
                     id: None,
-                    memory_type,
+                    memory_type: memory_type
+                        .parse::<MemoryType>()
+                        .map_err(|err| err.to_string())?,
                     title: truncate_words(&text, 8),
                     body: text,
-                    scope,
-                    status: "active".to_string(),
+                    scope: scope
+                        .parse::<MemoryScope>()
+                        .map_err(|err| err.to_string())?,
+                    status: MemoryStatus::Active,
                     source: Some("mcp".to_string()),
                     supersedes: None,
                     confidence: 0.8,
                     layer: json_string(&args, "layer"),
                     links: Vec::new(),
-                },
-            )
-            .map_err(|err| err.to_string())?
+                    allow_sensitive: false,
+                })
+                .map_err(|err| err.to_string())?
         }
-        "memory_search" => {
+        MCP_MEMORY_SEARCH => {
             let started = Instant::now();
             let query = json_string(&args, "query").ok_or_else(|| "missing query".to_string())?;
             let limit = json_usize(&args, "limit").unwrap_or(10);
@@ -1061,7 +1068,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     .map_err(|err| err.to_string())?
             }
         }
-        "memory_get" => {
+        MCP_MEMORY_GET => {
             let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
             let query = json_string(&args, "query").unwrap_or_default();
             let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
@@ -2163,7 +2170,7 @@ fn mcp_selected_root(selected_db: &Path, args: &Value) -> PathBuf {
 }
 
 fn mcp_memory_scope(args: &Value) -> Option<String> {
-    json_string(args, "scope").filter(|scope| VALID_SCOPES.contains(&scope.as_str()))
+    json_string(args, "scope").filter(|scope| scope.parse::<MemoryScope>().is_ok())
 }
 
 fn project_memory_db(root: &str) -> PathBuf {
@@ -2176,7 +2183,7 @@ fn project_memory_db(root: &str) -> PathBuf {
 }
 
 fn mcp_scope_looks_like_project_root(value: &str) -> bool {
-    if VALID_SCOPES.contains(&value) {
+    if value.parse::<MemoryScope>().is_ok() {
         return false;
     }
     value.starts_with('/')

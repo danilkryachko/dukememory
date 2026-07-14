@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::app::generation;
+use crate::app::graph_store::{edge_as_link_for, graph_edges_for_nodes, graph_neighbor_edges};
 use crate::app::memory::{get_links, get_memory};
 use crate::app::model::Memory;
 use crate::app::retrieval::{
@@ -171,8 +172,11 @@ pub(crate) fn compute_graph_rag(
     let mut scanned_neighbors = 0usize;
     for id in &seed_ids {
         let source_score = graph_node_score(&nodes_map, id);
-        if let Ok(links) = get_links(conn, id) {
-            for link in links {
+        if let Ok(edges) = graph_neighbor_edges(conn, id) {
+            for edge in edges {
+                let Some(link) = edge_as_link_for(&edge, id) else {
+                    continue;
+                };
                 if nodes_map.len() >= max_nodes
                     || scanned_neighbors >= graph_neighbor_scan_limit(limit)
                 {
@@ -441,6 +445,13 @@ fn collect_graph_edges(
     limit: usize,
 ) -> Vec<GraphRagEdge> {
     let mut edges = Vec::new();
+    if let Ok(stored_edges) = graph_edges_for_nodes(conn, selected_ids) {
+        edges.extend(stored_edges.into_iter().map(|edge| GraphRagEdge {
+            source: edge.source_id,
+            target: edge.target_id,
+            kind: edge.kind,
+        }));
+    }
     for id in selected_ids {
         if let Ok(links) = get_links(conn, id) {
             for link in links {

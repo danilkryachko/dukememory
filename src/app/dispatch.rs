@@ -51,6 +51,7 @@ pub(crate) fn run() -> Result<()> {
     }
 
     let conn = open_db(&cli.db)?;
+    let memory_app = MemoryApplication::new(MemoryStore::new(&conn));
 
     match cli.command {
         Command::Init { config, force } => init_project(&conn, &cli.db, &config, force)?,
@@ -70,26 +71,24 @@ pub(crate) fn run() -> Result<()> {
         } => {
             validate_scope(&scope)?;
             reject_sensitive(&title, &body, allow_sensitive)?;
-            let id = add_memory(
-                &conn,
-                AddMemory {
-                    id,
-                    memory_type: memory_type.to_string(),
-                    title,
-                    body,
-                    scope,
-                    status: status.to_string(),
-                    source,
-                    supersedes,
-                    confidence,
-                    layer,
-                    links,
-                },
-            )?;
+            let id = memory_app.create(AddMemory {
+                id,
+                memory_type,
+                title,
+                body,
+                scope: scope.parse()?,
+                status,
+                source,
+                supersedes,
+                confidence,
+                layer,
+                links,
+                allow_sensitive,
+            })?;
             println!("{id}");
         }
         Command::Get { id, json } => {
-            let memory = get_memory_with_links(&conn, &id)?;
+            let memory = memory_app.get_with_links(&id)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&memory)?);
             } else {
@@ -116,24 +115,22 @@ pub(crate) fn run() -> Result<()> {
             if let Some(body) = &body {
                 reject_sensitive(title.as_deref().unwrap_or_default(), body, allow_sensitive)?;
             }
-            update_memory(
-                &conn,
-                UpdateMemory {
-                    id,
-                    memory_type: memory_type.map(|v| v.to_string()),
-                    title,
-                    body,
-                    scope,
-                    status: status.map(|v| v.to_string()),
-                    source,
-                    confidence,
-                    layer,
-                    links,
-                    replace_links,
-                },
-            )?;
+            memory_app.update(UpdateMemory {
+                id,
+                memory_type,
+                title,
+                body,
+                scope: scope.map(|value| value.parse()).transpose()?,
+                status,
+                source,
+                confidence,
+                layer,
+                links,
+                replace_links,
+                allow_sensitive,
+            })?;
         }
-        Command::Delete { id } => delete_memory(&conn, &id)?,
+        Command::Delete { id } => memory_app.delete(&id)?,
         Command::Search {
             query,
             memory_type,
@@ -212,7 +209,7 @@ pub(crate) fn run() -> Result<()> {
             )?;
             print_rows(&conn, &rows, json)?;
         }
-        Command::Status { id, status } => set_status(&conn, &id, status.to_string())?,
+        Command::Status { id, status } => memory_app.set_status(&id, status)?,
         Command::ContextPack {
             task,
             memory_type,
@@ -458,22 +455,20 @@ pub(crate) fn run() -> Result<()> {
             validate_scope(&scope)?;
             let body = render_session_body(&summary, &next);
             reject_sensitive(&title, &body, allow_sensitive)?;
-            let id = add_memory(
-                &conn,
-                AddMemory {
-                    id: None,
-                    memory_type: "task_state".to_string(),
-                    title,
-                    body,
-                    scope,
-                    status: "active".to_string(),
-                    source,
-                    supersedes: None,
-                    confidence: 1.0,
-                    layer: None,
-                    links: Vec::new(),
-                },
-            )?;
+            let id = memory_app.create(AddMemory {
+                id: None,
+                memory_type: MemoryType::TaskState,
+                title,
+                body,
+                scope: scope.parse()?,
+                status: MemoryStatus::Active,
+                source,
+                supersedes: None,
+                confidence: 1.0,
+                layer: None,
+                links: Vec::new(),
+                allow_sensitive,
+            })?;
             println!("{id}");
         }
         Command::AgentSession { command } => handle_agent_session(
@@ -1012,6 +1007,12 @@ pub(crate) fn run() -> Result<()> {
         Command::MemoryDiffApply { root, apply, json } => {
             print_memory_diff_apply(&conn, &root, apply, json)?
         }
+        Command::MemoryGraphLinks {
+            root,
+            limit,
+            apply,
+            json,
+        } => print_memory_graph_links(&conn, &root, limit, apply, json)?,
         Command::RecallBenchmarkSuite {
             root,
             since_days,
