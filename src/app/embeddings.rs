@@ -1141,6 +1141,8 @@ pub(crate) struct VectorBenchReport {
     pub(crate) message: Option<String>,
     pub(crate) baseline_path: Option<String>,
     pub(crate) baseline_written: bool,
+    #[serde(default)]
+    pub(crate) thresholds: Option<VectorBenchThresholds>,
     pub(crate) regression: Option<VectorBenchRegression>,
 }
 
@@ -1149,6 +1151,16 @@ pub(crate) struct VectorBenchRegression {
     pub(crate) max_allowed_percent: f64,
     pub(crate) p95_percent: f64,
     pub(crate) qps_percent: f64,
+    pub(crate) ok: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct VectorBenchThresholds {
+    pub(crate) backend: String,
+    pub(crate) max_p95_ms: Option<f64>,
+    pub(crate) min_qps: Option<f64>,
+    pub(crate) observed_p95_ms: f64,
+    pub(crate) observed_qps: f64,
     pub(crate) ok: bool,
 }
 
@@ -1162,6 +1174,8 @@ pub(crate) struct VectorBenchOptions<'a> {
     pub(crate) baseline: Option<&'a Path>,
     pub(crate) write_baseline: bool,
     pub(crate) max_regression_percent: f64,
+    pub(crate) max_p95_ms: Option<f64>,
+    pub(crate) min_qps: Option<f64>,
     pub(crate) json_out: bool,
 }
 
@@ -1271,6 +1285,8 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
         baseline,
         write_baseline,
         max_regression_percent,
+        max_p95_ms,
+        min_qps,
         json_out,
     } = options;
     if iterations == 0 || iterations > 10_000 {
@@ -1284,6 +1300,12 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
     }
     if !max_regression_percent.is_finite() || max_regression_percent < 0.0 {
         bail!("vector-bench --max-regression-percent must be a finite non-negative number");
+    }
+    if max_p95_ms.is_some_and(|value| !value.is_finite() || value <= 0.0) {
+        bail!("vector-bench --max-p95-ms must be a finite positive number");
+    }
+    if min_qps.is_some_and(|value| !value.is_finite() || value <= 0.0) {
+        bail!("vector-bench --min-qps must be a finite positive number");
     }
     if write_baseline && baseline.is_none() {
         bail!("vector-bench --write-baseline requires --baseline PATH");
@@ -1314,7 +1336,7 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
     }
     if embeddings.is_empty() {
         let report = VectorBenchReport {
-            version: 3,
+            version: 4,
             provider: provider.to_string(),
             endpoint: endpoint_key,
             model: model.to_string(),
@@ -1330,6 +1352,7 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
             message: Some("no indexed embeddings".to_string()),
             baseline_path: baseline.map(|path| path.display().to_string()),
             baseline_written: false,
+            thresholds: None,
             regression: None,
         };
         if json_out {
@@ -1337,6 +1360,9 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
         } else {
             println!("vectors: 0");
             println!("bench: no indexed embeddings");
+        }
+        if max_p95_ms.is_some() || min_qps.is_some() {
+            bail!("vector benchmark thresholds require indexed embeddings");
         }
         return Ok(());
     }
@@ -1353,7 +1379,7 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
     })?;
     #[allow(unused_mut)]
     let mut report = VectorBenchReport {
-        version: 3,
+        version: 4,
         provider: provider.to_string(),
         endpoint: endpoint_key.clone(),
         model: model.to_string(),
@@ -1369,6 +1395,7 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
         message: None,
         baseline_path: baseline.map(|path| path.display().to_string()),
         baseline_written: false,
+        thresholds: None,
         regression: None,
     };
     #[cfg(feature = "vec")]
@@ -1385,6 +1412,7 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
         }
         report.sqlite_vec = Some(native_timing);
     }
+    report.thresholds = vector_bench_thresholds(&report, max_p95_ms, min_qps);
     if let Some(path) = baseline {
         if write_baseline {
             report.baseline_written = true;
@@ -1411,10 +1439,14 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
         }
     }
     let regression_failed = report.regression.as_ref().is_some_and(|gate| !gate.ok);
+    let thresholds_failed = report.thresholds.as_ref().is_some_and(|gate| !gate.ok);
     if json_out {
         println!("{}", serde_json::to_string_pretty(&report)?);
         if regression_failed {
             bail!("vector benchmark regression gate failed");
+        }
+        if thresholds_failed {
+            bail!("vector benchmark performance thresholds failed");
         }
         return Ok(());
     }
@@ -1451,13 +1483,47 @@ pub(crate) fn print_vector_bench(conn: &Connection, options: VectorBenchOptions<
         println!("regression_qps_percent: {:.2}", regression.qps_percent);
         println!("regression_ok: {}", regression.ok);
     }
+    if let Some(thresholds) = &report.thresholds {
+        println!("threshold_backend: {}", thresholds.backend);
+        println!("threshold_p95_ms: {:.3}", thresholds.observed_p95_ms);
+        println!("threshold_qps: {:.1}", thresholds.observed_qps);
+        println!("threshold_ok: {}", thresholds.ok);
+    }
     if report.baseline_written {
         println!("baseline_written: true");
     }
     if regression_failed {
         bail!("vector benchmark regression gate failed");
     }
+    if thresholds_failed {
+        bail!("vector benchmark performance thresholds failed");
+    }
     Ok(())
+}
+
+fn vector_bench_thresholds(
+    report: &VectorBenchReport,
+    max_p95_ms: Option<f64>,
+    min_qps: Option<f64>,
+) -> Option<VectorBenchThresholds> {
+    if max_p95_ms.is_none() && min_qps.is_none() {
+        return None;
+    }
+    let (backend, timing) = report
+        .sqlite_vec
+        .as_ref()
+        .map(|timing| ("sqlite_vec", timing))
+        .or_else(|| report.json.as_ref().map(|timing| ("json", timing)))?;
+    let ok = max_p95_ms.is_none_or(|limit| timing.p95_ms <= limit)
+        && min_qps.is_none_or(|limit| timing.queries_per_second >= limit);
+    Some(VectorBenchThresholds {
+        backend: backend.to_string(),
+        max_p95_ms,
+        min_qps,
+        observed_p95_ms: timing.p95_ms,
+        observed_qps: timing.queries_per_second,
+        ok,
+    })
 }
 
 fn vector_bench_regression(

@@ -602,6 +602,12 @@ pub(crate) enum Command {
         /// Fail when p95 latency or QPS regresses by more than this percentage.
         #[arg(long, default_value_t = 25.0)]
         max_regression_percent: f64,
+        /// Fail when the selected backend's p95 latency exceeds this value.
+        #[arg(long)]
+        max_p95_ms: Option<f64>,
+        /// Fail when the selected backend processes fewer queries per second.
+        #[arg(long)]
+        min_qps: Option<f64>,
         #[arg(long)]
         json: bool,
     },

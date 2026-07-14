@@ -2762,6 +2762,10 @@ fn vector_bench_reports_configured_scale_and_latency_percentiles() {
             .arg("2")
             .arg("--limit")
             .arg("64")
+            .arg("--max-p95-ms")
+            .arg("100000")
+            .arg("--min-qps")
+            .arg("0.000001")
             .arg("--json"),
     ))
     .unwrap();
@@ -2770,6 +2774,7 @@ fn vector_bench_reports_configured_scale_and_latency_percentiles() {
     assert_eq!(bench["iterations"], 9);
     assert!(bench["json"]["p99_ms"].as_f64().unwrap() >= 0.0);
     assert!(bench["json"]["queries_per_second"].as_f64().unwrap() >= 0.0);
+    assert_eq!(bench["thresholds"]["ok"], true);
     if cfg!(feature = "vec") {
         assert_eq!(bench["top_match_equal"], true);
         assert!(bench["sqlite_vec"]["p95_ms"].as_f64().unwrap() >= 0.0);
@@ -2847,6 +2852,25 @@ fn vector_bench_reports_configured_scale_and_latency_percentiles() {
         .assert()
         .failure()
         .stderr(contains("vector benchmark regression gate failed"));
+
+    cmd(&db)
+        .arg("vector-bench")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .arg("--iterations")
+        .arg("3")
+        .arg("--limit")
+        .arg("64")
+        .arg("--max-p95-ms")
+        .arg("0.000000001")
+        .arg("--json")
+        .assert()
+        .failure()
+        .stderr(contains("vector benchmark performance thresholds failed"));
 }
 
 #[test]
@@ -3901,7 +3925,7 @@ fn v4_inbox_mock_embeddings_redaction_and_provider_registry() {
             .arg("--json"),
     ))
     .unwrap();
-    assert_eq!(bench["version"], 3);
+    assert_eq!(bench["version"], 4);
     assert_eq!(bench["vectors"], 1);
     assert_eq!(bench["iterations"], 5);
     assert_eq!(bench["warmup"], 1);

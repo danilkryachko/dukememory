@@ -55,6 +55,8 @@ jobs:
           cargo test --locked --
           --skip v14_6_local_memory_ui_and_http_actions
           --skip v14_9_autonomous_memory_runs_and_rolls_back
+      - name: Run performance regression gate
+        run: cargo test --locked --test performance -- --ignored --nocapture
       - name: Test sqlite-vec native backend
         run: |
           cargo test --locked --features vec --bin dukememory

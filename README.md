@@ -373,6 +373,8 @@ dukememory vector-bench --iterations 100 --limit 10000 \
 dukememory vector-bench --iterations 100 --limit 10000 \
   --baseline .agent/vector-bench-baseline.json \
   --max-regression-percent 25 --json
+dukememory vector-bench --iterations 100 --warmup 10 --limit 10000 \
+  --max-p95-ms 250 --min-qps 4 --json
 ```
 
 The default build keeps application-side cosine search as a portable fallback.
@@ -390,7 +392,8 @@ tables, and missing/orphaned row memberships. `vec-index --json` exposes these
 checks; `vec-index --rebuild` remains available for an explicit rebuild.
 `vector-bench` reports exact sample size, warmup, p50/p95/p99 latency, QPS, and
 JSON/vec0 top-match equivalence. A reviewed baseline can gate both p95 latency
-growth and QPS loss with a non-zero exit on regression. Internal semantic flows fall back to the JSON
+growth and QPS loss, while `--max-p95-ms` and `--min-qps` provide stable absolute
+CI guardrails with a non-zero exit on failure. Internal semantic flows fall back to the JSON
 scorer if a native query fails; an explicitly requested
 `--backend sqlite-vec` remains strict so operational checks cannot hide damage.
 

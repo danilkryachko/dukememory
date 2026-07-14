@@ -674,6 +674,8 @@ pub(crate) fn run() -> Result<()> {
             baseline,
             write_baseline,
             max_regression_percent,
+            max_p95_ms,
+            min_qps,
             json,
         } => embeddings::print_vector_bench(
             &conn,
@@ -687,6 +689,8 @@ pub(crate) fn run() -> Result<()> {
                 baseline: baseline.as_deref(),
                 write_baseline,
                 max_regression_percent,
+                max_p95_ms,
+                min_qps,
                 json_out: json,
             },
         )?,
