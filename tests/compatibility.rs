@@ -205,6 +205,119 @@ fn schema_v21_migrates_then_survives_verified_backup_restore() {
 }
 
 #[test]
+fn legacy_read_events_gain_session_link_before_session_index_creation() {
+    let directory = tempdir().unwrap();
+    let db = directory.path().join("legacy-read-events.db");
+    let connection = Connection::open(&db).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE memory_read_events (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT, command TEXT NOT NULL, query TEXT NOT NULL, \
+                memory_ids TEXT NOT NULL DEFAULT '', semantic_used INTEGER NOT NULL DEFAULT 0, \
+                result_count INTEGER NOT NULL DEFAULT 0, budget INTEGER NOT NULL DEFAULT 0, \
+                elapsed_ms INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL\
+            );",
+        )
+        .unwrap();
+    drop(connection);
+
+    command(&db).arg("schema").arg("verify").assert().success();
+    let connection = Connection::open(&db).unwrap();
+    let columns = connection
+        .prepare("PRAGMA table_info(memory_read_events)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(columns.contains(&"session_id".to_string()));
+    let schema: i64 = connection
+        .query_row("SELECT MAX(version) FROM schema_versions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(schema, 22);
+}
+
+#[test]
+fn legacy_agent_sessions_gain_leases_and_monotonic_event_sequences() {
+    let directory = tempdir().unwrap();
+    let db = directory.path().join("legacy-agent-sessions.db");
+    let connection = Connection::open(&db).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE agent_sessions (\
+                id TEXT PRIMARY KEY, task TEXT NOT NULL, target TEXT, scope TEXT NOT NULL DEFAULT 'project', \
+                runner_profile TEXT, status TEXT NOT NULL DEFAULT 'active', outcome TEXT, summary TEXT, \
+                changed_files TEXT NOT NULL DEFAULT '[]', validation_commands TEXT NOT NULL DEFAULT '[]', \
+                commit_hash TEXT, memory_ids TEXT NOT NULL DEFAULT '[]', feedback_written INTEGER NOT NULL DEFAULT 0, \
+                started_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, finished_at INTEGER\
+            );\
+            CREATE TABLE agent_session_events (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, event_type TEXT NOT NULL, \
+                detail TEXT NOT NULL, created_at INTEGER NOT NULL\
+            );\
+            INSERT INTO agent_sessions (id, task, started_at, updated_at) \
+                VALUES ('legacy-session', 'migrate legacy session', 100, 200);\
+            INSERT INTO agent_session_events (session_id, event_type, detail, created_at) \
+                VALUES ('legacy-session', 'started', '{}', 100);\
+            INSERT INTO agent_session_events (session_id, event_type, detail, created_at) \
+                VALUES ('legacy-session', 'context_loaded', '{}', 150);",
+        )
+        .unwrap();
+    drop(connection);
+
+    command(&db).arg("schema").arg("verify").assert().success();
+    let connection = Connection::open(&db).unwrap();
+    let session_columns = connection
+        .prepare("PRAGMA table_info(agent_sessions)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    for expected in [
+        "lease_owner",
+        "lease_token",
+        "current_attempt_id",
+        "lease_expires_at",
+        "attempt_count",
+        "last_event_sequence",
+        "last_heartbeat_at",
+    ] {
+        assert!(session_columns.contains(&expected.to_string()));
+    }
+    let event_columns = connection
+        .prepare("PRAGMA table_info(agent_session_events)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    for expected in ["event_id", "sequence", "attempt_id"] {
+        assert!(event_columns.contains(&expected.to_string()));
+    }
+    let sequences = connection
+        .prepare(
+            "SELECT sequence FROM agent_session_events WHERE session_id = 'legacy-session' ORDER BY sequence",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, i64>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(sequences, vec![1, 2]);
+    let last_sequence: i64 = connection
+        .query_row(
+            "SELECT last_event_sequence FROM agent_sessions WHERE id = 'legacy-session'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(last_sequence, 2);
+}
+
+#[test]
 fn core_cli_mcp_and_http_contracts_remain_callable() {
     let directory = tempdir().unwrap();
     let db = directory.path().join("contracts.db");

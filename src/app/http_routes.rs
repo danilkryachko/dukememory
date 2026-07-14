@@ -60,11 +60,10 @@ pub(super) fn handle_http_request(
     let request_context = project_context(db, selected_project.as_deref())?;
     let conn = open_db(&request_context.db)?;
     let memory_app = MemoryApplication::new(MemoryStore::new(&conn));
+    if let Some(response) = route_memory_operation(&conn, &memory_app, method, path, query, body)? {
+        return Ok(response);
+    }
     let response = match (method, path) {
-        ("GET", HTTP_OPERATIONS) => HttpResponse::ok(json!({
-            "version": 1,
-            "operations": CORE_OPERATION_CATALOG,
-        })),
         ("GET", "/projects") => HttpResponse::ok(json!({"projects": discover_projects(db)?})),
         ("GET", "/agent-sessions") => {
             let params = parse_query(query);
@@ -367,86 +366,6 @@ pub(super) fn handle_http_request(
         ("GET", "/snapshot") => HttpResponse::ok(http_snapshot(&conn)?),
         ("GET", "/doctrine") => {
             HttpResponse::ok(json!({"doctrine": doctrine_report(&conn, None)?}))
-        }
-        ("GET", HTTP_MEMORY_GET) => {
-            let params = parse_query(query);
-            let q = params
-                .get("q")
-                .map(String::as_str)
-                .filter(|value| !value.is_empty());
-            let scope = params
-                .get("scope")
-                .map(String::as_str)
-                .filter(|value| !value.is_empty());
-            let types = params
-                .get("type")
-                .filter(|value| !value.is_empty() && value.as_str() != "all")
-                .cloned()
-                .into_iter()
-                .collect::<Vec<_>>();
-            let statuses = params
-                .get("status")
-                .filter(|value| !value.is_empty() && value.as_str() != "all")
-                .cloned()
-                .into_iter()
-                .collect::<Vec<_>>();
-            let limit = params
-                .get("limit")
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(100)
-                .min(500);
-            let usage = params.get("usage").map(String::as_str).unwrap_or("all");
-            let sort = params
-                .get("sort")
-                .map(String::as_str)
-                .unwrap_or("updated_desc");
-            let stale_days = params
-                .get("stale_days")
-                .and_then(|value| value.parse::<i64>().ok())
-                .unwrap_or(30);
-            let rows = if let Some(query) = q {
-                search_rows_with_semantic_fallback(
-                    &conn,
-                    SearchRowsRequest {
-                        query,
-                        types: &types,
-                        statuses: &statuses,
-                        scope,
-                        limit: if usage != "all" || sort != "updated_desc" {
-                            500
-                        } else {
-                            limit
-                        },
-                        budget: 1_200,
-                        provider: DEFAULT_EMBED_PROVIDER,
-                        endpoint: DEFAULT_EMBED_ENDPOINT,
-                        model: DEFAULT_EMBED_MODEL,
-                    },
-                )?
-                .0
-            } else {
-                query_memories(
-                    &conn,
-                    None,
-                    &types,
-                    &statuses,
-                    scope,
-                    if usage != "all" || sort != "updated_desc" {
-                        500
-                    } else {
-                        limit
-                    },
-                )?
-            };
-            let rows = if let Some(query) = q {
-                let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
-                filter_query_useless_memories(rows, query, &quality_signals)
-            } else {
-                rows
-            };
-            HttpResponse::ok(
-                json!({"memories": filter_sort_memory_rows(&conn, rows, usage, sort, stale_days, limit)?}),
-            )
         }
         ("GET", "/usefulness") => {
             let params = parse_query(query);
@@ -3199,125 +3118,6 @@ pub(super) fn handle_http_request(
             write_autonomous_status(&status_file, &rollback)?;
             HttpResponse::ok(json!({"report": rollback}))
         }
-        ("POST", HTTP_REMEMBER) => {
-            let value = parse_json_body(body)?;
-            let text = value
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if text.is_empty() {
-                HttpResponse::bad_request("missing text")
-            } else {
-                let id = memory_app.create(AddMemory {
-                    id: None,
-                    memory_type: value
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .unwrap_or("note")
-                        .parse()?,
-                    title: truncate_words(text, 8),
-                    body: text.to_string(),
-                    scope: value
-                        .get("scope")
-                        .and_then(Value::as_str)
-                        .unwrap_or("project")
-                        .parse()?,
-                    status: MemoryStatus::Active,
-                    source: Some("http".to_string()),
-                    supersedes: None,
-                    confidence: 0.8,
-                    layer: value
-                        .get("layer")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    links: Vec::new(),
-                    allow_sensitive: false,
-                })?;
-                HttpResponse::ok(json!({"id": id}))
-            }
-        }
-        ("POST", HTTP_MEMORY_STATUS) => {
-            let value = parse_json_body(body)?;
-            let id = value.get("id").and_then(Value::as_str).unwrap_or_default();
-            let status = value
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if id.is_empty() || status.is_empty() {
-                return Ok(HttpResponse::bad_request("missing id or status"));
-            }
-            memory_app.set_status(id, status.parse()?)?;
-            HttpResponse::ok(json!({"ok": true, "id": id, "status": status}))
-        }
-        ("POST", HTTP_MEMORY_DELETE) => {
-            let value = parse_json_body(body)?;
-            let id = value.get("id").and_then(Value::as_str).unwrap_or_default();
-            if id.is_empty() {
-                return Ok(HttpResponse::bad_request("missing id"));
-            }
-            memory_app.delete(id)?;
-            HttpResponse::ok(json!({"ok": true, "id": id}))
-        }
-        ("POST", HTTP_MEMORY_UPDATE) => {
-            let value = parse_json_body(body)?;
-            let id = value.get("id").and_then(Value::as_str).unwrap_or_default();
-            if id.is_empty() {
-                return Ok(HttpResponse::bad_request("missing id"));
-            }
-            let links = value
-                .get("links")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(ToOwned::to_owned)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            memory_app.update(UpdateMemory {
-                id: id.to_string(),
-                memory_type: value
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .map(str::parse)
-                    .transpose()?,
-                title: value
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-                body: value
-                    .get("body")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-                scope: value
-                    .get("scope")
-                    .and_then(Value::as_str)
-                    .map(str::parse)
-                    .transpose()?,
-                status: value
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .map(str::parse)
-                    .transpose()?,
-                source: value
-                    .get("source")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-                confidence: value.get("confidence").and_then(Value::as_f64),
-                layer: value
-                    .get("layer")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-                links,
-                replace_links: value
-                    .get("replace_links")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                allow_sensitive: false,
-            })?;
-            HttpResponse::ok(json!({"ok": true, "memory": memory_app.get_with_links(id)?}))
-        }
         ("POST", "/memory/bulk") => {
             let value = parse_json_body(body)?;
             let ids = value
@@ -3486,40 +3286,6 @@ pub(super) fn handle_http_request(
                 .unwrap_or(false);
             let root = value.get("root").and_then(Value::as_str).unwrap_or(".");
             HttpResponse::ok(json!({"drift": drift_report(&conn, Path::new(root), changed_only)?}))
-        }
-        ("POST", HTTP_SEARCH) => {
-            let value = parse_json_body(body)?;
-            let query = value
-                .get("query")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if query.is_empty() {
-                return Ok(HttpResponse::bad_request("missing query"));
-            }
-            let limit = value
-                .get("limit")
-                .and_then(Value::as_u64)
-                .map(|value| value as usize)
-                .unwrap_or(10)
-                .min(100);
-            let (rows, _) = search_rows_with_semantic_fallback(
-                &conn,
-                SearchRowsRequest {
-                    query,
-                    types: &[],
-                    statuses: &["active".to_string(), "uncertain".to_string()],
-                    scope: None,
-                    limit,
-                    budget: 1_200,
-                    provider: DEFAULT_EMBED_PROVIDER,
-                    endpoint: DEFAULT_EMBED_ENDPOINT,
-                    model: DEFAULT_EMBED_MODEL,
-                },
-            )?;
-            let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
-            let mut rows = filter_query_useless_memories(rows, query, &quality_signals);
-            rows.truncate(limit);
-            HttpResponse::ok(json!({"results": memory_rows_with_request_counts(&conn, rows)?}))
         }
         ("POST", "/inbox/approve") => {
             let value = parse_json_body(body)?;

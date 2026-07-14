@@ -137,7 +137,7 @@ fn is_loopback_host(host: &str) -> bool {
             .is_ok_and(|address| address.is_loopback())
 }
 
-fn parse_json_body(body: &str) -> Result<Value> {
+pub(crate) fn parse_json_body(body: &str) -> Result<Value> {
     serde_json::from_str(body).with_context(|| "request body must be valid JSON")
 }
 
@@ -157,7 +157,10 @@ struct UiProjectContext {
     root: PathBuf,
 }
 
-fn memory_rows_with_request_counts(conn: &Connection, rows: Vec<Memory>) -> Result<Vec<Value>> {
+pub(crate) fn memory_rows_with_request_counts(
+    conn: &Connection,
+    rows: Vec<Memory>,
+) -> Result<Vec<Value>> {
     let counts = memory_request_counts(conn)?;
     rows.into_iter()
         .map(|row| {
@@ -171,7 +174,7 @@ fn memory_rows_with_request_counts(conn: &Connection, rows: Vec<Memory>) -> Resu
         .collect()
 }
 
-fn filter_sort_memory_rows(
+pub(crate) fn filter_sort_memory_rows(
     conn: &Connection,
     mut rows: Vec<Memory>,
     usage: &str,
@@ -258,7 +261,7 @@ fn split_query(path: &str) -> (&str, &str) {
     path.split_once('?').unwrap_or((path, ""))
 }
 
-fn parse_query(query: &str) -> HashMap<String, String> {
+pub(crate) fn parse_query(query: &str) -> HashMap<String, String> {
     query
         .split('&')
         .filter(|part| !part.is_empty())
