@@ -1,6 +1,6 @@
 # Releasing dukememory
 
-Releases are tag-driven. A tag such as `v0.42.0` must exactly match the package
+Releases are tag-driven. A tag such as `v0.43.0` must exactly match the package
 version in `Cargo.toml` and `Cargo.lock`.
 
 ## One-time repository setup
@@ -22,19 +22,26 @@ publishing token only inside the protected environment.
 
    ```bash
    cargo fmt --all -- --check
-   cargo clippy --all-targets --all-features -- -D warnings
-   cargo test
-   cargo test --features vec
+   cargo clippy --locked --all-targets --all-features -- -D warnings
+   cargo test --locked
+   cargo test --locked --features vec
+   cargo test --locked --test performance -- --ignored --nocapture
+   cargo deny check advisories bans licenses sources
+   cargo cyclonedx --format json --all-features --target all \
+     --spec-version 1.5 --override-filename dukememory.cdx
+   jq -e '.bomFormat == "CycloneDX" and (.components | length > 0)' \
+     dukememory.cdx.json
    cargo package --locked
    cargo build --locked --release --features vec
-   scripts/release-smoke.sh target/release/dukememory 0.42.0
+   scripts/release-smoke.sh target/release/dukememory 0.43.0
    ```
 
 3. Merge the reviewed release commit to `main` and create the signed or
-   annotated tag `v0.42.0` on that commit.
+   annotated tag `v0.43.0` on that commit.
 4. Push the tag. `.github/workflows/release.yml` verifies the version, package,
-   formatting, Clippy, and tests; builds native Linux x86_64, macOS arm64, and
-   macOS x86_64 archives; smoke-tests an installed copy; emits per-archive and
+   formatting, Clippy, tests, the performance gate, dependency policy, and the
+   CycloneDX SBOM; builds native Linux x86_64, macOS arm64, and macOS x86_64
+   archives; smoke-tests an installed copy; emits the SBOM plus per-archive and
    combined SHA-256 manifests; creates the GitHub release; and publishes the
    crate with `cargo publish --locked`.
 5. Verify the GitHub assets and `SHA256SUMS`, then confirm the version on

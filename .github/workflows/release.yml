@@ -31,8 +31,30 @@ jobs:
       - name: Release quality gate
         run: |
           cargo fmt --all -- --check
-          cargo clippy --all-targets --all-features -- -D warnings
+          cargo clippy --locked --all-targets --all-features -- -D warnings
           cargo test --locked --features vec
+          cargo test --locked --test performance -- --ignored --nocapture
+      - name: Release supply-chain gate
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          command: check advisories bans licenses sources
+
+  sbom:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Generate CycloneDX release SBOM
+        run: |
+          cargo install cargo-cyclonedx --version 0.5.9 --locked
+          cargo cyclonedx --format json --all-features --target all --spec-version 1.5 --override-filename dukememory.cdx
+          jq -e '.bomFormat == "CycloneDX" and (.components | length > 0)' dukememory.cdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dukememory-sbom
+          path: dukememory.cdx.json
+          if-no-files-found: error
 
   build:
     needs: validate
@@ -67,7 +89,7 @@ jobs:
         run: |
           mkdir -p "dist/${{ matrix.asset }}"
           cp "target/${{ matrix.target }}/release/dukememory" "dist/${{ matrix.asset }}/"
-          cp README.md LICENSE TRADEMARKS.md "dist/${{ matrix.asset }}/"
+          cp README.md CHANGELOG.md LICENSE TRADEMARKS.md "dist/${{ matrix.asset }}/"
           tar -C dist -czf "dist/${{ matrix.asset }}.tar.gz" "${{ matrix.asset }}"
           if [[ "${{ matrix.checksum }}" = "sha256sum" ]]; then
             cd dist
@@ -85,7 +107,7 @@ jobs:
           if-no-files-found: error
 
   github-release:
-    needs: build
+    needs: [build, sbom]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -96,13 +118,16 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Build combined checksum manifest
-        run: cat dist/*.sha256 | sort >dist/SHA256SUMS
+        run: |
+          cd dist
+          sha256sum dukememory.cdx.json >dukememory.cdx.json.sha256
+          cat ./*.sha256 | sort >SHA256SUMS
       - name: Publish immutable GitHub release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
           gh release create "${GITHUB_REF_NAME}"
-          dist/*.tar.gz dist/*.sha256 dist/SHA256SUMS
+          dist/*.tar.gz dist/*.sha256 dist/SHA256SUMS dist/dukememory.cdx.json
           --verify-tag
           --generate-notes
           --title "dukememory ${GITHUB_REF_NAME#v}"

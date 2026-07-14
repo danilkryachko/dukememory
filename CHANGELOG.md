@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.43.0 — 2026-07-14 (release candidate)
+
+### Added
+
+- Schema v22 memory-to-memory graph edges with canonical symmetric storage,
+  provenance, transactional inference, reverse traversal, and graph-RAG
+  regression coverage.
+- A typed memory domain and application boundary shared by CLI, MCP, and HTTP,
+  with centralized type, scope, status, confidence, sensitivity, and link
+  invariants.
+- A 29-operation catalog generated from one Rust definition and exposed through
+  `dukememory operations`, MCP `memory_operations`, HTTP `/operations`, and
+  checked-in Markdown.
+- Absolute p95/QPS vector-search gates, a 4096-vector CI benchmark, and
+  dedicated migration, verified backup/restore, cross-surface compatibility,
+  domain-boundary, and supply-chain suites.
+- CycloneDX 1.5 SBOM generation and release artifacts, immutable GitHub Action
+  pins, and tests that reject mutable action references.
+
+### Changed
+
+- HTTP requests open one selected project database, process-local schema
+  initialization is cached, and versioned migrations run transactionally with
+  structural schema verification.
+- Retrieval policy is loaded once per operation from the selected project;
+  ranking, core memory HTTP routes, graph storage/inference, and compatibility
+  tests now live in focused modules.
+- Local ML dependencies are feature-gated, built-in model revisions and hashes
+  are pinned, ONNX output access is checked, and vector dimensions come from
+  model output instead of a hard-coded constant.
+- `age` is upgraded from 0.11.4 to 0.12.1; remaining unmaintained build-time
+  transitive exceptions are documented with explicit upstream removal gates.
+
+### Fixed
+
+- Prevent invalid memory values and sensitive updates from bypassing domain
+  validation through individual transport adapters.
+- Prevent graph edge duplication, one-way symmetric traversal, and partial
+  graph inference writes.
+- Return stable client/server HTTP status classes with security headers, and
+  preserve core CRUD behavior after routing decomposition.
+- Preserve v21 data, leased-session event sequences, graph edges, and schema
+  integrity across v22 migration plus strict verified backup/restore.
+
 ## 0.42.0 — 2026-07-14 (local development)
 
 ### Added
