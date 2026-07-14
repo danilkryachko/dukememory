@@ -2550,6 +2550,33 @@ pub(crate) enum AgentSessionOutcome {
     Abandoned,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum, Serialize)]
+#[value(rename_all = "snake_case")]
+pub(crate) enum AgentSessionEventKind {
+    Heartbeat,
+    RunnerSelected,
+    RunnerStarted,
+    RunnerCompleted,
+    RunnerFailed,
+    Validation,
+    Recovery,
+}
+
+impl fmt::Display for AgentSessionEventKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Heartbeat => "heartbeat",
+            Self::RunnerSelected => "runner_selected",
+            Self::RunnerStarted => "runner_started",
+            Self::RunnerCompleted => "runner_completed",
+            Self::RunnerFailed => "runner_failed",
+            Self::Validation => "validation",
+            Self::Recovery => "recovery",
+        };
+        f.write_str(value)
+    }
+}
+
 impl fmt::Display for AgentSessionOutcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
@@ -2589,6 +2616,25 @@ pub(crate) enum AgentSessionCommand {
         embed_endpoint: String,
         #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
         embed_model: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Record a bounded lifecycle event and refresh the session heartbeat.
+    Event {
+        id: String,
+        #[arg(long, value_enum)]
+        event_type: AgentSessionEventKind,
+        #[arg(long, default_value = "{}")]
+        detail: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List active sessions whose heartbeat is old enough to resume.
+    Recover {
+        #[arg(long, default_value_t = 300)]
+        stale_after_secs: u64,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
         #[arg(long)]
         json: bool,
     },

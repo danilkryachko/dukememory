@@ -115,6 +115,8 @@ fn mcp_tools() -> Value {
         {"name":"memory_feedback","description":"Record lightweight useful/useless/missing feedback for memory reads","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"rating":{"type":"string"},"command":{"type":"string"},"query":{"type":"string"},"note":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["rating"]}},
         {"name":"memory_session_start","description":"Start a durable evidence-backed agent session","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"target":{"type":"string"},"scope":{"type":"string"},"runner_profile":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_session_context","description":"Load brief, impact, and doctrine into one audited agent session read","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
+        {"name":"memory_session_event","description":"Record a bounded lifecycle event and refresh an active agent session heartbeat","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"event_type":{"type":"string","enum":["heartbeat","runner_selected","runner_started","runner_completed","runner_failed","validation","recovery"]},"detail":{"type":"object"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","event_type"]}},
+        {"name":"memory_session_recover","description":"List active agent sessions whose heartbeat is old enough to resume","inputSchema":{"type":"object","properties":{"stale_after_secs":{"type":"number"},"limit":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_session_finish","description":"Finish an agent session; automatic useful feedback requires success plus explicit evidence","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"outcome":{"type":"string","enum":["success","failed","partial","abandoned"]},"summary":{"type":"string"},"changed_files":{"type":"array","items":{"type":"string"}},"validations":{"type":"array","items":{"type":"string"}},"commit":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","outcome","summary"]}},
         {"name":"memory_session_status","description":"Show one agent session or recent sessions","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_session_trace","description":"Show recalled memory, actions, validation, and outcome for an agent session","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
@@ -215,6 +217,22 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 agent_session_context(&conn, &id, limit, max_chars, &provider, &endpoint, &model)
                     .map_err(|err| err.to_string())?;
             serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+        }
+        "memory_session_event" => {
+            let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            let event_type =
+                json_string(&args, "event_type").ok_or_else(|| "missing event_type".to_string())?;
+            let detail = args.get("detail").cloned().unwrap_or_else(|| json!({}));
+            let session = record_agent_session_event(&conn, &id, &event_type, &detail)
+                .map_err(|err| err.to_string())?;
+            serde_json::to_string_pretty(&session).map_err(|err| err.to_string())?
+        }
+        "memory_session_recover" => {
+            let stale_after_secs = json_usize(&args, "stale_after_secs").unwrap_or(300) as u64;
+            let limit = json_usize(&args, "limit").unwrap_or(20);
+            let sessions = recoverable_agent_sessions(&conn, stale_after_secs, limit)
+                .map_err(|err| err.to_string())?;
+            serde_json::to_string_pretty(&sessions).map_err(|err| err.to_string())?
         }
         "memory_session_finish" => {
             let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;

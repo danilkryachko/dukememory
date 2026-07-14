@@ -2075,6 +2075,8 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
     assert!(stdout.contains("memory_mcp_surface_v3"));
     assert!(stdout.contains("memory_session_start"));
     assert!(stdout.contains("memory_session_context"));
+    assert!(stdout.contains("memory_session_event"));
+    assert!(stdout.contains("memory_session_recover"));
     assert!(stdout.contains("memory_session_finish"));
     assert!(stdout.contains("memory_runner_profiles"));
     assert!(stdout.contains("MCP agent session"));
@@ -2886,6 +2888,58 @@ fn agent_session_lifecycle_is_idempotent_and_feedback_requires_evidence() {
         .unwrap();
     assert_eq!(linked_reads, 1);
 
+    cmd(&db)
+        .arg("agent-session")
+        .arg("event")
+        .arg(id)
+        .arg("--event-type")
+        .arg("heartbeat")
+        .arg("--detail")
+        .arg("[]")
+        .assert()
+        .failure()
+        .stderr(contains("must be a JSON object"));
+
+    let event: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("event")
+            .arg(id)
+            .arg("--event-type")
+            .arg("runner_started")
+            .arg("--detail")
+            .arg(r#"{"profile":"codex_default","pid":42}"#)
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(event["status"], "active");
+    let recoverable: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("recover")
+            .arg("--stale-after-secs")
+            .arg("0")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert!(
+        recoverable
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|session| session["id"] == id)
+    );
+    let fresh_only: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("recover")
+            .arg("--stale-after-secs")
+            .arg("3600")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert!(fresh_only.as_array().unwrap().is_empty());
+
     let finished: Value = serde_json::from_str(&stdout(
         cmd(&db)
             .arg("agent-session")
@@ -2906,6 +2960,23 @@ fn agent_session_lifecycle_is_idempotent_and_feedback_requires_evidence() {
     assert_eq!(finished["feedback"], "useful");
     assert_eq!(finished["causal_trace"]["outcome"], "success");
     assert!(finished["causal_trace"]["events"].as_array().unwrap().len() >= 4);
+    assert!(
+        finished["causal_trace"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["event_type"] == "runner_started"
+                && event["detail"]["profile"] == "codex_default")
+    );
+    cmd(&db)
+        .arg("agent-session")
+        .arg("event")
+        .arg(id)
+        .arg("--event-type")
+        .arg("heartbeat")
+        .assert()
+        .failure()
+        .stderr(contains("is not active"));
 
     let repeated: Value = serde_json::from_str(&stdout(
         cmd(&db)
@@ -3023,6 +3094,16 @@ fn agent_session_survives_process_exit_and_runner_profiles_are_named() {
     ))
     .unwrap();
     assert_eq!(recovered[0]["status"], "active");
+    let recoverable: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("recover")
+            .arg("--stale-after-secs")
+            .arg("0")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(recoverable[0]["id"], id);
 
     let profiles: Value = serde_json::from_str(&stdout(
         cmd(&db)
@@ -3136,6 +3217,33 @@ fn http_exposes_agent_sessions_profiles_and_stable_control_snapshot() {
     assert!(response.starts_with("HTTP/1.1 200"));
     assert!(response.contains("HTTP agent session"));
     assert!(response.contains("\"status\":\"active\""));
+    let start_body = response.split_once("\r\n\r\n").unwrap().1;
+    let started: Value = serde_json::from_str(start_body).unwrap();
+    let session_id = started["session"]["id"].as_str().unwrap();
+
+    let event_body = serde_json::json!({
+        "id": session_id,
+        "event_type": "heartbeat",
+        "detail": {"source": "dukeagent"}
+    })
+    .to_string();
+    let event = http_once(
+        &db,
+        &format!(
+            "POST /agent-sessions/event HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            event_body.len(),
+            event_body,
+        ),
+    );
+    assert!(event.starts_with("HTTP/1.1 200"));
+    assert!(event.contains("\"status\":\"active\""));
+
+    let recoverable = http_once(
+        &db,
+        "GET /agent-sessions/recover?stale_after_secs=0 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(recoverable.starts_with("HTTP/1.1 200"));
+    assert!(recoverable.contains(session_id));
 
     let sessions = http_once(
         &db,

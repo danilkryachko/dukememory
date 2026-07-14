@@ -75,6 +75,20 @@ pub(super) fn handle_http_request(
                 .ok_or_else(|| anyhow::anyhow!("missing agent session id"))?;
             HttpResponse::ok(json!({"trace": agent_session_trace(&conn, id)?}))
         }
+        ("GET", "/agent-sessions/recover") => {
+            let params = parse_query(query);
+            let stale_after_secs = params
+                .get("stale_after_secs")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(300);
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(20);
+            HttpResponse::ok(json!({
+                "sessions": recoverable_agent_sessions(&conn, stale_after_secs, limit)?
+            }))
+        }
         ("POST", "/agent-sessions/start") => {
             let value = parse_json_body(body)?;
             let task = value
@@ -110,6 +124,21 @@ pub(super) fn handle_http_request(
                 value.get("endpoint").and_then(Value::as_str).unwrap_or(DEFAULT_EMBED_ENDPOINT),
                 value.get("model").and_then(Value::as_str).unwrap_or(DEFAULT_EMBED_MODEL),
             )?}))
+        }
+        ("POST", "/agent-sessions/event") => {
+            let value = parse_json_body(body)?;
+            let id = value
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing agent session id"))?;
+            let event_type = value
+                .get("event_type")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing event_type"))?;
+            let detail = value.get("detail").cloned().unwrap_or_else(|| json!({}));
+            HttpResponse::ok(json!({
+                "session": record_agent_session_event(&conn, id, event_type, &detail)?
+            }))
         }
         ("POST", "/agent-sessions/finish") => {
             let value = parse_json_body(body)?;

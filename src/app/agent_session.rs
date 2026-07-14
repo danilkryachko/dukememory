@@ -114,6 +114,33 @@ pub(crate) fn handle_agent_session(
                 println!("{}", report.receipt);
             }
         }
+        AgentSessionCommand::Event {
+            id,
+            event_type,
+            detail,
+            json,
+        } => {
+            let detail: Value = serde_json::from_str(&detail)
+                .with_context(|| "agent session event detail must be valid JSON")?;
+            let session = record_agent_session_event(conn, &id, &event_type.to_string(), &detail)?;
+            print_session_value(&session, json)?;
+        }
+        AgentSessionCommand::Recover {
+            stale_after_secs,
+            limit,
+            json,
+        } => {
+            let sessions = recoverable_agent_sessions(conn, stale_after_secs, limit)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&sessions)?);
+            } else if sessions.is_empty() {
+                println!("recoverable agent sessions: none");
+            } else {
+                for session in sessions {
+                    println!("{}  {}  {}", session.id, session.updated_at, session.task);
+                }
+            }
+        }
         AgentSessionCommand::Finish {
             id,
             outcome,
@@ -471,6 +498,75 @@ pub(crate) fn finish_agent_session(
         idempotent: false,
         evidence_present,
     })
+}
+
+pub(crate) fn record_agent_session_event(
+    conn: &Connection,
+    id: &str,
+    event_type: &str,
+    detail: &Value,
+) -> Result<AgentSession> {
+    const MAX_EVENT_DETAIL_BYTES: usize = 32 * 1024;
+    const ALLOWED_EVENT_TYPES: &[&str] = &[
+        "heartbeat",
+        "runner_selected",
+        "runner_started",
+        "runner_completed",
+        "runner_failed",
+        "validation",
+        "recovery",
+    ];
+    if !ALLOWED_EVENT_TYPES.contains(&event_type) {
+        bail!("unsupported agent session event type: {event_type}");
+    }
+    if !detail.is_object() {
+        bail!("agent session event detail must be a JSON object");
+    }
+    let encoded = serde_json::to_string(detail)?;
+    if encoded.len() > MAX_EVENT_DETAIL_BYTES {
+        bail!("agent session event detail exceeds {MAX_EVENT_DETAIL_BYTES} bytes");
+    }
+
+    let tx = conn.unchecked_transaction()?;
+    let session = get_agent_session(&tx, id)?;
+    ensure_active(&session)?;
+    let now = now_ms();
+    let updated = tx.execute(
+        "UPDATE agent_sessions SET updated_at = ?1 WHERE id = ?2 AND status = 'active'",
+        params![now, id],
+    )?;
+    if updated != 1 {
+        bail!("agent session {id} finished while recording event");
+    }
+    tx.execute(
+        "INSERT INTO agent_session_events (session_id, event_type, detail, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![id, event_type, encoded, now],
+    )?;
+    tx.commit()?;
+    get_agent_session(conn, id)
+}
+
+pub(crate) fn recoverable_agent_sessions(
+    conn: &Connection,
+    stale_after_secs: u64,
+    limit: usize,
+) -> Result<Vec<AgentSession>> {
+    let stale_ms = stale_after_secs
+        .min((i64::MAX / 1000) as u64)
+        .saturating_mul(1000) as i64;
+    let threshold = now_ms().saturating_sub(stale_ms);
+    let mut stmt = conn.prepare(
+        "SELECT id, task, target, scope, runner_profile, status, outcome, summary, changed_files, \
+         validation_commands, commit_hash, memory_ids, feedback_written, started_at, updated_at, finished_at \
+         FROM agent_sessions WHERE status = 'active' AND updated_at <= ?1 \
+         ORDER BY updated_at ASC, id ASC LIMIT ?2",
+    )?;
+    stmt.query_map(
+        params![threshold, limit.min(i64::MAX as usize) as i64],
+        agent_session_from_row,
+    )?
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .map_err(Into::into)
 }
 
 pub(crate) fn list_agent_sessions(conn: &Connection, limit: usize) -> Result<Vec<AgentSession>> {

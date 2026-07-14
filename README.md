@@ -162,6 +162,11 @@ SESSION_ID=$(dukememory agent-session start \
 
 dukememory agent-session context "$SESSION_ID" --json
 
+dukememory agent-session event "$SESSION_ID" \
+  --event-type runner_started \
+  --detail '{"profile":"codex_default"}' \
+  --json
+
 dukememory agent-session finish "$SESSION_ID" \
   --outcome success \
   --summary "implemented client and server validation" \
@@ -170,6 +175,9 @@ dukememory agent-session finish "$SESSION_ID" \
   --json
 
 dukememory agent-session trace "$SESSION_ID" --json
+
+# Find interrupted sessions whose heartbeat has been quiet for five minutes.
+dukememory agent-session recover --stale-after-secs 300 --json
 ```
 
 `context` combines brief, optional target impact, and doctrine in one audited
@@ -178,6 +186,23 @@ session recalled memory and includes explicit evidence: a changed file,
 validation command, or commit. Exact finish retries are safe; a conflicting
 second finish is rejected. `failed`, `partial`, and `abandoned` outcomes never
 produce automatic positive feedback.
+
+External orchestrators can record bounded JSON-object events with
+`agent-session event`; every event refreshes the session heartbeat in the same
+transaction. Supported events are `heartbeat`, `runner_selected`,
+`runner_started`, `runner_completed`, `runner_failed`, `validation`, and
+`recovery`. `agent-session recover` returns only active sessions older than the
+requested heartbeat threshold. The same operations are exposed as
+`memory_session_event` / `memory_session_recover` over MCP and
+`/agent-sessions/event` / `/agent-sessions/recover` over HTTP.
+
+### DukeAgent 0.39 Integration
+
+DukeAgent uses the session lifecycle as its primary long-term coordination
+layer: it starts or resumes a session, loads audited context, selects an
+available named runner profile, emits heartbeats and runner events, captures
+workspace/validation/commit evidence, and finishes once with a causal trace.
+Runner failure and cancellation never create automatic positive feedback.
 
 Named runner profiles are built in and may be overridden in
 `.agent/runner-profiles.toml`:

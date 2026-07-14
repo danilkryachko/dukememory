@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.39.0 — 2026-07-14 (local development)
+
+### Added
+
+- Bounded agent-session lifecycle events for runner selection, start,
+  completion, failure, validation, recovery, and heartbeat updates.
+- Recoverable-session queries across CLI, MCP, and HTTP so DukeAgent can find
+  active work whose heartbeat stopped and resume the same durable session.
+- End-to-end DukeAgent integration coverage using a real temporary project,
+  runner profile discovery, memory context, evidence capture, finish feedback,
+  causal trace, interruption, and recovery.
+
+### Changed
+
+- Agent-session event writes update the heartbeat and append the event in one
+  SQLite transaction, failing closed if the session has already finished.
+- DukeAgent now treats DukeMemory session context as the primary context layer,
+  routes external CLI execution through named profiles, and records exact
+  changed-file, validation-command, and commit evidence at finish.
+- Antigravity review routing uses `Gemini 3.1 Pro (High)` while Gemini Flash
+  research routing remains `gemini-3.5-flash`.
+
+### Fixed
+
+- Interrupted DukeAgent tasks retain their DukeMemory session id and become
+  recoverable instead of silently losing causal context.
+- External CLI runners have a bounded timeout with graceful termination and a
+  forced-kill fallback.
+
 ## 0.38.0 — 2026-07-14 (local development)
 
 ### Added
