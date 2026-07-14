@@ -2132,7 +2132,9 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         .lines()
         .find(|line| line.contains("\"id\":26"))
         .unwrap();
-    assert!(mcp_status.contains("tabs"));
+    assert!(mcp_status.contains("stable-v1"));
+    assert!(mcp_status.contains("panels"));
+    assert!(mcp_status.contains("revision"));
     let mcp_should_write = stdout
         .lines()
         .find(|line| line.contains("\"id\":27"))
@@ -3656,6 +3658,17 @@ fn memory_ui_initial_intelligence_load_obeys_one_request_budget() {
     assert!(html.contains("Detailed reports stay unloaded"));
     assert!(html.contains("Preview 30-day cleanup"));
     assert!(html.contains("session-cleanup-apply"));
+    let details = html
+        .split("async function loadIntelligenceDetails()")
+        .nth(1)
+        .unwrap()
+        .split("async function intelligenceAction(action)")
+        .next()
+        .unwrap();
+    assert_eq!(details.matches("api(`").count(), 1);
+    assert!(details.contains("view: \"details\""));
+    assert!(!details.contains("Promise.all"));
+    assert!(!details.contains("/web-control-center-v12"));
 }
 
 #[test]
@@ -3782,7 +3795,9 @@ fn http_exposes_agent_sessions_profiles_and_stable_control_snapshot() {
         "GET /web-control-center HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(control.contains("\"initial_requests\":1"));
-    assert!(control.contains("\"details\":\"lazy\""));
+    assert!(control.contains("\"details\":\"single stable request\""));
+    assert!(control.contains("\"current_version\":\"stable-v1\""));
+    assert!(control.contains("\"legacy_fanout\":false"));
     assert!(control.contains("\"agent_sessions\""));
     assert!(control.contains("\"runner_profiles\""));
     assert!(control.contains("\"summary\""));
@@ -11899,234 +11914,12 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("id=\"usage\""));
     assert!(html.contains("id=\"sort\""));
     assert!(html.contains("id=\"reindexEmbeddings\""));
-    assert!(html.contains("Project profile"));
-    assert!(html.contains("policy decisions"));
-    assert!(html.contains("live usefulness"));
-    assert!(html.contains("live reads"));
-    assert!(html.contains("live gaps"));
-    assert!(html.contains("auto age"));
-    assert!(html.contains("recommendations"));
-    assert!(html.contains("missing live eval"));
-    assert!(html.contains("gap projects"));
-    assert!(html.contains("memory gaps"));
-    assert!(html.contains("semantic gap projects"));
-    assert!(html.contains("semantic gaps"));
-    assert!(html.contains("semantic gap queries"));
-    assert!(html.contains("semantic empty projects"));
-    assert!(html.contains("semantic empty reads"));
-    assert!(html.contains("semantic result warnings"));
-    assert!(html.contains("semantic empty queries"));
-    assert!(html.contains("embedding provider"));
-    assert!(html.contains("daemon embeddings"));
-    assert!(html.contains("gap inbox projects"));
-    assert!(html.contains("gap inbox pending"));
-    assert!(html.contains("gap inbox stale"));
-    assert!(html.contains("gap inbox oldest"));
-    assert!(html.contains("attention"));
-    assert!(html.contains("attention reasons"));
-    assert!(html.contains("repair actions"));
-    assert!(html.contains("safe repairs"));
-    assert!(html.contains("daemon skipped"));
-    assert!(html.contains("daemon repaired"));
-    assert!(html.contains("Repair history"));
-    assert!(html.contains("repair loop"));
-    assert!(html.contains("repair failed"));
-    assert!(html.contains("safe skipped"));
-    assert!(html.contains("repair action types"));
-    assert!(html.contains("manual repair action types"));
-    assert!(html.contains("actions by code"));
-    assert!(html.contains("manual actions by code"));
-    assert!(html.contains("<span>status</span>"));
-    assert!(html.contains("Memory QA"));
-    assert!(html.contains("semantic results"));
-    assert!(html.contains("semantic empty"));
-    assert!(html.contains("avg semantic results"));
-    assert!(html.contains("Storage"));
-    assert!(html.contains("/ops-status"));
-    assert!(html.contains("/roi-report"));
-    assert!(html.contains("/agent-audit"));
-    assert!(html.contains("/remote-status"));
-    assert!(html.contains("/decision-trace"));
-    assert!(html.contains("/auto-feedback"));
-    assert!(html.contains("/cost-guard"));
-    assert!(html.contains("/context-governor"));
-    assert!(html.contains("/memory-router"));
-    assert!(html.contains("/memory-health-score"));
-    assert!(html.contains("/explain-recall"));
-    assert!(html.contains("/project-intent-map"));
-    assert!(html.contains("/memory-test-harness"));
-    assert!(html.contains("/agent-audit-v2"));
-    assert!(html.contains("/memory-control-center?"));
-    assert!(html.contains("/auto-supersede-v2"));
-    assert!(html.contains("/memory-diff-apply"));
-    assert!(html.contains("/recall-benchmark-suite"));
-    assert!(html.contains("/release-gate-v2"));
-    assert!(html.contains("/memory-effectiveness-v2"));
-    assert!(html.contains("/recall-benchmark-baselines"));
-    assert!(html.contains("/memory-conflict-apply"));
-    assert!(html.contains("/remote-sync-wizard"));
-    assert!(html.contains("/memory-governance-policy"));
-    assert!(html.contains("/autonomous-loop-v2"));
-    assert!(html.contains("/governance-enforce"));
-    assert!(html.contains("/memory-quality-ci"));
-    assert!(html.contains("/fleet-dashboard-v2"));
-    assert!(html.contains("/remote-sync-apply-flow"));
-    assert!(html.contains("/mcp-tool-surface-v2"));
-    assert!(html.contains("/mcp-tool-surface-v3"));
-    assert!(html.contains("/autopilot-v3"));
-    assert!(html.contains("/self-learning-retrieval"));
-    assert!(html.contains("/project-role-profile"));
-    assert!(html.contains("/inbox-ai-reviewer"));
-    assert!(html.contains("/web-control-center-v3"));
-    assert!(html.contains("/remote-sync-apply"));
-    assert!(html.contains("/mcp-quality-tools"));
-    assert!(html.contains("/remote-sync-control"));
-    assert!(html.contains("/web-control-center-v4"));
-    assert!(html.contains("/mcp-discipline-v2"));
-    assert!(html.contains("/mcp-discipline-v3"));
-    assert!(html.contains("/feedback-loop-v2"));
-    assert!(html.contains("/upgrade-all-projects-v2"));
-    assert!(html.contains("/fleet-quality"));
-    assert!(html.contains("/vds-sync-pack"));
-    assert!(html.contains("/web-control-center-v5"));
-    assert!(html.contains("/quality-autopilot-v31"));
-    assert!(html.contains("/memory-router-v2"));
-    assert!(html.contains("/benchmark-profiles"));
-    assert!(html.contains("/install-polish"));
-    assert!(html.contains("/memory-effectiveness-lab"));
-    assert!(html.contains("/auto-context-budgeter-v2"));
-    assert!(html.contains("/memory-contract-v2"));
-    assert!(html.contains("/cross-project-learning"));
-    assert!(html.contains("/agent-trace"));
-    assert!(html.contains("/vds-sync-hardening"));
-    assert!(html.contains("/install-quality"));
-    assert!(html.contains("/web-control-center-v6"));
-    assert!(html.contains("/answer"));
-    assert!(html.contains("/connect-codex"));
-    assert!(html.contains("/memory-type-guide"));
-    assert!(html.contains("/memory-eval-story"));
-    assert!(html.contains("/import-review"));
-    assert!(html.contains("/memory-upload"));
-    assert!(html.contains("/memanto-gap-report"));
-    assert!(html.contains("/web-control-center-v7"));
-    assert!(html.contains("/autonomous-usefulness"));
-    assert!(html.contains("/benchmark-polish"));
-    assert!(html.contains("/web-control-center-v8"));
-    assert!(html.contains("/autonomous-supervisor"));
-    assert!(html.contains("/web-control-center-v9"));
-    assert!(html.contains("/fleet-supervisor"));
-    assert!(html.contains("/web-control-center-v10"));
-    assert!(html.contains("/fleet-supervisor-watch-install"));
-    assert!(html.contains("/web-control-center-v11"));
-    assert!(html.contains("/release-gate-v3"));
+    assert!(html.contains("state.controlSnapshot = data;"));
+    assert!(html.contains("state.intelligenceRequestBudget = data.request_budget"));
+    assert!(html.contains("view: \"details\""));
     assert!(html.contains("/web-control-center?"));
-    assert!(html.contains("/project-diff"));
-    assert!(html.contains("/intelligence-dashboard"));
-    assert!(html.contains("/remote-sync-dry-run"));
-    assert!(html.contains("/doctor-project"));
-    assert!(html.contains("/release-gate"));
-    assert!(html.contains("/memory-replay"));
-    assert!(html.contains("/project-watch"));
-    assert!(html.contains("/autonomous-loop"));
-    assert!(html.contains("/autonomous-watch-install"));
-    assert!(html.contains("/action-journal"));
-    assert!(html.contains("/usefulness-engine"));
-    assert!(html.contains("/auto-ranking-tune"));
-    assert!(html.contains("/ranking-profile"));
-    assert!(html.contains("/project-template"));
-    assert!(html.contains("/watch-control"));
-    assert!(html.contains("/autonomy-control-center"));
-    assert!(html.contains("/agent-sessions/cleanup"));
-    assert!(html.contains("Quality v2"));
-    assert!(html.contains("Local autonomy"));
-    assert!(html.contains("/sync-latency"));
-    assert!(html.contains("/sync-profile"));
-    assert!(html.contains("/memory-diff-review"));
-    assert!(html.contains("/remote-sync-v2"));
-    assert!(html.contains("/agent-enforce"));
-    assert!(html.contains("memory ROI"));
-    assert!(html.contains("agent audit"));
-    assert!(html.contains("remote readiness"));
-    assert!(html.contains("Intelligence v2"));
-    assert!(html.contains("decision trace"));
-    assert!(html.contains("auto feedback v2"));
-    assert!(html.contains("cost guard"));
-    assert!(html.contains("project intelligence diff"));
-    assert!(html.contains("remote sync dry-run"));
-    assert!(html.contains("doctor project"));
-    assert!(html.contains("release gate"));
-    assert!(html.contains("autonomous loop"));
-    assert!(html.contains("action journal"));
-    assert!(html.contains("usefulness engine"));
-    assert!(html.contains("watch install"));
-    assert!(html.contains("ranking profile"));
-    assert!(html.contains("context governor"));
-    assert!(html.contains("memory router"));
-    assert!(html.contains("memory health score"));
-    assert!(html.contains("explainable recall"));
-    assert!(html.contains("project intent map"));
-    assert!(html.contains("memory test harness"));
-    assert!(html.contains("agent audit v2"));
-    assert!(html.contains("control center v2"));
-    assert!(html.contains("auto supersede v2"));
-    assert!(html.contains("memory diff apply"));
-    assert!(html.contains("recall benchmark suite"));
-    assert!(html.contains("release gate v2"));
-    assert!(html.contains("remote sync wizard"));
-    assert!(html.contains("memory governance"));
-    assert!(html.contains("autonomous loop v2"));
-    assert!(html.contains("governance enforce"));
-    assert!(html.contains("memory quality ci"));
-    assert!(html.contains("fleet dashboard v2"));
-    assert!(html.contains("remote apply flow"));
-    assert!(html.contains("mcp tool surface v2"));
-    assert!(html.contains("autopilot v3"));
-    assert!(html.contains("self-learning retrieval"));
-    assert!(html.contains("project role profile"));
-    assert!(html.contains("inbox ai reviewer"));
-    assert!(html.contains("web control center v3"));
-    assert!(html.contains("remote sync apply"));
-    assert!(html.contains("mcp quality tools"));
-    assert!(html.contains("remote sync control"));
-    assert!(html.contains("web control center v4"));
-    assert!(html.contains("mcp discipline v2"));
-    assert!(html.contains("feedback loop v2"));
-    assert!(html.contains("upgrade all v2"));
-    assert!(html.contains("auto ranking tune"));
-    assert!(html.contains("watch control"));
-    assert!(html.contains("autonomy control center"));
-    assert!(html.contains("remote sync v2"));
-    assert!(html.contains("project template"));
-    assert!(html.contains("memory diff review"));
-    assert!(html.contains("sync latency"));
-    assert!(html.contains("sync profile"));
-    assert!(html.contains("sync flow"));
-    assert!(html.contains("agent enforce"));
-    assert!(html.contains("memory replay"));
-    assert!(html.contains("project watch"));
-    assert!(html.contains("Doctor fix"));
-    assert!(html.contains("Loop apply"));
-    assert!(html.contains("Loop v2"));
-    assert!(html.contains("Autopilot v3"));
-    assert!(html.contains("Sync control"));
-    assert!(html.contains("MCP discipline"));
-    assert!(html.contains("Feedback loop"));
-    assert!(html.contains("Upgrade v2"));
-    assert!(html.contains("Self learning"));
-    assert!(html.contains("Role profile"));
-    assert!(html.contains("Inbox reviewer"));
-    assert!(html.contains("Governance enforce"));
-    assert!(html.contains("Engine apply"));
-    assert!(html.contains("Sync profile"));
-    assert!(html.contains("Ranking profile"));
-    assert!(html.contains("Auto ranking"));
-    assert!(html.contains("Template"));
-    assert!(html.contains("Diff review"));
-    assert!(html.contains("Watch control"));
-    assert!(html.contains("Upgrade all"));
-    assert!(html.contains("Enforce fix"));
-    assert!(html.contains("Auto feedback"));
-    assert!(html.contains("/upgrade-project"));
+    assert!(!html.contains("/roi-report"));
+    assert!(!html.contains("/web-control-center-v12"));
 
     let memory = server.request("GET /memory?status=active&type=decision&q=ui HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
@@ -12919,7 +12712,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     let web_control = server.request("GET /web-control-center?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(web_control.contains("\"control\""));
-    assert!(web_control.contains("\"current_version\":\"v12\""));
+    assert!(web_control.contains("\"current_version\":\"stable-v1\""));
+    assert!(web_control.contains("\"canonical_endpoint\":\"/web-control-center\""));
     assert!(web_control.contains("\"agent_sessions\""));
     assert!(web_control.contains("\"runner_profiles\""));
     assert!(web_control.contains("\"initial_requests\":1"));
@@ -15537,11 +15331,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     let web_control_json: Value = serde_json::from_str(&web_control).unwrap();
     assert_eq!(web_control_json["version"], 1);
-    assert_eq!(web_control_json["status"], web_control_v12_json["status"]);
+    assert_eq!(web_control_json["current_version"], "stable-v1");
     assert_eq!(
-        web_control_json["panels"].as_array().unwrap().len(),
-        web_control_v12_json["panels"].as_array().unwrap().len()
+        web_control_json["compatibility"]["latest_legacy_alias"],
+        "/web-control-center-v12"
     );
+    assert!(web_control_json["cache"]["compute_ms"].is_number());
+    assert!(web_control_json["panels"].as_array().unwrap().len() >= 5);
 
     let project_template = stdout(
         cmd(&db)

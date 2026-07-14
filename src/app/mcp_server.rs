@@ -120,9 +120,9 @@ fn mcp_tools() -> Value {
         {"name":"memory_session_release","description":"Release an active agent session lease without finishing","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"owner":{"type":"string"},"lease_token":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","owner","lease_token"]}},
         {"name":"memory_session_event","description":"Record a bounded retry-safe lifecycle event and refresh an active agent session heartbeat","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"event_type":{"type":"string","enum":["heartbeat","runner_selected","runner_started","runner_completed","runner_failed","validation","recovery"]},"detail":{"type":"object"},"event_id":{"type":"string"},"owner":{"type":"string"},"lease_token":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","event_type"]}},
         {"name":"memory_session_recover","description":"List or atomically claim active sessions whose heartbeat or lease is stale","inputSchema":{"type":"object","properties":{"stale_after_secs":{"type":"number"},"limit":{"type":"number"},"owner":{"type":"string"},"lease_secs":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
-        {"name":"memory_session_cleanup","description":"Preview or apply retention cleanup for completed agent sessions","inputSchema":{"type":"object","properties":{"older_than_days":{"type":"number"},"limit":{"type":"number"},"apply":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_session_cleanup","description":"Preview or apply policy-based retention cleanup for terminal agent sessions","inputSchema":{"type":"object","properties":{"older_than_days":{"type":"number"},"statuses":{"type":"array","items":{"type":"string","enum":["completed","failed","partial","abandoned"]}},"limit":{"type":"number"},"apply":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_session_finish","description":"Finish an agent session; automatic useful feedback requires success plus explicit evidence","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"outcome":{"type":"string","enum":["success","failed","partial","abandoned"]},"summary":{"type":"string"},"changed_files":{"type":"array","items":{"type":"string"}},"validations":{"type":"array","items":{"type":"string"}},"commit":{"type":"string"},"owner":{"type":"string"},"lease_token":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","outcome","summary"]}},
-        {"name":"memory_session_status","description":"Show one agent session or recent sessions","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_session_status","description":"Show one agent session or a filtered paginated session list","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"offset":{"type":"number"},"statuses":{"type":"array","items":{"type":"string"}},"outcomes":{"type":"array","items":{"type":"string"}},"page":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_session_trace","description":"Show recalled memory, actions, validation, and outcome for an agent session","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_runner_profiles","description":"List named Codex, Gemini, Antigravity, and local runner profiles with PATH readiness","inputSchema":{"type":"object","properties":{"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_drift","description":"Detect cheap local memory drift before coding as bounded summary by default","inputSchema":{"type":"object","properties":{"changed_only":{"type":"boolean"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"}}}},
@@ -151,7 +151,7 @@ fn mcp_tools() -> Value {
         {"name":"memory_quality_ci","description":"CI-friendly memory quality gate","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"minimal":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_fleet_dashboard_v2","description":"Inspect all discovered project memories with V2 quality metrics","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"db":{"type":"string"}}}},
         {"name":"memory_governance_policy","description":"Inspect autonomous memory governance policy","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
-        {"name":"memory_status","description":"Return compact V3 memory status for agent startup","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_status","description":"Return the stable cached DukeMemory control snapshot for agent startup","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_should_write","description":"Decide whether a durable memory write is warranted","inputSchema":{"type":"object","properties":{"text":{"type":"string"},"memory_type":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["text"]}},
         {"name":"memory_after_task","description":"Return compact after-task memory maintenance guidance","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_project_health","description":"Return compact project memory health and role profile","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}
@@ -310,9 +310,14 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             }
         }
         "memory_session_cleanup" => {
-            let report = cleanup_agent_sessions(
+            let statuses = json_string_array(&args, "statuses");
+            let policy =
+                agent_session_config_for_root(&selected_root).map_err(|err| err.to_string())?;
+            let report = cleanup_agent_sessions_with_policy(
                 &conn,
-                json_usize(&args, "older_than_days").unwrap_or(30) as i64,
+                &policy,
+                &statuses,
+                json_usize(&args, "older_than_days").map(|value| value as i64),
                 json_usize(&args, "limit").unwrap_or(100),
                 args.get("apply").and_then(Value::as_bool).unwrap_or(false),
             )
@@ -355,13 +360,31 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
         }
         "memory_session_status" => {
-            let sessions = if let Some(id) = json_string(&args, "id") {
-                vec![get_agent_session(&conn, &id).map_err(|err| err.to_string())?]
+            let statuses = json_string_array(&args, "statuses");
+            let outcomes = json_string_array(&args, "outcomes");
+            let offset = json_usize(&args, "offset").unwrap_or(0);
+            let page = args.get("page").and_then(Value::as_bool).unwrap_or(false);
+            let policy =
+                agent_session_config_for_root(&selected_root).map_err(|err| err.to_string())?;
+            let limit = json_usize(&args, "limit").unwrap_or(policy.default_page_size);
+            let value = if let Some(id) = json_string(&args, "id") {
+                serde_json::to_value(vec![
+                    get_agent_session(&conn, &id).map_err(|err| err.to_string())?,
+                ])
+                .map_err(|err| err.to_string())?
+            } else if page || offset > 0 || !statuses.is_empty() || !outcomes.is_empty() {
+                serde_json::to_value(
+                    list_agent_sessions_page(&conn, &statuses, &outcomes, offset, limit)
+                        .map_err(|err| err.to_string())?,
+                )
+                .map_err(|err| err.to_string())?
             } else {
-                list_agent_sessions(&conn, json_usize(&args, "limit").unwrap_or(20))
-                    .map_err(|err| err.to_string())?
+                serde_json::to_value(
+                    list_agent_sessions(&conn, limit).map_err(|err| err.to_string())?,
+                )
+                .map_err(|err| err.to_string())?
             };
-            serde_json::to_string_pretty(&sessions).map_err(|err| err.to_string())?
+            serde_json::to_string_pretty(&value).map_err(|err| err.to_string())?
         }
         "memory_session_trace" => {
             let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
@@ -1418,11 +1441,19 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         "memory_status" => {
             let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
             let max_chars = json_usize(&args, "max_chars").unwrap_or(1400);
-            let report =
-                web_control_center_v3_report(&conn, &selected_db, &selected_root, None, since_days)
-                    .map_err(|err| err.to_string())?;
-            budgeted_mcp_json_response(&report, max_chars, &["tabs", "primary_actions"])
-                .map_err(|err| err.to_string())?
+            let report = control_snapshot_report(&conn, &selected_db, &selected_root, since_days)
+                .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(
+                &report,
+                max_chars,
+                &[
+                    "agent_sessions",
+                    "runner_profiles",
+                    "panels",
+                    "recommendations",
+                ],
+            )
+            .map_err(|err| err.to_string())?
         }
         "memory_should_write" => {
             let text = json_string(&args, "text").ok_or_else(|| "missing text".to_string())?;

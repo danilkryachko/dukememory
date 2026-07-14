@@ -12,6 +12,8 @@ pub struct AgentConfig {
     pub embeddings: EmbeddingConfig,
     pub generation: GenerationConfig,
     pub codegraph: CodeGraphConfig,
+    #[serde(default)]
+    pub agent_sessions: AgentSessionConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +34,27 @@ pub struct GenerationConfig {
 pub struct CodeGraphConfig {
     pub enabled: bool,
     pub command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSessionConfig {
+    pub default_page_size: usize,
+    pub completed_retention_days: i64,
+    pub failed_retention_days: i64,
+    pub partial_retention_days: i64,
+    pub abandoned_retention_days: i64,
+}
+
+impl Default for AgentSessionConfig {
+    fn default() -> Self {
+        Self {
+            default_page_size: 20,
+            completed_retention_days: 30,
+            failed_retention_days: 90,
+            partial_retention_days: 90,
+            abandoned_retention_days: 14,
+        }
+    }
 }
 
 impl AgentConfig {
@@ -60,6 +83,7 @@ impl AgentConfig {
                 enabled: true,
                 command: "codegraph".to_string(),
             },
+            agent_sessions: AgentSessionConfig::default(),
         }
     }
 }

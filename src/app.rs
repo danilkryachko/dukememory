@@ -1,7 +1,7 @@
 use crate::build_info::BuildInfo;
 use crate::http_api::HttpResponse;
 use crate::runtime_config::{
-    AgentConfig, load_runtime_config, parse_agent_config_with_compat_defaults,
+    AgentConfig, AgentSessionConfig, load_runtime_config, parse_agent_config_with_compat_defaults,
 };
 use crate::services;
 use crate::services::{MaintenanceService, MemoryService, RetrievalService};
@@ -35,8 +35,10 @@ const EXPORT_VERSION: u32 = 1;
 const VALID_SCOPES: &[&str] = &["global", "user", "project", "repo", "thread", "task"];
 
 mod agent_session;
+mod agent_session_ops;
 mod autonomous;
 mod cli;
+mod control_snapshot;
 mod db;
 mod diagnostics;
 mod dispatch;
@@ -66,8 +68,10 @@ mod sync_transport;
 mod topology;
 mod vec_backend;
 use agent_session::*;
+use agent_session_ops::*;
 use autonomous::*;
 use cli::*;
+use control_snapshot::*;
 use db::*;
 use diagnostics::*;
 pub(crate) use dispatch::run;
@@ -3723,18 +3727,15 @@ fn print_manpage() {
     println!("  self-learning-retrieval       tune retrieval from live usefulness signals");
     println!("  project-role-profile --apply  detect/apply project-specific memory profile");
     println!("  inbox-ai-reviewer --json      explain and safely process inbox suggestions");
-    println!("  web-control-center-v3         Health/Autonomy/Projects/Sync control model");
     println!("  remote-sync-apply --json      guarded local-first remote sync apply surface");
     println!("  mcp-quality-tools --json      inspect MCP helper tools for memory discipline");
     println!("  remote-sync-control --json    local-first VDS sync control and dry-runs");
-    println!("  web-control-center-v4         actionable UI control model with apply endpoints");
     println!("  mcp-discipline-v2 --json      enforce startup/write/after-task memory discipline");
     println!(
         "  feedback-loop-v2 --json       autonomous usefulness, supersede, diff, benchmark loop"
     );
     println!("  upgrade-all-projects-v2       richer all-project upgrade/version summary");
     println!("  vds-sync-pack --json          local-first VDS sync pack with verify commands");
-    println!("  web-control-center-v5         0.24 UI control model and release surfaces");
     println!("  quality-autopilot-v31         safe quality/cost/health autopilot");
     println!("  memory-router-v2 QUERY        cross-project router with current-write guardrails");
     println!("  benchmark-profiles --json     project-aware retrieval benchmark profile");
@@ -3746,7 +3747,6 @@ fn print_manpage() {
     println!("  agent-trace --json            recent memory influence and writes");
     println!("  vds-sync-hardening --json     VDS target/latency/dry-run/rollback checks");
     println!("  install-quality --json        install, skill, AGENTS, doctor readiness");
-    println!("  web-control-center-v6         0.25 effectiveness and trace control model");
     println!("  answer QUESTION --json        grounded memory answer with citations");
     println!("  connect-codex --apply         one-command Codex memory connection check");
     println!("  memory-type-guide --json      explain memory types, filters, guardrails");
@@ -3756,16 +3756,11 @@ fn print_manpage() {
     println!("  memanto-gap-report --json     compare Memanto-style capability coverage");
     println!("  memory-timeline ID --json     show card events and real read influence");
     println!("  memory-conflict-review --json review duplicate/stale/contradiction groups");
-    println!("  web-control-center-v7         0.26 answer/connect/eval/import control model");
     println!("  autonomous-usefulness --json  plan autonomous usefulness improvements");
     println!("  benchmark-polish --json       polished local benchmark evidence");
-    println!("  web-control-center-v8         0.27 answer/usefulness/benchmark control model");
     println!("  autonomous-supervisor --json  safe autonomous repair sequence");
-    println!("  web-control-center-v9         0.28 supervisor control model");
     println!("  fleet-supervisor --json       safe autonomous repair across projects");
-    println!("  web-control-center-v10        0.29 fleet supervisor control model");
     println!("  fleet-supervisor-watch-install preview/install periodic fleet repair");
-    println!("  web-control-center-v11        0.30 fleet watch control model");
     println!("  memory-effectiveness-v2       V2 influence, waste, and semantic usefulness");
     println!("  recall-benchmark-baselines    inspect/write guarded recall baselines");
     println!("  memory-conflict-apply --json  dry-run guarded reversible conflict actions");
@@ -3773,7 +3768,7 @@ fn print_manpage() {
     println!("  mcp-discipline-v3 --json      verify V3 memory discipline");
     println!("  fleet-quality --json          V3 quality across discovered projects");
     println!("  release-gate-v3 --json        release gate with effectiveness and MCP V3");
-    println!("  web-control-center-v12        0.33 effectiveness/release control model");
+    println!("  web-control-center            stable cached CLI/MCP/HTTP/UI control snapshot");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");

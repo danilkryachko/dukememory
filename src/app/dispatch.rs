@@ -483,6 +483,7 @@ pub(crate) fn run() -> Result<()> {
             &runtime.config.embeddings.provider,
             &runtime.config.embeddings.endpoint,
             &runtime.config.embeddings.model,
+            &runtime.config.agent_sessions,
         )?,
         Command::RunnerProfile { command } => handle_runner_profile(command)?,
         Command::Install { to, force } => install_binary(&to, force)?,
@@ -1753,16 +1754,23 @@ pub(crate) fn run() -> Result<()> {
             target,
             task,
             since_days,
+            details,
             json,
-        } => print_web_control_center_v12(
-            &conn,
-            &cli.db,
-            &root,
-            target.as_deref(),
-            &task,
-            since_days,
-            json,
-        )?,
+        } => {
+            if details {
+                print_web_control_center_v12(
+                    &conn,
+                    &cli.db,
+                    &root,
+                    target.as_deref(),
+                    &task,
+                    since_days,
+                    json,
+                )?;
+            } else {
+                print_control_snapshot(&conn, &cli.db, &root, since_days, json)?;
+            }
+        }
         Command::ProjectTemplate {
             root,
             kind,

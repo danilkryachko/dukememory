@@ -17,7 +17,7 @@ struct RunnerProfilesConfig {
     profiles: BTreeMap<String, RunnerProfile>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct RunnerProfileStatus {
     pub(crate) name: String,
     #[serde(flatten)]

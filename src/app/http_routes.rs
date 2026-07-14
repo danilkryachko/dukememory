@@ -61,11 +61,30 @@ pub(super) fn handle_http_request(
             if let Some(id) = params.get("id") {
                 HttpResponse::ok(json!({"session": get_agent_session(&conn, id)?}))
             } else {
+                let policy = agent_session_config_for_root(&runner_profile_root(db))?;
                 let limit = params
                     .get("limit")
                     .and_then(|value| value.parse::<usize>().ok())
-                    .unwrap_or(20);
-                HttpResponse::ok(json!({"sessions": list_agent_sessions(&conn, limit)?}))
+                    .unwrap_or(policy.default_page_size);
+                let offset = params
+                    .get("offset")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let statuses = session_filter_values(params.get("status"));
+                let outcomes = session_filter_values(params.get("outcome"));
+                let page = list_agent_sessions_page(&conn, &statuses, &outcomes, offset, limit)?;
+                HttpResponse::ok(json!({
+                    "sessions": page.sessions,
+                    "pagination": {
+                        "version": page.version,
+                        "total": page.total,
+                        "offset": page.offset,
+                        "limit": page.limit,
+                        "has_more": page.has_more,
+                        "statuses": page.statuses,
+                        "outcomes": page.outcomes,
+                    }
+                }))
             }
         }
         ("GET", "/agent-sessions/trace") => {
@@ -93,22 +112,51 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let older_than_days = params
                 .get("older_than_days")
-                .and_then(|value| value.parse::<i64>().ok())
-                .unwrap_or(30);
+                .and_then(|value| value.parse::<i64>().ok());
             let limit = params
                 .get("limit")
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(100);
+            let statuses = session_filter_values(params.get("status"));
+            let policy = agent_session_config_for_root(&runner_profile_root(db))?;
             HttpResponse::ok(json!({
-                "cleanup": cleanup_agent_sessions(&conn, older_than_days, limit, false)?
+                "cleanup": cleanup_agent_sessions_with_policy(
+                    &conn,
+                    &policy,
+                    &statuses,
+                    older_than_days,
+                    limit,
+                    false,
+                )?
             }))
         }
         ("POST", "/agent-sessions/cleanup") => {
             let value = parse_json_body(body)?;
+            let statuses = value
+                .get("statuses")
+                .or_else(|| value.get("status"))
+                .map(|value| match value {
+                    Value::Array(values) => values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>(),
+                    Value::String(value) => value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                        .collect(),
+                    _ => Vec::new(),
+                })
+                .unwrap_or_default();
+            let policy = agent_session_config_for_root(&runner_profile_root(db))?;
             HttpResponse::ok(json!({
-                "cleanup": cleanup_agent_sessions(
+                "cleanup": cleanup_agent_sessions_with_policy(
                     &conn,
-                    value.get("older_than_days").and_then(Value::as_i64).unwrap_or(30),
+                    &policy,
+                    &statuses,
+                    value.get("older_than_days").and_then(Value::as_i64),
                     value.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize,
                     value.get("apply").and_then(Value::as_bool).unwrap_or(false),
                 )?
@@ -2204,90 +2252,21 @@ pub(super) fn handle_http_request(
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
             let conn = open_db(&ctx.db)?;
-            if path == "/web-control-center" {
-                let sessions = list_agent_sessions(&conn, 20)?;
-                let profiles = runner_profiles_status(&ctx.root)?;
-                let quality = quality_report(&conn, 30, 20)?;
-                let recall = recall_benchmark_suite_report(&conn, &ctx.root, 7, 8, false)?;
-                let autonomy = autonomy_control_center_report(&conn, &ctx.db, &ctx.root, 7)?;
-                let active_sessions = sessions
-                    .iter()
-                    .filter(|session| session.status == "active")
-                    .count();
-                let ready_profiles = profiles.iter().filter(|profile| profile.available).count();
-                let memory_count: i64 =
-                    conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
-                let pending_inbox: i64 = conn.query_row(
-                    "SELECT COUNT(*) FROM memory_inbox WHERE status = 'pending'",
-                    [],
-                    |row| row.get(0),
-                )?;
-                let status = if ready_profiles > 0 {
-                    "ready"
-                } else {
-                    "attention"
-                };
-                return Ok(HttpResponse::ok(json!({
-                    "control": {
-                        "version": 12,
-                        "ok": status == "ready",
-                        "status": status,
-                        "root": ctx.root.display().to_string(),
-                        "panels": [
-                            {
-                                "name": "agent_sessions",
-                                "status": if active_sessions == 0 { "ready" } else { "active" },
-                                "headline": format!("{} active / {} recent", active_sessions, sessions.len()),
-                            },
-                            {
-                                "name": "runner_profiles",
-                                "status": if ready_profiles > 0 { "ready" } else { "attention" },
-                                "headline": format!("{} ready / {} configured", ready_profiles, profiles.len()),
-                            },
-                            {
-                                "name": "project_memory",
-                                "status": "ready",
-                                "headline": format!("{} memories / {} pending", memory_count, pending_inbox),
-                            }
-                        ],
-                        "controls": [],
-                        "recommendations": [],
-                        "details_endpoint": "/web-control-center-v12",
-                    },
-                    "current_version": "v12",
-                    "agent_sessions": sessions,
-                    "runner_profiles": profiles,
-                    "summary": {
-                        "health": {
-                            "score": autonomy.qa.score,
-                            "status": if autonomy.qa.ok { "ready" } else { "attention" },
-                        },
-                        "quality": quality,
-                        "recall": {
-                            "score": recall.score,
-                            "ok": recall.ok,
-                            "regression": recall.regression,
-                            "baseline_compatible": recall.baseline_compatible,
-                            "baseline_stale": recall.baseline_stale,
-                        },
-                        "autonomy": {
-                            "local_ready": autonomy.local_ready,
-                            "optional_sync_ready": autonomy.optional_sync_ready,
-                            "status": autonomy.status,
-                        },
-                    },
-                    "request_budget": {"initial_requests": 1, "details": "lazy"},
-                })));
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            let details = params.get("view").is_some_and(|value| value == "details");
+            if path == "/web-control-center" && !details {
+                return Ok(HttpResponse::ok(serde_json::to_value(
+                    control_snapshot_report(&conn, &ctx.db, &ctx.root, since_days)?,
+                )?));
             }
             let target = params.get("target").map(PathBuf::from);
             let task = params
                 .get("task")
                 .map(String::as_str)
                 .unwrap_or("project memory");
-            let since_days = params
-                .get("since_days")
-                .and_then(|value| value.parse::<i64>().ok())
-                .unwrap_or(7);
             let report = web_control_center_v12_report(
                 &conn,
                 &ctx.db,
@@ -2296,7 +2275,22 @@ pub(super) fn handle_http_request(
                 task,
                 since_days,
             )?;
-            HttpResponse::ok(json!({"control_v12": report}))
+            if path == "/web-control-center" {
+                HttpResponse::ok(json!({
+                    "control_v12": report,
+                    "current_version": "stable-v1",
+                    "compatibility": {
+                        "canonical_endpoint": "/web-control-center",
+                        "legacy_alias": "/web-control-center-v12",
+                    }
+                }))
+            } else {
+                HttpResponse::ok(json!({
+                    "control_v12": report,
+                    "deprecated": true,
+                    "canonical_endpoint": "/web-control-center?view=details",
+                }))
+            }
         }
         ("GET", "/mcp-discipline-v2") => {
             let params = parse_query(query);

@@ -38,6 +38,7 @@ Transcript-based memory quickly turns into noise.
 - **Grounded answers** from memory with cited card ids and explicit gaps.
 - **One-command Codex wiring** so future chats know memory is installed.
 - **Lightweight control surfaces** for health scoring, explainable recall, effectiveness, baselines, safe conflict cleanup, governance, sync dry-runs, and release gates.
+- **One stable control snapshot** shared by CLI, MCP, HTTP, and the web UI, with revision-aware caching and compatibility aliases for pinned clients.
 
 ## What It Remembers
 
@@ -212,6 +213,13 @@ dukememory agent-session recover \
 # Preview retention first; apply only after reviewing candidate ids/counts.
 dukememory agent-session cleanup --older-than-days 30 --json
 dukememory agent-session cleanup --older-than-days 30 --apply --json
+
+# Filter and page operational history without loading every session.
+dukememory agent-session status --status failed --page --limit 20 --json
+
+# Use per-status retention policy; terminal states remain dry-run first.
+dukememory agent-session cleanup --status failed --status abandoned --json
+dukememory agent-session cleanup --status failed --status abandoned --apply --json
 ```
 
 `context` combines brief, optional target impact, and doctrine in one audited
@@ -235,14 +243,48 @@ Supported events are `heartbeat`, `runner_selected`,
 `runner_started`, `runner_completed`, `runner_failed`, `validation`, and
 `recovery`. Trace metrics include ordered event sequences, attempt attribution,
 lease contention, orphaned attempts, recovery latency, heartbeat freshness,
-runner failures, evidence counts, and effectiveness. Cleanup only targets
-completed sessions older than the selected retention window, previews by
-default, and deletes their lifecycle events transactionally when `--apply` is
-explicitly supplied.
+runner failures, evidence counts, and effectiveness. Cleanup targets explicitly
+selected terminal states older than their configured retention window,
+previews by default, and deletes their lifecycle events transactionally when
+`--apply` is explicitly supplied. Session JSON exposes an explicit
+`attempt_state` (`idle`, `leased`, `stale`, `released`, or the terminal status),
+and list operations support status/outcome filters plus bounded pagination.
 The same operations are exposed as `memory_session_claim`,
 `memory_session_renew`, `memory_session_release`, `memory_session_event`, and
 `memory_session_recover` over MCP; retention is exposed as
 `memory_session_cleanup`. The HTTP equivalents live under `/agent-sessions/*`.
+
+Default retention and pagination can be overridden in `.agent/config.toml`:
+
+```toml
+[agent_sessions]
+default_page_size = 20
+completed_retention_days = 30
+failed_retention_days = 90
+partial_retention_days = 90
+abandoned_retention_days = 14
+```
+
+## Stable Control Snapshot
+
+Use the unversioned control surface for integrations:
+
+```bash
+dukememory web-control-center --json
+curl http://127.0.0.1:8765/web-control-center
+```
+
+The response schema is `stable-v1` across CLI, MCP `memory_status`, HTTP, and
+the initial web UI. It contains one normalized health/quality/recall/autonomy
+summary, recent session state, optional runner readiness, a database revision,
+and cache telemetry. Repeated requests reuse the snapshot for a short bounded
+TTL while any relevant SQLite or control-file revision invalidates it.
+
+Historical `/web-control-center-v3` through `-v12` routes and their CLI
+commands remain available for pinned clients but are deprecated and hidden from
+normal CLI help. Full legacy detail is opt-in through
+`/web-control-center?view=details` or `web-control-center --details`; the web UI
+loads it with one request instead of the former diagnostic fan-out.
 
 ### Named Runner Profiles
 

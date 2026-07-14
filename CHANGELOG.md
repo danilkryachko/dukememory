@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.42.0 — 2026-07-14 (local development)
+
+### Added
+
+- A stable `ControlSnapshot` schema shared by CLI, MCP `memory_status`, HTTP,
+  and the initial web UI, with one normalized health, quality, recall,
+  autonomy, session, and optional-runner summary.
+- Revision-aware in-process snapshot caching with bounded TTL/entry count,
+  cache hit/age/compute telemetry, concurrent-request coverage, and automatic
+  invalidation after relevant SQLite or control-file changes.
+- Filtered, bounded evidence-session pages by status and outcome, explicit
+  derived attempt states, and per-status retention policy defaults in
+  `.agent/config.toml`.
+- Dedicated control-plane integration coverage outside the historical
+  monolithic CLI compatibility test file.
+
+### Changed
+
+- `web-control-center` is now the canonical stable surface; V3 through V12
+  commands are hidden compatibility aliases, while legacy V12 detail remains
+  opt-in through `--details` or `?view=details`.
+- The web UI loads detailed diagnostics with one stable request instead of a
+  large parallel fan-out across every historical endpoint.
+- Agent-session cleanup can safely select completed, failed, partial, and
+  abandoned states while remaining dry-run-first and transactionally deleting
+  child lifecycle events only after explicit `--apply`.
+- Control snapshot and session operations live in focused modules rather than
+  adding more routing and lifecycle logic to existing monoliths.
+
+### Fixed
+
+- Prevent repeated control requests from recomputing identical expensive
+  diagnostics while still invalidating immediately after durable changes.
+- Prevent optional runner or remote-sync readiness from blocking local memory
+  readiness in the stable control result.
+- Prevent unbounded session history reads and one-size-fits-all cleanup windows
+  for unsuccessful or abandoned work.
+
 ## 0.41.0 — 2026-07-14 (local development)
 
 ### Added

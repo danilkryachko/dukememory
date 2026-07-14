@@ -17,6 +17,7 @@ pub(crate) struct AgentSession {
     pub(crate) feedback_written: bool,
     pub(crate) lease_owner: Option<String>,
     pub(crate) current_attempt_id: Option<String>,
+    pub(crate) attempt_state: String,
     pub(crate) lease_expires_at: Option<i64>,
     pub(crate) attempt_count: i64,
     pub(crate) last_event_sequence: i64,
@@ -111,21 +112,6 @@ struct AgentSessionMetrics {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct AgentSessionCleanupReport {
-    pub(crate) version: u32,
-    pub(crate) ok: bool,
-    pub(crate) dry_run: bool,
-    pub(crate) older_than_days: i64,
-    pub(crate) cutoff: i64,
-    pub(crate) candidate_count: usize,
-    pub(crate) candidate_events: usize,
-    pub(crate) deleted_sessions: usize,
-    pub(crate) deleted_events: usize,
-    pub(crate) candidate_ids: Vec<String>,
-    pub(crate) actions: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
 struct AgentSessionEffectiveness {
     classification: String,
     evidence_present: bool,
@@ -142,6 +128,7 @@ pub(crate) fn handle_agent_session(
     config_provider: &str,
     config_endpoint: &str,
     config_model: &str,
+    session_config: &AgentSessionConfig,
 ) -> Result<()> {
     match command {
         AgentSessionCommand::Start {
@@ -319,7 +306,39 @@ pub(crate) fn handle_agent_session(
                 println!("idempotent: {}", report.idempotent);
             }
         }
-        AgentSessionCommand::Status { id, limit, json } => {
+        AgentSessionCommand::Status {
+            id,
+            limit,
+            offset,
+            statuses,
+            outcomes,
+            page,
+            json,
+        } => {
+            let limit = limit.unwrap_or(session_config.default_page_size);
+            if id.is_none() && (page || offset > 0 || !statuses.is_empty() || !outcomes.is_empty())
+            {
+                let report = list_agent_sessions_page(conn, &statuses, &outcomes, offset, limit)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else if report.sessions.is_empty() {
+                    println!("agent sessions: none");
+                } else {
+                    for session in report.sessions {
+                        println!(
+                            "{}  {}  {}  {}",
+                            session.id, session.status, session.attempt_state, session.task
+                        );
+                    }
+                    println!(
+                        "page: {}-{} of {}",
+                        report.offset,
+                        report.offset + report.limit,
+                        report.total
+                    );
+                }
+                return Ok(());
+            }
             let sessions = if let Some(id) = id {
                 vec![get_agent_session(conn, &id)?]
             } else {
@@ -331,7 +350,10 @@ pub(crate) fn handle_agent_session(
                 println!("agent sessions: none");
             } else {
                 for session in sessions {
-                    println!("{}  {}  {}", session.id, session.status, session.task);
+                    println!(
+                        "{}  {}  {}  {}",
+                        session.id, session.status, session.attempt_state, session.task
+                    );
                 }
             }
         }
@@ -349,11 +371,19 @@ pub(crate) fn handle_agent_session(
         }
         AgentSessionCommand::Cleanup {
             older_than_days,
+            statuses,
             limit,
             apply,
             json,
         } => {
-            let report = cleanup_agent_sessions(conn, older_than_days, limit, apply)?;
+            let report = cleanup_agent_sessions_with_policy(
+                conn,
+                session_config,
+                &statuses,
+                older_than_days,
+                limit,
+                apply,
+            )?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -1015,80 +1045,6 @@ pub(crate) fn list_agent_sessions(conn: &Connection, limit: usize) -> Result<Vec
     .map_err(Into::into)
 }
 
-pub(crate) fn cleanup_agent_sessions(
-    conn: &Connection,
-    older_than_days: i64,
-    limit: usize,
-    apply: bool,
-) -> Result<AgentSessionCleanupReport> {
-    let older_than_days = older_than_days.max(0);
-    let cutoff = now_ms().saturating_sub(older_than_days.saturating_mul(86_400_000));
-    let limit = limit.clamp(1, 1_000);
-    let candidate_ids = {
-        let mut stmt = conn.prepare(
-            "SELECT id FROM agent_sessions \
-             WHERE status = 'completed' AND finished_at IS NOT NULL AND finished_at <= ?1 \
-             ORDER BY finished_at ASC, id ASC LIMIT ?2",
-        )?;
-        stmt.query_map(
-            params![cutoff, limit.min(i64::MAX as usize) as i64],
-            |row| row.get::<_, String>(0),
-        )?
-        .collect::<rusqlite::Result<Vec<_>>>()?
-    };
-    let mut candidate_events = 0usize;
-    for id in &candidate_ids {
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM agent_session_events WHERE session_id = ?1",
-            params![id],
-            |row| row.get(0),
-        )?;
-        candidate_events = candidate_events.saturating_add(count.max(0) as usize);
-    }
-    let mut deleted_sessions = 0usize;
-    let mut deleted_events = 0usize;
-    let mut actions = Vec::new();
-    if apply && !candidate_ids.is_empty() {
-        let tx = conn.unchecked_transaction()?;
-        for id in &candidate_ids {
-            let count: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM agent_session_events WHERE session_id = ?1",
-                params![id],
-                |row| row.get(0),
-            )?;
-            let deleted = tx.execute(
-                "DELETE FROM agent_sessions WHERE id = ?1 AND status = 'completed' AND finished_at <= ?2",
-                params![id, cutoff],
-            )?;
-            if deleted == 1 {
-                deleted_sessions = deleted_sessions.saturating_add(1);
-                deleted_events = deleted_events.saturating_add(count.max(0) as usize);
-            }
-        }
-        tx.commit()?;
-        actions.push(format!(
-            "deleted {deleted_sessions} completed session(s) and {deleted_events} event(s)"
-        ));
-    } else if candidate_ids.is_empty() {
-        actions.push("no completed sessions matched the retention window".to_string());
-    } else {
-        actions.push("dry_run: completed sessions were not deleted".to_string());
-    }
-    Ok(AgentSessionCleanupReport {
-        version: 1,
-        ok: true,
-        dry_run: !apply,
-        older_than_days,
-        cutoff,
-        candidate_count: candidate_ids.len(),
-        candidate_events,
-        deleted_sessions,
-        deleted_events,
-        candidate_ids,
-        actions,
-    })
-}
-
 pub(crate) fn get_agent_session(conn: &Connection, id: &str) -> Result<AgentSession> {
     conn.query_row(
         "SELECT id, task, target, scope, runner_profile, status, outcome, summary, changed_files, \
@@ -1102,17 +1058,27 @@ pub(crate) fn get_agent_session(conn: &Connection, id: &str) -> Result<AgentSess
     .ok_or_else(|| anyhow::anyhow!("agent session not found: {id}"))
 }
 
-fn agent_session_from_row(row: &Row<'_>) -> rusqlite::Result<AgentSession> {
+pub(crate) fn agent_session_from_row(row: &Row<'_>) -> rusqlite::Result<AgentSession> {
     let changed_files: String = row.get(8)?;
     let validation_commands: String = row.get(9)?;
     let memory_ids: String = row.get(11)?;
+    let status: String = row.get(5)?;
+    let current_attempt_id: Option<String> = row.get(14)?;
+    let lease_expires_at: Option<i64> = row.get(15)?;
+    let attempt_count: i64 = row.get(16)?;
+    let attempt_state = agent_session_attempt_state(
+        &status,
+        current_attempt_id.as_deref(),
+        lease_expires_at,
+        attempt_count,
+    );
     Ok(AgentSession {
         id: row.get(0)?,
         task: row.get(1)?,
         target: row.get(2)?,
         scope: row.get(3)?,
         runner_profile: row.get(4)?,
-        status: row.get(5)?,
+        status,
         outcome: row.get(6)?,
         summary: row.get(7)?,
         changed_files: serde_json::from_str(&changed_files).unwrap_or_default(),
@@ -1121,15 +1087,39 @@ fn agent_session_from_row(row: &Row<'_>) -> rusqlite::Result<AgentSession> {
         memory_ids: serde_json::from_str(&memory_ids).unwrap_or_default(),
         feedback_written: row.get::<_, i64>(12)? != 0,
         lease_owner: row.get(13)?,
-        current_attempt_id: row.get(14)?,
-        lease_expires_at: row.get(15)?,
-        attempt_count: row.get(16)?,
+        current_attempt_id,
+        attempt_state,
+        lease_expires_at,
+        attempt_count,
         last_event_sequence: row.get(17)?,
         last_heartbeat_at: row.get(18)?,
         started_at: row.get(19)?,
         updated_at: row.get(20)?,
         finished_at: row.get(21)?,
     })
+}
+
+fn agent_session_attempt_state(
+    status: &str,
+    current_attempt_id: Option<&str>,
+    lease_expires_at: Option<i64>,
+    attempt_count: i64,
+) -> String {
+    if status != "active" {
+        return status.to_string();
+    }
+    if current_attempt_id.is_some() {
+        match lease_expires_at {
+            Some(expires_at) if expires_at <= now_ms() => "stale",
+            Some(_) => "leased",
+            None => "released",
+        }
+        .to_string()
+    } else if attempt_count > 0 {
+        "released".to_string()
+    } else {
+        "idle".to_string()
+    }
 }
 
 pub(crate) fn agent_session_trace(conn: &Connection, id: &str) -> Result<AgentSessionTrace> {

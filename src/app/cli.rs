@@ -1238,6 +1238,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the simplified V3 web control model: Health, Autonomy, Projects, Sync.
+    #[command(hide = true)]
     WebControlCenterV3 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1280,6 +1281,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V4 web control model with actionable controls.
+    #[command(hide = true)]
     WebControlCenterV4 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1339,6 +1341,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V5 web control model with 0.24 control surfaces.
+    #[command(hide = true)]
     WebControlCenterV5 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1470,6 +1473,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V6 web control model with 0.25 memory effectiveness surfaces.
+    #[command(hide = true)]
     WebControlCenterV6 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1687,6 +1691,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V7 web control model with answer/connect/eval/import surfaces.
+    #[command(hide = true)]
     WebControlCenterV7 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1722,6 +1727,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V8 web control model with answer/usefulness/benchmark panels.
+    #[command(hide = true)]
     WebControlCenterV8 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1746,6 +1752,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V9 web control model with autonomous supervisor panels.
+    #[command(hide = true)]
     WebControlCenterV9 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1768,6 +1775,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V10 web control model with fleet supervisor panels.
+    #[command(hide = true)]
     WebControlCenterV10 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1794,6 +1802,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V11 web control model with fleet watch installation.
+    #[command(hide = true)]
     WebControlCenterV11 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1874,6 +1883,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V12 web control model with effectiveness and release panels.
+    #[command(hide = true)]
     WebControlCenterV12 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1886,7 +1896,7 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Render the current stable web control model (currently V12).
+    /// Render the stable cached control snapshot shared by CLI, MCP, HTTP, and UI.
     WebControlCenter {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1896,6 +1906,9 @@ pub(crate) enum Command {
         task: String,
         #[arg(long, default_value_t = 7)]
         since_days: i64,
+        /// Render the legacy full V12 diagnostic tree instead of the stable snapshot.
+        #[arg(long)]
+        details: bool,
         #[arg(long)]
         json: bool,
     },
@@ -2707,8 +2720,16 @@ pub(crate) enum AgentSessionCommand {
     /// Show one session, or recent sessions when no id is supplied.
     Status {
         id: Option<String>,
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        #[arg(long = "status")]
+        statuses: Vec<String>,
+        #[arg(long = "outcome")]
+        outcomes: Vec<String>,
+        #[arg(long)]
+        page: bool,
         #[arg(long)]
         json: bool,
     },
@@ -2720,8 +2741,10 @@ pub(crate) enum AgentSessionCommand {
     },
     /// Preview or delete completed sessions older than the retention window.
     Cleanup {
-        #[arg(long, default_value_t = 30)]
-        older_than_days: i64,
+        #[arg(long)]
+        older_than_days: Option<i64>,
+        #[arg(long = "status")]
+        statuses: Vec<String>,
         #[arg(long, default_value_t = 100)]
         limit: usize,
         #[arg(long)]
