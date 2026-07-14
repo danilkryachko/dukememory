@@ -1,0 +1,60 @@
+use std::fs;
+use std::path::Path;
+
+#[test]
+fn github_actions_are_pinned_to_immutable_commit_shas() {
+    let workflows = Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows");
+    for entry in fs::read_dir(workflows).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|value| value.to_str()) != Some("yml") {
+            continue;
+        }
+        let source = fs::read_to_string(&path).unwrap();
+        for (line_index, line) in source.lines().enumerate() {
+            let Some((_, action)) = line.split_once("uses:") else {
+                continue;
+            };
+            let action = action.trim();
+            if action.starts_with("./") {
+                continue;
+            }
+            let reference = action
+                .split_once('@')
+                .unwrap_or_else(|| {
+                    panic!("{}:{} action has no ref", path.display(), line_index + 1)
+                })
+                .1
+                .split_whitespace()
+                .next()
+                .unwrap();
+            assert_eq!(
+                reference.len(),
+                40,
+                "{}:{} action ref is not a full commit SHA: {reference}",
+                path.display(),
+                line_index + 1
+            );
+            assert!(
+                reference.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "{}:{} action ref is not hexadecimal: {reference}",
+                path.display(),
+                line_index + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn sbom_generator_and_advisory_exceptions_are_explicitly_pinned() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workflow = fs::read_to_string(root.join(".github/workflows/security.yml")).unwrap();
+    assert!(workflow.contains("cargo-cyclonedx --version 0.5.9 --locked"));
+    assert!(workflow.contains("--spec-version 1.5"));
+    assert!(workflow.contains("dukememory.cdx.json"));
+
+    let deny = fs::read_to_string(root.join("deny.toml")).unwrap();
+    for advisory in ["RUSTSEC-2024-0436", "RUSTSEC-2026-0173"] {
+        assert!(deny.contains(advisory));
+        assert!(deny.contains("latest upstream release"));
+    }
+}

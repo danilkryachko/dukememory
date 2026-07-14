@@ -3,8 +3,8 @@ all-features = true
 
 [advisories]
 ignore = [
-    { id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained build-time transitive dependency of tokenizers; no patched release is available" },
-    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is an unmaintained build-time transitive dependency of age via i18n-embed-fl; no patched release is available" },
+    { id = "RUSTSEC-2024-0436", reason = "tokenizers 0.23.1 is the latest upstream release and still requires paste; remove this exception when upstream replaces it" },
+    { id = "RUSTSEC-2026-0173", reason = "age 0.12.1 is the latest upstream release and still requires proc-macro-error2 via i18n-embed-fl; remove this exception when upstream replaces it" },
 ]
 
 [licenses]

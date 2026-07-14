@@ -16,6 +16,9 @@
 Run `dukememory operations --json` to inspect the same stable contract exposed
 by MCP `memory_operations` and HTTP `GET /operations`.
 
+Supply-chain policy, SBOM generation, and the two reviewed upstream exceptions
+are documented in [docs/supply-chain.md](docs/supply-chain.md).
+
 `dukememory` is a Rust CLI, MCP server, and Codex skill that gives Codex,
 Claude, Cursor, and other AI coding agents durable project memory. It stores
 decisions, constraints, commands, known issues, task state, user preferences,
