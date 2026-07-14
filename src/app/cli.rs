@@ -2617,6 +2617,42 @@ pub(crate) enum AgentSessionCommand {
         #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
         embed_model: String,
         #[arg(long)]
+        owner: Option<String>,
+        #[arg(long)]
+        lease_token: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Atomically claim an active session lease for one worker attempt.
+    Claim {
+        id: String,
+        #[arg(long)]
+        owner: String,
+        #[arg(long, default_value_t = 120)]
+        lease_secs: u64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Renew an unexpired lease owned by the current worker attempt.
+    Renew {
+        id: String,
+        #[arg(long)]
+        owner: String,
+        #[arg(long)]
+        lease_token: String,
+        #[arg(long, default_value_t = 120)]
+        lease_secs: u64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Release a lease without finishing the active session.
+    Release {
+        id: String,
+        #[arg(long)]
+        owner: String,
+        #[arg(long)]
+        lease_token: String,
+        #[arg(long)]
         json: bool,
     },
     /// Record a bounded lifecycle event and refresh the session heartbeat.
@@ -2627,6 +2663,12 @@ pub(crate) enum AgentSessionCommand {
         #[arg(long, default_value = "{}")]
         detail: String,
         #[arg(long)]
+        event_id: Option<String>,
+        #[arg(long)]
+        owner: Option<String>,
+        #[arg(long)]
+        lease_token: Option<String>,
+        #[arg(long)]
         json: bool,
     },
     /// List active sessions whose heartbeat is old enough to resume.
@@ -2635,6 +2677,10 @@ pub(crate) enum AgentSessionCommand {
         stale_after_secs: u64,
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        #[arg(long)]
+        owner: Option<String>,
+        #[arg(long, default_value_t = 120)]
+        lease_secs: u64,
         #[arg(long)]
         json: bool,
     },
@@ -2651,6 +2697,10 @@ pub(crate) enum AgentSessionCommand {
         validations: Vec<String>,
         #[arg(long)]
         commit: Option<String>,
+        #[arg(long)]
+        owner: Option<String>,
+        #[arg(long)]
+        lease_token: Option<String>,
         #[arg(long)]
         json: bool,
     },

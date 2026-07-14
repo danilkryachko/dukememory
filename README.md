@@ -160,11 +160,30 @@ SESSION_ID=$(dukememory agent-session start \
   --target src/checkout.rs \
   --runner-profile codex_default)
 
-dukememory agent-session context "$SESSION_ID" --json
+OWNER="checkout-worker-1"
+CLAIM=$(dukememory agent-session claim "$SESSION_ID" \
+  --owner "$OWNER" \
+  --lease-secs 120 \
+  --json)
+LEASE_TOKEN=$(printf '%s' "$CLAIM" | jq -r .lease_token)
+
+dukememory agent-session context "$SESSION_ID" \
+  --owner "$OWNER" \
+  --lease-token "$LEASE_TOKEN" \
+  --json
 
 dukememory agent-session event "$SESSION_ID" \
   --event-type runner_started \
   --detail '{"profile":"codex_default"}' \
+  --event-id "runner-started-attempt-1" \
+  --owner "$OWNER" \
+  --lease-token "$LEASE_TOKEN" \
+  --json
+
+dukememory agent-session renew "$SESSION_ID" \
+  --owner "$OWNER" \
+  --lease-token "$LEASE_TOKEN" \
+  --lease-secs 120 \
   --json
 
 dukememory agent-session finish "$SESSION_ID" \
@@ -172,12 +191,21 @@ dukememory agent-session finish "$SESSION_ID" \
   --summary "implemented client and server validation" \
   --changed-file src/checkout.rs \
   --validation "cargo test --all-targets" \
+  --owner "$OWNER" \
+  --lease-token "$LEASE_TOKEN" \
   --json
 
 dukememory agent-session trace "$SESSION_ID" --json
 
 # Find interrupted sessions whose heartbeat has been quiet for five minutes.
 dukememory agent-session recover --stale-after-secs 300 --json
+
+# Atomically claim every recoverable session for a recovery worker.
+dukememory agent-session recover \
+  --stale-after-secs 300 \
+  --owner "recovery-worker-1" \
+  --lease-secs 120 \
+  --json
 ```
 
 `context` combines brief, optional target impact, and doctrine in one audited
@@ -187,22 +215,33 @@ validation command, or commit. Exact finish retries are safe; a conflicting
 second finish is rejected. `failed`, `partial`, and `abandoned` outcomes never
 produce automatic positive feedback.
 
-External orchestrators can record bounded JSON-object events with
-`agent-session event`; every event refreshes the session heartbeat in the same
-transaction. Supported events are `heartbeat`, `runner_selected`,
-`runner_started`, `runner_completed`, `runner_failed`, `validation`, and
-`recovery`. `agent-session recover` returns only active sessions older than the
-requested heartbeat threshold. The same operations are exposed as
-`memory_session_event` / `memory_session_recover` over MCP and
-`/agent-sessions/event` / `/agent-sessions/recover` over HTTP.
+External orchestrators should claim a session before loading context. A live
+lease fences context, event, renew, release, and finish mutations to one owner
+and opaque token; after release or expiry, a new claim creates a new attempt.
+Unclaimed sessions remain compatible with the 0.39 lifecycle. Recovery never
+returns a session with an unexpired lease.
 
-### DukeAgent 0.39 Integration
+Orchestrators can record bounded JSON-object events with `agent-session event`;
+every accepted event refreshes session activity in the same transaction.
+`--event-id` makes delivery retry-safe: an exact retry returns the existing
+result, while reusing the id with another type or payload fails closed.
+Supported events are `heartbeat`, `runner_selected`,
+`runner_started`, `runner_completed`, `runner_failed`, `validation`, and
+`recovery`. Trace v2 includes ordered event sequences, attempt attribution,
+lease/heartbeat metrics, runner failures, evidence counts, and effectiveness.
+The same operations are exposed as `memory_session_claim`,
+`memory_session_renew`, `memory_session_release`, `memory_session_event`, and
+`memory_session_recover` over MCP and under `/agent-sessions/*` over HTTP.
+
+### DukeAgent 0.40 Integration
 
 DukeAgent uses the session lifecycle as its primary long-term coordination
-layer: it starts or resumes a session, loads audited context, selects an
-available named runner profile, emits heartbeats and runner events, captures
-workspace/validation/commit evidence, and finishes once with a causal trace.
-Runner failure and cancellation never create automatic positive feedback.
+layer: it starts or resumes a session, claims a fenced attempt, loads audited
+context, selects an available named runner profile, renews the lease before
+heartbeat events, captures workspace/validation/commit evidence, and finishes
+once with a causal trace. A second worker cannot resume the task while its
+lease is live. Runner failure and cancellation never create automatic positive
+feedback.
 
 Named runner profiles are built in and may be overridden in
 `.agent/runner-profiles.toml`:

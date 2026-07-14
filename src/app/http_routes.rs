@@ -89,6 +89,22 @@ pub(super) fn handle_http_request(
                 "sessions": recoverable_agent_sessions(&conn, stale_after_secs, limit)?
             }))
         }
+        ("POST", "/agent-sessions/recover") => {
+            let value = parse_json_body(body)?;
+            let owner = value
+                .get("owner")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing lease owner"))?;
+            HttpResponse::ok(json!({
+                "claims": claim_recoverable_agent_sessions(
+                    &conn,
+                    value.get("stale_after_secs").and_then(Value::as_u64).unwrap_or(300),
+                    value.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize,
+                    owner,
+                    value.get("lease_secs").and_then(Value::as_u64).unwrap_or(120),
+                )?
+            }))
+        }
         ("POST", "/agent-sessions/start") => {
             let value = parse_json_body(body)?;
             let task = value
@@ -123,7 +139,71 @@ pub(super) fn handle_http_request(
                 value.get("provider").and_then(Value::as_str).unwrap_or(DEFAULT_EMBED_PROVIDER),
                 value.get("endpoint").and_then(Value::as_str).unwrap_or(DEFAULT_EMBED_ENDPOINT),
                 value.get("model").and_then(Value::as_str).unwrap_or(DEFAULT_EMBED_MODEL),
+                value.get("owner").and_then(Value::as_str),
+                value.get("lease_token").and_then(Value::as_str),
             )?}))
+        }
+        ("POST", "/agent-sessions/claim") => {
+            let value = parse_json_body(body)?;
+            let id = value
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing agent session id"))?;
+            let owner = value
+                .get("owner")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing lease owner"))?;
+            HttpResponse::ok(json!({
+                "claim": claim_agent_session(
+                    &conn,
+                    id,
+                    owner,
+                    value.get("lease_secs").and_then(Value::as_u64).unwrap_or(120),
+                    false,
+                )?
+            }))
+        }
+        ("POST", "/agent-sessions/renew") => {
+            let value = parse_json_body(body)?;
+            let id = value
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing agent session id"))?;
+            let owner = value
+                .get("owner")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing lease owner"))?;
+            let lease_token = value
+                .get("lease_token")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing lease token"))?;
+            HttpResponse::ok(json!({
+                "claim": renew_agent_session_lease(
+                    &conn,
+                    id,
+                    owner,
+                    lease_token,
+                    value.get("lease_secs").and_then(Value::as_u64).unwrap_or(120),
+                )?
+            }))
+        }
+        ("POST", "/agent-sessions/release") => {
+            let value = parse_json_body(body)?;
+            let id = value
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing agent session id"))?;
+            let owner = value
+                .get("owner")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing lease owner"))?;
+            let lease_token = value
+                .get("lease_token")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing lease token"))?;
+            HttpResponse::ok(json!({
+                "session": release_agent_session_lease(&conn, id, owner, lease_token)?
+            }))
         }
         ("POST", "/agent-sessions/event") => {
             let value = parse_json_body(body)?;
@@ -137,7 +217,15 @@ pub(super) fn handle_http_request(
                 .ok_or_else(|| anyhow::anyhow!("missing event_type"))?;
             let detail = value.get("detail").cloned().unwrap_or_else(|| json!({}));
             HttpResponse::ok(json!({
-                "session": record_agent_session_event(&conn, id, event_type, &detail)?
+                "session": record_agent_session_event(
+                    &conn,
+                    id,
+                    event_type,
+                    &detail,
+                    value.get("event_id").and_then(Value::as_str),
+                    value.get("owner").and_then(Value::as_str),
+                    value.get("lease_token").and_then(Value::as_str),
+                )?
             }))
         }
         ("POST", "/agent-sessions/finish") => {
@@ -181,6 +269,8 @@ pub(super) fn handle_http_request(
                 &changed_files,
                 &validations,
                 value.get("commit").and_then(Value::as_str),
+                value.get("owner").and_then(Value::as_str),
+                value.get("lease_token").and_then(Value::as_str),
             )?}))
         }
         ("GET", "/runner-profiles") => {

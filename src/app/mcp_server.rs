@@ -114,10 +114,13 @@ fn mcp_tools() -> Value {
         {"name":"memory_budget_plan","description":"Choose the smallest useful memory budget for a task","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"scope":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_feedback","description":"Record lightweight useful/useless/missing feedback for memory reads","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"ids":{"type":"array","items":{"type":"string"}},"rating":{"type":"string"},"command":{"type":"string"},"query":{"type":"string"},"note":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["rating"]}},
         {"name":"memory_session_start","description":"Start a durable evidence-backed agent session","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"target":{"type":"string"},"scope":{"type":"string"},"runner_profile":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
-        {"name":"memory_session_context","description":"Load brief, impact, and doctrine into one audited agent session read","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
-        {"name":"memory_session_event","description":"Record a bounded lifecycle event and refresh an active agent session heartbeat","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"event_type":{"type":"string","enum":["heartbeat","runner_selected","runner_started","runner_completed","runner_failed","validation","recovery"]},"detail":{"type":"object"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","event_type"]}},
-        {"name":"memory_session_recover","description":"List active agent sessions whose heartbeat is old enough to resume","inputSchema":{"type":"object","properties":{"stale_after_secs":{"type":"number"},"limit":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
-        {"name":"memory_session_finish","description":"Finish an agent session; automatic useful feedback requires success plus explicit evidence","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"outcome":{"type":"string","enum":["success","failed","partial","abandoned"]},"summary":{"type":"string"},"changed_files":{"type":"array","items":{"type":"string"}},"validations":{"type":"array","items":{"type":"string"}},"commit":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","outcome","summary"]}},
+        {"name":"memory_session_context","description":"Load brief, impact, and doctrine into one audited agent session read","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"owner":{"type":"string"},"lease_token":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
+        {"name":"memory_session_claim","description":"Atomically claim an active agent session lease for one worker attempt","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"owner":{"type":"string"},"lease_secs":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","owner"]}},
+        {"name":"memory_session_renew","description":"Renew an unexpired agent session lease","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"owner":{"type":"string"},"lease_token":{"type":"string"},"lease_secs":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","owner","lease_token"]}},
+        {"name":"memory_session_release","description":"Release an active agent session lease without finishing","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"owner":{"type":"string"},"lease_token":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","owner","lease_token"]}},
+        {"name":"memory_session_event","description":"Record a bounded retry-safe lifecycle event and refresh an active agent session heartbeat","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"event_type":{"type":"string","enum":["heartbeat","runner_selected","runner_started","runner_completed","runner_failed","validation","recovery"]},"detail":{"type":"object"},"event_id":{"type":"string"},"owner":{"type":"string"},"lease_token":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","event_type"]}},
+        {"name":"memory_session_recover","description":"List or atomically claim active sessions whose heartbeat or lease is stale","inputSchema":{"type":"object","properties":{"stale_after_secs":{"type":"number"},"limit":{"type":"number"},"owner":{"type":"string"},"lease_secs":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_session_finish","description":"Finish an agent session; automatic useful feedback requires success plus explicit evidence","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"outcome":{"type":"string","enum":["success","failed","partial","abandoned"]},"summary":{"type":"string"},"changed_files":{"type":"array","items":{"type":"string"}},"validations":{"type":"array","items":{"type":"string"}},"commit":{"type":"string"},"owner":{"type":"string"},"lease_token":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","outcome","summary"]}},
         {"name":"memory_session_status","description":"Show one agent session or recent sessions","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_session_trace","description":"Show recalled memory, actions, validation, and outcome for an agent session","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_runner_profiles","description":"List named Codex, Gemini, Antigravity, and local runner profiles with PATH readiness","inputSchema":{"type":"object","properties":{"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
@@ -213,26 +216,97 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 .unwrap_or_else(|| DEFAULT_EMBED_ENDPOINT.to_string());
             let model =
                 json_string(&args, "model").unwrap_or_else(|| DEFAULT_EMBED_MODEL.to_string());
-            let report =
-                agent_session_context(&conn, &id, limit, max_chars, &provider, &endpoint, &model)
-                    .map_err(|err| err.to_string())?;
+            let owner = json_string(&args, "owner");
+            let lease_token = json_string(&args, "lease_token");
+            let report = agent_session_context(
+                &conn,
+                &id,
+                limit,
+                max_chars,
+                &provider,
+                &endpoint,
+                &model,
+                owner.as_deref(),
+                lease_token.as_deref(),
+            )
+            .map_err(|err| err.to_string())?;
             serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+        }
+        "memory_session_claim" => {
+            let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            let owner = json_string(&args, "owner").ok_or_else(|| "missing owner".to_string())?;
+            let report = claim_agent_session(
+                &conn,
+                &id,
+                &owner,
+                json_usize(&args, "lease_secs").unwrap_or(120) as u64,
+                false,
+            )
+            .map_err(|err| err.to_string())?;
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+        }
+        "memory_session_renew" => {
+            let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            let owner = json_string(&args, "owner").ok_or_else(|| "missing owner".to_string())?;
+            let lease_token = json_string(&args, "lease_token")
+                .ok_or_else(|| "missing lease_token".to_string())?;
+            let report = renew_agent_session_lease(
+                &conn,
+                &id,
+                &owner,
+                &lease_token,
+                json_usize(&args, "lease_secs").unwrap_or(120) as u64,
+            )
+            .map_err(|err| err.to_string())?;
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+        }
+        "memory_session_release" => {
+            let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            let owner = json_string(&args, "owner").ok_or_else(|| "missing owner".to_string())?;
+            let lease_token = json_string(&args, "lease_token")
+                .ok_or_else(|| "missing lease_token".to_string())?;
+            let session = release_agent_session_lease(&conn, &id, &owner, &lease_token)
+                .map_err(|err| err.to_string())?;
+            serde_json::to_string_pretty(&session).map_err(|err| err.to_string())?
         }
         "memory_session_event" => {
             let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
             let event_type =
                 json_string(&args, "event_type").ok_or_else(|| "missing event_type".to_string())?;
             let detail = args.get("detail").cloned().unwrap_or_else(|| json!({}));
-            let session = record_agent_session_event(&conn, &id, &event_type, &detail)
-                .map_err(|err| err.to_string())?;
+            let event_id = json_string(&args, "event_id");
+            let owner = json_string(&args, "owner");
+            let lease_token = json_string(&args, "lease_token");
+            let session = record_agent_session_event(
+                &conn,
+                &id,
+                &event_type,
+                &detail,
+                event_id.as_deref(),
+                owner.as_deref(),
+                lease_token.as_deref(),
+            )
+            .map_err(|err| err.to_string())?;
             serde_json::to_string_pretty(&session).map_err(|err| err.to_string())?
         }
         "memory_session_recover" => {
             let stale_after_secs = json_usize(&args, "stale_after_secs").unwrap_or(300) as u64;
             let limit = json_usize(&args, "limit").unwrap_or(20);
-            let sessions = recoverable_agent_sessions(&conn, stale_after_secs, limit)
+            if let Some(owner) = json_string(&args, "owner") {
+                let claims = claim_recoverable_agent_sessions(
+                    &conn,
+                    stale_after_secs,
+                    limit,
+                    &owner,
+                    json_usize(&args, "lease_secs").unwrap_or(120) as u64,
+                )
                 .map_err(|err| err.to_string())?;
-            serde_json::to_string_pretty(&sessions).map_err(|err| err.to_string())?
+                serde_json::to_string_pretty(&claims).map_err(|err| err.to_string())?
+            } else {
+                let sessions = recoverable_agent_sessions(&conn, stale_after_secs, limit)
+                    .map_err(|err| err.to_string())?;
+                serde_json::to_string_pretty(&sessions).map_err(|err| err.to_string())?
+            }
         }
         "memory_session_finish" => {
             let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
@@ -253,6 +327,8 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let changed_files = json_string_array(&args, "changed_files");
             let validations = json_string_array(&args, "validations");
             let commit = json_string(&args, "commit");
+            let owner = json_string(&args, "owner");
+            let lease_token = json_string(&args, "lease_token");
             let report = finish_agent_session(
                 &conn,
                 &id,
@@ -261,6 +337,8 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 &changed_files,
                 &validations,
                 commit.as_deref(),
+                owner.as_deref(),
+                lease_token.as_deref(),
             )
             .map_err(|err| err.to_string())?;
             serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?

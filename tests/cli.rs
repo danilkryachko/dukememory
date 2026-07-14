@@ -2075,6 +2075,9 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
     assert!(stdout.contains("memory_mcp_surface_v3"));
     assert!(stdout.contains("memory_session_start"));
     assert!(stdout.contains("memory_session_context"));
+    assert!(stdout.contains("memory_session_claim"));
+    assert!(stdout.contains("memory_session_renew"));
+    assert!(stdout.contains("memory_session_release"));
     assert!(stdout.contains("memory_session_event"));
     assert!(stdout.contains("memory_session_recover"));
     assert!(stdout.contains("memory_session_finish"));
@@ -3073,6 +3076,266 @@ fn agent_session_lifecycle_is_idempotent_and_feedback_requires_evidence() {
 }
 
 #[test]
+fn agent_session_lease_fencing_and_event_idempotency_are_enforced() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let started: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("start")
+            .arg("lease fenced runner task")
+            .arg("--json"),
+    ))
+    .unwrap();
+    let id = started["id"].as_str().unwrap();
+
+    let claimed: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("claim")
+            .arg(id)
+            .arg("--owner")
+            .arg("dukeagent:worker-a")
+            .arg("--lease-secs")
+            .arg("120")
+            .arg("--json"),
+    ))
+    .unwrap();
+    let lease_token = claimed["lease_token"].as_str().unwrap();
+    let attempt_id = claimed["attempt_id"].as_str().unwrap();
+    assert_eq!(claimed["session"]["attempt_count"], 1);
+    assert_eq!(claimed["session"]["lease_owner"], "dukeagent:worker-a");
+    assert_eq!(claimed["idempotent"], false);
+
+    let repeated_claim: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("claim")
+            .arg(id)
+            .arg("--owner")
+            .arg("dukeagent:worker-a")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(repeated_claim["lease_token"], lease_token);
+    assert_eq!(repeated_claim["attempt_id"], attempt_id);
+    assert_eq!(repeated_claim["idempotent"], true);
+
+    cmd(&db)
+        .arg("agent-session")
+        .arg("claim")
+        .arg(id)
+        .arg("--owner")
+        .arg("dukeagent:worker-b")
+        .assert()
+        .failure()
+        .stderr(contains("already leased by dukeagent:worker-a"));
+    cmd(&db)
+        .arg("agent-session")
+        .arg("context")
+        .arg(id)
+        .assert()
+        .failure()
+        .stderr(contains("requires --owner"));
+
+    let event_args = |command: &mut assert_cmd::Command| {
+        command
+            .arg("agent-session")
+            .arg("event")
+            .arg(id)
+            .arg("--event-type")
+            .arg("runner_started")
+            .arg("--detail")
+            .arg(r#"{"profile":"codex_default","pid":42}"#)
+            .arg("--event-id")
+            .arg("runner-started-1")
+            .arg("--owner")
+            .arg("dukeagent:worker-a")
+            .arg("--lease-token")
+            .arg(lease_token)
+            .arg("--json");
+    };
+    let mut event_command = cmd(&db);
+    event_args(&mut event_command);
+    let recorded: Value = serde_json::from_str(&stdout(&mut event_command)).unwrap();
+    let sequence_after_event = recorded["last_event_sequence"].as_i64().unwrap();
+    let mut repeated_event_command = cmd(&db);
+    event_args(&mut repeated_event_command);
+    let repeated_event: Value = serde_json::from_str(&stdout(&mut repeated_event_command)).unwrap();
+    assert_eq!(repeated_event["last_event_sequence"], sequence_after_event);
+    cmd(&db)
+        .arg("agent-session")
+        .arg("event")
+        .arg(id)
+        .arg("--event-type")
+        .arg("runner_failed")
+        .arg("--detail")
+        .arg(r#"{"error":"conflict"}"#)
+        .arg("--event-id")
+        .arg("runner-started-1")
+        .arg("--owner")
+        .arg("dukeagent:worker-a")
+        .arg("--lease-token")
+        .arg(lease_token)
+        .assert()
+        .failure()
+        .stderr(contains("already exists with different payload"));
+
+    let renewed: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("renew")
+            .arg(id)
+            .arg("--owner")
+            .arg("dukeagent:worker-a")
+            .arg("--lease-token")
+            .arg(lease_token)
+            .arg("--lease-secs")
+            .arg("120")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert!(renewed["session"]["last_heartbeat_at"].as_i64().is_some());
+    let released: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("release")
+            .arg(id)
+            .arg("--owner")
+            .arg("dukeagent:worker-a")
+            .arg("--lease-token")
+            .arg(lease_token)
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert!(released["lease_owner"].is_null());
+
+    let second_claim: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("claim")
+            .arg(id)
+            .arg("--owner")
+            .arg("dukeagent:worker-b")
+            .arg("--json"),
+    ))
+    .unwrap();
+    let second_token = second_claim["lease_token"].as_str().unwrap();
+    assert_ne!(second_claim["attempt_id"], attempt_id);
+    assert_eq!(second_claim["session"]["attempt_count"], 2);
+    cmd(&db)
+        .arg("agent-session")
+        .arg("event")
+        .arg(id)
+        .arg("--event-type")
+        .arg("heartbeat")
+        .arg("--owner")
+        .arg("dukeagent:worker-a")
+        .arg("--lease-token")
+        .arg(lease_token)
+        .assert()
+        .failure()
+        .stderr(contains("owned by dukeagent:worker-b"));
+
+    let finished: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("finish")
+            .arg(id)
+            .arg("--outcome")
+            .arg("success")
+            .arg("--summary")
+            .arg("lease fenced task completed")
+            .arg("--validation")
+            .arg("cargo check")
+            .arg("--owner")
+            .arg("dukeagent:worker-b")
+            .arg("--lease-token")
+            .arg(second_token)
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(finished["session"]["status"], "completed");
+    assert!(finished["session"]["lease_owner"].is_null());
+    assert_eq!(finished["causal_trace"]["metrics"]["attempt_count"], 2);
+    assert_eq!(
+        finished["causal_trace"]["metrics"]["lease_state"],
+        "released"
+    );
+    assert_eq!(
+        finished["causal_trace"]["effectiveness"]["classification"],
+        "validated_success"
+    );
+    let events = finished["causal_trace"]["events"].as_array().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["event_id"] == "runner-started-1")
+            .count(),
+        1
+    );
+    assert!(events.windows(2).all(|pair| {
+        pair[0]["sequence"].as_i64().unwrap() < pair[1]["sequence"].as_i64().unwrap()
+    }));
+}
+
+#[test]
+fn agent_session_recovery_atomically_claims_an_expired_lease() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let started: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("start")
+            .arg("recover expired worker")
+            .arg("--json"),
+    ))
+    .unwrap();
+    let id = started["id"].as_str().unwrap();
+    stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("claim")
+            .arg(id)
+            .arg("--owner")
+            .arg("dukeagent:dead-worker")
+            .arg("--json"),
+    );
+    Connection::open(&db)
+        .unwrap()
+        .execute(
+            "UPDATE agent_sessions SET lease_expires_at = 0 WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+
+    let claims: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("recover")
+            .arg("--stale-after-secs")
+            .arg("3600")
+            .arg("--owner")
+            .arg("dukeagent:recovery-worker")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(claims.as_array().unwrap().len(), 1);
+    assert_eq!(claims[0]["session"]["id"], id);
+    assert_eq!(claims[0]["session"]["attempt_count"], 2);
+    assert_eq!(claims[0]["recovered"], true);
+    let trace: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("trace")
+            .arg(id)
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(trace["metrics"]["recovery_count"], 1);
+}
+
+#[test]
 fn agent_session_survives_process_exit_and_runner_profiles_are_named() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
@@ -3148,7 +3411,7 @@ fn agent_session_survives_process_exit_and_runner_profiles_are_named() {
 }
 
 #[test]
-fn schema_v20_upgrades_existing_read_events_before_creating_session_index() {
+fn schema_v21_upgrades_existing_read_events_before_creating_session_index() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
     let conn = Connection::open(&db).unwrap();
@@ -3178,7 +3441,84 @@ fn schema_v20_upgrades_existing_read_events_before_creating_session_index() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(schema, 20);
+    assert_eq!(schema, 21);
+}
+
+#[test]
+fn schema_v21_migrates_agent_sessions_and_backfills_event_sequences() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE agent_sessions (\
+            id TEXT PRIMARY KEY, task TEXT NOT NULL, target TEXT, scope TEXT NOT NULL DEFAULT 'project', \
+            runner_profile TEXT, status TEXT NOT NULL DEFAULT 'active', outcome TEXT, summary TEXT, \
+            changed_files TEXT NOT NULL DEFAULT '[]', validation_commands TEXT NOT NULL DEFAULT '[]', \
+            commit_hash TEXT, memory_ids TEXT NOT NULL DEFAULT '[]', feedback_written INTEGER NOT NULL DEFAULT 0, \
+            started_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, finished_at INTEGER\
+        );\
+        CREATE TABLE agent_session_events (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, event_type TEXT NOT NULL, \
+            detail TEXT NOT NULL, created_at INTEGER NOT NULL\
+        );\
+        INSERT INTO agent_sessions (id, task, started_at, updated_at) \
+            VALUES ('legacy-session', 'migrate legacy session', 100, 200);\
+        INSERT INTO agent_session_events (session_id, event_type, detail, created_at) \
+            VALUES ('legacy-session', 'started', '{}', 100);\
+        INSERT INTO agent_session_events (session_id, event_type, detail, created_at) \
+            VALUES ('legacy-session', 'context_loaded', '{}', 150);",
+    )
+    .unwrap();
+    drop(conn);
+
+    cmd(&db).arg("schema").arg("verify").assert().success();
+    let conn = Connection::open(&db).unwrap();
+    let session_columns = conn
+        .prepare("PRAGMA table_info(agent_sessions)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    for expected in [
+        "lease_owner",
+        "lease_token",
+        "current_attempt_id",
+        "lease_expires_at",
+        "attempt_count",
+        "last_event_sequence",
+        "last_heartbeat_at",
+    ] {
+        assert!(session_columns.contains(&expected.to_string()));
+    }
+    let event_columns = conn
+        .prepare("PRAGMA table_info(agent_session_events)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    for expected in ["event_id", "sequence", "attempt_id"] {
+        assert!(event_columns.contains(&expected.to_string()));
+    }
+    let sequences = conn
+        .prepare(
+            "SELECT sequence FROM agent_session_events WHERE session_id = 'legacy-session' ORDER BY sequence",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, i64>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(sequences, vec![1, 2]);
+    let last_sequence: i64 = conn
+        .query_row(
+            "SELECT last_event_sequence FROM agent_sessions WHERE id = 'legacy-session'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(last_sequence, 2);
 }
 
 #[test]
@@ -3195,6 +3535,10 @@ fn memory_ui_initial_intelligence_load_obeys_one_request_budget() {
     assert!(initial.contains("/web-control-center?"));
     assert!(!initial.contains("/web-control-center-v12"));
     assert!(html.contains("data-intelligence=\"load-details\""));
+    assert!(html.contains("leased workers"));
+    assert!(html.contains("session.lease_expires_at"));
+    assert!(html.contains("session.attempt_count"));
+    assert!(html.contains("session.last_heartbeat_at"));
 }
 
 #[test]
@@ -3221,10 +3565,32 @@ fn http_exposes_agent_sessions_profiles_and_stable_control_snapshot() {
     let started: Value = serde_json::from_str(start_body).unwrap();
     let session_id = started["session"]["id"].as_str().unwrap();
 
+    let claim_body = serde_json::json!({
+        "id": session_id,
+        "owner": "dukeagent:http-worker",
+        "lease_secs": 120
+    })
+    .to_string();
+    let claim = http_once(
+        &db,
+        &format!(
+            "POST /agent-sessions/claim HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            claim_body.len(),
+            claim_body,
+        ),
+    );
+    assert!(claim.starts_with("HTTP/1.1 200"));
+    let claim_json: Value = serde_json::from_str(claim.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let lease_token = claim_json["claim"]["lease_token"].as_str().unwrap();
+    assert_eq!(claim_json["claim"]["session"]["attempt_count"], 1);
+
     let event_body = serde_json::json!({
         "id": session_id,
         "event_type": "heartbeat",
-        "detail": {"source": "dukeagent"}
+        "detail": {"source": "dukeagent"},
+        "event_id": "http-heartbeat-1",
+        "owner": "dukeagent:http-worker",
+        "lease_token": lease_token
     })
     .to_string();
     let event = http_once(
@@ -3243,7 +3609,17 @@ fn http_exposes_agent_sessions_profiles_and_stable_control_snapshot() {
         "GET /agent-sessions/recover?stale_after_secs=0 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(recoverable.starts_with("HTTP/1.1 200"));
-    assert!(recoverable.contains(session_id));
+    assert!(!recoverable.contains(session_id));
+
+    let trace = http_once(
+        &db,
+        &format!(
+            "GET /agent-sessions/trace?id={} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            session_id
+        ),
+    );
+    assert!(trace.contains("http-heartbeat-1"));
+    assert!(trace.contains("\"lease_state\":\"active\""));
 
     let sessions = http_once(
         &db,
@@ -3848,7 +4224,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .arg("status")
         .assert()
         .success()
-        .stdout(contains("expected: 20"));
+        .stdout(contains("expected: 21"));
     cmd(&db)
         .arg("schema")
         .arg("verify")
@@ -3921,7 +4297,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .assert()
         .success()
         .stdout(contains("version:"))
-        .stdout(contains("schema: 20"));
+        .stdout(contains("schema: 21"));
 
     let install_dir = dir.path().join("install");
     let target = install_dir.join("dukememory");
@@ -4457,7 +4833,7 @@ fn v11_release_bundle_bench_and_self_host() {
 
     let bench = stdout(cmd(&db).arg("bench").arg("--json"));
     let bench_json: Value = serde_json::from_str(&bench).unwrap();
-    assert_eq!(bench_json["schema"], 20);
+    assert_eq!(bench_json["schema"], 21);
     assert_eq!(bench_json["memory_count"], 4);
     assert!(bench_json["db_bytes"].as_u64().unwrap() > 0);
 
@@ -4473,7 +4849,7 @@ fn v11_release_bundle_bench_and_self_host() {
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(bundle.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(manifest["schema"], 20);
+    assert_eq!(manifest["schema"], 21);
     assert_eq!(manifest["memory_stats"]["total"], 4);
     assert_eq!(manifest["binary_sha256"].as_str().unwrap().len(), 64);
 }
@@ -4507,7 +4883,7 @@ fn v12_always_on_operations() {
     );
     let health_json: Value = serde_json::from_str(&health).unwrap();
     assert_eq!(health_json["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(health_json["schema"], 20);
+    assert_eq!(health_json["schema"], 21);
     assert_eq!(health_json["endpoint_ok"], true);
 
     for _ in 0..3 {
@@ -4581,7 +4957,7 @@ fn v13_stabilization_integrity_optimize_and_large_http_request() {
     let integrity = stdout(cmd(&db).arg("integrity").arg("--json"));
     let integrity_json: Value = serde_json::from_str(&integrity).unwrap();
     assert_eq!(integrity_json["ok"], true);
-    assert_eq!(integrity_json["schema"], 20);
+    assert_eq!(integrity_json["schema"], 21);
     assert_eq!(integrity_json["integrity_check"], "ok");
 
     let optimized = stdout(cmd(&db).arg("optimize").arg("--vacuum").arg("--json"));
@@ -11487,7 +11863,10 @@ fn v14_6_local_memory_ui_and_http_actions() {
 
     let memory = server.request("GET /memory?status=active&type=decision&q=ui HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
-    assert!(memory.contains("200 OK"));
+    assert!(
+        memory.contains("200 OK"),
+        "unexpected /memory response: {memory}"
+    );
     assert!(memory.contains("\"memories\""));
     assert!(memory.contains("Memory UI"));
     assert!(memory.contains("\"request_count\""));

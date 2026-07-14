@@ -188,6 +188,13 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     commit_hash TEXT,
     memory_ids TEXT NOT NULL DEFAULT '[]',
     feedback_written INTEGER NOT NULL DEFAULT 0,
+    lease_owner TEXT,
+    lease_token TEXT,
+    current_attempt_id TEXT,
+    lease_expires_at INTEGER,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_event_sequence INTEGER NOT NULL DEFAULT 0,
+    last_heartbeat_at INTEGER,
     started_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     finished_at INTEGER
@@ -198,6 +205,9 @@ CREATE INDEX IF NOT EXISTS idx_agent_sessions_status_updated_at
 CREATE TABLE IF NOT EXISTS agent_session_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
+    event_id TEXT,
+    sequence INTEGER NOT NULL DEFAULT 0,
+    attempt_id TEXT,
     event_type TEXT NOT NULL,
     detail TEXT NOT NULL,
     created_at INTEGER NOT NULL,
@@ -315,8 +325,53 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         "INTEGER NOT NULL DEFAULT 0",
     )?;
     ensure_column(conn, "memory_read_events", "session_id", "TEXT")?;
+    ensure_column(conn, "agent_sessions", "lease_owner", "TEXT")?;
+    ensure_column(conn, "agent_sessions", "lease_token", "TEXT")?;
+    ensure_column(conn, "agent_sessions", "current_attempt_id", "TEXT")?;
+    ensure_column(conn, "agent_sessions", "lease_expires_at", "INTEGER")?;
+    ensure_column(
+        conn,
+        "agent_sessions",
+        "attempt_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "agent_sessions",
+        "last_event_sequence",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(conn, "agent_sessions", "last_heartbeat_at", "INTEGER")?;
+    ensure_column(conn, "agent_session_events", "event_id", "TEXT")?;
+    ensure_column(
+        conn,
+        "agent_session_events",
+        "sequence",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(conn, "agent_session_events", "attempt_id", "TEXT")?;
+    conn.execute(
+        "UPDATE agent_session_events SET sequence = id WHERE sequence = 0",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE agent_sessions SET last_event_sequence = COALESCE((SELECT MAX(sequence) FROM agent_session_events WHERE session_id = agent_sessions.id), 0)",
+        [],
+    )?;
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_read_events_session_id ON memory_read_events(session_id)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_sessions_lease_expiry ON agent_sessions(status, lease_expires_at)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_session_events_event_id ON agent_session_events(session_id, event_id) WHERE event_id IS NOT NULL",
+        [],
+    )?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_session_events_sequence ON agent_session_events(session_id, sequence)",
         [],
     )?;
     let version: Option<i64> =
@@ -421,6 +476,10 @@ fn migrations() -> &'static [Migration] {
         Migration {
             version: 20,
             name: "Production v20 agent session control plane",
+        },
+        Migration {
+            version: 21,
+            name: "Production v21 leased idempotent agent orchestration",
         },
     ]
 }

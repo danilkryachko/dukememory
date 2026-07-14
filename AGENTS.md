@@ -114,9 +114,11 @@ For every new chat or coding task in this repository:
 - To inspect the 0.30 web control model, run `dukememory web-control-center-v11 --json`.
 - To inspect the 0.33 web control model, run `dukememory web-control-center-v12 --json`.
 - To run an evidence-backed agent loop, use `dukememory agent-session start`,
-  `context`, `event`, `recover`, `finish`, `status`, and `trace`; use bounded
-  heartbeat/runner events for recovery, and remember that automatic positive
-  feedback requires an explicit successful result with recorded evidence.
+  `claim`, `context`, `renew`, retry-safe `event --event-id`, `release`,
+  `recover`, `finish`, `status`, and `trace`; pass the current owner and lease
+  token after claim, never recover a live lease, and remember that automatic
+  positive feedback requires an explicit successful result with recorded
+  evidence.
 - To inspect or initialize named external runner profiles, run
   `dukememory runner-profile list|doctor|init --json`; initialization writes
   `.agent/runner-profiles.toml` only with `--apply`.

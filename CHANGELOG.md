@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.40.0 — 2026-07-14 (local development)
+
+### Added
+
+- Schema v21 leased agent sessions with atomic `claim`, `renew`, `release`,
+  and stale-session recovery, including per-attempt owner fencing, opaque lease
+  tokens, expiry timestamps, heartbeat state, and attempt counters.
+- Retry-safe lifecycle events with caller-provided `event_id`, monotonic
+  per-session sequences, attempt attribution, exact-retry acceptance, and
+  conflicting-payload rejection.
+- Agent-session trace v2 metrics for duration, attempts, heartbeats, failures,
+  recoveries, runner/model attribution, lease state, evidence count, and
+  evidence-backed effectiveness classification.
+- CLI, MCP, HTTP, web-control, migration, contention, idempotency, and recovery
+  coverage for the leased orchestration protocol.
+
+### Changed
+
+- A session remains compatible with unleased 0.39 clients until it is claimed;
+  after claim, context, event, and finish mutations require the current owner
+  and lease token and fail closed after expiry or takeover.
+- DukeAgent claims every new or resumed session, renews the lease before
+  heartbeat events, attaches stable attempt-scoped event ids, and passes lease
+  credentials through runner completion and evidence-backed finish.
+- The built-in memory UI reports active leases, recoverable workers, attempts,
+  event sequence, and the last heartbeat for recent agent sessions.
+
+### Fixed
+
+- Prevent two workers from concurrently mutating or finishing the same durable
+  agent session while still allowing a new attempt after release or expiry.
+- Prevent retried runner events from duplicating causal history or silently
+  changing a previously accepted event payload.
+- Exclude sessions with a live lease from stale recovery and atomically fence a
+  recovered attempt before it can load context or emit events.
+
 ## 0.39.0 — 2026-07-14 (local development)
 
 ### Added
