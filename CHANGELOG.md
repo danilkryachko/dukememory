@@ -21,15 +21,22 @@
   are normalized on read instead of blocking status, ops, or control surfaces.
 - RAG Eval v2 now reports `evidence_placement` with selection recall,
   candidate recall, near-miss count, and suppression reasons.
+- RAG Eval v3 now adds `eval_matrix` coverage dimensions and
+  `retrieval_tuning` profile recommendations derived from eval near-misses,
+  missing candidates, and semantic fallbacks.
 - `project-diff` and `memory-diff-review` now include compact impact summaries
   with affected memory ids, unlinked changed files, severity, and suggested
   action.
 - `graph-rag` now returns `graph_summary` with seed/expanded nodes, edge
-  density, isolated nodes, and relationship kind counts.
+  density, isolated nodes, relationship coverage, max relationships per node,
+  and relationship kind counts.
 - The stable `web-control-center` snapshot now includes `rag_eval` and
   `diff_impact` panels while keeping unconfigured RAG eval cheap.
+- The stable `web-control-center` and V12 detail panels now surface RAG eval
+  matrix coverage and retrieval tuning status/profile.
 - `autonomous-supervisor` now reports a `readiness` block for RAG eval and
-  diff-impact pressure before apply.
+  diff-impact pressure before apply, including eval matrix and retrieval tuning
+  readiness.
 
 ### Changed
 
@@ -38,6 +45,8 @@
   opt-in through `--details` or `?view=details`.
 - The web UI loads detailed diagnostics with one stable request instead of a
   large parallel fan-out across every historical endpoint.
+- `auto-ranking-tune` now considers RAG eval retrieval tuning when stored eval
+  cases show evidence selection pressure.
 - Agent-session cleanup can safely select completed, failed, partial, and
   abandoned states while remaining dry-run-first and transactionally deleting
   child lifecycle events only after explicit `--apply`.

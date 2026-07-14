@@ -727,7 +727,7 @@ fn select_rag_sources(
 
 fn promote_diverse_chunk_source(
     sources: &[RagSource],
-    selected: &mut Vec<RagSource>,
+    selected: &mut [RagSource],
     packing: &mut RagPackingReport,
 ) {
     if selected.len() < 3 {

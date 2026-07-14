@@ -113,6 +113,11 @@ pub(crate) struct ControlRagSignal {
     pub(crate) grounded_coverage: f64,
     pub(crate) candidate_recall: f64,
     pub(crate) near_miss_count: usize,
+    pub(crate) eval_matrix_status: String,
+    pub(crate) eval_matrix_coverage: f64,
+    pub(crate) eval_matrix_missing_dimensions: Vec<String>,
+    pub(crate) retrieval_tuning_status: String,
+    pub(crate) retrieval_profile: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -308,6 +313,33 @@ pub(crate) fn control_snapshot_report(
             ),
         },
         ControlSnapshotPanel {
+            name: "eval_matrix".to_string(),
+            status: match rag_signal.eval_matrix_status.as_str() {
+                "ready" => "ready",
+                "empty" | "unconfigured" => "optional",
+                _ => "attention",
+            }
+            .to_string(),
+            headline: format!(
+                "coverage {:.1}% / missing {}",
+                rag_signal.eval_matrix_coverage,
+                rag_signal.eval_matrix_missing_dimensions.len()
+            ),
+        },
+        ControlSnapshotPanel {
+            name: "retrieval_tuning".to_string(),
+            status: match rag_signal.retrieval_tuning_status.as_str() {
+                "ready" => "ready",
+                "unconfigured" => "optional",
+                _ => "attention",
+            }
+            .to_string(),
+            headline: format!(
+                "{} / profile {}",
+                rag_signal.retrieval_tuning_status, rag_signal.retrieval_profile
+            ),
+        },
+        ControlSnapshotPanel {
             name: "diff_impact".to_string(),
             status: if diff_impact.severity == "high" {
                 "attention"
@@ -368,6 +400,18 @@ pub(crate) fn control_snapshot_report(
     let details_endpoint = "/web-control-center?view=details".to_string();
     let mut recommendations = recall.recommendations.clone();
     recommendations.extend(autonomy.recommendations.clone());
+    if !rag_signal.eval_matrix_missing_dimensions.is_empty() {
+        recommendations.push(format!(
+            "add RAG eval matrix cases for: {}",
+            rag_signal.eval_matrix_missing_dimensions.join(", ")
+        ));
+    }
+    if rag_signal.retrieval_tuning_status == "attention" {
+        recommendations.push(format!(
+            "review retrieval tuning profile {} with `dukememory eval rag --json`",
+            rag_signal.retrieval_profile
+        ));
+    }
     recommendations.sort();
     recommendations.dedup();
     let compact_sessions = sessions
@@ -525,6 +569,11 @@ fn control_rag_signal(conn: &Connection) -> Result<ControlRagSignal> {
             grounded_coverage: 0.0,
             candidate_recall: 0.0,
             near_miss_count: 0,
+            eval_matrix_status: "unconfigured".to_string(),
+            eval_matrix_coverage: 0.0,
+            eval_matrix_missing_dimensions: Vec::new(),
+            retrieval_tuning_status: "unconfigured".to_string(),
+            retrieval_profile: "balanced".to_string(),
         });
     }
     let report = rag_eval_report(
@@ -542,6 +591,11 @@ fn control_rag_signal(conn: &Connection) -> Result<ControlRagSignal> {
         grounded_coverage: report.grounded_answers.coverage,
         candidate_recall: report.evidence_placement.candidate_recall,
         near_miss_count: report.evidence_placement.near_miss_count,
+        eval_matrix_status: report.eval_matrix.status,
+        eval_matrix_coverage: report.eval_matrix.coverage,
+        eval_matrix_missing_dimensions: report.eval_matrix.missing_dimensions,
+        retrieval_tuning_status: report.retrieval_tuning.status,
+        retrieval_profile: report.retrieval_tuning.selected_profile,
     })
 }
 

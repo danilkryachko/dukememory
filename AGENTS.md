@@ -50,7 +50,7 @@ For every new chat or coding task in this repository:
 - To inspect goals, decisions, constraints, commands, risks, active tasks, and the compact contract, run `dukememory project-intent-map --json`.
 - To run lightweight retrieval quality probes against durable memory, run `dukememory memory-test-harness --json`.
 - To audit read discipline, semantic effectiveness, write pressure, feedback, and explainability, run `dukememory agent-audit-v2 --json`.
-- To aggregate health, intent, probes, audit, recall explanations, and autonomy, run `dukememory memory-control-center-v2 --json`.
+- To aggregate health, intent, probes, audit, recall explanations, and autonomy, run `dukememory memory-control-center --json`; `memory-control-center-v2` remains available for pinned clients.
 - To safely supersede duplicate/obsolete cards, run `dukememory auto-supersede-v2 --json`; use `--apply` only for high-confidence reversible status changes.
 - To write high-confidence changed-file memory candidates, run `dukememory memory-diff-apply --json`; use `--apply` only after reviewing write-ready cards.
 - To detect retrieval regressions, run `dukememory recall-benchmark-suite --json`; use `--write-baseline` after reviewing stable probes.
@@ -114,7 +114,7 @@ For every new chat or coding task in this repository:
 - To inspect the 0.29 web control model, run `dukememory web-control-center-v10 --json`.
 - To preview periodic fleet maintenance, run `dukememory fleet-supervisor-watch-install --dry-run --json`; omit `--dry-run` to write the launchd plist.
 - To inspect the 0.30 web control model, run `dukememory web-control-center-v11 --json`.
-- To inspect the 0.33 web control model, run `dukememory web-control-center-v12 --json`.
+- To inspect the current stable web control model, run `dukememory web-control-center --json`; `web-control-center-v12` remains available for pinned clients.
 - To run an evidence-backed agent loop, use `dukememory agent-session start`,
   `claim`, `context`, `renew`, retry-safe `event --event-id`, `release`,
   `recover`, `finish`, `status`, and `trace`; pass the current owner and lease

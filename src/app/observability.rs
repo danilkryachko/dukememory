@@ -611,6 +611,11 @@ pub(crate) struct AutoRankingTuneReport {
     pub(crate) inferred_missing: usize,
     pub(crate) semantic_empty: usize,
     pub(crate) noisy_cards: usize,
+    pub(crate) rag_retrieval_status: String,
+    pub(crate) rag_retrieval_profile: String,
+    pub(crate) rag_selection_recall: f64,
+    pub(crate) rag_candidate_recall: f64,
+    pub(crate) rag_near_misses: usize,
     pub(crate) reasons: Vec<String>,
     pub(crate) ranking: RankingProfileReport,
 }
@@ -1952,6 +1957,11 @@ pub(crate) struct AutonomousSupervisorReadiness {
     pub(crate) rag_eval_status: String,
     pub(crate) rag_eval_recall: f64,
     pub(crate) rag_eval_near_misses: usize,
+    pub(crate) eval_matrix_status: String,
+    pub(crate) eval_matrix_coverage: f64,
+    pub(crate) eval_matrix_missing_dimensions: Vec<String>,
+    pub(crate) retrieval_tuning_status: String,
+    pub(crate) retrieval_profile: String,
     pub(crate) diff_impact_severity: String,
     pub(crate) diff_write_ready_count: usize,
     pub(crate) diff_unlinked_changed_files: usize,
@@ -4523,6 +4533,14 @@ pub(crate) fn print_auto_ranking_tune(
     println!("Auto Ranking Tune");
     println!("selected_profile: {}", report.selected_profile);
     println!("applied: {}", report.applied);
+    println!(
+        "rag_retrieval: status={} profile={} selection_recall={:.1}% candidate_recall={:.1}% near_misses={}",
+        report.rag_retrieval_status,
+        report.rag_retrieval_profile,
+        report.rag_selection_recall,
+        report.rag_candidate_recall,
+        report.rag_near_misses
+    );
     for reason in &report.reasons {
         println!("- {reason}");
     }
@@ -4565,6 +4583,40 @@ pub(crate) fn auto_ranking_tune_report(
                 vec!["mixed quality signals favor precision over recall".to_string()],
             )
         };
+    let stored_cases: i64 =
+        conn.query_row("SELECT COUNT(*) FROM eval_cases", [], |row| row.get(0))?;
+    let mut profile = profile;
+    let mut rag_retrieval_status = "unconfigured".to_string();
+    let mut rag_retrieval_profile = profile.to_string();
+    let mut rag_selection_recall = 0.0;
+    let mut rag_candidate_recall = 0.0;
+    let mut rag_near_misses = 0usize;
+    if stored_cases > 0 {
+        let rag_eval = rag_eval_report(
+            conn,
+            None,
+            8,
+            3_000,
+            DEFAULT_EMBED_PROVIDER,
+            DEFAULT_EMBED_ENDPOINT,
+            DEFAULT_EMBED_MODEL,
+        )?;
+        rag_retrieval_status = rag_eval.retrieval_tuning.status.clone();
+        rag_retrieval_profile = rag_eval.retrieval_tuning.selected_profile.clone();
+        rag_selection_recall = rag_eval.retrieval_tuning.selection_recall;
+        rag_candidate_recall = rag_eval.retrieval_tuning.candidate_recall;
+        rag_near_misses = rag_eval.retrieval_tuning.near_miss_count;
+        if rag_eval.retrieval_tuning.status == "attention"
+            && let Some(rag_profile) =
+                ranking_profile_mode_from_name(&rag_eval.retrieval_tuning.selected_profile)
+        {
+            profile = rag_profile;
+            reasons.push(format!(
+                "RAG eval retrieval tuning selected {}",
+                rag_eval.retrieval_tuning.selected_profile
+            ));
+        }
+    }
     if apply {
         reasons.push("applied durable .agent/ranking-profile.json".to_string());
     }
@@ -4581,9 +4633,24 @@ pub(crate) fn auto_ranking_tune_report(
         inferred_missing: qa.inferred_missing,
         semantic_empty: qa.semantic_eligible_empty_read_count,
         noisy_cards,
+        rag_retrieval_status,
+        rag_retrieval_profile,
+        rag_selection_recall,
+        rag_candidate_recall,
+        rag_near_misses,
         reasons,
         ranking,
     })
+}
+
+fn ranking_profile_mode_from_name(name: &str) -> Option<RankingProfileMode> {
+    match name {
+        "balanced" => Some(RankingProfileMode::Balanced),
+        "strict" => Some(RankingProfileMode::Strict),
+        "recall_heavy" | "recall-heavy" => Some(RankingProfileMode::RecallHeavy),
+        "precision_heavy" | "precision-heavy" => Some(RankingProfileMode::PrecisionHeavy),
+        _ => None,
+    }
 }
 
 pub(crate) fn print_memory_health_score(
@@ -5879,7 +5946,7 @@ pub(crate) fn release_gate_v3_report(
         ok: rag_eval.ok && rag_eval.recall >= 80.0,
         required: true,
         detail: format!(
-            "recall={:.1}% passed={}/{} source={} semantic_fallbacks={} grounded={:.1}% grounded_passed={}/{} packing_selected={}/{} packing_chunks={}/{} suppressed_overlap={} suppressed_file_cap={} suppressed_limit={} expected_selected={} expected_suppressed={} expected_missing={} evidence_selection={:.1}% evidence_candidate={:.1}% near_misses={}",
+            "recall={:.1}% passed={}/{} source={} semantic_fallbacks={} grounded={:.1}% grounded_passed={}/{} packing_selected={}/{} packing_chunks={}/{} suppressed_overlap={} suppressed_file_cap={} suppressed_limit={} expected_selected={} expected_suppressed={} expected_missing={} evidence_selection={:.1}% evidence_candidate={:.1}% near_misses={} matrix={} matrix_coverage={:.1}% matrix_missing={} retrieval_profile={} retrieval_tuning={}",
             rag_eval.recall,
             rag_eval.passed,
             rag_eval.total,
@@ -5900,7 +5967,12 @@ pub(crate) fn release_gate_v3_report(
             rag_eval.packing.expected_missing_from_candidates,
             rag_eval.evidence_placement.selection_recall,
             rag_eval.evidence_placement.candidate_recall,
-            rag_eval.evidence_placement.near_miss_count
+            rag_eval.evidence_placement.near_miss_count,
+            rag_eval.eval_matrix.status,
+            rag_eval.eval_matrix.coverage,
+            rag_eval.eval_matrix.missing_dimensions.len(),
+            rag_eval.retrieval_tuning.selected_profile,
+            rag_eval.retrieval_tuning.status
         ),
     });
     let mut issues = release_gate_v2.issues.clone();
@@ -11748,9 +11820,12 @@ pub(crate) fn print_autonomous_supervisor(
     println!("quality_after: {:.1}", report.quality_after);
     println!("quality_delta: {:+.1}", report.quality_delta);
     println!(
-        "readiness: rag={} near_misses={} diff={} write_ready={} safe_to_apply={}",
+        "readiness: rag={} near_misses={} matrix={} tuning={} profile={} diff={} write_ready={} safe_to_apply={}",
         report.readiness.rag_eval_status,
         report.readiness.rag_eval_near_misses,
+        report.readiness.eval_matrix_status,
+        report.readiness.retrieval_tuning_status,
+        report.readiness.retrieval_profile,
         report.readiness.diff_impact_severity,
         report.readiness.diff_write_ready_count,
         report.readiness.safe_to_apply
@@ -11775,7 +11850,7 @@ pub(crate) fn autonomous_supervisor_report(
     let quality_before = quality_report(conn, since_days, 100)?.average_score;
     let doctor_before = project_doctor_report(conn, db, &root, since_days, false)?;
     let readiness = autonomous_supervisor_readiness(conn, &root)?;
-    let planned_actions = autonomous_supervisor_plan(&doctor_before);
+    let planned_actions = autonomous_supervisor_plan(&doctor_before, &readiness);
     let mut executed_actions = Vec::new();
     let mut embed_index = None;
     if apply {
@@ -11867,7 +11942,7 @@ pub(crate) fn autonomous_supervisor_report(
                 .to_string(),
         );
     }
-    if !apply && !planned_actions.is_empty() {
+    if !apply && planned_actions.iter().any(|action| action.safe_auto) {
         recommendations
             .push("rerun autonomous-supervisor --apply --json to execute safe actions".to_string());
     }
@@ -11882,7 +11957,7 @@ pub(crate) fn autonomous_supervisor_report(
     let ok = if apply {
         doctor_after.ok && autonomous_loop.ok && agent_enforce.ok && contract_v2.ok
     } else {
-        doctor_before.ok && planned_actions.is_empty()
+        doctor_before.ok && !planned_actions.iter().any(|action| action.safe_auto)
     };
     Ok(AutonomousSupervisorReport {
         version: 2,
@@ -11921,8 +11996,26 @@ fn autonomous_supervisor_readiness(
 ) -> Result<AutonomousSupervisorReadiness> {
     let stored_cases: i64 =
         conn.query_row("SELECT COUNT(*) FROM eval_cases", [], |row| row.get(0))?;
-    let (rag_eval_status, rag_eval_recall, rag_eval_near_misses) = if stored_cases == 0 {
-        ("unconfigured".to_string(), 0.0, 0)
+    let (
+        rag_eval_status,
+        rag_eval_recall,
+        rag_eval_near_misses,
+        eval_matrix_status,
+        eval_matrix_coverage,
+        eval_matrix_missing_dimensions,
+        retrieval_tuning_status,
+        retrieval_profile,
+    ) = if stored_cases == 0 {
+        (
+            "unconfigured".to_string(),
+            0.0,
+            0,
+            "unconfigured".to_string(),
+            0.0,
+            Vec::new(),
+            "unconfigured".to_string(),
+            "balanced".to_string(),
+        )
     } else {
         let report = rag_eval_report(
             conn,
@@ -11937,6 +12030,11 @@ fn autonomous_supervisor_readiness(
             report.status,
             report.recall,
             report.evidence_placement.near_miss_count,
+            report.eval_matrix.status,
+            report.eval_matrix.coverage,
+            report.eval_matrix.missing_dimensions,
+            report.retrieval_tuning.status,
+            report.retrieval_tuning.selected_profile,
         )
     };
     let diff_review = memory_diff_review_report(conn, root, false)?;
@@ -11946,6 +12044,11 @@ fn autonomous_supervisor_readiness(
         rag_eval_status,
         rag_eval_recall,
         rag_eval_near_misses,
+        eval_matrix_status,
+        eval_matrix_coverage,
+        eval_matrix_missing_dimensions,
+        retrieval_tuning_status,
+        retrieval_profile,
         diff_impact_severity: diff_review.impact.severity,
         diff_write_ready_count: diff_review.impact.write_ready_count,
         diff_unlinked_changed_files: diff_review.impact.unlinked_changed_files.len(),
@@ -11953,8 +12056,40 @@ fn autonomous_supervisor_readiness(
     })
 }
 
-fn autonomous_supervisor_plan(doctor: &ProjectDoctorReport) -> Vec<AutonomousSupervisorAction> {
+fn autonomous_supervisor_plan(
+    doctor: &ProjectDoctorReport,
+    readiness: &AutonomousSupervisorReadiness,
+) -> Vec<AutonomousSupervisorAction> {
     let mut actions = Vec::new();
+    if !matches!(
+        readiness.eval_matrix_status.as_str(),
+        "ready" | "unconfigured" | "empty"
+    ) {
+        actions.push(AutonomousSupervisorAction {
+            name: "rag_eval_matrix_review".to_string(),
+            reason: format!(
+                "eval matrix is {} with {:.1}% coverage and {} missing dimensions",
+                readiness.eval_matrix_status,
+                readiness.eval_matrix_coverage,
+                readiness.eval_matrix_missing_dimensions.len()
+            ),
+            safe_auto: false,
+            applied: false,
+            status: "manual_review".to_string(),
+        });
+    }
+    if readiness.retrieval_tuning_status == "attention" {
+        actions.push(AutonomousSupervisorAction {
+            name: "retrieval_tuning_review".to_string(),
+            reason: format!(
+                "RAG eval recommends retrieval profile {}",
+                readiness.retrieval_profile
+            ),
+            safe_auto: false,
+            applied: false,
+            status: "manual_review".to_string(),
+        });
+    }
     if doctor
         .embedding
         .as_ref()
@@ -12676,6 +12811,96 @@ pub(crate) fn web_control_center_v12_report(
                 status: fleet_quality.status.clone(),
             }],
             actions: vec!["dukememory fleet-quality --json".to_string()],
+        },
+        WebControlPanel {
+            name: "eval_matrix".to_string(),
+            status: match release_gate.rag_eval.eval_matrix.status.as_str() {
+                "ready" => "ready",
+                "empty" | "auto_only" => "optional",
+                _ => "attention",
+            }
+            .to_string(),
+            headline: format!(
+                "{:.1}% coverage, {} missing",
+                release_gate.rag_eval.eval_matrix.coverage,
+                release_gate.rag_eval.eval_matrix.missing_dimensions.len()
+            ),
+            metrics: vec![
+                MemoryEvalProofPoint {
+                    name: "stored_cases".to_string(),
+                    value: release_gate.rag_eval.eval_matrix.stored_cases.to_string(),
+                    status: if release_gate.rag_eval.eval_matrix.stored_cases
+                        >= release_gate
+                            .rag_eval
+                            .eval_matrix
+                            .recommended_min_stored_cases
+                    {
+                        "ready"
+                    } else {
+                        "attention"
+                    }
+                    .to_string(),
+                },
+                MemoryEvalProofPoint {
+                    name: "covered_dimensions".to_string(),
+                    value: format!(
+                        "{}/{}",
+                        release_gate.rag_eval.eval_matrix.covered_dimensions,
+                        release_gate.rag_eval.eval_matrix.total_dimensions
+                    ),
+                    status: release_gate.rag_eval.eval_matrix.status.clone(),
+                },
+            ],
+            actions: vec!["dukememory eval rag --json".to_string()],
+        },
+        WebControlPanel {
+            name: "retrieval_tuning".to_string(),
+            status: match release_gate.rag_eval.retrieval_tuning.status.as_str() {
+                "ready" => "ready",
+                "unconfigured" => "optional",
+                _ => "attention",
+            }
+            .to_string(),
+            headline: format!(
+                "profile {}, selection {:.1}%",
+                release_gate.rag_eval.retrieval_tuning.selected_profile,
+                release_gate.rag_eval.retrieval_tuning.selection_recall
+            ),
+            metrics: vec![
+                MemoryEvalProofPoint {
+                    name: "candidate_recall".to_string(),
+                    value: format!(
+                        "{:.1}%",
+                        release_gate.rag_eval.retrieval_tuning.candidate_recall
+                    ),
+                    status: release_gate.rag_eval.retrieval_tuning.status.clone(),
+                },
+                MemoryEvalProofPoint {
+                    name: "semantic_fallback_rate".to_string(),
+                    value: format!(
+                        "{:.1}%",
+                        release_gate
+                            .rag_eval
+                            .retrieval_tuning
+                            .semantic_fallback_rate
+                    ),
+                    status: if release_gate
+                        .rag_eval
+                        .retrieval_tuning
+                        .semantic_fallback_rate
+                        == 0.0
+                    {
+                        "ready"
+                    } else {
+                        "attention"
+                    }
+                    .to_string(),
+                },
+            ],
+            actions: vec![
+                "dukememory eval rag --json".to_string(),
+                "dukememory auto-ranking-tune --json".to_string(),
+            ],
         },
         WebControlPanel {
             name: "release_gate_v3".to_string(),

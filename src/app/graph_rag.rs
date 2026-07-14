@@ -43,6 +43,8 @@ pub(crate) struct GraphRagSummary {
     pub(crate) edge_count: usize,
     pub(crate) connected_node_count: usize,
     pub(crate) isolated_node_count: usize,
+    pub(crate) relationship_coverage: f64,
+    pub(crate) max_relationships_per_node: usize,
     pub(crate) edge_density: f64,
     pub(crate) relationship_kinds: BTreeMap<String, usize>,
     pub(crate) status: String,
@@ -567,13 +569,20 @@ fn graph_summary(nodes: &[GraphRagNodeEvidence], edges: &[GraphRagEdge]) -> Grap
         .map(|node| node.id.as_str())
         .collect::<HashSet<_>>();
     let mut connected_ids = HashSet::new();
+    let mut relationship_counts = HashMap::new();
     let mut relationship_kinds = BTreeMap::new();
     for edge in edges {
         if node_ids.contains(edge.source.as_str()) {
             connected_ids.insert(edge.source.as_str());
+            *relationship_counts
+                .entry(edge.source.as_str())
+                .or_insert(0usize) += 1;
         }
         if node_ids.contains(edge.target.as_str()) {
             connected_ids.insert(edge.target.as_str());
+            *relationship_counts
+                .entry(edge.target.as_str())
+                .or_insert(0usize) += 1;
         }
         *relationship_kinds.entry(edge.kind.clone()).or_insert(0) += 1;
     }
@@ -581,6 +590,16 @@ fn graph_summary(nodes: &[GraphRagNodeEvidence], edges: &[GraphRagEdge]) -> Grap
     let seed_count = nodes.iter().filter(|node| node.seed).count();
     let connected_node_count = connected_ids.len();
     let isolated_node_count = node_count.saturating_sub(connected_node_count);
+    let relationship_coverage = if node_count == 0 {
+        0.0
+    } else {
+        ((connected_node_count as f64 / node_count as f64) * 1000.0).round() / 10.0
+    };
+    let max_relationships_per_node = relationship_counts
+        .values()
+        .copied()
+        .max()
+        .unwrap_or_default();
     let possible_directed_edges = node_count.saturating_mul(node_count.saturating_sub(1));
     let edge_density = if possible_directed_edges == 0 {
         0.0
@@ -604,6 +623,8 @@ fn graph_summary(nodes: &[GraphRagNodeEvidence], edges: &[GraphRagEdge]) -> Grap
         edge_count: edges.len(),
         connected_node_count,
         isolated_node_count,
+        relationship_coverage,
+        max_relationships_per_node,
         edge_density,
         relationship_kinds,
         status,
@@ -914,6 +935,8 @@ mod graph_rag_tests {
         assert_eq!(summary.edge_count, 1);
         assert_eq!(summary.connected_node_count, 2);
         assert_eq!(summary.isolated_node_count, 1);
+        assert_eq!(summary.relationship_coverage, 66.7);
+        assert_eq!(summary.max_relationships_per_node, 1);
         assert_eq!(summary.edge_density, 0.167);
         assert_eq!(summary.relationship_kinds.get("relates_to"), Some(&1));
         assert_eq!(summary.status, "partial");

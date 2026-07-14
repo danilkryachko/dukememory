@@ -1490,6 +1490,8 @@ pub(crate) struct RagEvalReport {
     pub(crate) packing: RagEvalPackingSummary,
     pub(crate) evidence_placement: RagEvalEvidencePlacementSummary,
     pub(crate) grounded_answers: RagEvalGroundedSummary,
+    pub(crate) eval_matrix: RagEvalMatrixSummary,
+    pub(crate) retrieval_tuning: RagEvalRetrievalTuningSummary,
     pub(crate) cases: Vec<RagEvalCaseResult>,
     pub(crate) recommendations: Vec<String>,
 }
@@ -1533,6 +1535,45 @@ pub(crate) struct RagEvalGroundedSummary {
     pub(crate) expected_in_answer: usize,
     pub(crate) cited_answers: usize,
     pub(crate) unknown_citation_cases: usize,
+}
+
+const RAG_EVAL_RECOMMENDED_STORED_CASES: usize = 12;
+const RAG_EVAL_MATRIX_DIMENSIONS: [&str; 9] = [
+    "source_chunk",
+    "memory_card",
+    "cli_workflow",
+    "mcp_tooling",
+    "http_api",
+    "graph_memory",
+    "multilingual",
+    "negative_or_missing",
+    "packing_near_miss",
+];
+
+#[derive(Debug, Serialize, Default)]
+pub(crate) struct RagEvalMatrixSummary {
+    pub(crate) status: String,
+    pub(crate) stored_cases: usize,
+    pub(crate) auto_cases: usize,
+    pub(crate) recommended_min_stored_cases: usize,
+    pub(crate) total_dimensions: usize,
+    pub(crate) covered_dimensions: usize,
+    pub(crate) coverage: f64,
+    pub(crate) dimensions: std::collections::BTreeMap<String, usize>,
+    pub(crate) missing_dimensions: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub(crate) struct RagEvalRetrievalTuningSummary {
+    pub(crate) status: String,
+    pub(crate) selected_profile: String,
+    pub(crate) candidate_recall: f64,
+    pub(crate) selection_recall: f64,
+    pub(crate) chunk_selection_rate: f64,
+    pub(crate) memory_selection_rate: f64,
+    pub(crate) semantic_fallback_rate: f64,
+    pub(crate) near_miss_count: usize,
+    pub(crate) reasons: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1628,6 +1669,26 @@ fn run_rag_eval(
             report.grounded_answers.expected_in_answer,
             report.grounded_answers.cited_answers,
             report.grounded_answers.unknown_citation_cases
+        );
+        println!(
+            "eval_matrix: status={} coverage={:.1}% stored={} auto={} covered={}/{} missing={:?}",
+            report.eval_matrix.status,
+            report.eval_matrix.coverage,
+            report.eval_matrix.stored_cases,
+            report.eval_matrix.auto_cases,
+            report.eval_matrix.covered_dimensions,
+            report.eval_matrix.total_dimensions,
+            report.eval_matrix.missing_dimensions
+        );
+        println!(
+            "retrieval_tuning: status={} profile={} selection_recall={:.1}% candidate_recall={:.1}% chunk_selection={:.1}% memory_selection={:.1}% semantic_fallbacks={:.1}%",
+            report.retrieval_tuning.status,
+            report.retrieval_tuning.selected_profile,
+            report.retrieval_tuning.selection_recall,
+            report.retrieval_tuning.candidate_recall,
+            report.retrieval_tuning.chunk_selection_rate,
+            report.retrieval_tuning.memory_selection_rate,
+            report.retrieval_tuning.semantic_fallback_rate
         );
         for case in &report.cases {
             println!(
@@ -1793,6 +1854,13 @@ pub(crate) fn rag_eval_report(
     let packing = rag_eval_packing_summary(&results);
     let evidence_placement = rag_eval_evidence_placement_summary(&results);
     let grounded_answers = rag_eval_grounded_summary(&results);
+    let eval_matrix = rag_eval_matrix_summary(&results);
+    let retrieval_tuning = rag_eval_retrieval_tuning_summary(
+        &results,
+        &evidence_placement,
+        &packing,
+        semantic_fallbacks,
+    );
     let mut recommendations = Vec::new();
     if total == 0 {
         recommendations
@@ -1828,9 +1896,34 @@ pub(crate) fn rag_eval_report(
             "ingest or relink source chunks for cases where expected evidence is missing from candidates".to_string(),
         );
     }
+    if eval_matrix.status == "auto_only" {
+        recommendations.push(
+            "promote representative auto eval cases into stored project-critical RAG eval cases"
+                .to_string(),
+        );
+    }
+    if eval_matrix.stored_cases > 0
+        && eval_matrix.stored_cases < eval_matrix.recommended_min_stored_cases
+    {
+        recommendations.push(format!(
+            "expand RAG eval matrix to at least {} stored cases before release confidence claims",
+            eval_matrix.recommended_min_stored_cases
+        ));
+    }
+    if !eval_matrix.missing_dimensions.is_empty() {
+        recommendations.push(format!(
+            "add RAG eval cases for missing matrix dimensions: {}",
+            eval_matrix.missing_dimensions.join(", ")
+        ));
+    }
+    for reason in &retrieval_tuning.reasons {
+        if retrieval_tuning.status != "ready" {
+            recommendations.push(format!("retrieval tuning: {reason}"));
+        }
+    }
     let ok = total > 0 && failed == 0 && grounded_answers.failed == 0;
     Ok(RagEvalReport {
-        version: 2,
+        version: 3,
         ok,
         status: if ok {
             "ready"
@@ -1851,6 +1944,8 @@ pub(crate) fn rag_eval_report(
         packing,
         evidence_placement,
         grounded_answers,
+        eval_matrix,
+        retrieval_tuning,
         cases: results,
         recommendations,
     })
@@ -1933,6 +2028,211 @@ fn rag_eval_grounded_summary(cases: &[RagEvalCaseResult]) -> RagEvalGroundedSumm
             .iter()
             .filter(|case| !case.grounded_answer.unknown_citations.is_empty())
             .count(),
+    }
+}
+
+fn rag_eval_matrix_summary(cases: &[RagEvalCaseResult]) -> RagEvalMatrixSummary {
+    let mut dimensions = RAG_EVAL_MATRIX_DIMENSIONS
+        .iter()
+        .map(|dimension| (dimension.to_string(), 0usize))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut stored_cases = 0usize;
+    let mut auto_cases = 0usize;
+
+    for case in cases {
+        if case.case_source == "stored" {
+            stored_cases += 1;
+        } else {
+            auto_cases += 1;
+        }
+        for dimension in rag_eval_case_dimensions(case) {
+            *dimensions.entry(dimension.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    let missing_dimensions = RAG_EVAL_MATRIX_DIMENSIONS
+        .iter()
+        .filter(|dimension| dimensions.get(**dimension).copied().unwrap_or_default() == 0)
+        .map(|dimension| dimension.to_string())
+        .collect::<Vec<_>>();
+    let total_dimensions = RAG_EVAL_MATRIX_DIMENSIONS.len();
+    let covered_dimensions = total_dimensions.saturating_sub(missing_dimensions.len());
+    let coverage = eval_ratio_percent(covered_dimensions, total_dimensions);
+    let status = if cases.is_empty() {
+        "empty"
+    } else if stored_cases == 0 {
+        "auto_only"
+    } else if !missing_dimensions.is_empty() {
+        "partial"
+    } else {
+        "ready"
+    }
+    .to_string();
+
+    RagEvalMatrixSummary {
+        status,
+        stored_cases,
+        auto_cases,
+        recommended_min_stored_cases: RAG_EVAL_RECOMMENDED_STORED_CASES,
+        total_dimensions,
+        covered_dimensions,
+        coverage,
+        dimensions,
+        missing_dimensions,
+    }
+}
+
+fn rag_eval_case_dimensions(case: &RagEvalCaseResult) -> Vec<&'static str> {
+    let mut dimensions = Vec::new();
+    let text = format!(
+        "{} {} {} {}",
+        case.query,
+        case.expected,
+        case.source_titles.join(" "),
+        case.citations.join(" ")
+    )
+    .to_lowercase();
+
+    if case.packing.chunk_candidates > 0
+        || case.packing.selected_chunks > 0
+        || case.source_titles.iter().any(|title| {
+            title.contains(".rs")
+                || title.contains(".md")
+                || title.contains(".toml")
+                || title.contains(':')
+        })
+    {
+        dimensions.push("source_chunk");
+    }
+    if case.packing.memory_candidates > 0 || case.packing.selected_memories > 0 {
+        dimensions.push("memory_card");
+    }
+    if text.contains("dukememory")
+        || text.contains("rag-ingest")
+        || text.contains(" --")
+        || text.contains(" cli")
+    {
+        dimensions.push("cli_workflow");
+    }
+    if text.contains("mcp") || text.contains("memory_") || text.contains("agent-session") {
+        dimensions.push("mcp_tooling");
+    }
+    if text.contains("http")
+        || text.contains("endpoint")
+        || text.contains("/web-control")
+        || text.contains(" get ")
+        || text.contains(" post ")
+    {
+        dimensions.push("http_api");
+    }
+    if text.contains("graph")
+        || text.contains("relationship")
+        || text.contains("edge")
+        || text.contains("node")
+    {
+        dimensions.push("graph_memory");
+    }
+    if text
+        .chars()
+        .any(|ch| ('\u{0400}'..='\u{04FF}').contains(&ch))
+    {
+        dimensions.push("multilingual");
+    }
+    if !case.passed
+        || case.expected_evidence_status == "missing_from_candidates"
+        || text.contains("missing")
+        || text.contains("нет ")
+        || text.contains("не ")
+    {
+        dimensions.push("negative_or_missing");
+    }
+    if case.expected_evidence_status == "suppressed_by_packing"
+        || !case.expected_suppressed_reasons.is_empty()
+        || !case.packing.suppressed_sources.is_empty()
+    {
+        dimensions.push("packing_near_miss");
+    }
+
+    dimensions.sort_unstable();
+    dimensions.dedup();
+    dimensions
+}
+
+fn rag_eval_retrieval_tuning_summary(
+    cases: &[RagEvalCaseResult],
+    evidence: &RagEvalEvidencePlacementSummary,
+    packing: &RagEvalPackingSummary,
+    semantic_fallbacks: usize,
+) -> RagEvalRetrievalTuningSummary {
+    let semantic_fallback_rate = eval_ratio_percent(semantic_fallbacks, cases.len());
+    let chunk_selection_rate =
+        eval_ratio_percent(packing.selected_chunks, packing.chunk_candidates);
+    let memory_selection_rate =
+        eval_ratio_percent(packing.selected_memories, packing.memory_candidates);
+    let mut selected_profile = "balanced".to_string();
+    let mut status = "ready".to_string();
+    let mut reasons = Vec::new();
+
+    if cases.is_empty() {
+        return RagEvalRetrievalTuningSummary {
+            status: "unconfigured".to_string(),
+            selected_profile,
+            candidate_recall: evidence.candidate_recall,
+            selection_recall: evidence.selection_recall,
+            chunk_selection_rate,
+            memory_selection_rate,
+            semantic_fallback_rate,
+            near_miss_count: evidence.near_miss_count,
+            reasons: vec!["no eval cases are available for retrieval tuning".to_string()],
+        };
+    }
+
+    if semantic_fallbacks > 0 {
+        status = "attention".to_string();
+        selected_profile = "recall_heavy".to_string();
+        reasons.push(
+            "semantic fallback occurred during eval; refresh embeddings/provider health"
+                .to_string(),
+        );
+    }
+    if evidence.missing_from_candidates > 0 {
+        status = "attention".to_string();
+        selected_profile = "recall_heavy".to_string();
+        reasons.push("expected evidence is missing from candidates; broaden retrieval or ingest missing chunks".to_string());
+    }
+    if evidence.near_miss_count > 0 {
+        status = "attention".to_string();
+        selected_profile = "recall_heavy".to_string();
+        reasons.push(
+            "expected evidence appears in candidates but is suppressed by packing".to_string(),
+        );
+    }
+    if evidence.selection_recall < 90.0 {
+        status = "attention".to_string();
+        selected_profile = "recall_heavy".to_string();
+        reasons.push(format!(
+            "selection recall {:.1}% is below the 90% tuning target",
+            evidence.selection_recall
+        ));
+    }
+    if status == "ready" && chunk_selection_rate < 20.0 && packing.chunk_candidates >= 5 {
+        selected_profile = "precision_heavy".to_string();
+        reasons.push("chunk pool is broad while selected evidence remains complete".to_string());
+    }
+    if reasons.is_empty() {
+        reasons.push("eval retrieval signals are balanced".to_string());
+    }
+
+    RagEvalRetrievalTuningSummary {
+        status,
+        selected_profile,
+        candidate_recall: evidence.candidate_recall,
+        selection_recall: evidence.selection_recall,
+        chunk_selection_rate,
+        memory_selection_rate,
+        semantic_fallback_rate,
+        near_miss_count: evidence.near_miss_count,
+        reasons,
     }
 }
 
@@ -3473,6 +3773,83 @@ mod tests {
         assert_eq!(summary.candidate_recall, 66.7);
         assert_eq!(summary.near_miss_count, 1);
         assert_eq!(summary.suppression_reasons.get("file_cap"), Some(&1));
+    }
+
+    #[test]
+    fn rag_eval_matrix_reports_dimension_coverage() {
+        let mut case = rag_eval_case_with_packing(
+            "selected",
+            RagPackingReport {
+                selected_chunks: 1,
+                chunk_candidates: 2,
+                selected_memories: 1,
+                memory_candidates: 1,
+                ..RagPackingReport::default()
+            },
+        );
+        case.query =
+            "Как dukememory CLI MCP /web-control проверяет graph relationship?".to_string();
+        case.expected = "graph".to_string();
+        case.source_titles = vec!["README.md:1-10".to_string()];
+
+        let summary = rag_eval_matrix_summary(&[case]);
+
+        assert_eq!(summary.stored_cases, 1);
+        assert_eq!(summary.dimensions.get("source_chunk"), Some(&1));
+        assert_eq!(summary.dimensions.get("memory_card"), Some(&1));
+        assert_eq!(summary.dimensions.get("cli_workflow"), Some(&1));
+        assert_eq!(summary.dimensions.get("mcp_tooling"), Some(&1));
+        assert_eq!(summary.dimensions.get("http_api"), Some(&1));
+        assert_eq!(summary.dimensions.get("graph_memory"), Some(&1));
+        assert_eq!(summary.dimensions.get("multilingual"), Some(&1));
+        assert_eq!(summary.status, "partial");
+        assert!(
+            summary
+                .missing_dimensions
+                .contains(&"negative_or_missing".to_string())
+        );
+    }
+
+    #[test]
+    fn rag_eval_retrieval_tuning_recommends_recall_for_near_misses() {
+        let cases = vec![
+            rag_eval_case_with_packing("selected", RagPackingReport::default()),
+            rag_eval_case_with_packing(
+                "suppressed_by_packing",
+                RagPackingReport {
+                    chunk_candidates: 4,
+                    selected_chunks: 1,
+                    suppressed_sources: vec![RagPackingSuppressedSource {
+                        id: "chunk-a".to_string(),
+                        source_kind: "chunk".to_string(),
+                        title: "README.md:1-8".to_string(),
+                        reason: "file_cap".to_string(),
+                        score: 1.0,
+                        semantic_score: None,
+                        location: Some("README.md:1-8".to_string()),
+                        summary: "expected evidence".to_string(),
+                    }],
+                    ..RagPackingReport::default()
+                },
+            ),
+            rag_eval_case_with_packing("missing_from_candidates", RagPackingReport::default()),
+        ];
+        let evidence = rag_eval_evidence_placement_summary(&cases);
+        let packing = rag_eval_packing_summary(&cases);
+
+        let tuning = rag_eval_retrieval_tuning_summary(&cases, &evidence, &packing, 0);
+
+        assert_eq!(tuning.status, "attention");
+        assert_eq!(tuning.selected_profile, "recall_heavy");
+        assert_eq!(tuning.selection_recall, 33.3);
+        assert_eq!(tuning.candidate_recall, 66.7);
+        assert_eq!(tuning.near_miss_count, 1);
+        assert!(
+            tuning
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("suppressed by packing"))
+        );
     }
 
     #[test]

@@ -426,13 +426,18 @@ regressions before explicit benchmark cases are written. Each case reports the
 same packed source selection diagnostics as `rag-debug`, including selected
 chunk counts and overlap/file-cap suppression. Failing cases also distinguish
 expected evidence that was selected, suppressed by packing, or missing from the
-retrieved candidates. The v2 report adds `evidence_placement` with selection
-recall, candidate recall, near-miss count, and suppression reasons so file-cap
-or limit pressure is visible without reading every case. It also builds a
-deterministic grounded answer from the selected source pack and checks that
-expected evidence reaches the answer with a valid selected citation. The
-top-level `packing`, `evidence_placement`, and `grounded_answers` summaries
-aggregate those counts across the whole eval run for release-gate inspection.
+retrieved candidates. The v3 report includes `evidence_placement` with
+selection recall, candidate recall, near-miss count, and suppression reasons so
+file-cap or limit pressure is visible without reading every case. It also adds
+`eval_matrix` coverage across source chunks, memory cards, CLI/MCP/HTTP
+workflows, graph memory, multilingual cases, negative/missing cases, and
+packing near-misses, plus `retrieval_tuning` with the recommended ranking
+profile from actual eval failures or near-misses. It also builds a deterministic
+grounded answer from the selected source pack and checks that expected evidence
+reaches the answer with a valid selected citation. The top-level `packing`,
+`evidence_placement`, `grounded_answers`, `eval_matrix`, and
+`retrieval_tuning` summaries aggregate those counts across the whole eval run
+for release-gate inspection.
 Chunked RAG sources provide file/document evidence for answers, while durable
 decisions and constraints should still be saved as reviewed memory cards.
 The same source-chunk indexing path is exposed to agents as MCP
@@ -453,8 +458,9 @@ and grounded-answer summaries.
 `rag-answer`, `rag-debug`, and `graph-rag` JSON reports include a compact
 `trace` array with ranked evidence ids, scores, reasons, and chunk file
 locations when source chunks are used. `graph-rag` also returns `graph_summary`
-with seed/expanded node counts, edge density, isolated nodes, and relationship
-kinds for a quick graph-connectivity read. RAG source packing also suppresses
+with seed/expanded node counts, edge density, isolated nodes, relationship
+coverage, max relationships per node, and relationship kinds for a quick
+graph-connectivity read. RAG source packing also suppresses
 heavily overlapping chunks from the same file and caps selected chunks per file
 so the prompt carries broader evidence instead of repeated context. When the
 pack is memory-heavy and a strong chunk from a new file is available, the
@@ -464,9 +470,10 @@ candidate/selected counts and chunk suppression counts overall and per file.
 `project-diff` and `memory-diff-review` include an `impact` summary with
 changed-file coverage, affected memory ids, unlinked changed files, write-ready
 candidate count, severity, and the next suggested action. The stable
-`web-control-center` snapshot surfaces compact `rag_eval` and `diff_impact`
-panels; it runs full RAG eval there only when stored eval cases exist, keeping
-startup snapshots cheap for unconfigured projects.
+`web-control-center` snapshot surfaces compact `rag_eval`, `eval_matrix`,
+`retrieval_tuning`, and `diff_impact` panels; it runs full RAG eval there only
+when stored eval cases exist, keeping startup snapshots cheap for unconfigured
+projects.
 Generated RAG answers expose a `generation_guard` report with `answer_source`,
 selected citations seen in generated text, and the fallback reason when the
 local model output is empty, prompt-shaped, or uncited.
