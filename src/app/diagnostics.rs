@@ -2920,13 +2920,17 @@ pub(crate) fn link_report(
     root: &Path,
     validate_symbols: bool,
 ) -> Result<Vec<LinkReport>> {
-    let mut sql = "SELECT memory_id, kind, target FROM memory_links".to_string();
+    let mut sql = "SELECT l.memory_id, l.kind, l.target FROM memory_links l \
+                   JOIN memories m ON m.id = l.memory_id"
+        .to_string();
     let mut params_vec = Vec::new();
     if let Some(id) = id {
-        sql.push_str(" WHERE memory_id = ?");
+        sql.push_str(" WHERE l.memory_id = ?");
         params_vec.push(id.to_string());
+    } else {
+        sql.push_str(" WHERE m.status IN ('active', 'uncertain')");
     }
-    sql.push_str(" ORDER BY memory_id, id");
+    sql.push_str(" ORDER BY l.memory_id, l.id");
     let mut stmt = conn.prepare(&sql)?;
     let links = stmt.query_map(rusqlite::params_from_iter(params_vec), |row| {
         Ok((

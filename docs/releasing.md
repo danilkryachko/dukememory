@@ -1,6 +1,6 @@
 # Releasing dukememory
 
-Releases are tag-driven. A tag such as `v0.40.0` must exactly match the package
+Releases are tag-driven. A tag such as `v0.41.0` must exactly match the package
 version in `Cargo.toml` and `Cargo.lock`.
 
 ## One-time repository setup
@@ -27,11 +27,11 @@ publishing token only inside the protected environment.
    cargo test --features vec
    cargo package --locked
    cargo build --locked --release --features vec
-   scripts/release-smoke.sh target/release/dukememory 0.40.0
+   scripts/release-smoke.sh target/release/dukememory 0.41.0
    ```
 
 3. Merge the reviewed release commit to `main` and create the signed or
-   annotated tag `v0.40.0` on that commit.
+   annotated tag `v0.41.0` on that commit.
 4. Push the tag. `.github/workflows/release.yml` verifies the version, package,
    formatting, Clippy, and tests; builds native Linux x86_64, macOS arm64, and
    macOS x86_64 archives; smoke-tests an installed copy; emits per-archive and

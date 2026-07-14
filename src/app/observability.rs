@@ -105,6 +105,10 @@ pub(crate) struct MemoryQuality {
     pub(crate) negative_feedback: usize,
     pub(crate) body_chars: usize,
     pub(crate) links: usize,
+    pub(crate) age_days: i64,
+    pub(crate) classification: String,
+    pub(crate) evidence_state: String,
+    pub(crate) recommended_action: Option<String>,
     pub(crate) reasons: Vec<String>,
 }
 
@@ -114,6 +118,8 @@ pub(crate) struct QualityReport {
     pub(crate) since_days: i64,
     pub(crate) total: usize,
     pub(crate) average_score: f64,
+    pub(crate) actionable_count: usize,
+    pub(crate) classifications: BTreeMap<String, usize>,
     pub(crate) strongest: Vec<MemoryQuality>,
     pub(crate) weakest: Vec<MemoryQuality>,
     pub(crate) items: Vec<MemoryQuality>,
@@ -657,8 +663,10 @@ pub(crate) struct MemoryTestHarnessReport {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct MemoryTestProbe {
     pub(crate) query: String,
+    pub(crate) original_expected_id: Option<String>,
     pub(crate) expected_type: Option<String>,
     pub(crate) expected_id: Option<String>,
+    pub(crate) supersession_hops: Vec<String>,
     pub(crate) found: bool,
     pub(crate) matched_id: Option<String>,
     pub(crate) matched_title: Option<String>,
@@ -745,6 +753,8 @@ pub(crate) struct RecallBenchmarkBaseline {
     pub(crate) version: u32,
     pub(crate) score: f64,
     pub(crate) probe_count: usize,
+    #[serde(default)]
+    pub(crate) probe_ids: Vec<String>,
     pub(crate) written_at: i64,
 }
 
@@ -756,6 +766,9 @@ pub(crate) struct RecallBenchmarkSuiteReport {
     pub(crate) since_days: i64,
     pub(crate) score: f64,
     pub(crate) baseline_score: Option<f64>,
+    pub(crate) baseline_compatible: bool,
+    pub(crate) baseline_stale: bool,
+    pub(crate) current_probe_ids: Vec<String>,
     pub(crate) regression: bool,
     pub(crate) baseline_written: bool,
     pub(crate) baseline_path: String,
@@ -2052,13 +2065,19 @@ pub(crate) struct AutonomyControlCenterReport {
     pub(crate) status: String,
     pub(crate) root: String,
     pub(crate) since_days: i64,
+    pub(crate) local_ready: bool,
+    pub(crate) optional_sync_ready: bool,
+    pub(crate) required_checks: Vec<ReleaseGateCheck>,
+    pub(crate) optional_checks: Vec<ReleaseGateCheck>,
     pub(crate) qa: MemoryQaReport,
     pub(crate) ranking: AutoRankingTuneReport,
     pub(crate) watch: WatchControlReport,
     pub(crate) diff_review: MemoryDiffReviewReport,
     pub(crate) remote_sync: RemoteSyncV2Report,
     pub(crate) issues: Vec<String>,
+    pub(crate) optional_issues: Vec<String>,
     pub(crate) recommendations: Vec<String>,
+    pub(crate) optional_recommendations: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -4900,11 +4919,15 @@ pub(crate) fn memory_test_harness_report(
     let usage = usage_report(conn, since_days, 10)?;
     let mut seed_queries = Vec::new();
     for item in usage.top_memories.iter().take(4) {
-        seed_queries.push((
-            item.title.clone(),
-            Some(item.memory_type.clone()),
-            Some(item.id.clone()),
-        ));
+        if let Some((memory, supersession_hops)) = resolve_active_probe_memory(conn, &item.id)? {
+            seed_queries.push((
+                memory.title,
+                Some(memory.memory_type),
+                Some(memory.id),
+                Some(item.id.clone()),
+                supersession_hops,
+            ));
+        }
     }
     if seed_queries.len() < limit {
         for item in intent_items(
@@ -4912,7 +4935,13 @@ pub(crate) fn memory_test_harness_report(
             &["decision", "constraint", "command", "task_state"],
             limit,
         )? {
-            seed_queries.push((item.title, Some(item.memory_type), Some(item.id)));
+            seed_queries.push((
+                item.title,
+                Some(item.memory_type),
+                Some(item.id.clone()),
+                Some(item.id),
+                Vec::new(),
+            ));
             if seed_queries.len() >= limit {
                 break;
             }
@@ -4922,7 +4951,9 @@ pub(crate) fn memory_test_harness_report(
     seed_queries.dedup_by(|a, b| a.0 == b.0);
     let mut probes = Vec::new();
     let mut failures = Vec::new();
-    for (query, expected_type, expected_id) in seed_queries.into_iter().take(limit) {
+    for (query, expected_type, expected_id, original_expected_id, supersession_hops) in
+        seed_queries.into_iter().take(limit)
+    {
         let hits = query_memories(
             conn,
             Some(&query),
@@ -4931,11 +4962,11 @@ pub(crate) fn memory_test_harness_report(
             Some("project"),
             5,
         )?;
-        let matched = hits.iter().find(|memory| {
-            expected_id.as_ref().is_some_and(|id| memory.id == *id)
-                || expected_type
-                    .as_ref()
-                    .is_some_and(|kind| memory.memory_type == *kind)
+        let matched = hits.iter().find(|memory| match expected_id.as_ref() {
+            Some(id) => memory.id == *id,
+            None => expected_type
+                .as_ref()
+                .is_some_and(|kind| memory.memory_type == *kind),
         });
         let found = matched.is_some();
         if !found {
@@ -4943,14 +4974,21 @@ pub(crate) fn memory_test_harness_report(
         }
         probes.push(MemoryTestProbe {
             query: query.clone(),
+            original_expected_id,
             expected_type,
             expected_id,
+            supersession_hops: supersession_hops.clone(),
             found,
             matched_id: matched.map(|memory| memory.id.clone()),
             matched_title: matched.map(|memory| memory.title.clone()),
             result_count: hits.len(),
-            explanation: if found {
-                "retrieval recovered the expected card or type".to_string()
+            explanation: if found && !supersession_hops.is_empty() {
+                format!(
+                    "retrieval followed {} supersession hop(s) and recovered the active successor",
+                    supersession_hops.len()
+                )
+            } else if found {
+                "retrieval recovered the exact expected active card".to_string()
             } else if hits.is_empty() {
                 "retrieval returned no active project cards".to_string()
             } else {
@@ -4978,7 +5016,7 @@ pub(crate) fn memory_test_harness_report(
         );
     }
     Ok(MemoryTestHarnessReport {
-        version: 1,
+        version: 2,
         ok: score >= 75.0 && !probes.is_empty(),
         root: root.display().to_string(),
         since_days,
@@ -4987,6 +5025,35 @@ pub(crate) fn memory_test_harness_report(
         failures,
         recommendations,
     })
+}
+
+fn resolve_active_probe_memory(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<(Memory, Vec<String>)>> {
+    let mut current_id = id.to_string();
+    let mut visited = BTreeSet::new();
+    let mut hops = Vec::new();
+    loop {
+        if !visited.insert(current_id.clone()) {
+            return Ok(None);
+        }
+        let memory = match get_memory(conn, &current_id) {
+            Ok(memory) => memory,
+            Err(_) => return Ok(None),
+        };
+        if matches!(memory.status.as_str(), "active" | "uncertain") {
+            return Ok(Some((memory, hops)));
+        }
+        if memory.status != "superseded" {
+            return Ok(None);
+        }
+        let Some(successor) = memory.superseded_by.clone() else {
+            return Ok(None);
+        };
+        hops.push(format!("{}->{successor}", memory.id));
+        current_id = successor;
+    }
 }
 
 pub(crate) fn print_agent_audit_v2(
@@ -5417,17 +5484,35 @@ pub(crate) fn recall_benchmark_suite_report(
     let baseline = fs::read_to_string(&baseline_path)
         .ok()
         .and_then(|content| serde_json::from_str::<RecallBenchmarkBaseline>(&content).ok());
-    let baseline_score = baseline.as_ref().map(|item| item.score);
-    let regression = baseline_score.is_some_and(|score| harness.score + 5.0 < score);
+    let mut baseline_score = baseline.as_ref().map(|item| item.score);
+    let mut current_probe_ids = harness
+        .probes
+        .iter()
+        .filter_map(|probe| probe.expected_id.clone())
+        .collect::<Vec<_>>();
+    current_probe_ids.sort();
+    current_probe_ids.dedup();
+    let mut baseline_compatible = baseline.as_ref().is_none_or(|item| {
+        let mut probe_ids = item.probe_ids.clone();
+        probe_ids.sort();
+        probe_ids.dedup();
+        item.version >= 2
+            && item.probe_count == harness.probes.len()
+            && probe_ids == current_probe_ids
+    });
+    let mut baseline_stale = baseline.is_some() && !baseline_compatible;
+    let mut regression =
+        baseline_compatible && baseline_score.is_some_and(|score| harness.score + 5.0 < score);
     let mut baseline_written = false;
     if write_baseline {
         if let Some(parent) = baseline_path.parent() {
             fs::create_dir_all(parent)?;
         }
         let value = RecallBenchmarkBaseline {
-            version: 1,
+            version: 2,
             score: harness.score,
             probe_count: harness.probes.len(),
+            probe_ids: current_probe_ids.clone(),
             written_at: now_ms(),
         };
         write_file(
@@ -5435,6 +5520,10 @@ pub(crate) fn recall_benchmark_suite_report(
             serde_json::to_string_pretty(&value)?.as_bytes(),
         )?;
         baseline_written = true;
+        baseline_score = Some(harness.score);
+        baseline_compatible = true;
+        baseline_stale = false;
+        regression = false;
     }
     let mut recommendations = harness.recommendations.clone();
     if baseline_score.is_none() && !write_baseline {
@@ -5444,15 +5533,24 @@ pub(crate) fn recall_benchmark_suite_report(
     if regression {
         recommendations.push("recall benchmark regressed by more than 5 points; inspect failed probes before release".to_string());
     }
+    if baseline_stale {
+        recommendations.push(
+            "recall baseline probe set changed; review active successors before writing a new baseline"
+                .to_string(),
+        );
+    }
     recommendations.sort();
     recommendations.dedup();
     Ok(RecallBenchmarkSuiteReport {
-        version: 1,
+        version: 2,
         ok: harness.ok && !regression,
         root: root.display().to_string(),
         since_days,
         score: harness.score,
         baseline_score,
+        baseline_compatible,
+        baseline_stale,
+        current_probe_ids,
         regression,
         baseline_written,
         baseline_path: baseline_path.display().to_string(),
@@ -13485,7 +13583,46 @@ pub(crate) fn autonomy_control_center_report(
     let watch = watch_control_report(db, &root, 3600, "com.dukememory.autonomous-loop", false)?;
     let diff_review = memory_diff_review_report(conn, &root, false)?;
     let remote_sync = remote_sync_v2_report(conn, db, &root, None, since_days, false)?;
+    let required_checks = vec![
+        ReleaseGateCheck {
+            name: "memory_qa".to_string(),
+            ok: qa.ok,
+            required: true,
+            detail: format!("score {:.1}", qa.score),
+        },
+        ReleaseGateCheck {
+            name: "ranking".to_string(),
+            ok: ranking.ok,
+            required: true,
+            detail: format!("selected {}", ranking.selected_profile),
+        },
+        ReleaseGateCheck {
+            name: "local_watch".to_string(),
+            ok: watch.ok,
+            required: true,
+            detail: format!("installed={} running={}", watch.installed, watch.running),
+        },
+        ReleaseGateCheck {
+            name: "memory_diff".to_string(),
+            ok: diff_review.ok,
+            required: true,
+            detail: format!("changed_files={}", diff_review.changed_files.len()),
+        },
+    ];
+    let optional_checks = vec![ReleaseGateCheck {
+        name: "remote_sync".to_string(),
+        ok: remote_sync.ok,
+        required: false,
+        detail: if remote_sync.ok {
+            "optional encrypted sync is configured".to_string()
+        } else {
+            "optional; no remote target is required for local autonomy".to_string()
+        },
+    }];
     let mut issues = qa.issues.clone();
+    if !ranking.ok {
+        issues.push("local ranking policy needs attention".to_string());
+    }
     if !watch.ok {
         issues.extend(watch.issues.iter().cloned());
     }
@@ -13495,23 +13632,38 @@ pub(crate) fn autonomy_control_center_report(
     let mut recommendations = qa.recommendations.clone();
     recommendations.extend(ranking.reasons.iter().cloned());
     recommendations.extend(watch.recommendations.iter().cloned());
-    recommendations.extend(remote_sync.recommendations.iter().cloned());
     recommendations.sort();
     recommendations.dedup();
-    let ok = issues.is_empty();
+    let optional_issues = if remote_sync.ok {
+        Vec::new()
+    } else {
+        remote_sync.blockers.clone()
+    };
+    let mut optional_recommendations = remote_sync.recommendations.clone();
+    optional_recommendations.sort();
+    optional_recommendations.dedup();
+    let local_ready = required_checks.iter().all(|check| check.ok);
+    let optional_sync_ready = optional_checks.iter().all(|check| check.ok);
+    let ok = local_ready;
     Ok(AutonomyControlCenterReport {
-        version: 1,
+        version: 2,
         ok,
         status: if ok { "ready" } else { "attention" }.to_string(),
         root: root.display().to_string(),
         since_days,
+        local_ready,
+        optional_sync_ready,
+        required_checks,
+        optional_checks,
         qa,
         ranking,
         watch,
         diff_review,
         remote_sync,
         issues,
+        optional_issues,
         recommendations,
+        optional_recommendations,
     })
 }
 
@@ -14694,8 +14846,9 @@ pub(crate) fn quality_report(
     since_days: i64,
     limit: usize,
 ) -> Result<QualityReport> {
-    let since_ms = now_ms().saturating_sub(since_days.max(0).saturating_mul(86_400_000));
-    let fresh_cutoff = now_ms().saturating_sub(FRESH_MEMORY_GRACE_MS);
+    let now = now_ms();
+    let since_ms = now.saturating_sub(since_days.max(0).saturating_mul(86_400_000));
+    let fresh_cutoff = now.saturating_sub(FRESH_MEMORY_GRACE_MS);
     let request_counts = memory_request_counts_since(conn, Some(since_ms))?;
     let feedback = memory_feedback_counts(conn, since_ms)?;
     let rows = query_memories(
@@ -14715,72 +14868,85 @@ pub(crate) fn quality_report(
         let links = get_links(conn, &memory.id)?.len();
         let body_chars = memory.body.chars().count();
         let fresh = memory.updated_at >= fresh_cutoff;
+        let age_days = now
+            .saturating_sub(memory.updated_at)
+            .saturating_div(86_400_000);
         let broad_history = quality_broad_history_task_state(&memory);
         let scored_request_count = if broad_history {
             request_count.min(3)
         } else {
             request_count
         };
-        let mut usefulness_score = 20.0 + (scored_request_count.min(10) as f64 * 4.0);
-        usefulness_score += positive_feedback.min(10) as f64 * 5.0;
-        usefulness_score -= negative_feedback.min(10) as f64 * 6.0;
+        let mut usefulness_score = 55.0 + (scored_request_count.min(8) as f64 * 3.0);
+        usefulness_score += positive_feedback.min(5) as f64 * 4.0;
+        usefulness_score -= negative_feedback.min(5) as f64 * 10.0;
         usefulness_score += match memory.memory_type.as_str() {
-            "decision" | "constraint" | "user_preference" | "product_goal" => 12.0,
-            "known_issue" | "command" | "design_note" => 8.0,
+            "decision" | "constraint" | "user_preference" | "product_goal" => 10.0,
+            "known_issue" | "command" | "design_note" => 6.0,
             "task_state" => 4.0,
             _ => 2.0,
         };
         if memory.status == "uncertain" {
-            usefulness_score -= 8.0;
+            usefulness_score -= 10.0;
+        }
+        if fresh {
+            usefulness_score += 5.0;
         }
         let mut token_saving_score = if body_chars <= 600 {
-            18.0
+            15.0
         } else if body_chars <= 1200 {
-            10.0
+            8.0
         } else {
-            -10.0
+            -8.0
         };
         if request_count > 0 {
-            token_saving_score += 8.0;
+            token_saving_score += 5.0;
         }
         if links > 0 {
-            token_saving_score += 6.0;
+            token_saving_score += 8.0;
         }
-        let mut risk_score = 5.0;
+        let evidence_required = matches!(
+            memory.memory_type.as_str(),
+            "decision"
+                | "constraint"
+                | "user_preference"
+                | "product_goal"
+                | "known_issue"
+                | "command"
+        );
+        let evidence_state = if links > 0 {
+            "linked"
+        } else if evidence_required {
+            "unlinked_required"
+        } else {
+            "unlinked_optional"
+        };
+        let mut risk_score = 0.0;
         if matches!(
             memory.memory_type.as_str(),
             "decision" | "constraint" | "user_preference" | "product_goal"
         ) {
-            risk_score += 25.0;
+            risk_score += 5.0;
         }
         if memory.status == "uncertain" {
-            risk_score += 10.0;
+            risk_score += 8.0;
         }
-        if links == 0 {
+        if links == 0 && evidence_required {
             risk_score += 8.0;
         }
         if body_chars > 1200 {
-            risk_score += 5.0;
+            risk_score += 10.0;
         }
         if broad_history && request_count >= 8 && positive_feedback == 0 {
-            risk_score += 18.0;
+            risk_score += 15.0;
         }
         let mut reasons = Vec::new();
         if request_count > 0 {
             reasons.push(format!("used {request_count} time(s) recently"));
         } else if fresh {
-            usefulness_score += 10.0;
             reasons.push("fresh; waiting for use".to_string());
         } else {
-            reasons.push("unused recently".to_string());
-            if !broad_history {
-                suggestions.push(UsefulnessSuggestion {
-                    action: "review_unused".to_string(),
-                    id: Some(memory.id.clone()),
-                    detail: "low quality score because no recent retrieval used this card"
-                        .to_string(),
-                });
-            }
+            reasons.push("dormant; no recent reads but not automatically low quality".to_string());
         }
         if links == 0 {
             reasons.push("no evidence links".to_string());
@@ -14796,6 +14962,59 @@ pub(crate) fn quality_report(
                 "feedback +{positive_feedback} -{negative_feedback}"
             ));
         }
+        let (classification, recommended_action) = if negative_feedback > positive_feedback {
+            (
+                "noisy",
+                Some("review negative feedback and suppress only with evidence".to_string()),
+            )
+        } else if body_chars > 1200 {
+            (
+                "oversized",
+                Some("compact into one bounded evidence-linked summary".to_string()),
+            )
+        } else if memory.status == "uncertain" && age_days >= 30 {
+            (
+                "stale",
+                Some("confirm, supersede, or reject the uncertain card".to_string()),
+            )
+        } else if memory.memory_type == "task_state"
+            && !broad_history
+            && age_days >= 30
+            && request_count == 0
+        {
+            (
+                "obsolete",
+                Some("supersede the completed task state with the current state".to_string()),
+            )
+        } else if matches!(
+            memory.memory_type.as_str(),
+            "known_issue" | "command" | "design_note"
+        ) && age_days >= 180
+            && request_count == 0
+        {
+            (
+                "stale",
+                Some("verify the fact against current project evidence".to_string()),
+            )
+        } else if links == 0 && evidence_required {
+            (
+                "needs_evidence",
+                Some("attach a file, symbol, command, or source link".to_string()),
+            )
+        } else if fresh && request_count == 0 {
+            ("fresh", None)
+        } else if request_count == 0 {
+            ("dormant", None)
+        } else {
+            ("healthy", None)
+        };
+        if let Some(action) = &recommended_action {
+            suggestions.push(UsefulnessSuggestion {
+                action: format!("review_{classification}"),
+                id: Some(memory.id.clone()),
+                detail: action.clone(),
+            });
+        }
         let score = (usefulness_score + token_saving_score - risk_score).clamp(0.0, 100.0);
         items.push(MemoryQuality {
             id: memory.id,
@@ -14810,6 +15029,10 @@ pub(crate) fn quality_report(
             negative_feedback,
             body_chars,
             links,
+            age_days,
+            classification: classification.to_string(),
+            evidence_state: evidence_state.to_string(),
+            recommended_action,
             reasons,
         });
     }
@@ -14831,11 +15054,23 @@ pub(crate) fn quality_report(
     } else {
         items.iter().map(|item| item.score).sum::<f64>() / items.len() as f64
     };
+    let mut classifications = BTreeMap::new();
+    for item in &items {
+        *classifications
+            .entry(item.classification.clone())
+            .or_insert(0) += 1;
+    }
+    let actionable_count = items
+        .iter()
+        .filter(|item| item.recommended_action.is_some())
+        .count();
     Ok(QualityReport {
-        version: 1,
+        version: 2,
         since_days,
         total: items.len(),
         average_score,
+        actionable_count,
+        classifications,
         strongest,
         weakest,
         items: items.into_iter().take(limit).collect(),
@@ -16678,7 +16913,27 @@ pub(crate) fn memory_qa_report(
     recommendations.sort();
     recommendations.dedup();
     let mut score = 100.0;
-    score -= usefulness.unused.len().min(10) as f64 * 2.0;
+    score -= quality
+        .classifications
+        .get("noisy")
+        .copied()
+        .unwrap_or(0)
+        .min(5) as f64
+        * 5.0;
+    score -= quality
+        .classifications
+        .get("obsolete")
+        .copied()
+        .unwrap_or(0)
+        .min(5) as f64
+        * 2.0;
+    score -= quality
+        .classifications
+        .get("stale")
+        .copied()
+        .unwrap_or(0)
+        .min(5) as f64
+        * 3.0;
     score -= usefulness.too_long.len().min(10) as f64 * 3.0;
     score -= usefulness.duplicate_candidates.len().min(10) as f64 * 2.0;
     score -= embedding

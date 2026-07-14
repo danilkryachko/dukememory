@@ -94,6 +94,10 @@ struct AgentSessionMetrics {
     validation_event_count: usize,
     runner_failure_count: usize,
     recovery_count: usize,
+    lease_contention_count: usize,
+    orphaned_attempt_count: usize,
+    recovery_latency_ms: Option<i64>,
+    heartbeat_stale: bool,
     last_heartbeat_at: Option<i64>,
     heartbeat_lag_ms: Option<i64>,
     lease_state: String,
@@ -104,6 +108,21 @@ struct AgentSessionMetrics {
     runner_model: Option<String>,
     last_error: Option<String>,
     evidence_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AgentSessionCleanupReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) dry_run: bool,
+    pub(crate) older_than_days: i64,
+    pub(crate) cutoff: i64,
+    pub(crate) candidate_count: usize,
+    pub(crate) candidate_events: usize,
+    pub(crate) deleted_sessions: usize,
+    pub(crate) deleted_events: usize,
+    pub(crate) candidate_ids: Vec<String>,
+    pub(crate) actions: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -326,6 +345,25 @@ pub(crate) fn handle_agent_session(
                 println!("actions: {}", trace.actions.join(","));
                 println!("validations: {}", trace.validations.join(","));
                 println!("outcome: {}", trace.outcome.as_deref().unwrap_or("active"));
+            }
+        }
+        AgentSessionCommand::Cleanup {
+            older_than_days,
+            limit,
+            apply,
+            json,
+        } => {
+            let report = cleanup_agent_sessions(conn, older_than_days, limit, apply)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "agent session cleanup: {} candidate(s)",
+                    report.candidate_count
+                );
+                println!("deleted sessions: {}", report.deleted_sessions);
+                println!("deleted events: {}", report.deleted_events);
+                println!("dry_run: {}", report.dry_run);
             }
         }
     }
@@ -754,9 +792,24 @@ pub(crate) fn claim_agent_session(
                 recovered,
             });
         }
+        let expires_at = session.lease_expires_at.unwrap_or(now);
+        insert_agent_session_event(
+            &tx,
+            id,
+            None,
+            session.current_attempt_id.as_deref(),
+            "lease_contended",
+            &json!({
+                "requested_owner": owner,
+                "current_owner": existing_owner,
+                "lease_expires_at": expires_at,
+            }),
+            now,
+        )?;
+        tx.commit()?;
         bail!(
             "agent session {id} is already leased by {existing_owner} until {}",
-            session.lease_expires_at.unwrap_or(now)
+            expires_at
         );
     }
 
@@ -788,6 +841,10 @@ pub(crate) fn claim_agent_session(
             "lease_expires_at": lease_expires_at,
             "recovered": recovered,
             "previous_owner": session.lease_owner,
+            "previous_lease_expires_at": session.lease_expires_at,
+            "recovery_latency_ms": recovered.then(|| now.saturating_sub(
+                session.lease_expires_at.unwrap_or(session.updated_at)
+            )),
         }),
         now,
     )?;
@@ -956,6 +1013,80 @@ pub(crate) fn list_agent_sessions(conn: &Connection, limit: usize) -> Result<Vec
     )?
     .collect::<rusqlite::Result<Vec<_>>>()
     .map_err(Into::into)
+}
+
+pub(crate) fn cleanup_agent_sessions(
+    conn: &Connection,
+    older_than_days: i64,
+    limit: usize,
+    apply: bool,
+) -> Result<AgentSessionCleanupReport> {
+    let older_than_days = older_than_days.max(0);
+    let cutoff = now_ms().saturating_sub(older_than_days.saturating_mul(86_400_000));
+    let limit = limit.clamp(1, 1_000);
+    let candidate_ids = {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM agent_sessions \
+             WHERE status = 'completed' AND finished_at IS NOT NULL AND finished_at <= ?1 \
+             ORDER BY finished_at ASC, id ASC LIMIT ?2",
+        )?;
+        stmt.query_map(
+            params![cutoff, limit.min(i64::MAX as usize) as i64],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let mut candidate_events = 0usize;
+    for id in &candidate_ids {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_session_events WHERE session_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        candidate_events = candidate_events.saturating_add(count.max(0) as usize);
+    }
+    let mut deleted_sessions = 0usize;
+    let mut deleted_events = 0usize;
+    let mut actions = Vec::new();
+    if apply && !candidate_ids.is_empty() {
+        let tx = conn.unchecked_transaction()?;
+        for id in &candidate_ids {
+            let count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM agent_session_events WHERE session_id = ?1",
+                params![id],
+                |row| row.get(0),
+            )?;
+            let deleted = tx.execute(
+                "DELETE FROM agent_sessions WHERE id = ?1 AND status = 'completed' AND finished_at <= ?2",
+                params![id, cutoff],
+            )?;
+            if deleted == 1 {
+                deleted_sessions = deleted_sessions.saturating_add(1);
+                deleted_events = deleted_events.saturating_add(count.max(0) as usize);
+            }
+        }
+        tx.commit()?;
+        actions.push(format!(
+            "deleted {deleted_sessions} completed session(s) and {deleted_events} event(s)"
+        ));
+    } else if candidate_ids.is_empty() {
+        actions.push("no completed sessions matched the retention window".to_string());
+    } else {
+        actions.push("dry_run: completed sessions were not deleted".to_string());
+    }
+    Ok(AgentSessionCleanupReport {
+        version: 1,
+        ok: true,
+        dry_run: !apply,
+        older_than_days,
+        cutoff,
+        candidate_count: candidate_ids.len(),
+        candidate_events,
+        deleted_sessions,
+        deleted_events,
+        candidate_ids,
+        actions,
+    })
 }
 
 pub(crate) fn get_agent_session(conn: &Connection, id: &str) -> Result<AgentSession> {
@@ -1157,6 +1288,43 @@ fn agent_session_metrics(
         .iter()
         .filter(|event| event.event_type == "recovery")
         .count();
+    let lease_contention_count = events
+        .iter()
+        .filter(|event| event.event_type == "lease_contended")
+        .count();
+    let recovery_latency_ms = events.iter().rev().find_map(|event| {
+        (event.event_type == "recovery")
+            .then(|| {
+                event
+                    .detail
+                    .get("recovery_latency_ms")
+                    .and_then(Value::as_i64)
+            })
+            .flatten()
+    });
+    let attempt_ids = events
+        .iter()
+        .filter(|event| matches!(event.event_type.as_str(), "lease_claimed" | "recovery"))
+        .filter_map(|event| event.attempt_id.clone())
+        .collect::<BTreeSet<_>>();
+    let terminal_attempt_ids = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.event_type.as_str(),
+                "runner_completed" | "runner_failed" | "finished" | "lease_released"
+            )
+        })
+        .filter_map(|event| event.attempt_id.clone())
+        .collect::<BTreeSet<_>>();
+    let orphaned_attempt_count = attempt_ids
+        .iter()
+        .filter(|attempt_id| {
+            !(terminal_attempt_ids.contains(*attempt_id)
+                || session.status == "active"
+                    && session.current_attempt_id.as_ref() == Some(*attempt_id))
+        })
+        .count();
     let last_heartbeat_at = session.last_heartbeat_at.or_else(|| {
         events
             .iter()
@@ -1195,6 +1363,11 @@ fn agent_session_metrics(
     } else {
         "expired"
     };
+    let heartbeat_stale = session.status == "active"
+        && (session
+            .lease_expires_at
+            .is_some_and(|expires_at| expires_at <= now)
+            || last_heartbeat_at.is_some_and(|at| now.saturating_sub(at) > 300_000));
     AgentSessionMetrics {
         duration_ms: end.saturating_sub(session.started_at),
         event_count: events.len(),
@@ -1203,6 +1376,10 @@ fn agent_session_metrics(
         validation_event_count,
         runner_failure_count,
         recovery_count,
+        lease_contention_count,
+        orphaned_attempt_count,
+        recovery_latency_ms,
+        heartbeat_stale,
         last_heartbeat_at,
         heartbeat_lag_ms: last_heartbeat_at.map(|at| now.saturating_sub(at)),
         lease_state: lease_state.to_string(),

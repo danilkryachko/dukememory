@@ -567,7 +567,7 @@
       autonomousSupervisor: null, webControlV9: null, fleetSupervisor: null, webControlV10: null,
       fleetWatchInstall: null, webControlV11: null, effectivenessV2: null, recallBaselines: null, conflictApply: null,
       mcpSurfaceV3: null, mcpDisciplineV3: null, fleetQuality: null, releaseGateV3: null, webControlV12: null,
-      agentSessions: [], runnerProfiles: [], intelligenceRequestBudget: null, intelligenceDetailsLoaded: false
+      agentSessions: [], runnerProfiles: [], sessionCleanup: null, intelligenceRequestBudget: null, intelligenceDetailsLoaded: false
     };
     const $ = (id) => document.getElementById(id);
     const t = (key) => i18n[state.lang][key] || i18n.en[key] || key;
@@ -881,6 +881,7 @@
       state.webControlV12 = data.control || null;
       state.agentSessions = data.agent_sessions || [];
       state.runnerProfiles = data.runner_profiles || [];
+      state.coreSummary = data.summary || {};
       state.intelligenceRequestBudget = data.request_budget || null;
       state.intelligenceDetailsLoaded = false;
       renderSettings();
@@ -1092,6 +1093,21 @@
       if (action === "load-details") {
         await loadIntelligenceDetails();
         setToast("intelligence details loaded");
+        return;
+      } else if (action === "session-cleanup-preview") {
+        const params = new URLSearchParams({ older_than_days: "30", limit: "100" });
+        if (state.project) params.set("project", state.project);
+        const data = await api(`/agent-sessions/cleanup?${params.toString()}`);
+        state.sessionCleanup = data.cleanup || null;
+        renderSettings();
+        setToast("session cleanup preview loaded");
+        return;
+      } else if (action === "session-cleanup-apply") {
+        if (!window.confirm("Delete completed agent sessions older than 30 days?")) return;
+        const data = await api("/agent-sessions/cleanup", { method: "POST", body: JSON.stringify(withProject({ older_than_days: 30, limit: 100, apply: true })) });
+        state.sessionCleanup = data.cleanup || null;
+        await loadIntelligence();
+        setToast("session retention cleanup applied");
         return;
       } else if (action === "doctor-fix") {
         await api("/doctor-project/fix", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
@@ -1479,7 +1495,7 @@
     function renderSettings() {
       const usefulness = state.usefulness || {};
       const embedding = state.embedding || {};
-      const quality = state.quality || {};
+      const quality = state.coreSummary?.quality || state.quality || {};
       const profile = state.profile || {};
       const budget = state.budget || {};
       const qa = state.qa || {};
@@ -1581,6 +1597,8 @@
       const webControlV12 = state.webControlV12 || {};
       const agentSessions = state.agentSessions || [];
       const runnerProfiles = state.runnerProfiles || [];
+      const sessionCleanup = state.sessionCleanup || {};
+      const coreSummary = state.coreSummary || {};
       const intelligenceRequestBudget = state.intelligenceRequestBudget || {};
       const contract = state.contract || {};
       const ops = state.ops || {};
@@ -1593,6 +1611,26 @@
       const storage = ops.storage || {};
       const multiDevice = ops.multi_device || {};
       const opsDaemonEmbeddings = opsAutonomous.daemon_embedding_skipped == null ? "-" : opsAutonomous.daemon_embedding_skipped ? "skipped" : opsAutonomous.daemon_embedding_repaired_at ? `repaired ${escapeHtml(formatTimestamp(opsAutonomous.daemon_embedding_repaired_at))}` : "ok";
+      if (!state.intelligenceDetailsLoaded) {
+        const activeSessions = agentSessions.filter((session) => session.status === "active");
+        const leasedSessions = activeSessions.filter((session) => session.lease_owner && Number(session.lease_expires_at || 0) > Date.now());
+        const benchmark = coreSummary.recall || webControlV12.baselines?.benchmark || webControlV12.baselines || {};
+        const coreHealth = coreSummary.health || ops;
+        const localAutonomy = coreSummary.autonomy || {};
+        const qualityActions = (quality.items || []).filter((item) => item.recommended_action).slice(0, 5);
+        $("settingsPanel").innerHTML = `<h2>DukeMemory control</h2>
+        <div class="stat-grid">
+          <div class="stat"><strong>${Number(coreHealth.score || 0).toFixed(1)}</strong><span>Health ${escapeHtml(coreHealth.status || "-")}</span></div>
+          <div class="stat"><strong>${Number(benchmark.current_score ?? benchmark.score ?? 0).toFixed(1)}</strong><span>Recall</span></div>
+          <div class="stat"><strong>${localAutonomy.local_ready ? "ready" : "attention"}</strong><span>Local autonomy</span></div>
+          <div class="stat"><strong>${activeSessions.length}</strong><span>Sessions · ${leasedSessions.length} leased</span></div>
+        </div>
+        <div class="card"><div class="title">Quality v2</div><div class="body">average ${Number(quality.average_score || 0).toFixed(1)} · actionable ${Number(quality.actionable_count || 0)}<br>${Object.entries(quality.classifications || {}).map(([name, count]) => `${escapeHtml(name)} ${Number(count)}`).join(" · ") || "classifications pending"}<br>${qualityActions.length ? qualityActions.map((item) => `${escapeHtml(item.classification)} ${escapeHtml(item.title)}: ${escapeHtml(item.recommended_action)}`).join("<br>") : "no actionable card issues"}</div></div>
+        <div class="card"><div class="title">Local-first autonomy</div><div class="body">local ${localAutonomy.local_ready ? "ready" : "attention"}<br>optional sync ${localAutonomy.optional_sync_ready ? "ready" : "not configured"}<br>remote sync is optional and does not block local readiness</div></div>
+        <div class="card"><div class="title">Agent sessions</div><div class="body">${agentSessions.length ? agentSessions.slice(0, 8).map((session) => `${escapeHtml(session.status)} ${escapeHtml(session.task)} · attempts ${Number(session.attempt_count || 0)} · events ${Number(session.last_event_sequence || 0)}`).join("<br>") : "no sessions"}<br>${sessionCleanup.candidate_count == null ? "retention preview not loaded" : `${Number(sessionCleanup.candidate_count)} cleanup candidates / ${Number(sessionCleanup.candidate_events || 0)} events`}</div><div class="actions"><button data-intelligence="session-cleanup-preview">Preview 30-day cleanup</button><button class="danger" data-intelligence="session-cleanup-apply">Apply 30-day cleanup</button></div></div>
+        <div class="card"><div class="title">Diagnostics</div><div class="body">Detailed reports stay unloaded until requested.</div><div class="actions"><button class="primary" data-intelligence="load-details">Load diagnostic details</button></div></div>`;
+        return;
+      }
       $("settingsPanel").innerHTML = `<h2>${escapeHtml(t("opsStatus"))}</h2>
       <div class="stat-grid">
         <div class="stat"><strong>${Number(ops.score || 0).toFixed(1)}</strong><span>${escapeHtml(ops.status || "-")}</span></div>

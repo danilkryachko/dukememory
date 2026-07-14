@@ -120,6 +120,7 @@ fn mcp_tools() -> Value {
         {"name":"memory_session_release","description":"Release an active agent session lease without finishing","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"owner":{"type":"string"},"lease_token":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","owner","lease_token"]}},
         {"name":"memory_session_event","description":"Record a bounded retry-safe lifecycle event and refresh an active agent session heartbeat","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"event_type":{"type":"string","enum":["heartbeat","runner_selected","runner_started","runner_completed","runner_failed","validation","recovery"]},"detail":{"type":"object"},"event_id":{"type":"string"},"owner":{"type":"string"},"lease_token":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","event_type"]}},
         {"name":"memory_session_recover","description":"List or atomically claim active sessions whose heartbeat or lease is stale","inputSchema":{"type":"object","properties":{"stale_after_secs":{"type":"number"},"limit":{"type":"number"},"owner":{"type":"string"},"lease_secs":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
+        {"name":"memory_session_cleanup","description":"Preview or apply retention cleanup for completed agent sessions","inputSchema":{"type":"object","properties":{"older_than_days":{"type":"number"},"limit":{"type":"number"},"apply":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_session_finish","description":"Finish an agent session; automatic useful feedback requires success plus explicit evidence","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"outcome":{"type":"string","enum":["success","failed","partial","abandoned"]},"summary":{"type":"string"},"changed_files":{"type":"array","items":{"type":"string"}},"validations":{"type":"array","items":{"type":"string"}},"commit":{"type":"string"},"owner":{"type":"string"},"lease_token":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","outcome","summary"]}},
         {"name":"memory_session_status","description":"Show one agent session or recent sessions","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_session_trace","description":"Show recalled memory, actions, validation, and outcome for an agent session","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
@@ -307,6 +308,16 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     .map_err(|err| err.to_string())?;
                 serde_json::to_string_pretty(&sessions).map_err(|err| err.to_string())?
             }
+        }
+        "memory_session_cleanup" => {
+            let report = cleanup_agent_sessions(
+                &conn,
+                json_usize(&args, "older_than_days").unwrap_or(30) as i64,
+                json_usize(&args, "limit").unwrap_or(100),
+                args.get("apply").and_then(Value::as_bool).unwrap_or(false),
+            )
+            .map_err(|err| err.to_string())?;
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
         }
         "memory_session_finish" => {
             let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;

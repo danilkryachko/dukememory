@@ -2718,6 +2718,17 @@ pub(crate) enum AgentSessionCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Preview or delete completed sessions older than the retention window.
+    Cleanup {
+        #[arg(long, default_value_t = 30)]
+        older_than_days: i64,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]

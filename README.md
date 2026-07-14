@@ -113,6 +113,8 @@ dukememory fleet-supervisor --json
 dukememory fleet-supervisor-watch-install --dry-run --json
 dukememory benchmark-polish --json
 dukememory recall-benchmark-suite --json
+dukememory quality-report --json
+dukememory autonomy-control-center --json
 dukememory memory-effectiveness-v2 --json
 dukememory recall-benchmark-baselines --json
 dukememory import-review docs/project-notes.md --json
@@ -206,6 +208,10 @@ dukememory agent-session recover \
   --owner "recovery-worker-1" \
   --lease-secs 120 \
   --json
+
+# Preview retention first; apply only after reviewing candidate ids/counts.
+dukememory agent-session cleanup --older-than-days 30 --json
+dukememory agent-session cleanup --older-than-days 30 --apply --json
 ```
 
 `context` combines brief, optional target impact, and doctrine in one audited
@@ -227,21 +233,25 @@ every accepted event refreshes session activity in the same transaction.
 result, while reusing the id with another type or payload fails closed.
 Supported events are `heartbeat`, `runner_selected`,
 `runner_started`, `runner_completed`, `runner_failed`, `validation`, and
-`recovery`. Trace v2 includes ordered event sequences, attempt attribution,
-lease/heartbeat metrics, runner failures, evidence counts, and effectiveness.
+`recovery`. Trace metrics include ordered event sequences, attempt attribution,
+lease contention, orphaned attempts, recovery latency, heartbeat freshness,
+runner failures, evidence counts, and effectiveness. Cleanup only targets
+completed sessions older than the selected retention window, previews by
+default, and deletes their lifecycle events transactionally when `--apply` is
+explicitly supplied.
 The same operations are exposed as `memory_session_claim`,
 `memory_session_renew`, `memory_session_release`, `memory_session_event`, and
-`memory_session_recover` over MCP and under `/agent-sessions/*` over HTTP.
+`memory_session_recover` over MCP; retention is exposed as
+`memory_session_cleanup`. The HTTP equivalents live under `/agent-sessions/*`.
 
-### DukeAgent 0.40 Integration
+### Named Runner Profiles
 
-DukeAgent uses the session lifecycle as its primary long-term coordination
-layer: it starts or resumes a session, claims a fenced attempt, loads audited
-context, selects an available named runner profile, renews the lease before
-heartbeat events, captures workspace/validation/commit evidence, and finishes
-once with a causal trace. A second worker cannot resume the task while its
-lease is live. Runner failure and cancellation never create automatic positive
-feedback.
+Any external orchestrator can use the session lifecycle as its durable
+coordination layer: start or resume a session, claim a fenced attempt, load
+audited context, select a named runner profile, renew the lease, capture
+workspace/validation/commit evidence, and finish once with a causal trace. A
+second worker cannot resume the task while its lease is live. Runner failure
+and cancellation never create automatic positive feedback.
 
 Named runner profiles are built in and may be overridden in
 `.agent/runner-profiles.toml`:
@@ -261,6 +271,10 @@ availability without executing external runners.
 
 Remote or VDS sync is optional and remains local-first: agents keep reading the
 local SQLite database, while push/pull moves reviewable sync bundles.
+
+`autonomy-control-center` reports required local checks separately from
+optional sync checks. An absent remote target can leave optional sync
+unconfigured, but it does not block local autonomy readiness.
 
 ```bash
 dukememory remote-sync-control --target /mnt/vds/dukememory --json
@@ -470,6 +484,9 @@ in [`docs/production-deployment.md`](docs/production-deployment.md).
 Use it to search memory, inspect evidence, review inbox items, watch usage,
 check autonomous health, explain recall, inspect the project intent map, run
 retrieval probes, tune ranking, route project memory, and review gaps.
+The initial control view is deliberately small: health, Quality v2 actions,
+supersession-aware recall, local autonomy, and evidence-session retention.
+Versioned diagnostic panels load only after an explicit request.
 
 For one compact health view:
 

@@ -54,6 +54,8 @@ For every new chat or coding task in this repository:
 - To safely supersede duplicate/obsolete cards, run `dukememory auto-supersede-v2 --json`; use `--apply` only for high-confidence reversible status changes.
 - To write high-confidence changed-file memory candidates, run `dukememory memory-diff-apply --json`; use `--apply` only after reviewing write-ready cards.
 - To detect retrieval regressions, run `dukememory recall-benchmark-suite --json`; use `--write-baseline` after reviewing stable probes.
+- Recall probes follow explicit `superseded_by` chains to the active successor; rewrite a benchmark baseline only after reviewing a reported stale probe set.
+- Quality Score v2 separates dormant history from actionable stale, obsolete, noisy, oversized, and evidence-missing cards; inspect `dukememory quality-report --json` before cleanup.
 - To gate releases with health, recall benchmark, audit v2, and control-center checks, run `dukememory release-gate-v2 --json`.
 - To measure memory usefulness with influence, wasted reads, and semantic-read signals, run `dukememory memory-effectiveness-v2 --json`.
 - To inspect or write guarded recall benchmark baselines, run `dukememory recall-benchmark-baselines --json`; use `--apply` only after reviewing stable probes.
@@ -119,6 +121,7 @@ For every new chat or coding task in this repository:
   token after claim, never recover a live lease, and remember that automatic
   positive feedback requires an explicit successful result with recorded
   evidence.
+- To preview completed evidence-session retention, run `dukememory agent-session cleanup --older-than-days 30 --json`; add `--apply` only after reviewing candidate ids and event counts.
 - To inspect or initialize named external runner profiles, run
   `dukememory runner-profile list|doctor|init --json`; initialization writes
   `.agent/runner-profiles.toml` only with `--apply`.
@@ -145,6 +148,7 @@ For every new chat or coding task in this repository:
 - To seed project-type defaults, run `dukememory project-template --kind rust-cli|frontend-app|game-mod|electronics-cad|docs-research --json`; use `--apply` only after review.
 - To inspect or enable the autonomous watch loop, run `dukememory watch-control --json`; use `--apply` only when launchd should be updated.
 - To inspect the autonomy cockpit, run `dukememory autonomy-control-center --json`.
+- Local autonomy readiness uses required local checks; remote/VDS sync is reported separately as optional and must not block a local-only project.
 - To measure local/VDS sync latency while keeping reads local-first, run `dukememory sync-latency --json`.
 - To choose a safe sync mode, run `dukememory sync-profile --profile local-first-backup --run-dry-run --json` before push/pull.
 - To enforce memory wiring for future chats, run `dukememory agent-enforce --json` or `dukememory agent-enforce --fix --json`.

@@ -89,6 +89,31 @@ pub(super) fn handle_http_request(
                 "sessions": recoverable_agent_sessions(&conn, stale_after_secs, limit)?
             }))
         }
+        ("GET", "/agent-sessions/cleanup") => {
+            let params = parse_query(query);
+            let older_than_days = params
+                .get("older_than_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(30);
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(100);
+            HttpResponse::ok(json!({
+                "cleanup": cleanup_agent_sessions(&conn, older_than_days, limit, false)?
+            }))
+        }
+        ("POST", "/agent-sessions/cleanup") => {
+            let value = parse_json_body(body)?;
+            HttpResponse::ok(json!({
+                "cleanup": cleanup_agent_sessions(
+                    &conn,
+                    value.get("older_than_days").and_then(Value::as_i64).unwrap_or(30),
+                    value.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize,
+                    value.get("apply").and_then(Value::as_bool).unwrap_or(false),
+                )?
+            }))
+        }
         ("POST", "/agent-sessions/recover") => {
             let value = parse_json_body(body)?;
             let owner = value
@@ -2182,6 +2207,9 @@ pub(super) fn handle_http_request(
             if path == "/web-control-center" {
                 let sessions = list_agent_sessions(&conn, 20)?;
                 let profiles = runner_profiles_status(&ctx.root)?;
+                let quality = quality_report(&conn, 30, 20)?;
+                let recall = recall_benchmark_suite_report(&conn, &ctx.root, 7, 8, false)?;
+                let autonomy = autonomy_control_center_report(&conn, &ctx.db, &ctx.root, 7)?;
                 let active_sessions = sessions
                     .iter()
                     .filter(|session| session.status == "active")
@@ -2229,6 +2257,25 @@ pub(super) fn handle_http_request(
                     "current_version": "v12",
                     "agent_sessions": sessions,
                     "runner_profiles": profiles,
+                    "summary": {
+                        "health": {
+                            "score": autonomy.qa.score,
+                            "status": if autonomy.qa.ok { "ready" } else { "attention" },
+                        },
+                        "quality": quality,
+                        "recall": {
+                            "score": recall.score,
+                            "ok": recall.ok,
+                            "regression": recall.regression,
+                            "baseline_compatible": recall.baseline_compatible,
+                            "baseline_stale": recall.baseline_stale,
+                        },
+                        "autonomy": {
+                            "local_ready": autonomy.local_ready,
+                            "optional_sync_ready": autonomy.optional_sync_ready,
+                            "status": autonomy.status,
+                        },
+                    },
                     "request_budget": {"initial_requests": 1, "details": "lazy"},
                 })));
             }

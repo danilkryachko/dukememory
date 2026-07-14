@@ -2046,6 +2046,12 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
             serde_json::json!({"jsonrpc":"2.0","id":38,"method":"tools/call","params":{"name":"memory_runner_profiles","arguments":{}}})
         )
         .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":39,"method":"tools/call","params":{"name":"memory_session_cleanup","arguments":{"older_than_days":30,"limit":10}}})
+        )
+        .unwrap();
     }
     drop(child.stdin.take());
 
@@ -2081,6 +2087,7 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
     assert!(stdout.contains("memory_session_event"));
     assert!(stdout.contains("memory_session_recover"));
     assert!(stdout.contains("memory_session_finish"));
+    assert!(stdout.contains("memory_session_cleanup"));
     assert!(stdout.contains("memory_runner_profiles"));
     assert!(stdout.contains("MCP agent session"));
     assert!(stdout.contains("gemini_flash_high"));
@@ -3095,7 +3102,7 @@ fn agent_session_lease_fencing_and_event_idempotency_are_enforced() {
             .arg("claim")
             .arg(id)
             .arg("--owner")
-            .arg("dukeagent:worker-a")
+            .arg("worker-a")
             .arg("--lease-secs")
             .arg("120")
             .arg("--json"),
@@ -3104,7 +3111,7 @@ fn agent_session_lease_fencing_and_event_idempotency_are_enforced() {
     let lease_token = claimed["lease_token"].as_str().unwrap();
     let attempt_id = claimed["attempt_id"].as_str().unwrap();
     assert_eq!(claimed["session"]["attempt_count"], 1);
-    assert_eq!(claimed["session"]["lease_owner"], "dukeagent:worker-a");
+    assert_eq!(claimed["session"]["lease_owner"], "worker-a");
     assert_eq!(claimed["idempotent"], false);
 
     let repeated_claim: Value = serde_json::from_str(&stdout(
@@ -3113,7 +3120,7 @@ fn agent_session_lease_fencing_and_event_idempotency_are_enforced() {
             .arg("claim")
             .arg(id)
             .arg("--owner")
-            .arg("dukeagent:worker-a")
+            .arg("worker-a")
             .arg("--json"),
     ))
     .unwrap();
@@ -3126,10 +3133,10 @@ fn agent_session_lease_fencing_and_event_idempotency_are_enforced() {
         .arg("claim")
         .arg(id)
         .arg("--owner")
-        .arg("dukeagent:worker-b")
+        .arg("worker-b")
         .assert()
         .failure()
-        .stderr(contains("already leased by dukeagent:worker-a"));
+        .stderr(contains("already leased by worker-a"));
     cmd(&db)
         .arg("agent-session")
         .arg("context")
@@ -3150,7 +3157,7 @@ fn agent_session_lease_fencing_and_event_idempotency_are_enforced() {
             .arg("--event-id")
             .arg("runner-started-1")
             .arg("--owner")
-            .arg("dukeagent:worker-a")
+            .arg("worker-a")
             .arg("--lease-token")
             .arg(lease_token)
             .arg("--json");
@@ -3174,7 +3181,7 @@ fn agent_session_lease_fencing_and_event_idempotency_are_enforced() {
         .arg("--event-id")
         .arg("runner-started-1")
         .arg("--owner")
-        .arg("dukeagent:worker-a")
+        .arg("worker-a")
         .arg("--lease-token")
         .arg(lease_token)
         .assert()
@@ -3187,7 +3194,7 @@ fn agent_session_lease_fencing_and_event_idempotency_are_enforced() {
             .arg("renew")
             .arg(id)
             .arg("--owner")
-            .arg("dukeagent:worker-a")
+            .arg("worker-a")
             .arg("--lease-token")
             .arg(lease_token)
             .arg("--lease-secs")
@@ -3202,7 +3209,7 @@ fn agent_session_lease_fencing_and_event_idempotency_are_enforced() {
             .arg("release")
             .arg(id)
             .arg("--owner")
-            .arg("dukeagent:worker-a")
+            .arg("worker-a")
             .arg("--lease-token")
             .arg(lease_token)
             .arg("--json"),
@@ -3216,7 +3223,7 @@ fn agent_session_lease_fencing_and_event_idempotency_are_enforced() {
             .arg("claim")
             .arg(id)
             .arg("--owner")
-            .arg("dukeagent:worker-b")
+            .arg("worker-b")
             .arg("--json"),
     ))
     .unwrap();
@@ -3230,12 +3237,12 @@ fn agent_session_lease_fencing_and_event_idempotency_are_enforced() {
         .arg("--event-type")
         .arg("heartbeat")
         .arg("--owner")
-        .arg("dukeagent:worker-a")
+        .arg("worker-a")
         .arg("--lease-token")
         .arg(lease_token)
         .assert()
         .failure()
-        .stderr(contains("owned by dukeagent:worker-b"));
+        .stderr(contains("owned by worker-b"));
 
     let finished: Value = serde_json::from_str(&stdout(
         cmd(&db)
@@ -3249,7 +3256,7 @@ fn agent_session_lease_fencing_and_event_idempotency_are_enforced() {
             .arg("--validation")
             .arg("cargo check")
             .arg("--owner")
-            .arg("dukeagent:worker-b")
+            .arg("worker-b")
             .arg("--lease-token")
             .arg(second_token)
             .arg("--json"),
@@ -3258,6 +3265,14 @@ fn agent_session_lease_fencing_and_event_idempotency_are_enforced() {
     assert_eq!(finished["session"]["status"], "completed");
     assert!(finished["session"]["lease_owner"].is_null());
     assert_eq!(finished["causal_trace"]["metrics"]["attempt_count"], 2);
+    assert_eq!(
+        finished["causal_trace"]["metrics"]["lease_contention_count"],
+        1
+    );
+    assert_eq!(
+        finished["causal_trace"]["metrics"]["orphaned_attempt_count"],
+        0
+    );
     assert_eq!(
         finished["causal_trace"]["metrics"]["lease_state"],
         "released"
@@ -3298,7 +3313,7 @@ fn agent_session_recovery_atomically_claims_an_expired_lease() {
             .arg("claim")
             .arg(id)
             .arg("--owner")
-            .arg("dukeagent:dead-worker")
+            .arg("expired-worker")
             .arg("--json"),
     );
     Connection::open(&db)
@@ -3316,7 +3331,7 @@ fn agent_session_recovery_atomically_claims_an_expired_lease() {
             .arg("--stale-after-secs")
             .arg("3600")
             .arg("--owner")
-            .arg("dukeagent:recovery-worker")
+            .arg("recovery-worker")
             .arg("--json"),
     ))
     .unwrap();
@@ -3333,6 +3348,104 @@ fn agent_session_recovery_atomically_claims_an_expired_lease() {
     ))
     .unwrap();
     assert_eq!(trace["metrics"]["recovery_count"], 1);
+    assert_eq!(trace["metrics"]["orphaned_attempt_count"], 1);
+    assert!(trace["metrics"]["recovery_latency_ms"].as_i64().is_some());
+    assert_eq!(trace["metrics"]["heartbeat_stale"], false);
+}
+
+#[test]
+fn agent_session_cleanup_is_dry_run_first_and_retains_recent_sessions() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    let finish_session = |task: &str| -> String {
+        let started: Value = serde_json::from_str(&stdout(
+            cmd(&db)
+                .arg("agent-session")
+                .arg("start")
+                .arg(task)
+                .arg("--json"),
+        ))
+        .unwrap();
+        let id = started["id"].as_str().unwrap().to_string();
+        cmd(&db)
+            .arg("agent-session")
+            .arg("finish")
+            .arg(&id)
+            .arg("--outcome")
+            .arg("success")
+            .arg("--summary")
+            .arg("completed with local validation")
+            .arg("--validation")
+            .arg("cargo check")
+            .assert()
+            .success();
+        id
+    };
+
+    let old_id = finish_session("old completed session");
+    let recent_id = finish_session("recent completed session");
+    Connection::open(&db)
+        .unwrap()
+        .execute(
+            "UPDATE agent_sessions SET finished_at = ?1, updated_at = ?1 WHERE id = ?2",
+            params![now_ms() - 45 * 86_400_000, old_id],
+        )
+        .unwrap();
+
+    let preview: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("cleanup")
+            .arg("--older-than-days")
+            .arg("30")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["candidate_count"], 1);
+    assert_eq!(preview["candidate_ids"][0], old_id);
+    assert_eq!(preview["deleted_sessions"], 0);
+
+    let applied: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("agent-session")
+            .arg("cleanup")
+            .arg("--older-than-days")
+            .arg("30")
+            .arg("--apply")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(applied["dry_run"], false);
+    assert_eq!(applied["deleted_sessions"], 1);
+    assert!(applied["deleted_events"].as_u64().unwrap() > 0);
+
+    let conn = Connection::open(&db).unwrap();
+    let old_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM agent_sessions WHERE id = ?1",
+            [&old_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let old_event_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM agent_session_events WHERE session_id = ?1",
+            [&old_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let recent_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM agent_sessions WHERE id = ?1",
+            [&recent_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_count, 0);
+    assert_eq!(old_event_count, 0);
+    assert_eq!(recent_count, 1);
 }
 
 #[test]
@@ -3539,6 +3652,10 @@ fn memory_ui_initial_intelligence_load_obeys_one_request_budget() {
     assert!(html.contains("session.lease_expires_at"));
     assert!(html.contains("session.attempt_count"));
     assert!(html.contains("session.last_heartbeat_at"));
+    assert!(html.contains("DukeMemory control"));
+    assert!(html.contains("Detailed reports stay unloaded"));
+    assert!(html.contains("Preview 30-day cleanup"));
+    assert!(html.contains("session-cleanup-apply"));
 }
 
 #[test]
@@ -3567,7 +3684,7 @@ fn http_exposes_agent_sessions_profiles_and_stable_control_snapshot() {
 
     let claim_body = serde_json::json!({
         "id": session_id,
-        "owner": "dukeagent:http-worker",
+        "owner": "http-worker",
         "lease_secs": 120
     })
     .to_string();
@@ -3587,9 +3704,9 @@ fn http_exposes_agent_sessions_profiles_and_stable_control_snapshot() {
     let event_body = serde_json::json!({
         "id": session_id,
         "event_type": "heartbeat",
-        "detail": {"source": "dukeagent"},
+        "detail": {"source": "local-runner"},
         "event_id": "http-heartbeat-1",
-        "owner": "dukeagent:http-worker",
+        "owner": "http-worker",
         "lease_token": lease_token
     })
     .to_string();
@@ -3628,6 +3745,31 @@ fn http_exposes_agent_sessions_profiles_and_stable_control_snapshot() {
     assert!(sessions.contains("\"sessions\""));
     assert!(sessions.contains("HTTP agent session"));
 
+    let cleanup_preview = http_once(
+        &db,
+        "GET /agent-sessions/cleanup?older_than_days=30&limit=10 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(cleanup_preview.starts_with("HTTP/1.1 200"));
+    assert!(cleanup_preview.contains("\"dry_run\":true"));
+    assert!(cleanup_preview.contains("\"candidate_count\":0"));
+
+    let cleanup_body = serde_json::json!({
+        "older_than_days": 30,
+        "limit": 10,
+        "apply": false
+    })
+    .to_string();
+    let cleanup_post = http_once(
+        &db,
+        &format!(
+            "POST /agent-sessions/cleanup HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            cleanup_body.len(),
+            cleanup_body,
+        ),
+    );
+    assert!(cleanup_post.starts_with("HTTP/1.1 200"));
+    assert!(cleanup_post.contains("\"dry_run\":true"));
+
     let profiles = http_once(
         &db,
         "GET /runner-profiles HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
@@ -3643,6 +3785,10 @@ fn http_exposes_agent_sessions_profiles_and_stable_control_snapshot() {
     assert!(control.contains("\"details\":\"lazy\""));
     assert!(control.contains("\"agent_sessions\""));
     assert!(control.contains("\"runner_profiles\""));
+    assert!(control.contains("\"summary\""));
+    assert!(control.contains("\"quality\""));
+    assert!(control.contains("\"local_ready\""));
+    assert!(control.contains("\"baseline_compatible\""));
 }
 
 #[test]
@@ -7610,7 +7756,127 @@ fn quality_and_usefulness_do_not_suggest_review_unused_for_broad_history() {
 }
 
 #[test]
-fn autonomous_infers_basename_links_triages_unused_and_throttles_write_pressure() {
+fn quality_report_v2_separates_dormant_cards_from_actionable_debt() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    let dormant_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("decision")
+            .arg("Stable local storage policy")
+            .arg("Keep project memory local-first and evidence-linked.")
+            .arg("--link")
+            .arg("file:src/app/observability.rs"),
+    )
+    .trim()
+    .to_string();
+    let stale_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("constraint")
+            .arg("Unconfirmed legacy constraint")
+            .arg("This constraint needs current evidence before it can guide work."),
+    )
+    .trim()
+    .to_string();
+    let old = now_ms() - 60 * 86_400_000;
+    let conn = Connection::open(&db).unwrap();
+    conn.execute(
+        "UPDATE memories SET updated_at = ?1 WHERE id = ?2",
+        params![old, dormant_id],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE memories SET status = 'uncertain', updated_at = ?1 WHERE id = ?2",
+        params![old, stale_id],
+    )
+    .unwrap();
+
+    let report: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("quality-report")
+            .arg("--limit")
+            .arg("20")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(report["version"], 2);
+    assert_eq!(report["actionable_count"], 1);
+    assert_eq!(report["classifications"]["dormant"], 1);
+    assert_eq!(report["classifications"]["stale"], 1);
+
+    let dormant = report["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == dormant_id)
+        .unwrap();
+    assert_eq!(dormant["classification"], "dormant");
+    assert_eq!(dormant["evidence_state"], "linked");
+    assert!(dormant["recommended_action"].is_null());
+
+    let stale = report["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == stale_id)
+        .unwrap();
+    assert_eq!(stale["classification"], "stale");
+    assert_eq!(stale["evidence_state"], "unlinked_required");
+    assert!(stale["recommended_action"].as_str().is_some());
+}
+
+#[test]
+fn drift_ignores_missing_links_from_superseded_history() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let original_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("decision")
+            .arg("Legacy removed component")
+            .arg("The removed component used this historical file.")
+            .arg("--link")
+            .arg("file:removed/component.rs"),
+    )
+    .trim()
+    .to_string();
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Current local component")
+        .arg("The current component no longer uses the removed file.")
+        .arg("--supersedes")
+        .arg(&original_id)
+        .assert()
+        .success();
+
+    let drift: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("drift")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert!(drift["missing_links"].as_array().unwrap().is_empty());
+
+    let explicit: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("links")
+            .arg("--id")
+            .arg(&original_id)
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(explicit[0]["status"], "missing");
+}
+
+#[test]
+fn autonomous_infers_links_preserves_dormant_cards_and_throttles_write_pressure() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join(".agent")).unwrap();
     fs::create_dir_all(dir.path().join("src").join("app")).unwrap();
@@ -7680,13 +7946,11 @@ fn autonomous_infers_basename_links_triages_unused_and_throttles_write_pressure(
             .iter()
             .any(|item| { item["kind"] == "repair_explicit_file_links" && item["status"] == "ok" })
     );
-    assert!(
-        run_json["actions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| { item["kind"] == "triage_unused_memory" && item["status"] == "ok" })
-    );
+    assert!(run_json["actions"].as_array().unwrap().iter().any(|item| {
+        item["kind"] == "triage_unused_memory"
+            && item["status"] == "skipped"
+            && item["detail"] == "no low-risk unused memory cards"
+    }));
     let conn = Connection::open(&db).unwrap();
     let basename_links: i64 = conn
         .query_row(
@@ -7703,7 +7967,7 @@ fn autonomous_infers_basename_links_triages_unused_and_throttles_write_pressure(
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(triage_status, "uncertain");
+    assert_eq!(triage_status, "active");
 
     for idx in 0..20 {
         insert_read_event(&db, "brief", &format!("high pressure query {idx}"), false);
@@ -11772,6 +12036,9 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("/project-template"));
     assert!(html.contains("/watch-control"));
     assert!(html.contains("/autonomy-control-center"));
+    assert!(html.contains("/agent-sessions/cleanup"));
+    assert!(html.contains("Quality v2"));
+    assert!(html.contains("Local autonomy"));
     assert!(html.contains("/sync-latency"));
     assert!(html.contains("/sync-profile"));
     assert!(html.contains("/memory-diff-review"));
@@ -11873,7 +12140,10 @@ fn v14_6_local_memory_ui_and_http_actions() {
 
     let hot_memory = server.request("GET /memory?status=active&type=decision&q=ui&usage=hot&sort=request_count HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
-    assert!(hot_memory.contains("200 OK"));
+    assert!(
+        hot_memory.contains("200 OK"),
+        "unexpected hot /memory response: {hot_memory}"
+    );
     assert!(hot_memory.contains("\"request_count\""));
 
     let usefulness = server.request("GET /usefulness?since_days=30&stale_days=30&hot_threshold=1 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
@@ -12252,6 +12522,8 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(recall_benchmark.contains("\"benchmark\""));
     assert!(recall_benchmark.contains("\"baseline_path\""));
     assert!(recall_benchmark.contains("\"regression\""));
+    assert!(recall_benchmark.contains("\"baseline_compatible\""));
+    assert!(recall_benchmark.contains("\"current_probe_ids\""));
 
     let release_gate_v2 = server.request("GET /release-gate-v2?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
@@ -12674,6 +12946,10 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(autonomy_control.contains("\"control\""));
     assert!(autonomy_control.contains("\"diff_review\""));
     assert!(autonomy_control.contains("\"remote_sync\""));
+    assert!(autonomy_control.contains("\"local_ready\""));
+    assert!(autonomy_control.contains("\"optional_sync_ready\""));
+    assert!(autonomy_control.contains("\"required_checks\""));
+    assert!(autonomy_control.contains("\"optional_checks\""));
 
     let sync_latency = server.request(
         "GET /sync-latency?samples=1 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
@@ -12854,6 +13130,144 @@ fn v14_6_local_memory_ui_and_http_actions() {
     );
     assert!(inbox.contains("\"items\""));
     assert!(inbox.contains("browser based"));
+}
+
+#[test]
+fn recall_benchmark_v2_follows_active_supersession_successors() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    let original_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("decision")
+            .arg("Legacy runner ownership")
+            .arg("The legacy runner owns durable project memory."),
+    )
+    .trim()
+    .to_string();
+    let successor_id = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("decision")
+            .arg("DukeMemory owns durable project memory")
+            .arg("Only DukeMemory owns durable project memory and evidence sessions.")
+            .arg("--supersedes")
+            .arg(&original_id),
+    )
+    .trim()
+    .to_string();
+    cmd(&db)
+        .arg("add")
+        .arg("constraint")
+        .arg("Local first memory")
+        .arg("Memory remains local unless optional sync is configured.")
+        .assert()
+        .success();
+    cmd(&db)
+        .arg("add")
+        .arg("command")
+        .arg("Validate local memory")
+        .arg("Run cargo test --locked before completing local work.")
+        .assert()
+        .success();
+    insert_read_event_with_ids(
+        &db,
+        "brief",
+        "durable project memory ownership",
+        &[&original_id],
+    );
+
+    let harness: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("memory-test-harness")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--limit")
+            .arg("3")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(harness["version"], 2);
+    assert_eq!(harness["score"], 100.0);
+    let supersession_probe = harness["probes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|probe| probe["original_expected_id"] == original_id)
+        .unwrap();
+    assert_eq!(supersession_probe["expected_id"], successor_id);
+    assert_eq!(supersession_probe["matched_id"], successor_id);
+    assert_eq!(supersession_probe["found"], true);
+    assert_eq!(
+        supersession_probe["supersession_hops"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    fs::create_dir_all(dir.path().join(".agent")).unwrap();
+    fs::write(
+        dir.path().join(".agent/recall-benchmark.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 1,
+            "score": 100.0,
+            "probe_count": 3,
+            "written_at": now_ms()
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let stale_baseline: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("recall-benchmark-suite")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--limit")
+            .arg("3")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(stale_baseline["baseline_compatible"], false);
+    assert_eq!(stale_baseline["baseline_stale"], true);
+    assert_eq!(stale_baseline["regression"], false);
+
+    let benchmark: Value = serde_json::from_str(&stdout(
+        cmd(&db)
+            .arg("recall-benchmark-suite")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--limit")
+            .arg("3")
+            .arg("--write-baseline")
+            .arg("--json"),
+    ))
+    .unwrap();
+    assert_eq!(benchmark["version"], 2);
+    assert_eq!(benchmark["baseline_compatible"], true);
+    assert_eq!(benchmark["baseline_stale"], false);
+    assert_eq!(benchmark["regression"], false);
+    assert_eq!(benchmark["baseline_score"], 100.0);
+    assert!(
+        benchmark["current_probe_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|id| id == &successor_id)
+    );
+    let baseline: Value = serde_json::from_str(
+        &fs::read_to_string(dir.path().join(".agent/recall-benchmark.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(baseline["version"], 2);
+    assert!(
+        baseline["probe_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|id| id == &successor_id)
+    );
 }
 
 #[test]
@@ -14064,7 +14478,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .arg("--json"),
     );
     let memory_harness_json: Value = serde_json::from_str(&memory_harness).unwrap();
-    assert_eq!(memory_harness_json["version"], 1);
+    assert_eq!(memory_harness_json["version"], 2);
     assert!(memory_harness_json["probes"].as_array().is_some());
     assert!(memory_harness_json["score"].as_f64().is_some());
 
@@ -14155,8 +14569,15 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .arg("--json"),
     );
     let recall_benchmark_json: Value = serde_json::from_str(&recall_benchmark).unwrap();
-    assert_eq!(recall_benchmark_json["version"], 1);
+    assert_eq!(recall_benchmark_json["version"], 2);
     assert_eq!(recall_benchmark_json["baseline_written"], true);
+    assert_eq!(recall_benchmark_json["baseline_compatible"], true);
+    assert_eq!(recall_benchmark_json["baseline_stale"], false);
+    assert!(
+        recall_benchmark_json["current_probe_ids"]
+            .as_array()
+            .is_some()
+    );
     assert!(dir.path().join(".agent/recall-benchmark.json").exists());
 
     let release_gate_v2 = stdout(
@@ -15168,7 +15589,25 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .arg("--json"),
     );
     let autonomy_control_json: Value = serde_json::from_str(&autonomy_control).unwrap();
-    assert_eq!(autonomy_control_json["version"], 1);
+    assert_eq!(autonomy_control_json["version"], 2);
+    assert_eq!(
+        autonomy_control_json["ok"],
+        autonomy_control_json["local_ready"]
+    );
+    assert!(
+        autonomy_control_json["required_checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|check| check["required"] == true)
+    );
+    assert!(
+        autonomy_control_json["optional_checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| check["name"] == "remote_sync" && check["required"] == false)
+    );
     assert!(
         autonomy_control_json["ranking"]["selected_profile"]
             .as_str()

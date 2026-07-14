@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.41.0 — 2026-07-14 (local development)
+
+### Added
+
+- Recall benchmark v2 resolves historical read ids through explicit
+  supersession chains, probes the exact active successor, records stable probe
+  identities in baselines, and reports changed probe sets as stale instead of
+  false regressions.
+- Quality Score v2 classifies cards as healthy, fresh, dormant, stale,
+  obsolete, noisy, oversized, or needing evidence, with separate evidence and
+  recommended-action fields plus aggregate actionable counts.
+- Evidence-session observability for lease contention, orphaned attempts,
+  recovery latency, and stale heartbeats, plus dry-run-first completed-session
+  retention over CLI, MCP, HTTP, and the local web UI.
+- Explicit required local-autonomy checks and optional sync checks, with
+  independent readiness, issues, and recommendations.
+
+### Changed
+
+- The stable web control snapshot now returns the small health, quality,
+  recall, local-autonomy, runner, and session summary needed by the initial UI;
+  the full diagnostic surface remains lazy and opt-in.
+- Ordinary unused durable cards are treated as dormant history rather than
+  automatic quality debt; actionable scoring is reserved for evidence-backed
+  stale, obsolete, noisy, oversized, or unlinked conditions.
+- The local autonomy result is no longer blocked by an unconfigured remote
+  target; encrypted remote/VDS sync remains an optional readiness dimension.
+
+### Fixed
+
+- Prevent historical superseded cards in read telemetry from lowering recall
+  benchmarks when the active successor is retrievable.
+- Prevent changed benchmark probe sets from being compared as if they were the
+  same baseline population.
+- Prevent missing file links retained only by superseded/rejected history from
+  polluting active drift and autonomy readiness; explicit per-card link
+  inspection still preserves the historical evidence.
+- Prevent completed evidence sessions from accumulating without a bounded,
+  reviewable, reversible-by-backup retention workflow.
+
 ## 0.40.0 — 2026-07-14 (local development)
 
 ### Added
@@ -21,9 +61,9 @@
 - A session remains compatible with unleased 0.39 clients until it is claimed;
   after claim, context, event, and finish mutations require the current owner
   and lease token and fail closed after expiry or takeover.
-- DukeAgent claims every new or resumed session, renews the lease before
-  heartbeat events, attaches stable attempt-scoped event ids, and passes lease
-  credentials through runner completion and evidence-backed finish.
+- External orchestrators can claim every new or resumed session, renew the
+  lease before heartbeat events, attach stable attempt-scoped event ids, and
+  pass lease credentials through runner completion and evidence-backed finish.
 - The built-in memory UI reports active leases, recoverable workers, attempts,
   event sequence, and the last heartbeat for recent agent sessions.
 
@@ -42,25 +82,25 @@
 
 - Bounded agent-session lifecycle events for runner selection, start,
   completion, failure, validation, recovery, and heartbeat updates.
-- Recoverable-session queries across CLI, MCP, and HTTP so DukeAgent can find
-  active work whose heartbeat stopped and resume the same durable session.
-- End-to-end DukeAgent integration coverage using a real temporary project,
-  runner profile discovery, memory context, evidence capture, finish feedback,
-  causal trace, interruption, and recovery.
+- Recoverable-session queries across CLI, MCP, and HTTP so an orchestrator can
+  find active work whose heartbeat stopped and resume the same durable session.
+- End-to-end external-runner integration coverage using a real temporary
+  project, runner profile discovery, memory context, evidence capture, finish
+  feedback, causal trace, interruption, and recovery.
 
 ### Changed
 
 - Agent-session event writes update the heartbeat and append the event in one
   SQLite transaction, failing closed if the session has already finished.
-- DukeAgent now treats DukeMemory session context as the primary context layer,
-  routes external CLI execution through named profiles, and records exact
+- External orchestrators can treat DukeMemory session context as the primary
+  context layer, route CLI execution through named profiles, and record exact
   changed-file, validation-command, and commit evidence at finish.
 - Antigravity review routing uses `Gemini 3.1 Pro (High)` while Gemini Flash
   research routing remains `gemini-3.5-flash`.
 
 ### Fixed
 
-- Interrupted DukeAgent tasks retain their DukeMemory session id and become
+- Interrupted runner tasks retain their DukeMemory session id and become
   recoverable instead of silently losing causal context.
 - External CLI runners have a bounded timeout with graceful termination and a
   forced-kill fallback.
