@@ -11,6 +11,8 @@
 
 [GitHub](https://github.com/danilkryachko/dukememory)
 
+[Architecture](docs/architecture.md) · [Core operation catalog](docs/operations.md) · [Production deployment](docs/production-deployment.md)
+
 `dukememory` is a Rust CLI, MCP server, and Codex skill that gives Codex,
 Claude, Cursor, and other AI coding agents durable project memory. It stores
 decisions, constraints, commands, known issues, task state, user preferences,
@@ -492,10 +494,16 @@ cargo build --features local-embeddings,local-generation
 
 The current lightweight local generation profile uses
 `HuggingFaceTB/SmolLM2-360M-Instruct-GGUF` with
-`smollm2-360m-instruct-q8_0.gguf`. Tiny models can produce short or uncited
+`smollm2-360m-instruct-q8_0.gguf`. Built-in embedding and generation artifacts
+are pinned to immutable Hugging Face revisions and verified with SHA-256 before
+loading. Custom generation models can pin a revision with
+`hf://owner/repo@revision:file.gguf`. Tiny models can produce short or uncited
 answers, so `rag-answer` and `graph-rag` require selected citation ids and
 return a grounded extractive fallback with citations when generated output is
 too weak or uncited.
+
+Use `cargo build --no-default-features` for a smaller FTS-only binary without
+the ONNX, tokenizer, or Hugging Face dependency stack.
 
 Ollama and OpenAI-compatible embedding providers are still supported:
 

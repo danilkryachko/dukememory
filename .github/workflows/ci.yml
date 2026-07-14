@@ -17,6 +17,14 @@ env:
   DUKEMEMORY_GEN_PROVIDER: mock
 
 jobs:
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.91.0
+      - name: Check declared minimum Rust version
+        run: cargo check --locked
+
   quality:
     runs-on: ubuntu-latest
     steps:
@@ -24,38 +32,60 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
       - name: Format
         run: cargo fmt --all -- --check
+      - name: Check minimal feature build
+        run: cargo check --locked --all-targets --no-default-features
       - name: Check all targets
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Test default features
         run: >-
-          cargo test --
+          cargo test --locked --
           --skip v14_6_local_memory_ui_and_http_actions
           --skip v14_9_autonomous_memory_runs_and_rolls_back
       - name: Test sqlite-vec native backend
         run: |
-          cargo test --features vec --bin dukememory
-          cargo test --features vec --test cli review_conflicts_links_session_and_vec_status -- --exact
-          cargo test --features vec --test cli sqlite_vec_backend_runs_knn_and_matches_json_fallback -- --exact
-          cargo test --features vec --test cli sqlite_vec_persists_rag_chunk_index -- --exact
+          cargo test --locked --features vec --bin dukememory
+          cargo test --locked --features vec --test cli review_conflicts_links_session_and_vec_status -- --exact
+          cargo test --locked --features vec --test cli sqlite_vec_backend_runs_knn_and_matches_json_fallback -- --exact
+          cargo test --locked --features vec --test cli sqlite_vec_persists_rag_chunk_index -- --exact
       - name: Smoke-test installed vec-enabled binary
         run: |
-          cargo build --features vec
+          cargo build --locked --features vec
           scripts/release-smoke.sh target/debug/dukememory
       - name: Check local generation build
-        run: cargo check --features local-embeddings,local-generation
+        run: cargo check --locked --features local-embeddings,local-generation
 
   extended-http:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
       - name: Test extended HTTP compatibility matrix
         run: >-
-          cargo test --test cli
+          cargo test --locked --test cli
           v14_6_local_memory_ui_and_http_actions -- --exact
 
   extended-autonomy:
@@ -63,7 +93,17 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
       - name: Test autonomous maintenance and rollback matrix
         run: >-
-          cargo test --test cli
+          cargo test --locked --test cli
           v14_9_autonomous_memory_runs_and_rolls_back -- --exact
