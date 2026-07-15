@@ -20,9 +20,22 @@ pub(crate) struct ReleaseGateV3Report {
     pub(crate) rag_eval: RagEvalReport,
     pub(crate) graph_rag_eval: GraphRagEvalReport,
     pub(crate) advanced_eval: AdvancedEvalReport,
+    pub(crate) deployment_profile: DeploymentProfileReport,
     pub(crate) checks: Vec<ReleaseGateCheck>,
+    pub(crate) profiles: Vec<ReleaseGateReadinessProfile>,
     pub(crate) issues: Vec<String>,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ReleaseGateReadinessProfile {
+    pub(crate) name: String,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) boundary: String,
+    pub(crate) checks: Vec<String>,
+    pub(crate) required_checks: usize,
+    pub(crate) failed_required_checks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -83,6 +96,13 @@ pub(crate) fn print_release_gate_v3(
     }
     println!("Release Gate v3");
     println!("status: {}", report.status);
+    for profile in &report.profiles {
+        println!(
+            "{} profile:{}",
+            if profile.ok { "ok" } else { "warn" },
+            profile.name
+        );
+    }
     for check in &report.checks {
         println!("{} {}", if check.ok { "ok" } else { "warn" }, check.name);
     }
@@ -145,6 +165,21 @@ pub(crate) fn release_gate_v3_report_with_profile(
         &rag_profile.model,
     )?;
     let advanced_eval = advanced_eval_report(conn)?;
+    let deployment_mode =
+        DeploymentMode::parse(std::env::var("DUKEMEMORY_DEPLOYMENT_MODE").ok().as_deref())?;
+    let deployment_host =
+        std::env::var("DUKEMEMORY_HTTP_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let deployment_token_file = std::env::var_os("DUKEMEMORY_HTTP_TOKEN_FILE").map(PathBuf::from);
+    let deployment_public_origin = std::env::var("DUKEMEMORY_PUBLIC_ORIGIN").ok();
+    let deployment_sync_target = std::env::var_os("DUKEMEMORY_SYNC_TARGET").map(PathBuf::from);
+    let deployment_profile = deployment_profile_report(DeploymentProfileRequest {
+        root: &root,
+        mode: deployment_mode,
+        host: &deployment_host,
+        token_file: deployment_token_file.as_deref(),
+        public_origin: deployment_public_origin.as_deref(),
+        sync_target: deployment_sync_target.as_deref(),
+    });
     let mut checks = release_gate_v2.checks.clone();
     checks.push(ReleaseGateCheck {
         name: "memory_effectiveness_v2".to_string(),
@@ -321,16 +356,38 @@ pub(crate) fn release_gate_v3_report_with_profile(
     });
     checks.push(ReleaseGateCheck {
         name: "advanced_eval_poisoning_review".to_string(),
-        ok: advanced_eval.poisoning.status != "attention",
+        ok: matches!(
+            advanced_eval.poisoning.status.as_str(),
+            "heuristic_clean" | "unconfigured"
+        ),
         required: false,
         detail: format!(
-            "status={} risk={:.1} candidates={} duplicate_groups={}",
+            "status={} risk={:.1} candidates={} duplicate_groups={} provenance={:.1}% detector={}/{} attack_resistance={}",
             advanced_eval.poisoning.status,
             advanced_eval.poisoning.risk_score,
             advanced_eval.poisoning.prompt_injection_candidates,
-            advanced_eval.poisoning.duplicate_cross_source_groups
+            advanced_eval.poisoning.duplicate_cross_source_groups,
+            advanced_eval.poisoning.provenance_coverage,
+            advanced_eval.poisoning.detector_benchmark_passed,
+            advanced_eval.poisoning.detector_benchmark_total,
+            advanced_eval.poisoning.attack_resistance_status
         ),
     });
+    checks.push(ReleaseGateCheck {
+        name: "deployment_profile".to_string(),
+        ok: deployment_profile.ok,
+        required: true,
+        detail: format!(
+            "mode={} host={} blockers={} otlp={} database_at_rest={} sync_encryption={}",
+            deployment_profile.mode,
+            deployment_profile.http.host,
+            deployment_profile.blockers.len(),
+            deployment_profile.observability.otlp_exporter,
+            deployment_profile.encryption.database_at_rest,
+            deployment_profile.encryption.sync_bundle_encryption,
+        ),
+    });
+    let profiles = release_gate_readiness_profiles(&checks);
     let mut issues = release_gate_v2.issues.clone();
     for check in &checks {
         if check.required && !check.ok {
@@ -354,11 +411,16 @@ pub(crate) fn release_gate_v3_report_with_profile(
     recommendations.extend(rag_sources.recommendations.clone());
     recommendations.extend(graph_rag_eval.recommendations.clone());
     recommendations.extend(advanced_eval.recommendations.clone());
+    recommendations.extend(deployment_profile.recommendations.clone());
+    recommendations.push(
+        "use the code profile for source/package readiness, project for local memory health, and deployment for runtime RAG/sync readiness"
+            .to_string(),
+    );
     recommendations.sort();
     recommendations.dedup();
     let ok = issues.is_empty();
     Ok(ReleaseGateV3Report {
-        version: 2,
+        version: 3,
         ok,
         status: if ok { "ready" } else { "blocked" }.to_string(),
         root: root.display().to_string(),
@@ -376,10 +438,70 @@ pub(crate) fn release_gate_v3_report_with_profile(
         rag_eval,
         graph_rag_eval,
         advanced_eval,
+        deployment_profile,
         checks,
+        profiles,
         issues,
         recommendations,
     })
+}
+
+fn release_gate_readiness_profiles(
+    checks: &[ReleaseGateCheck],
+) -> Vec<ReleaseGateReadinessProfile> {
+    [
+        (
+            "code",
+            "source tree, package metadata, declared MCP surface, and optional local build commands",
+        ),
+        (
+            "project",
+            "local project memory quality, governance, evidence, storage, and agent discipline",
+        ),
+        (
+            "deployment",
+            "runtime embedding profile, RAG evaluation, graph retrieval, and remote sync readiness",
+        ),
+    ]
+    .into_iter()
+    .map(|(name, boundary)| {
+        let selected = checks
+            .iter()
+            .filter(|check| release_gate_check_profile(&check.name) == name)
+            .collect::<Vec<_>>();
+        let failed_required_checks = selected
+            .iter()
+            .filter(|check| check.required && !check.ok)
+            .map(|check| check.name.clone())
+            .collect::<Vec<_>>();
+        let required_checks = selected.iter().filter(|check| check.required).count();
+        let ok = failed_required_checks.is_empty();
+        ReleaseGateReadinessProfile {
+            name: name.to_string(),
+            ok,
+            status: if ok { "ready" } else { "blocked" }.to_string(),
+            boundary: boundary.to_string(),
+            checks: selected.iter().map(|check| check.name.clone()).collect(),
+            required_checks,
+            failed_required_checks,
+        }
+    })
+    .collect()
+}
+
+fn release_gate_check_profile(name: &str) -> &'static str {
+    match name {
+        "cargo_version" | "git_clean" | "required_commands" | "mcp_tool_surface_v3" => "code",
+        "sync_latency"
+        | "sync_profile"
+        | "fleet_quality_observed"
+        | "rag_sources_freshness"
+        | "rag_source_pack_eval"
+        | "rag_eval_baseline"
+        | "graph_rag_eval" => "deployment",
+        "deployment_profile" => "deployment",
+        _ => "project",
+    }
 }
 
 fn release_gate_rag_profile(
@@ -466,4 +588,48 @@ fn read_project_rag_budget(root: &Path) -> (usize, usize) {
             .filter(|value| *value > 0)
             .unwrap_or(defaults.1),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readiness_profiles_assign_every_check_once_and_keep_boundaries_separate() {
+        let checks = [
+            ("cargo_version", true),
+            ("memory_health_score", false),
+            ("rag_sources_freshness", true),
+        ]
+        .into_iter()
+        .map(|(name, ok)| ReleaseGateCheck {
+            name: name.to_string(),
+            ok,
+            required: true,
+            detail: String::new(),
+        })
+        .collect::<Vec<_>>();
+
+        let profiles = release_gate_readiness_profiles(&checks);
+        assert_eq!(profiles.len(), 3);
+        assert_eq!(
+            profiles.iter().map(|item| item.checks.len()).sum::<usize>(),
+            3
+        );
+        assert!(profiles.iter().find(|item| item.name == "code").unwrap().ok);
+        assert!(
+            !profiles
+                .iter()
+                .find(|item| item.name == "project")
+                .unwrap()
+                .ok
+        );
+        assert!(
+            profiles
+                .iter()
+                .find(|item| item.name == "deployment")
+                .unwrap()
+                .ok
+        );
+    }
 }

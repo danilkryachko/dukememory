@@ -61,6 +61,7 @@ pub(super) fn mcp_task_call_is_read_only(name: &str, args: &Value) -> bool {
             .and_then(Value::as_bool)
             .unwrap_or(false),
         "memory_rag_ingest" => !args.get("apply").and_then(Value::as_bool).unwrap_or(false),
+        "memory_evidence_autopilot" => !args.get("apply").and_then(Value::as_bool).unwrap_or(false),
         "memory_rag_eval" => !args
             .get("write_baseline")
             .and_then(Value::as_bool)

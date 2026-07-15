@@ -1113,6 +1113,23 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Turn explicit durable-id references into bitemporal evidence (dry-run by default).
+    EvidenceAutopilot {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        apply: bool,
+        #[arg(
+            long = "rollback-observation-id",
+            value_name = "ID",
+            conflicts_with = "apply"
+        )]
+        rollback_observation_ids: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Run recall probes and optionally store a benchmark baseline.
     RecallBenchmarkSuite {
         #[arg(long, default_value = ".")]
@@ -2211,6 +2228,23 @@ pub(crate) enum Command {
     Autonomous {
         #[command(subcommand)]
         command: AutonomousCommand,
+    },
+    /// Validate a local or reverse-proxy deployment profile without exposing secrets.
+    DeploymentProfile {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, value_enum, default_value_t = DeploymentMode::Local)]
+        mode: DeploymentMode,
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, env = "DUKEMEMORY_HTTP_TOKEN_FILE")]
+        auth_token_file: Option<PathBuf>,
+        #[arg(long, env = "DUKEMEMORY_PUBLIC_ORIGIN")]
+        public_origin: Option<String>,
+        #[arg(long)]
+        sync_target: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
     },
     /// Serve the local HTTP API; external binds require an auth token.
     ServeHttp {

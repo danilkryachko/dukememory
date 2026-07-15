@@ -1,9 +1,11 @@
 use anyhow::{Context, Result, bail};
+#[cfg(test)]
+use dukememory::protocol::MCP_MAX_HEADER_BYTES;
+use dukememory::protocol::{
+    MCP_MAX_FRAME_BYTES, read_mcp_content_length_header as read_content_length_header,
+};
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
-
-const MCP_MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
-const MCP_MAX_HEADER_BYTES: usize = 8 * 1024;
 
 pub(super) fn serve_json_rpc<F>(content_length: bool, mut handle: F) -> Result<()>
 where
@@ -76,41 +78,6 @@ fn serve_content_length_stream(
         }
     }
     Ok(())
-}
-
-fn read_content_length_header(reader: &mut impl BufRead) -> Result<Option<usize>> {
-    let mut length = None;
-    let mut saw_header = false;
-    let mut header_bytes = 0_usize;
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
-            if saw_header {
-                bail!("incomplete MCP frame header");
-            }
-            return Ok(None);
-        }
-        header_bytes = header_bytes.saturating_add(line.len());
-        if header_bytes > MCP_MAX_HEADER_BYTES {
-            bail!("MCP frame header exceeds {MCP_MAX_HEADER_BYTES} bytes");
-        }
-        if line == "\r\n" || line == "\n" {
-            break;
-        }
-        saw_header = true;
-        if let Some((name, value)) = line.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            let parsed = value.trim().parse::<usize>()?;
-            if length.is_some() {
-                bail!("duplicate Content-Length headers");
-            }
-            length = Some(parsed);
-        }
-    }
-    length
-        .map(Some)
-        .ok_or_else(|| anyhow::anyhow!("missing Content-Length header"))
 }
 
 fn parse_error(message: String) -> Value {

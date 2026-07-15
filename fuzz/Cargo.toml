@@ -1,0 +1,29 @@
+[package]
+name = "dukememory-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+dukememory = { path = "..", default-features = false }
+
+[[bin]]
+name = "mcp_content_length"
+path = "fuzz_targets/mcp_content_length.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_framing"
+path = "fuzz_targets/http_framing.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

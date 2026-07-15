@@ -13,3 +13,7 @@
 /test.pdf
 /dukememory.cdx.json*
 /dist/
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/coverage/
+/lcov.info

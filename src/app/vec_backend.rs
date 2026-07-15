@@ -1,15 +1,12 @@
 use super::*;
 
-#[cfg(feature = "vec")]
 use std::sync::OnceLock;
 
-#[cfg(feature = "vec")]
 static SQLITE_VEC_REGISTRATION: OnceLock<i32> = OnceLock::new();
 
 #[cfg(feature = "vec")]
 const VEC_TRIGGER_VERSION: i64 = 2;
 
-#[cfg(feature = "vec")]
 type SqliteExtensionEntry = unsafe extern "C" fn(
     *mut rusqlite::ffi::sqlite3,
     *mut *mut std::os::raw::c_char,
@@ -102,7 +99,6 @@ impl VecIndexKind {
     }
 }
 
-#[cfg(feature = "vec")]
 pub(crate) fn register_sqlite_vec() -> Result<()> {
     let result = *SQLITE_VEC_REGISTRATION.get_or_init(|| unsafe {
         let entry = std::mem::transmute::<*const (), SqliteExtensionEntry>(
@@ -113,11 +109,6 @@ pub(crate) fn register_sqlite_vec() -> Result<()> {
     if result != rusqlite::ffi::SQLITE_OK {
         bail!("failed to register sqlite-vec extension: SQLite error {result}");
     }
-    Ok(())
-}
-
-#[cfg(not(feature = "vec"))]
-pub(crate) fn register_sqlite_vec() -> Result<()> {
     Ok(())
 }
 
@@ -869,5 +860,69 @@ mod tests {
             )
             .unwrap();
         assert!(sql.to_ascii_lowercase().contains("using vec0"));
+    }
+}
+
+#[cfg(all(test, not(feature = "vec")))]
+mod no_vec_tests {
+    use super::*;
+
+    #[test]
+    fn minimal_binary_keeps_persistent_vec_triggers_writable() {
+        register_sqlite_vec().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE memory_embeddings(
+                memory_id TEXT,
+                dimensions INTEGER,
+                embedding TEXT,
+                endpoint TEXT,
+                model TEXT
+            );
+            CREATE TABLE vector_index_registry(
+                kind TEXT,
+                dimensions INTEGER,
+                table_name TEXT,
+                trigger_version INTEGER
+            );
+            INSERT INTO vector_index_registry(kind, dimensions, table_name, trigger_version)
+            VALUES ('memory', 8, 'dukememory_memory_vec_8', 2);
+            CREATE VIRTUAL TABLE dukememory_memory_vec_8 USING vec0(
+                embedding_rowid INTEGER PRIMARY KEY,
+                embedding float[8] distance_metric=cosine,
+                endpoint TEXT,
+                model TEXT
+            );
+            CREATE TRIGGER dukememory_memory_vec_8_ai
+            AFTER INSERT ON memory_embeddings
+            BEGIN
+                INSERT INTO dukememory_memory_vec_8(
+                    embedding_rowid, embedding, endpoint, model
+                ) VALUES (NEW.rowid, NEW.embedding, NEW.endpoint, NEW.model);
+            END;
+            CREATE TRIGGER dukememory_memory_vec_8_au_remove
+            AFTER UPDATE ON memory_embeddings BEGIN SELECT 1; END;
+            CREATE TRIGGER dukememory_memory_vec_8_au_upsert
+            AFTER UPDATE ON memory_embeddings BEGIN SELECT 1; END;
+            CREATE TRIGGER dukememory_memory_vec_8_ad
+            AFTER DELETE ON memory_embeddings BEGIN SELECT 1; END;
+            "#,
+        )
+        .unwrap();
+
+        initialize_sqlite_vec_indexes(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO memory_embeddings(memory_id, dimensions, embedding, endpoint, model) VALUES ('memory-1', 8, ?1, 'local', 'mock-small')",
+            [serde_json::to_string(&vec![0.25_f32; 8]).unwrap()],
+        )
+        .unwrap();
+
+        let indexed: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dukememory_memory_vec_8", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(indexed, 1);
     }
 }

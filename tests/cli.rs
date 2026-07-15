@@ -15722,13 +15722,31 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .arg("--json"),
     );
     let release_gate_v3_json: Value = serde_json::from_str(&release_gate_v3).unwrap();
-    assert_eq!(release_gate_v3_json["version"], 2);
+    assert_eq!(release_gate_v3_json["version"], 3);
     assert!(release_gate_v3_json["mcp_discipline_v3"].is_object());
     assert!(release_gate_v3_json["graph_rag_eval"].is_object());
     assert!(release_gate_v3_json["advanced_eval"].is_object());
+    assert!(release_gate_v3_json["deployment_profile"].is_object());
     assert!(release_gate_v3_json["storage"].is_object());
     assert_eq!(release_gate_v3_json["rag_profile"]["name"], "offline");
     assert_eq!(release_gate_v3_json["rag_profile"]["provider"], "mock");
+    let readiness_profiles = release_gate_v3_json["profiles"].as_array().unwrap();
+    assert_eq!(readiness_profiles.len(), 3);
+    assert!(
+        readiness_profiles
+            .iter()
+            .any(|profile| profile["name"] == "code")
+    );
+    assert!(
+        readiness_profiles
+            .iter()
+            .any(|profile| profile["name"] == "project")
+    );
+    assert!(
+        readiness_profiles
+            .iter()
+            .any(|profile| profile["name"] == "deployment")
+    );
     assert!(
         release_gate_v3_json["checks"]
             .as_array()

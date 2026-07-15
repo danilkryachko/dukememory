@@ -13,6 +13,9 @@ pub(crate) const MCP_MEMORY_ADD: &str = "memory_add";
 pub(crate) const MCP_MEMORY_REMEMBER: &str = "memory_remember";
 pub(crate) const MCP_MEMORY_GET: &str = "memory_get";
 pub(crate) const MCP_MEMORY_SEARCH: &str = "memory_search";
+pub(crate) const MCP_MEMORY_UPDATE: &str = "memory_update";
+pub(crate) const MCP_MEMORY_SET_STATUS: &str = "memory_set_status";
+pub(crate) const MCP_MEMORY_DELETE: &str = "memory_delete";
 pub(crate) const MCP_OPERATIONS: &str = "memory_operations";
 
 pub(crate) const HTTP_OPERATIONS: &str = "/operations";
@@ -175,7 +178,7 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         "memory",
         "Update a memory card",
         &[CLI_UPDATE],
-        &[],
+        &[MCP_MEMORY_UPDATE],
         &[HTTP_MEMORY_UPDATE],
         true,
         false;
@@ -186,7 +189,7 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         "memory",
         "Change memory status",
         &[CLI_STATUS],
-        &[],
+        &[MCP_MEMORY_SET_STATUS],
         &[HTTP_MEMORY_STATUS],
         true,
         false;
@@ -197,7 +200,7 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         "memory",
         "Delete a memory card",
         &[CLI_DELETE],
-        &[],
+        &[MCP_MEMORY_DELETE],
         &[HTTP_MEMORY_DELETE],
         true,
         false;
@@ -266,6 +269,21 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         false,
         false;
         Preview, Read, true, false, false
+    ),
+    operation!(
+        "evidence.autopilot",
+        "evidence",
+        "Create reversible bitemporal evidence from explicit durable-id references",
+        &["evidence-autopilot"],
+        &["memory_evidence_autopilot"],
+        &[
+            "/evidence-autopilot",
+            "/evidence-autopilot/apply",
+            "/evidence-autopilot/rollback",
+        ],
+        true,
+        true;
+        Preview, Write, false, true, false
     ),
     operation!(
         "memory.drift",
@@ -485,6 +503,17 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         true,
         false;
         Stable, Maintenance, true, false, true
+    ),
+    operation!(
+        "deployment.profile",
+        "deployment",
+        "Validate local or reverse-proxy deployment security and observability",
+        &["deployment-profile"],
+        &["memory_deployment_profile"],
+        &["/deployment-profile"],
+        false,
+        false;
+        Preview, Filesystem, true, false, true
     ),
     operation!(
         "agent_session.start",
@@ -714,6 +743,21 @@ mod tests {
             operation_for_http("/memory/delete").map(|operation| operation.destructive),
             Some(true)
         );
+        for id in [
+            "memory.create",
+            "memory.get",
+            "memory.update",
+            "memory.status",
+            "memory.delete",
+        ] {
+            let operation = OPERATION_CATALOG
+                .iter()
+                .find(|operation| operation.id == id)
+                .unwrap();
+            assert!(!operation.cli.is_empty(), "missing CLI surface for {id}");
+            assert!(!operation.mcp.is_empty(), "missing MCP surface for {id}");
+            assert!(!operation.http.is_empty(), "missing HTTP surface for {id}");
+        }
     }
 
     #[test]

@@ -121,7 +121,7 @@ pub(crate) fn run() -> Result<()> {
                 reject_sensitive(title.as_deref().unwrap_or_default(), body, allow_sensitive)?;
             }
             memory_app.update(UpdateMemory {
-                id,
+                id: id.clone(),
                 memory_type,
                 title,
                 body,
@@ -134,8 +134,12 @@ pub(crate) fn run() -> Result<()> {
                 replace_links,
                 allow_sensitive,
             })?;
+            println!("{id}");
         }
-        Command::Delete { id } => memory_app.delete(&id)?,
+        Command::Delete { id } => {
+            memory_app.delete(&id)?;
+            println!("{id}");
+        }
         Command::Search {
             query,
             memory_type,
@@ -214,7 +218,10 @@ pub(crate) fn run() -> Result<()> {
             )?;
             print_rows(&conn, &rows, json)?;
         }
-        Command::Status { id, status } => memory_app.set_status(&id, status)?,
+        Command::Status { id, status } => {
+            memory_app.set_status(&id, status)?;
+            println!("{id}");
+        }
         Command::ContextPack {
             task,
             memory_type,
@@ -1026,6 +1033,13 @@ pub(crate) fn run() -> Result<()> {
             apply,
             json,
         } => print_memory_graph_links(&conn, &root, limit, apply, json)?,
+        Command::EvidenceAutopilot {
+            root,
+            limit,
+            apply,
+            rollback_observation_ids,
+            json,
+        } => print_evidence_autopilot(&conn, &root, limit, apply, &rollback_observation_ids, json)?,
         Command::RecallBenchmarkSuite {
             root,
             since_days,
@@ -1996,6 +2010,25 @@ pub(crate) fn run() -> Result<()> {
         )?,
         Command::Autopilot { command } => handle_autopilot(&conn, &cli.db, command)?,
         Command::Autonomous { command } => handle_autonomous(&conn, &cli.db, command)?,
+        Command::DeploymentProfile {
+            root,
+            mode,
+            host,
+            auth_token_file,
+            public_origin,
+            sync_target,
+            json,
+        } => print_deployment_profile(
+            DeploymentProfileRequest {
+                root: &root,
+                mode,
+                host: &host,
+                token_file: auth_token_file.as_deref(),
+                public_origin: public_origin.as_deref(),
+                sync_target: sync_target.as_deref(),
+            },
+            json,
+        )?,
         Command::ServeHttp {
             host,
             port,

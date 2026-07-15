@@ -10,15 +10,16 @@ Every JSON entry also exposes stable `input_schema` and `output_schema` identifi
 | `memory.create` | `memory` | Create durable memory | `add`<br>`remember` | `memory_add`<br>`memory_remember` | `/remember` | `stable` | `project_write` | yes | no | no | no | no |
 | `memory.get` | `memory` | Read memory cards | `get` | `memory_get` | `/memory` | `stable` | `project_read` | no | no | yes | no | no |
 | `memory.search` | `memory` | Search memory | `search` | `memory_search` | `/search` | `stable` | `project_read` | no | no | yes | no | no |
-| `memory.update` | `memory` | Update a memory card | `update` | — | `/memory/update` | `stable` | `project_write` | yes | no | yes | no | no |
-| `memory.status` | `memory` | Change memory status | `status` | — | `/memory/status` | `stable` | `project_write` | yes | no | yes | no | no |
-| `memory.delete` | `memory` | Delete a memory card | `delete` | — | `/memory/delete` | `stable` | `project_maintenance` | yes | no | yes | yes | no |
+| `memory.update` | `memory` | Update a memory card | `update` | `memory_update` | `/memory/update` | `stable` | `project_write` | yes | no | yes | no | no |
+| `memory.status` | `memory` | Change memory status | `status` | `memory_set_status` | `/memory/status` | `stable` | `project_write` | yes | no | yes | no | no |
+| `memory.delete` | `memory` | Delete a memory card | `delete` | `memory_delete` | `/memory/delete` | `stable` | `project_maintenance` | yes | no | yes | yes | no |
 | `memory.feedback` | `memory` | Record retrieval usefulness feedback | `feedback` | `memory_feedback` | `/feedback` | `stable` | `project_write` | yes | no | no | no | no |
 | `memory.doctrine` | `memory` | Read active project decisions | `doctrine` | `memory_doctrine` | `/doctrine` | `stable` | `project_read` | no | no | yes | no | no |
 | `memory.evidence` | `memory` | Read provenance for one memory card | `evidence` | `memory_evidence` | `/evidence` | `stable` | `project_read` | no | no | yes | no | no |
 | `evidence.observe` | `evidence` | Record a bitemporal evidence observation | `observe` | `memory_observe` | — | `preview` | `project_write` | yes | no | no | no | no |
 | `evidence.list` | `evidence` | Read evidence observations as-of two times | `observations` | `memory_observations` | — | `preview` | `project_read` | no | no | yes | no | no |
 | `graph.temporal` | `graph` | Read the bitemporal memory graph | `temporal-graph` | `memory_temporal_graph` | — | `preview` | `project_read` | no | no | yes | no | no |
+| `evidence.autopilot` | `evidence` | Create reversible bitemporal evidence from explicit durable-id references | `evidence-autopilot` | `memory_evidence_autopilot` | `/evidence-autopilot`<br>`/evidence-autopilot/apply`<br>`/evidence-autopilot/rollback` | `preview` | `project_write` | yes | yes | no | yes | no |
 | `memory.drift` | `memory` | Detect memory drift against project files | `drift` | `memory_drift` | `/drift` | `stable` | `project_filesystem` | no | no | yes | no | yes |
 | `retrieval.brief` | `retrieval` | Build a tiny verified task brief | `brief` | `memory_brief` | `/brief` | `stable` | `project_read` | no | no | yes | no | no |
 | `retrieval.impact` | `retrieval` | Find memory relevant to a target | `impact` | `memory_impact` | `/impact` | `stable` | `project_read` | no | no | yes | no | no |
@@ -40,6 +41,7 @@ Every JSON entry also exposes stable `input_schema` and `output_schema` identifi
 | `memory.advanced_eval` | `evaluation` | Audit causal, poisoning, global, and temporal memory signals | `eval advanced` | `memory_advanced_eval` | `/advanced-eval` | `preview` | `project_read` | no | no | yes | no | no |
 | `release.gate_v2` | `release` | Run V2 release readiness checks | `release-gate-v2` | `memory_release_gate_v2` | `/release-gate-v2` | `deprecated` | `project_maintenance` | yes | no | yes | no | yes |
 | `release.gate_v3` | `release` | Run V3 release readiness checks | `release-gate-v3` | `memory_release_gate_v3` | `/release-gate-v3` | `stable` | `project_maintenance` | yes | no | yes | no | yes |
+| `deployment.profile` | `deployment` | Validate local or reverse-proxy deployment security and observability | `deployment-profile` | `memory_deployment_profile` | `/deployment-profile` | `preview` | `project_filesystem` | no | no | yes | no | yes |
 | `agent_session.start` | `agent_session` | Start an evidence-backed session | `agent-session start` | `memory_session_start` | `/agent-sessions/start` | `stable` | `project_write` | yes | no | no | no | no |
 | `agent_session.context` | `agent_session` | Load audited session context | `agent-session context` | `memory_session_context` | `/agent-sessions/context` | `stable` | `project_read` | no | no | yes | no | no |
 | `agent_session.claim` | `agent_session` | Claim a worker lease | `agent-session claim` | `memory_session_claim` | `/agent-sessions/claim` | `stable` | `project_write` | yes | no | no | no | no |

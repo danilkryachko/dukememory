@@ -86,7 +86,6 @@ pub(crate) fn add_memory(conn: &Connection, input: AddMemory) -> Result<String> 
 
 pub(crate) fn update_memory(conn: &Connection, input: UpdateMemory) -> Result<()> {
     let links = parse_links(&input.links)?;
-    let id = input.id.clone();
     transactional(conn, "update_memory", || {
         let mut memory = get_memory(conn, &input.id)?;
         if let Some(value) = input.memory_type {
@@ -153,7 +152,6 @@ pub(crate) fn update_memory(conn: &Connection, input: UpdateMemory) -> Result<()
             "updated memory card",
         )
     })?;
-    println!("{id}");
     Ok(())
 }
 
@@ -165,7 +163,6 @@ pub(crate) fn delete_memory(conn: &Connection, id: &str) -> Result<()> {
         }
         log_event(conn, "memory_deleted", Some(id), "deleted memory card")
     })?;
-    println!("{id}");
     Ok(())
 }
 
@@ -186,7 +183,6 @@ pub(crate) fn set_status(conn: &Connection, id: &str, status: MemoryStatus) -> R
             &format!("set status to {status}"),
         )
     })?;
-    println!("{id}");
     Ok(())
 }
 

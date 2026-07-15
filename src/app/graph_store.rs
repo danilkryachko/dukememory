@@ -37,6 +37,20 @@ pub(crate) fn insert_memory_edge(
     confidence: f64,
     provenance: &str,
 ) -> Result<bool> {
+    insert_memory_edge_with_observation(
+        conn, source_id, target_id, kind, confidence, provenance, None,
+    )
+}
+
+pub(crate) fn insert_memory_edge_with_observation(
+    conn: &Connection,
+    source_id: &str,
+    target_id: &str,
+    kind: &str,
+    confidence: f64,
+    provenance: &str,
+    observation_id: Option<&str>,
+) -> Result<bool> {
     validate_confidence(confidence)?;
     let kind = kind.trim();
     let provenance = provenance.trim();
@@ -53,15 +67,16 @@ pub(crate) fn insert_memory_edge(
     let observed_at = now_ms();
     let changed = conn.execute(
         "INSERT OR IGNORE INTO memory_edges \
-         (source_id, target_id, kind, confidence, provenance, created_at, valid_from, observed_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?6)",
+         (source_id, target_id, kind, confidence, provenance, created_at, valid_from, observed_at, observation_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?6, ?7)",
         params![
             source_id,
             target_id,
             kind,
             confidence,
             provenance,
-            observed_at
+            observed_at,
+            observation_id,
         ],
     )?;
     Ok(changed == 1)

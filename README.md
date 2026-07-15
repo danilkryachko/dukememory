@@ -650,8 +650,8 @@ local-first multi-device readiness. Memory gaps become reviewable suggestions
 instead of noisy automatic writes.
 
 Storage health reports byte quotas and `ok`/`warn`/`critical` pressure. Defaults
-are 512 MiB for `.agent`, 256 MiB for database backups, and 128 MiB each for
-autonomous rollbacks and install backups. Override them with
+are 512 MiB for `.agent`, 256 MiB for database backups, 128 MiB for autonomous
+rollbacks, and 512 MiB for install backups. Override them with
 `DUKEMEMORY_AGENT_QUOTA_BYTES`, `DUKEMEMORY_BACKUP_QUOTA_BYTES`,
 `DUKEMEMORY_ROLLBACK_QUOTA_BYTES`, and
 `DUKEMEMORY_INSTALL_BACKUP_QUOTA_BYTES`; backup rotation enforces both count and

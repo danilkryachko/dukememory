@@ -1963,6 +1963,81 @@ pub(super) fn handle_http_request(
                 .unwrap_or(7);
             HttpResponse::ok(json!({"fleet_quality": fleet_quality_report(db, since_days)?}))
         }
+        ("GET", "/evidence-autopilot") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(20);
+            HttpResponse::ok(json!({"evidence_autopilot": evidence_autopilot_report(
+                &conn,
+                &ctx.root,
+                limit,
+                false,
+                &[],
+            )?}))
+        }
+        ("POST", "/evidence-autopilot/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+            HttpResponse::ok(json!({"evidence_autopilot": evidence_autopilot_report(
+                &conn,
+                &ctx.root,
+                limit,
+                true,
+                &[],
+            )?}))
+        }
+        ("POST", "/evidence-autopilot/rollback") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let Some(items) = value.get("observation_ids").and_then(Value::as_array) else {
+                return Ok(HttpResponse::bad_request("missing observation_ids"));
+            };
+            let observation_ids = items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            if observation_ids.is_empty() || observation_ids.len() != items.len() {
+                return Ok(HttpResponse::bad_request(
+                    "observation_ids must be a non-empty string array",
+                ));
+            }
+            HttpResponse::ok(json!({"evidence_autopilot": evidence_autopilot_report(
+                &conn,
+                &ctx.root,
+                20,
+                false,
+                &observation_ids,
+            )?}))
+        }
+        ("GET", "/deployment-profile") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let mode = DeploymentMode::parse(params.get("mode").map(String::as_str))?;
+            let host = params
+                .get("host")
+                .map(String::as_str)
+                .unwrap_or("127.0.0.1");
+            let token_file = params.get("token_file").map(PathBuf::from);
+            let public_origin = params.get("public_origin").map(String::as_str);
+            let sync_target = params.get("sync_target").map(PathBuf::from);
+            HttpResponse::ok(json!({"deployment_profile": deployment_profile_report(
+                DeploymentProfileRequest {
+                    root: &ctx.root,
+                    mode,
+                    host,
+                    token_file: token_file.as_deref(),
+                    public_origin,
+                    sync_target: sync_target.as_deref(),
+                }
+            )}))
+        }
         ("GET", "/release-gate-v3") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);

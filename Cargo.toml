@@ -16,7 +16,7 @@ anyhow = "1.0"
 clap = { version = "4.5", features = ["derive", "env"] }
 ctrlc = { version = "3.5", features = ["termination"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
-sqlite-vec = { version = "0.1.9", optional = true }
+sqlite-vec = "0.1.9"
 regex = "1.12"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rhai = { version = "1.22", default-features = false, features = ["std"] }
@@ -38,8 +38,10 @@ default = ["local-embeddings"]
 # `--no-default-features` to omit the ONNX/tokenizer download stack.
 local-embeddings = ["dep:hf-hub", "dep:tokenizers", "dep:tract-onnx"]
 local-generation = ["dep:encoding_rs", "dep:hf-hub", "dep:llama-cpp-2"]
-# Statically registers sqlite-vec and runs semantic distance queries in SQLite.
-vec = ["dep:sqlite-vec"]
+# The sqlite-vec module is always linked so databases created by accelerated
+# builds remain writable by minimal builds. This feature enables KNN query and
+# persistent index management; JSON fallback remains the default query path.
+vec = []
 
 [dev-dependencies]
 assert_cmd = "2.0"

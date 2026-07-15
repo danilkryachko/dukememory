@@ -6,6 +6,30 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command as StdCommand, Stdio};
 use tempfile::tempdir;
 
+#[test]
+fn domain_and_protocol_boundaries_do_not_write_to_process_streams() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for relative in [
+        "src/domain.rs",
+        "src/storage.rs",
+        "src/application.rs",
+        "src/app/memory.rs",
+        "src/app/graph_store.rs",
+        "src/protocol.rs",
+    ] {
+        let source = std::fs::read_to_string(root.join(relative)).unwrap();
+        assert!(
+            !source.contains("println!(") && !source.contains("eprintln!("),
+            "lower layer {relative} must return data/errors instead of writing process streams"
+        );
+    }
+
+    let http = std::fs::read_to_string(root.join("src/app/http_server.rs")).unwrap();
+    let mcp = std::fs::read_to_string(root.join("src/app/mcp_transport.rs")).unwrap();
+    assert!(http.contains("dukememory::protocol::http_content_length"));
+    assert!(mcp.contains("dukememory::protocol"));
+}
+
 fn cmd(db: &std::path::Path) -> Command {
     let mut command = Command::cargo_bin("dukememory").unwrap();
     command.arg("--db").arg(db);

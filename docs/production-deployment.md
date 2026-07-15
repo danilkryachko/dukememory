@@ -33,7 +33,10 @@ DUKEMEMORY_HTTP_ALLOWED_ORIGINS=https://memory.example.com
 DUKEMEMORY_AGENT_QUOTA_BYTES=536870912
 DUKEMEMORY_BACKUP_QUOTA_BYTES=268435456
 DUKEMEMORY_ROLLBACK_QUOTA_BYTES=134217728
-DUKEMEMORY_INSTALL_BACKUP_QUOTA_BYTES=134217728
+DUKEMEMORY_INSTALL_BACKUP_QUOTA_BYTES=536870912
+DUKEMEMORY_DEPLOYMENT_MODE=reverse-proxy
+DUKEMEMORY_HTTP_HOST=127.0.0.1
+DUKEMEMORY_PUBLIC_ORIGIN=https://memory.example.com
 ```
 
 The service also accepts `DUKEMEMORY_SYNC_PASSPHRASE_FILE` here when encrypted
@@ -45,6 +48,24 @@ with mode `700`, and enables SQLite `secure_delete=FAST`; production hosts shoul
 still use encrypted storage (for example LUKS or FileVault) when memory content
 is sensitive. Remote/VDS bundles should use the built-in authenticated age
 encryption.
+
+Validate the effective profile before starting or releasing the service:
+
+```bash
+dukememory deployment-profile \
+  --mode reverse-proxy \
+  --host 127.0.0.1 \
+  --auth-token-file /etc/dukememory/http-token \
+  --public-origin https://memory.example.com \
+  --json
+```
+
+The report fails closed on public binds, missing bearer authentication, a
+non-HTTPS origin, origin-policy mismatches, unsafe token files, and an encrypted
+sync target without a valid passphrase. It also states the current limits
+explicitly: SQLite at-rest encryption is host-managed and native OTLP export is
+not implemented; production observability is JSON access logs, request IDs,
+`/metrics`, and journal/collector ingestion.
 
 ## 3. Start the systemd service
 

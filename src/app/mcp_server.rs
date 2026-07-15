@@ -308,6 +308,7 @@ fn mcp_server_instructions(profile: McpProfile) -> String {
 fn mcp_server_discover(state: &McpSessionState) -> Value {
     json!({
         "supportedVersions": MCP_SUPPORTED_PROTOCOL_VERSIONS,
+        "releaseStatus": "preview_until_2026-07-28",
         "capabilities": mcp_server_capabilities(true),
         "serverInfo": {
             "name": "dukememory",
@@ -407,6 +408,9 @@ fn build_mcp_tools() -> Value {
         {"name":"memory_evidence","description":"Return compact provenance for one memory card by default","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_auto_ingest","description":"Scan agent session files into pending inbox suggestions without duplicates as bounded summary","inputSchema":{"type":"object","properties":{"input":{"type":"string"},"scope":{"type":"string"},"dry_run":{"type":"boolean"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"}}}},
         {"name":MCP_MEMORY_GET,"description":"Get one memory card as compact summary by default","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
+        {"name":MCP_MEMORY_UPDATE,"description":"Update fields on one memory card","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"type":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"scope":{"type":"string"},"status":{"type":"string","enum":["active","superseded","rejected","uncertain"]},"source":{"type":"string"},"confidence":{"type":"number"},"layer":{"type":"string"},"links":{"type":"array","items":{"type":"string"}},"replace_links":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
+        {"name":MCP_MEMORY_SET_STATUS,"description":"Change one memory card status","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"status":{"type":"string","enum":["active","superseded","rejected","uncertain"]},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","status"]}},
+        {"name":MCP_MEMORY_DELETE,"description":"Permanently delete one memory card","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}},
         {"name":"memory_review","description":"Review stale/conflicting memory as a bounded summary","inputSchema":{"type":"object","properties":{"limit":{"type":"number"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_doctor","description":"Run compact memory health checks","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
         {"name":"memory_inbox_list","description":"List pending inbox items as compact summaries by default","inputSchema":{"type":"object","properties":{"limit":{"type":"number"},"query":{"type":"string"},"max_chars":{"type":"number"},"include_body":{"type":"boolean"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}},
@@ -437,6 +441,7 @@ fn build_mcp_tools() -> Value {
             json!({"name":"memory_observe","description":"Record an evidence-backed bitemporal observation","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"target_memory_id":{"type":"string"},"kind":{"type":"string","enum":["asserted","verified","contradicted","superseded","file_changed","retrieved","outcome"]},"statement":{"type":"string"},"evidence_kind":{"type":"string"},"evidence_ref":{"type":"string"},"confidence":{"type":"number","minimum":0.0,"maximum":1.0},"valid_from":{"type":"number"},"valid_to":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","kind","statement","evidence_kind","evidence_ref"]}}),
             json!({"name":"memory_observations","description":"List evidence observations as-of valid and knowledge time","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"valid_at":{"type":"number"},"known_at":{"type":"number"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}}),
             json!({"name":"memory_temporal_graph","description":"Read the memory graph as-of valid and knowledge time","inputSchema":{"type":"object","properties":{"valid_at":{"type":"number"},"known_at":{"type":"number"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_evidence_autopilot","description":"Dry-run, apply, or roll back bitemporal evidence for explicit durable-id references","inputSchema":{"type":"object","properties":{"limit":{"type":"number"},"apply":{"type":"boolean"},"rollback_observation_ids":{"type":"array","items":{"type":"string"}},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_conflict_review","description":"Review duplicate, stale, superseded, and contradiction-prone memory groups","inputSchema":{"type":"object","properties":{"stale_days":{"type":"number"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_effectiveness_v2","description":"Measure memory usefulness with influence, waste, and semantic-read signals","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_recall_baselines","description":"Inspect or write guarded recall benchmark baselines","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
@@ -445,6 +450,7 @@ fn build_mcp_tools() -> Value {
             json!({"name":"memory_mcp_discipline_v3","description":"Verify or record MCP V3 memory discipline","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_fleet_quality","description":"Inspect V3 quality across discovered project memories","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"db":{"type":"string"}}}}),
             json!({"name":"memory_release_gate_v3","description":"Gate releases with effectiveness, baselines, conflicts, MCP V3, fleet visibility, and an explicit RAG runtime profile","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"rag_profile":{"type":"string","enum":["deployment","canonical","offline"]},"strict":{"type":"boolean"},"run":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_deployment_profile","description":"Validate local or reverse-proxy deployment security, observability, and encryption prerequisites","inputSchema":{"type":"object","properties":{"mode":{"type":"string","enum":["local","reverse_proxy"]},"host":{"type":"string"},"token_file":{"type":"string"},"public_origin":{"type":"string"},"sync_target":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
         ]);
         for tool in items {
             enrich_mcp_tool_definition(tool);
@@ -497,6 +503,9 @@ fn mcp_profile_includes(profile: McpProfile, name: &str) -> bool {
         "memory_feedback",
         "memory_get",
         "memory_impact",
+        "memory_update",
+        "memory_set_status",
+        "memory_delete",
         "memory_operations",
         "memory_project_health",
         "memory_recall",
@@ -509,6 +518,8 @@ fn mcp_profile_includes(profile: McpProfile, name: &str) -> bool {
         "memory_advanced_eval",
         "memory_auto_ingest",
         "memory_effectiveness_v2",
+        "memory_evidence_autopilot",
+        "memory_deployment_profile",
         "memory_graph_rag_answer",
         "memory_graph_rag_eval",
         "memory_health_score",
@@ -1976,6 +1987,62 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     .map_err(|err| err.to_string())?
             }
         }
+        MCP_MEMORY_UPDATE => {
+            let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            memory_app
+                .update(UpdateMemory {
+                    id: id.clone(),
+                    memory_type: json_string(&args, "type")
+                        .map(|value| value.parse::<MemoryType>())
+                        .transpose()
+                        .map_err(|err| err.to_string())?,
+                    title: json_string(&args, "title"),
+                    body: json_string(&args, "body"),
+                    scope: json_string(&args, "scope")
+                        .map(|value| value.parse::<MemoryScope>())
+                        .transpose()
+                        .map_err(|err| err.to_string())?,
+                    status: json_string(&args, "status")
+                        .map(|value| value.parse::<MemoryStatus>())
+                        .transpose()
+                        .map_err(|err| err.to_string())?,
+                    source: json_string(&args, "source"),
+                    confidence: args.get("confidence").and_then(Value::as_f64),
+                    layer: json_string(&args, "layer"),
+                    links: json_string_array(&args, "links"),
+                    replace_links: args
+                        .get("replace_links")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    allow_sensitive: false,
+                })
+                .map_err(|err| err.to_string())?;
+            serde_json::to_string_pretty(
+                &json!({"ok": true, "memory": memory_app.get_with_links(&id).map_err(|err| err.to_string())?}),
+            )
+            .map_err(|err| err.to_string())?
+        }
+        MCP_MEMORY_SET_STATUS => {
+            let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            let status =
+                json_string(&args, "status").ok_or_else(|| "missing status".to_string())?;
+            memory_app
+                .set_status(
+                    &id,
+                    status
+                        .parse::<MemoryStatus>()
+                        .map_err(|err| err.to_string())?,
+                )
+                .map_err(|err| err.to_string())?;
+            serde_json::to_string_pretty(&json!({"ok": true, "id": id, "status": status}))
+                .map_err(|err| err.to_string())?
+        }
+        MCP_MEMORY_DELETE => {
+            let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            memory_app.delete(&id).map_err(|err| err.to_string())?;
+            serde_json::to_string_pretty(&json!({"ok": true, "id": id}))
+                .map_err(|err| err.to_string())?
+        }
         "memory_review" => {
             let limit = json_usize(&args, "limit").unwrap_or(20);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
@@ -2315,6 +2382,26 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             budgeted_mcp_json_response(&report, max_chars, &["edges", "nodes"])
                 .map_err(|err| err.to_string())?
         }
+        "memory_evidence_autopilot" => {
+            let limit = json_usize(&args, "limit").unwrap_or(20);
+            let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            let rollback_observation_ids = json_string_array(&args, "rollback_observation_ids");
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(2_400);
+            let report = evidence_autopilot_report(
+                &conn,
+                &selected_root,
+                limit,
+                apply,
+                &rollback_observation_ids,
+            )
+            .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(
+                &report,
+                max_chars,
+                &["candidates", "rollback_observation_ids", "recommendations"],
+            )
+            .map_err(|err| err.to_string())?
+        }
         "memory_conflict_review" => {
             let stale_days = json_i64(&args, "stale_days").unwrap_or(30);
             let limit = json_usize(&args, "limit").unwrap_or(20);
@@ -2424,6 +2511,26 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 ],
             )
             .map_err(|err| err.to_string())?
+        }
+        "memory_deployment_profile" => {
+            let mode = DeploymentMode::parse(args.get("mode").and_then(Value::as_str))
+                .map_err(|err| err.to_string())?;
+            let host = json_string(&args, "host").unwrap_or_else(|| "127.0.0.1".to_string());
+            let token_file = json_string(&args, "token_file").map(|value| expand_mcp_path(&value));
+            let public_origin = json_string(&args, "public_origin");
+            let sync_target =
+                json_string(&args, "sync_target").map(|value| expand_mcp_path(&value));
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(1_800);
+            let report = deployment_profile_report(DeploymentProfileRequest {
+                root: &selected_root,
+                mode,
+                host: &host,
+                token_file: token_file.as_deref(),
+                public_origin: public_origin.as_deref(),
+                sync_target: sync_target.as_deref(),
+            });
+            budgeted_mcp_json_response(&report, max_chars, &["blockers", "recommendations"])
+                .map_err(|err| err.to_string())?
         }
         "memory_control_center_v2" => {
             let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
@@ -3330,6 +3437,57 @@ mod tests {
     }
 
     #[test]
+    fn mcp_core_memory_crud_uses_the_same_domain_contract() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("memory.db");
+        let add = handle_mcp_tool_call(
+            &db,
+            json!({
+                "name": MCP_MEMORY_ADD,
+                "arguments": {"type":"note", "title":"MCP CRUD", "body":"original"}
+            }),
+        )
+        .unwrap();
+        let id = add["content"][0]["text"].as_str().unwrap().to_string();
+
+        let updated = handle_mcp_tool_call(
+            &db,
+            json!({
+                "name": MCP_MEMORY_UPDATE,
+                "arguments": {"id":id, "body":"updated", "confidence":0.9}
+            }),
+        )
+        .unwrap();
+        assert_eq!(updated["structuredContent"]["memory"]["body"], "updated");
+
+        let status = handle_mcp_tool_call(
+            &db,
+            json!({
+                "name": MCP_MEMORY_SET_STATUS,
+                "arguments": {"id":id, "status":"uncertain"}
+            }),
+        )
+        .unwrap();
+        assert_eq!(status["structuredContent"]["status"], "uncertain");
+
+        let deleted = handle_mcp_tool_call(
+            &db,
+            json!({"name": MCP_MEMORY_DELETE, "arguments": {"id":id}}),
+        )
+        .unwrap();
+        assert_eq!(deleted["structuredContent"]["ok"], true);
+        let conn = open_db(&db).unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
+        assert_eq!(
+            mcp_tool_annotations(MCP_MEMORY_DELETE)["destructiveHint"],
+            true
+        );
+    }
+
+    #[test]
     fn mcp_argument_validation_rejects_unknown_and_malformed_fields() {
         assert!(validate_mcp_tool_arguments("memory_brief", &json!({"task":"review"})).is_ok());
         assert!(validate_mcp_tool_arguments("memory_brief", &json!({})).is_err());
@@ -3557,6 +3715,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(missing_capability["error"]["code"], -32003);
+    }
+
+    #[test]
+    fn mcp_2026_preview_matches_checked_in_conformance_fixtures() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join(".agent/memory.db");
+        let cases: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/mcp_2026_conformance.json"
+        ))
+        .unwrap();
+        for case in cases.as_array().unwrap() {
+            let mut state = test_state(McpProfile::Core, 0);
+            let response = handle_mcp_request(&db, case["request"].clone(), &mut state).unwrap();
+            let pointer = case["expected_pointer"].as_str().unwrap();
+            assert_eq!(
+                response.pointer(pointer),
+                Some(&case["expected"]),
+                "fixture={} response={response}",
+                case["name"]
+            );
+        }
     }
 
     #[test]
