@@ -147,7 +147,7 @@ fn schema_v21_migrates_then_survives_verified_backup_restore() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(version, 24);
+    assert_eq!(version, 25);
     let (source_id, target_id) = if first_id < second_id {
         (&first_id, &second_id)
     } else {
@@ -236,7 +236,7 @@ fn legacy_read_events_gain_session_link_before_session_index_creation() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(schema, 24);
+    assert_eq!(schema, 25);
 }
 
 #[test]

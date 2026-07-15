@@ -13,7 +13,7 @@
 - A typed memory domain and application boundary shared by CLI, MCP, and HTTP,
   with centralized type, scope, status, confidence, sensitivity, and link
   invariants.
-- A 44-operation catalog generated from one Rust definition and exposed through
+- A 45-operation catalog generated from one Rust definition and exposed through
   `dukememory operations`, MCP `memory_operations`, HTTP `/operations`, and
   checked-in Markdown.
 - Absolute p95/QPS vector-search gates, a 4096-vector CI benchmark, and
@@ -25,6 +25,17 @@
   typed tool results, and bounded malformed-frame coverage.
 - MCP core/standard/full profiles, cursor pagination, Resources, optional Tasks,
   cached strict Draft 2020-12 tool schemas, and runtime argument validation.
+- A dual MCP protocol path for the stable 2025 lifecycle and the locked
+  `2026-07-28` stateless release candidate, including `server/discover` and the
+  per-request `io.modelcontextprotocol/tasks` extension.
+- Schema v25 durable MCP task records with client/lifecycle isolation,
+  restart-safe terminal results, TTL failure handling, and cooperative
+  cancellation intent.
+- Property-based HTTP and MCP framing coverage over arbitrary byte input,
+  canonical lengths, and duplicate singleton headers.
+- A deterministic `eval advanced` capability report across CLI, MCP, and HTTP
+  for explicit causal paths, retrieval-poisoning signals, global graph
+  coverage, and bitemporal consistency.
 - RAG Eval v5 expected-rank, Hit@1/3/5, and MRR metrics; structure-aware source
   chunking and content-hashed evidence provenance.
 - macOS/Windows core CI and Sigstore build-provenance attestations for final
@@ -51,9 +62,20 @@
   annotations for catalogued tools are derived from it.
 - MCP framing and HTTP file-ingest routing now live in focused modules with
   independent boundary tests.
+- Legacy `tasks/result` waits are bounded; 2026 task creation is server-directed
+  and limited to effectively read-only calls, while cancellation is reported
+  as eventually consistent instead of claiming work stopped synchronously.
+- Secret detection now shares structured provider, credential URL, auth header,
+  JWT, private-key, and adjacent-assignment rules across admission, scanning,
+  and redaction while recognizing explicit placeholders.
+- The local UI serves CSS and JavaScript as same-origin assets under a strict
+  CSP without `unsafe-inline` or inline style/script attributes.
 - RAG Eval v6 now separates development and holdout results, requires a minimum
   reviewed holdout set for release readiness, and fingerprints the eval corpus
   and retrieval configuration in baseline v3.
+- Durable MCP task handling and release-gate v3 composition now live in focused
+  submodules, and the late CLI compatibility surfaces have been split out of
+  the historical monolithic integration test source.
 
 ### Fixed
 

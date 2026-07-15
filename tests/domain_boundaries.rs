@@ -63,7 +63,9 @@ fn http_memory_mutations_enforce_domain_invariants() {
     assert!(operations.starts_with("HTTP/1.1 200 OK"));
     assert!(operations.contains("X-Content-Type-Options: nosniff"));
     assert!(operations.contains("X-Frame-Options: DENY"));
-    assert!(operations.contains("Content-Security-Policy: default-src 'self'"));
+    assert!(operations.contains("Content-Security-Policy: default-src 'none'"));
+    assert!(operations.contains("script-src 'self'; script-src-attr 'none'"));
+    assert!(!operations.contains("unsafe-inline"));
     assert!(operations.contains("Cache-Control: no-store"));
     assert!(operations.contains(r#""id":"memory.create""#));
     assert!(operations.contains(r#""memory_add""#));

@@ -1440,6 +1440,7 @@ pub(crate) fn handle_eval(
             &model,
             json,
         )?,
+        EvalCommand::Advanced { json } => print_advanced_eval(conn, json)?,
         EvalCommand::Live { since_days, json } => print_live_eval(conn, since_days, json)?,
     }
     Ok(())
@@ -3786,42 +3787,20 @@ fn redact_sensitive_memories(conn: &Connection, findings: &[SecretFinding]) -> R
 }
 
 pub(crate) fn redact_sensitive_text(text: &str) -> Result<String> {
-    let patterns = [
-        Regex::new(r"sk-[A-Za-z0-9_-]{8,}")?,
-        Regex::new(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----")?,
-        Regex::new(r"(?i)(api_key|token|password|secret)\s*[:=]\s*\S+")?,
-    ];
-    let mut out = text.to_string();
-    for pattern in patterns {
-        out = pattern.replace_all(&out, "[REDACTED]").to_string();
-    }
-    Ok(out)
+    Ok(redact_sensitive_patterns(text))
 }
 
 pub(crate) fn scan_secret_findings(conn: &Connection) -> Result<Vec<SecretFinding>> {
     let rows = query_memories(conn, None, &[], &[], None, usize::MAX)?;
-    let patterns = [
-        ("openai_key", Regex::new(r"sk-[A-Za-z0-9_-]{8,}")?),
-        (
-            "private_key",
-            Regex::new(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")?,
-        ),
-        (
-            "assignment_secret",
-            Regex::new(r"(?i)(api_key|token|password|secret)\s*[:=]")?,
-        ),
-    ];
     let mut out = Vec::new();
     for row in rows {
         let text = format!("{}\n{}", row.title, row.body);
-        for (name, regex) in &patterns {
-            if regex.is_match(&text) {
-                out.push(SecretFinding {
-                    id: row.id.clone(),
-                    title: row.title.clone(),
-                    pattern: (*name).to_string(),
-                });
-            }
+        for name in sensitive_text_patterns(&text) {
+            out.push(SecretFinding {
+                id: row.id.clone(),
+                title: row.title.clone(),
+                pattern: name.to_string(),
+            });
         }
     }
     Ok(out)

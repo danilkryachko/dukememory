@@ -26,7 +26,11 @@ pub(super) fn handle_http_request(
     if let Some(expected) = auth_token
         && !matches!(
             (method, path),
-            ("GET", "/") | ("GET", "/ui") | ("GET", "/health")
+            ("GET", "/")
+                | ("GET", "/ui")
+                | ("GET", "/ui.css")
+                | ("GET", "/ui.js")
+                | ("GET", "/health")
         )
     {
         let provided = headers
@@ -48,6 +52,18 @@ pub(super) fn handle_http_request(
     match (method, path) {
         ("GET", "/") | ("GET", "/ui") => {
             return Ok(HttpResponse::html(memory_ui_html()));
+        }
+        ("GET", "/ui.css") => {
+            return Ok(HttpResponse::asset(
+                "text/css; charset=utf-8",
+                memory_ui_css().as_bytes().to_vec(),
+            ));
+        }
+        ("GET", "/ui.js") => {
+            return Ok(HttpResponse::asset(
+                "text/javascript; charset=utf-8",
+                memory_ui_javascript().as_bytes().to_vec(),
+            ));
         }
         ("GET", "/health") => {
             return Ok(HttpResponse::ok(
@@ -1958,14 +1974,19 @@ pub(super) fn handle_http_request(
             let strict = params
                 .get("strict")
                 .is_some_and(|value| value == "true" || value == "1");
-            HttpResponse::ok(json!({"release_gate_v3": release_gate_v3_report(
+            let rag_profile =
+                ReleaseRagProfile::parse(params.get("rag_profile").map(String::as_str))?;
+            HttpResponse::ok(
+                json!({"release_gate_v3": release_gate_v3_report_with_profile(
                 &conn,
                 &ctx.db,
                 &ctx.root,
                 since_days,
                 strict,
                 false,
-            )?}))
+                rag_profile,
+            )?}),
+            )
         }
         ("POST", "/release-gate-v3/run") => {
             let value = parse_json_body(body)?;
@@ -1975,14 +1996,19 @@ pub(super) fn handle_http_request(
                 .get("strict")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            HttpResponse::ok(json!({"release_gate_v3": release_gate_v3_report(
+            let rag_profile =
+                ReleaseRagProfile::parse(value.get("rag_profile").and_then(Value::as_str))?;
+            HttpResponse::ok(
+                json!({"release_gate_v3": release_gate_v3_report_with_profile(
                 &conn,
                 &ctx.db,
                 &ctx.root,
                 since_days,
                 strict,
                 true,
-            )?}))
+                rag_profile,
+            )?}),
+            )
         }
         ("GET", "/rag-eval") => {
             let params = parse_query(query);
@@ -2031,6 +2057,9 @@ pub(super) fn handle_http_request(
                 DEFAULT_EMBED_ENDPOINT,
                 DEFAULT_EMBED_MODEL,
             )?}))
+        }
+        ("GET", "/advanced-eval") => {
+            HttpResponse::ok(json!({"advanced_eval": advanced_eval_report(&conn)?}))
         }
         ("GET", "/web-control-center") | ("GET", "/web-control-center-v12") => {
             let params = parse_query(query);

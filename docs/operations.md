@@ -37,6 +37,7 @@ Every JSON entry also exposes stable `input_schema` and `output_schema` identifi
 | `rag.sources` | `rag` | Inspect indexed RAG sources | `rag-sources` | `memory_rag_sources` | `/rag-sources` | `stable` | `project_read` | no | no | yes | no | no |
 | `rag.eval` | `rag` | Evaluate grounded RAG retrieval | `eval rag` | `memory_rag_eval` | `/rag-eval` | `stable` | `project_maintenance` | yes | no | yes | no | no |
 | `rag.graph_eval` | `rag` | Evaluate graph-RAG relationships | `eval graph-rag` | `memory_graph_rag_eval` | `/graph-rag-eval` | `preview` | `project_read` | no | no | yes | no | no |
+| `memory.advanced_eval` | `evaluation` | Audit causal, poisoning, global, and temporal memory signals | `eval advanced` | `memory_advanced_eval` | `/advanced-eval` | `preview` | `project_read` | no | no | yes | no | no |
 | `release.gate_v2` | `release` | Run V2 release readiness checks | `release-gate-v2` | `memory_release_gate_v2` | `/release-gate-v2` | `deprecated` | `project_maintenance` | yes | no | yes | no | yes |
 | `release.gate_v3` | `release` | Run V3 release readiness checks | `release-gate-v3` | `memory_release_gate_v3` | `/release-gate-v3` | `stable` | `project_maintenance` | yes | no | yes | no | yes |
 | `agent_session.start` | `agent_session` | Start an evidence-backed session | `agent-session start` | `memory_session_start` | `/agent-sessions/start` | `stable` | `project_write` | yes | no | no | no | no |

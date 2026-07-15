@@ -1960,6 +1960,8 @@ pub(crate) enum Command {
         root: PathBuf,
         #[arg(long, default_value_t = 7)]
         since_days: i64,
+        #[arg(long, value_enum, default_value = "deployment")]
+        rag_profile: ReleaseRagProfile,
         #[arg(long)]
         strict: bool,
         #[arg(long)]
@@ -3232,6 +3234,10 @@ pub(crate) enum EvalCommand {
         endpoint: String,
         #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
         model: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Advanced {
         #[arg(long)]
         json: bool,
     },

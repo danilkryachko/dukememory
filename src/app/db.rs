@@ -267,6 +267,30 @@ CREATE TABLE IF NOT EXISTS memory_locks (
     expires_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS mcp_tasks (
+    task_id TEXT PRIMARY KEY,
+    owner_key TEXT NOT NULL,
+    protocol_version TEXT NOT NULL,
+    lifecycle TEXT NOT NULL CHECK (lifecycle IN ('legacy', 'extension')),
+    operation_name TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('working', 'input_required', 'completed', 'cancelled', 'failed')),
+    status_message TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_updated_at TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    last_updated_at_ms INTEGER NOT NULL,
+    ttl_ms INTEGER NOT NULL,
+    poll_interval_ms INTEGER NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    result_json TEXT,
+    error_json TEXT,
+    cancellation_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancellation_requested IN (0, 1))
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_tasks_owner_updated
+    ON mcp_tasks(owner_key, last_updated_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_mcp_tasks_expires
+    ON mcp_tasks(expires_at_ms);
+
 CREATE TABLE IF NOT EXISTS eval_cases (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -538,6 +562,31 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
                  CREATE INDEX IF NOT EXISTS idx_memory_observations_target ON memory_observations(target_memory_id);",
             )?;
         }
+        25 => conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS mcp_tasks (\
+                 task_id TEXT PRIMARY KEY,\
+                 owner_key TEXT NOT NULL,\
+                 protocol_version TEXT NOT NULL,\
+                 lifecycle TEXT NOT NULL CHECK (lifecycle IN ('legacy', 'extension')),\
+                 operation_name TEXT NOT NULL,\
+                 status TEXT NOT NULL CHECK (status IN ('working', 'input_required', 'completed', 'cancelled', 'failed')),\
+                 status_message TEXT NOT NULL,\
+                 created_at TEXT NOT NULL,\
+                 last_updated_at TEXT NOT NULL,\
+                 created_at_ms INTEGER NOT NULL,\
+                 last_updated_at_ms INTEGER NOT NULL,\
+                 ttl_ms INTEGER NOT NULL,\
+                 poll_interval_ms INTEGER NOT NULL,\
+                 expires_at_ms INTEGER NOT NULL,\
+                 result_json TEXT,\
+                 error_json TEXT,\
+                 cancellation_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancellation_requested IN (0, 1))\
+             );\
+             CREATE INDEX IF NOT EXISTS idx_mcp_tasks_owner_updated \
+                 ON mcp_tasks(owner_key, last_updated_at_ms DESC);\
+             CREATE INDEX IF NOT EXISTS idx_mcp_tasks_expires \
+                 ON mcp_tasks(expires_at_ms);",
+        )?,
         _ => {}
     }
     Ok(())
@@ -709,6 +758,10 @@ fn migrations() -> &'static [Migration] {
             version: 24,
             name: "Production v24 bitemporal evidence observations and graph edges",
         },
+        Migration {
+            version: 25,
+            name: "Production v25 durable MCP task lifecycle",
+        },
     ]
 }
 
@@ -775,6 +828,7 @@ pub(crate) fn verify_schema(conn: &Connection) -> Result<()> {
         "embedding_provider_health",
         "memory_locks",
         "eval_cases",
+        "mcp_tasks",
         "memory_sources",
         "rag_chunks",
         "rag_chunks_fts",
@@ -831,6 +885,22 @@ pub(crate) fn verify_schema(conn: &Connection) -> Result<()> {
         ],
     )?;
     verify_columns(conn, "eval_cases", &["split"])?;
+    verify_columns(
+        conn,
+        "mcp_tasks",
+        &[
+            "task_id",
+            "owner_key",
+            "protocol_version",
+            "lifecycle",
+            "operation_name",
+            "status",
+            "expires_at_ms",
+            "result_json",
+            "error_json",
+            "cancellation_requested",
+        ],
+    )?;
     for (object_type, name) in [
         ("index", "idx_memory_edges_source"),
         ("index", "idx_memory_edges_target"),
@@ -838,6 +908,8 @@ pub(crate) fn verify_schema(conn: &Connection) -> Result<()> {
         ("index", "idx_memory_observations_memory_time"),
         ("index", "idx_eval_cases_split_created"),
         ("index", "idx_agent_session_events_event_id"),
+        ("index", "idx_mcp_tasks_owner_updated"),
+        ("index", "idx_mcp_tasks_expires"),
         ("trigger", "memories_ai"),
         ("trigger", "memories_ad"),
         ("trigger", "memories_au"),

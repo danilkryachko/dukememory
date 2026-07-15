@@ -1563,8 +1563,12 @@ pub(crate) fn autonomous_run_once(
     let install_backup_dir = autonomous_project_root_for_db(request.db)
         .join(".agent")
         .join("install-backups");
-    let install_pruned =
-        prune_autonomous_install_backups(&install_backup_dir, DEFAULT_INSTALL_BACKUP_KEEP)?;
+    let install_backup_quota_bytes = install_backup_quota_bytes();
+    let install_pruned = prune_autonomous_install_backups(
+        &install_backup_dir,
+        DEFAULT_INSTALL_BACKUP_KEEP,
+        install_backup_quota_bytes,
+    )?;
     report.actions.push(AutonomousAction {
         kind: "install_backup_retention".to_string(),
         status: if install_pruned.is_empty() {
@@ -1574,8 +1578,9 @@ pub(crate) fn autonomous_run_once(
         }
         .to_string(),
         detail: format!(
-            "keep={} pruned={}",
+            "keep={} quota_bytes={} pruned={}",
             DEFAULT_INSTALL_BACKUP_KEEP,
+            install_backup_quota_bytes,
             install_pruned.len()
         ),
         memory_id: None,
@@ -1706,21 +1711,28 @@ fn list_autonomous_rollback_backups(rollback_dir: &Path) -> Result<Vec<Autonomou
 struct AutonomousInstallBackup {
     path: PathBuf,
     modified: SystemTime,
+    bytes: u64,
 }
 
-fn prune_autonomous_install_backups(backup_dir: &Path, keep: usize) -> Result<Vec<String>> {
-    let backups = list_autonomous_install_backups(backup_dir)?;
-    let kept = backups
+fn prune_autonomous_install_backups(
+    backup_dir: &Path,
+    keep: usize,
+    quota_bytes: u64,
+) -> Result<Vec<String>> {
+    let mut backups = list_autonomous_install_backups(backup_dir)?;
+    let keep_from = backups.len().saturating_sub(keep);
+    let mut kept = backups.split_off(keep_from);
+    let mut prune_items = backups;
+    let mut kept_bytes = kept
         .iter()
-        .rev()
-        .take(keep)
-        .map(|item| item.path.clone())
-        .collect::<HashSet<_>>();
+        .fold(0_u64, |total, item| total.saturating_add(item.bytes));
+    while kept_bytes > quota_bytes && kept.len() > 1 {
+        let oldest = kept.remove(0);
+        kept_bytes = kept_bytes.saturating_sub(oldest.bytes);
+        prune_items.push(oldest);
+    }
     let mut pruned = Vec::new();
-    for item in backups {
-        if kept.contains(&item.path) {
-            continue;
-        }
+    for item in prune_items {
         if item.path.exists() {
             fs::remove_file(&item.path)
                 .with_context(|| format!("failed to remove {}", item.path.display()))?;
@@ -1743,10 +1755,14 @@ fn list_autonomous_install_backups(backup_dir: &Path) -> Result<Vec<AutonomousIn
         if !path.is_file() || !is_autonomous_install_backup(&path) {
             continue;
         }
-        let modified = fs::metadata(&path)
-            .and_then(|meta| meta.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        backups.push(AutonomousInstallBackup { path, modified });
+        let metadata =
+            fs::metadata(&path).with_context(|| format!("failed to inspect {}", path.display()))?;
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        backups.push(AutonomousInstallBackup {
+            path,
+            modified,
+            bytes: metadata.len(),
+        });
     }
     backups.sort_by(|left, right| {
         left.modified

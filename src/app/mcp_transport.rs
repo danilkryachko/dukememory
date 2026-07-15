@@ -102,8 +102,8 @@ fn read_content_length_header(reader: &mut impl BufRead) -> Result<Option<usize>
             && name.eq_ignore_ascii_case("content-length")
         {
             let parsed = value.trim().parse::<usize>()?;
-            if length.is_some_and(|length| length != parsed) {
-                bail!("conflicting Content-Length headers");
+            if length.is_some() {
+                bail!("duplicate Content-Length headers");
             }
             length = Some(parsed);
         }
@@ -124,6 +124,7 @@ fn parse_error(message: String) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::io::{Cursor, Read};
 
     #[test]
@@ -152,7 +153,14 @@ mod tests {
             read_content_length_header(&mut Cursor::new(conflicting))
                 .unwrap_err()
                 .to_string()
-                .contains("conflicting")
+                .contains("duplicate")
+        );
+        let duplicate = b"Content-Length: 1\r\ncontent-length: 1\r\n\r\n{}";
+        assert!(
+            read_content_length_header(&mut Cursor::new(duplicate))
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate")
         );
         let oversized = format!("X-Fill: {}\r\n\r\n", "x".repeat(MCP_MAX_HEADER_BYTES));
         assert!(
@@ -214,5 +222,40 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("frame exceeds"));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn arbitrary_mcp_frame_headers_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..20_000)) {
+            let _ = read_content_length_header(&mut Cursor::new(bytes));
+        }
+
+        #[test]
+        fn content_length_value_round_trips_with_bounded_whitespace(
+            length in 0usize..=MCP_MAX_FRAME_BYTES,
+            leading in 0usize..8,
+            trailing in 0usize..8,
+        ) {
+            let header = format!(
+                "Content-Length:{}{}{}\r\n\r\n",
+                " ".repeat(leading),
+                length,
+                " ".repeat(trailing),
+            );
+            prop_assert_eq!(
+                read_content_length_header(&mut Cursor::new(header)).unwrap(),
+                Some(length)
+            );
+        }
+
+        #[test]
+        fn duplicate_content_lengths_are_always_rejected(first in 0usize..10_000, second in 0usize..10_000) {
+            let header = format!(
+                "Content-Length: {first}\r\ncontent-length: {second}\r\n\r\n"
+            );
+            prop_assert!(read_content_length_header(&mut Cursor::new(header)).is_err());
+        }
     }
 }

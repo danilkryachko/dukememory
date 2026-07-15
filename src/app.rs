@@ -31,9 +31,11 @@ const DEFAULT_EMBED_ENDPOINT: &str = "local";
 const DEFAULT_EMBED_MODEL: &str = "paraphrase-multilingual-MiniLM-L12-v2";
 const DEFAULT_EMBED_PROVIDER: &str = "local";
 const DEFAULT_INSTALL_BACKUP_KEEP: usize = 3;
-const CURRENT_SCHEMA_VERSION: i64 = 24;
+const DEFAULT_INSTALL_BACKUP_QUOTA_BYTES: u64 = 128 * 1024 * 1024;
+const CURRENT_SCHEMA_VERSION: i64 = 25;
 const EXPORT_VERSION: u32 = 1;
 
+mod advanced_eval;
 mod agent_session;
 mod agent_session_ops;
 mod autonomous;
@@ -76,6 +78,7 @@ mod sync_planning;
 mod sync_transport;
 mod topology;
 mod vec_backend;
+use advanced_eval::*;
 use agent_session::*;
 use agent_session_ops::*;
 use autonomous::*;
@@ -3215,10 +3218,14 @@ fn update_install(
         pruned_backups = retention.pruned;
         kept_backups = retention.kept;
     } else if backup_dir.exists() {
-        kept_backups = list_install_backups(backup_dir)?
+        let (kept, _) = plan_install_backup_retention(
+            list_install_backups(backup_dir)?,
+            backup_keep,
+            install_backup_quota_bytes(),
+        );
+        kept_backups = kept
             .into_iter()
             .rev()
-            .take(backup_keep)
             .map(|item| item.path.display().to_string())
             .collect();
     }
@@ -3243,6 +3250,7 @@ fn update_install(
 struct InstallBackupItem {
     path: PathBuf,
     modified: SystemTime,
+    bytes: u64,
 }
 
 struct InstallBackupRetention {
@@ -3251,21 +3259,19 @@ struct InstallBackupRetention {
 }
 
 fn prune_install_backups(backup_dir: &Path, keep: usize) -> Result<InstallBackupRetention> {
-    let backups = list_install_backups(backup_dir)?;
-    let kept = backups
+    let (kept_items, prune_items) = plan_install_backup_retention(
+        list_install_backups(backup_dir)?,
+        keep,
+        install_backup_quota_bytes(),
+    );
+    let kept = kept_items
         .iter()
         .rev()
-        .take(keep)
         .map(|item| item.path.display().to_string())
         .collect::<Vec<_>>();
-    let prune_paths = backups
-        .into_iter()
-        .rev()
-        .skip(keep)
-        .map(|item| item.path)
-        .collect::<Vec<_>>();
     let mut pruned = Vec::new();
-    for path in prune_paths {
+    for item in prune_items {
+        let path = item.path;
         if path.exists() {
             fs::remove_file(&path)
                 .with_context(|| format!("failed to remove {}", path.display()))?;
@@ -3273,6 +3279,33 @@ fn prune_install_backups(backup_dir: &Path, keep: usize) -> Result<InstallBackup
         pruned.push(path.display().to_string());
     }
     Ok(InstallBackupRetention { kept, pruned })
+}
+
+fn plan_install_backup_retention(
+    mut backups: Vec<InstallBackupItem>,
+    keep: usize,
+    quota_bytes: u64,
+) -> (Vec<InstallBackupItem>, Vec<InstallBackupItem>) {
+    let keep_from = backups.len().saturating_sub(keep);
+    let mut kept = backups.split_off(keep_from);
+    let mut pruned = backups;
+    let mut kept_bytes = kept
+        .iter()
+        .fold(0_u64, |total, item| total.saturating_add(item.bytes));
+    while kept_bytes > quota_bytes && kept.len() > 1 {
+        let oldest = kept.remove(0);
+        kept_bytes = kept_bytes.saturating_sub(oldest.bytes);
+        pruned.push(oldest);
+    }
+    (kept, pruned)
+}
+
+fn install_backup_quota_bytes() -> u64 {
+    std::env::var("DUKEMEMORY_INSTALL_BACKUP_QUOTA_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_INSTALL_BACKUP_QUOTA_BYTES)
 }
 
 fn list_install_backups(backup_dir: &Path) -> Result<Vec<InstallBackupItem>> {
@@ -3287,10 +3320,14 @@ fn list_install_backups(backup_dir: &Path) -> Result<Vec<InstallBackupItem>> {
         if !path.is_file() || !is_install_backup_file(&path) {
             continue;
         }
-        let modified = fs::metadata(&path)
-            .and_then(|meta| meta.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        backups.push(InstallBackupItem { path, modified });
+        let metadata =
+            fs::metadata(&path).with_context(|| format!("failed to inspect {}", path.display()))?;
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        backups.push(InstallBackupItem {
+            path,
+            modified,
+            bytes: metadata.len(),
+        });
     }
     backups.sort_by(|left, right| {
         left.modified

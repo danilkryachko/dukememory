@@ -4597,7 +4597,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .arg("status")
         .assert()
         .success()
-        .stdout(contains("expected: 24"));
+        .stdout(contains("expected: 25"));
     cmd(&db)
         .arg("schema")
         .arg("verify")
@@ -4670,7 +4670,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .assert()
         .success()
         .stdout(contains("version:"))
-        .stdout(contains("schema: 24"));
+        .stdout(contains("schema: 25"));
 
     let install_dir = dir.path().join("install");
     let target = install_dir.join("dukememory");
@@ -4760,6 +4760,34 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         })
         .count();
     assert_eq!(install_backup_count, 2);
+
+    let quota_pruned = stdout(
+        cmd(&db)
+            .env("DUKEMEMORY_INSTALL_BACKUP_QUOTA_BYTES", "1")
+            .arg("update-install")
+            .arg("--from")
+            .arg(&source)
+            .arg("--to")
+            .arg(&target)
+            .arg("--backup-dir")
+            .arg(&backup_dir)
+            .arg("--backup-keep")
+            .arg("3")
+            .arg("--json"),
+    );
+    let quota_pruned_json: Value = serde_json::from_str(&quota_pruned).unwrap();
+    assert_eq!(
+        quota_pruned_json["kept_backups"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        fs::read_dir(&backup_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".bak"))
+            .count(),
+        1
+    );
 
     let skills = dir.path().join("skills");
     cmd(&db)
@@ -5213,7 +5241,7 @@ fn v11_release_bundle_bench_and_self_host() {
 
     let bench = stdout(cmd(&db).arg("bench").arg("--json"));
     let bench_json: Value = serde_json::from_str(&bench).unwrap();
-    assert_eq!(bench_json["schema"], 24);
+    assert_eq!(bench_json["schema"], 25);
     assert_eq!(bench_json["memory_count"], 4);
     assert!(bench_json["db_bytes"].as_u64().unwrap() > 0);
 
@@ -5229,7 +5257,7 @@ fn v11_release_bundle_bench_and_self_host() {
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(bundle.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(manifest["schema"], 24);
+    assert_eq!(manifest["schema"], 25);
     assert_eq!(manifest["memory_stats"]["total"], 4);
     assert_eq!(manifest["binary_sha256"].as_str().unwrap().len(), 64);
 }
@@ -5263,7 +5291,7 @@ fn v12_always_on_operations() {
     );
     let health_json: Value = serde_json::from_str(&health).unwrap();
     assert_eq!(health_json["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(health_json["schema"], 24);
+    assert_eq!(health_json["schema"], 25);
     assert_eq!(health_json["endpoint_ok"], true);
 
     for _ in 0..3 {
@@ -5337,7 +5365,7 @@ fn v13_stabilization_integrity_optimize_and_large_http_request() {
     let integrity = stdout(cmd(&db).arg("integrity").arg("--json"));
     let integrity_json: Value = serde_json::from_str(&integrity).unwrap();
     assert_eq!(integrity_json["ok"], true);
-    assert_eq!(integrity_json["schema"], 24);
+    assert_eq!(integrity_json["schema"], 25);
     assert_eq!(integrity_json["integrity_check"], "ok");
 
     let optimized = stdout(cmd(&db).arg("optimize").arg("--vacuum").arg("--json"));
@@ -12193,29 +12221,43 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(html.contains("dukememory."));
     assert!(html.contains("<html lang=\"ru\">"));
     assert!(html.contains("Поиск памяти"));
-    assert!(html.contains("Добавить память"));
     assert!(html.contains("id=\"lang\""));
     assert!(html.contains("data-tab=\"edit\""));
     assert!(html.contains("data-tab=\"autopilot\""));
     assert!(html.contains("data-tab=\"settings\""));
     assert!(html.contains("data-quick-type=\"decision\""));
     assert!(html.contains("id=\"activityPanel\""));
-    assert!(html.contains("inline-edit"));
     assert!(html.contains("id=\"autopilotRun\""));
     assert!(html.contains("id=\"autonomousRun\""));
     assert!(html.contains("id=\"autonomousRollback\""));
     assert!(html.contains("id=\"dashboardRepair\""));
-    assert!(html.contains("/memory?"));
-    assert!(html.contains("запросы"));
     assert!(html.contains("id=\"usage\""));
     assert!(html.contains("id=\"sort\""));
-    assert!(html.contains("id=\"reindexEmbeddings\""));
-    assert!(html.contains("state.controlSnapshot = data;"));
-    assert!(html.contains("state.intelligenceRequestBudget = data.request_budget"));
-    assert!(html.contains("view: \"details\""));
-    assert!(html.contains("/web-control-center?"));
-    assert!(!html.contains("/roi-report"));
-    assert!(!html.contains("/web-control-center-v12"));
+    assert!(html.contains("<link rel=\"stylesheet\" href=\"/ui.css\">"));
+    assert!(html.contains("<script src=\"/ui.js\" defer></script>"));
+    assert!(!html.contains("<style>"));
+    assert!(!html.contains("<script>"));
+    assert!(!html.contains("style=\""));
+    assert!(!html.contains("unsafe-inline"));
+
+    let css =
+        server.request("GET /ui.css HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    assert!(css.contains("Content-Type: text/css"));
+    assert!(css.contains(".hidden"));
+    assert!(css.contains(".inline-edit"));
+    let javascript =
+        server.request("GET /ui.js HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    assert!(javascript.contains("Content-Type: text/javascript"));
+    assert!(javascript.contains("/memory?"));
+    assert!(javascript.contains("Добавить память"));
+    assert!(javascript.contains("id=\"reindexEmbeddings\""));
+    assert!(javascript.contains("запросы"));
+    assert!(javascript.contains("state.controlSnapshot = data;"));
+    assert!(javascript.contains("state.intelligenceRequestBudget = data.request_budget"));
+    assert!(javascript.contains("view: \"details\""));
+    assert!(javascript.contains("/web-control-center?"));
+    assert!(!javascript.contains("/roi-report"));
+    assert!(!javascript.contains("/web-control-center-v12"));
 
     let memory = server.request("GET /memory?status=active&type=decision&q=ui HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
@@ -12994,11 +13036,12 @@ fn v14_6_local_memory_ui_and_http_actions() {
     assert!(fleet_watch_install.contains("\"install\""));
     assert!(fleet_watch_install.contains("\"fleet-supervisor\""));
 
-    let release_gate_v3 = server.request("GET /release-gate-v3?since_days=7 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    let release_gate_v3 = server.request("GET /release-gate-v3?since_days=7&rag_profile=offline HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
     assert!(release_gate_v3.contains("\"release_gate_v3\""));
     assert!(release_gate_v3.contains("\"memory_effectiveness_v2\""));
     assert!(release_gate_v3.contains("\"mcp_discipline_v3\""));
+    assert!(release_gate_v3.contains("\"name\":\"offline\""));
 
     let web_control_v12 = server.request("GET /web-control-center-v12?since_days=7&task=project%20memory HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     );
@@ -14090,6 +14133,19 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(ops_text.contains("gap_inbox: pending="));
     assert!(ops_text.contains("stale_pending="));
     assert!(ops_text.contains("oldest_pending_age_secs="));
+
+    let critical_ops = stdout(
+        cmd(&db)
+            .env("DUKEMEMORY_AGENT_QUOTA_BYTES", "1")
+            .arg("ops-status")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    );
+    let critical_ops_json: Value = serde_json::from_str(&critical_ops).unwrap();
+    assert_eq!(critical_ops_json["storage"]["pressure"], "critical");
+    assert_eq!(critical_ops_json["ok"], false);
+    assert_eq!(critical_ops_json["status"], "blocked");
 
     let roi = stdout(
         cmd(&db)
@@ -15616,6 +15672,13 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .as_array()
             .unwrap()
             .iter()
+            .any(|item| item.as_str() == Some("memory_advanced_eval"))
+    );
+    assert!(
+        mcp_surface_v3_json["expected_tools"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|item| item.as_str() == Some("memory_auto_ranking_tune"))
     );
 
@@ -15654,12 +15717,32 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
             .arg(dir.path())
             .arg("--since-days")
             .arg("7")
+            .arg("--rag-profile")
+            .arg("offline")
             .arg("--json"),
     );
     let release_gate_v3_json: Value = serde_json::from_str(&release_gate_v3).unwrap();
-    assert_eq!(release_gate_v3_json["version"], 1);
+    assert_eq!(release_gate_v3_json["version"], 2);
     assert!(release_gate_v3_json["mcp_discipline_v3"].is_object());
     assert!(release_gate_v3_json["graph_rag_eval"].is_object());
+    assert!(release_gate_v3_json["advanced_eval"].is_object());
+    assert!(release_gate_v3_json["storage"].is_object());
+    assert_eq!(release_gate_v3_json["rag_profile"]["name"], "offline");
+    assert_eq!(release_gate_v3_json["rag_profile"]["provider"], "mock");
+    assert!(
+        release_gate_v3_json["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| check["name"] == "ops_storage" && check["required"] == true)
+    );
+    assert!(
+        release_gate_v3_json["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| check["name"] == "advanced_eval_integrity" && check["required"] == true)
+    );
 
     let web_control_v12 = stdout(
         cmd(&db)
@@ -17072,6 +17155,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     }
     let install_retention = stdout(
         cmd(&db)
+            .env("DUKEMEMORY_INSTALL_BACKUP_QUOTA_BYTES", "16")
             .arg("autonomous")
             .arg("run-once")
             .arg("--level")
@@ -17103,7 +17187,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
         .filter_map(Result::ok)
         .filter(|entry| entry.file_name().to_string_lossy().ends_with(".bak"))
         .count();
-    assert_eq!(retained_install_backups, 3);
+    assert_eq!(retained_install_backups, 2);
 
     let plist = stdout(
         cmd(&db)
@@ -17134,379 +17218,6 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     assert!(!plist.contains("<string>.agent/dukememory-autonomous.out.log</string>"));
 }
 
-#[test]
-fn v14_7_memory_ui_selects_sibling_project_memory() {
-    let dir = tempdir().unwrap();
-    let alpha = dir.path().join("alpha_project");
-    let beta = dir.path().join("beta_project");
-    fs::create_dir_all(alpha.join(".agent")).unwrap();
-    fs::create_dir_all(beta.join(".agent")).unwrap();
-    let alpha_db = alpha.join(".agent").join("memory.db");
-    let beta_db = beta.join(".agent").join("memory.db");
-
-    cmd(&alpha_db)
-        .arg("add")
-        .arg("decision")
-        .arg("Alpha memory")
-        .arg("Only the alpha project should show this card.")
-        .assert()
-        .success();
-    cmd(&beta_db)
-        .arg("add")
-        .arg("decision")
-        .arg("Beta memory")
-        .arg("Only the beta project should show this card.")
-        .assert()
-        .success();
-
-    let projects = http_once(
-        &alpha_db,
-        "GET /projects HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
-    assert!(projects.contains("\"key\":\"alpha_project\""));
-    assert!(projects.contains("\"key\":\"beta_project\""));
-    assert!(projects.contains("\"current\":true"));
-
-    let beta_memory = http_once(
-        &alpha_db,
-        "GET /memory?project=beta_project&status=active&type=decision HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
-    assert!(beta_memory.contains("Beta memory"));
-    assert!(!beta_memory.contains("Alpha memory"));
-
-    let html = http_once(
-        &alpha_db,
-        "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
-    assert!(html.contains("id=\"project\""));
-    assert!(html.contains("id=\"lang\""));
-    assert!(html.contains("/projects"));
-}
-
-#[test]
-fn memory_mutations_roll_back_when_audit_logging_fails() {
-    let dir = tempdir().unwrap();
-    let db = dir.path().join("memory.db");
-
-    cmd(&db).arg("stats").assert().success();
-    let conn = Connection::open(&db).unwrap();
-    conn.execute_batch(
-        r#"
-        CREATE TRIGGER fail_memory_added
-        BEFORE INSERT ON memory_events
-        WHEN NEW.event_type = 'memory_added'
-        BEGIN
-            SELECT RAISE(ABORT, 'forced audit failure');
-        END;
-        "#,
-    )
-    .unwrap();
-    drop(conn);
-
-    cmd(&db)
-        .arg("add")
-        .arg("decision")
-        .arg("Must roll back")
-        .arg("The memory insert must not survive a failed audit event.")
-        .assert()
-        .failure()
-        .stderr(contains("transaction failed: add_memory"));
-
-    let conn = Connection::open(&db).unwrap();
-    let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM memories WHERE title = 'Must roll back'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(count, 0);
-}
-
-#[test]
-fn inbox_approval_uses_nested_savepoint_and_rolls_back_as_one_unit() {
-    let dir = tempdir().unwrap();
-    let db = dir.path().join("memory.db");
-
-    cmd(&db).arg("stats").assert().success();
-    let conn = Connection::open(&db).unwrap();
-    conn.execute(
-        r#"
-        INSERT INTO memory_inbox (
-            id, type, scope, title, body, source, confidence, status,
-            created_at, updated_at, layer
-        ) VALUES ('atomic-inbox', 'decision', 'project', 'Atomic approval',
-            'Approval must commit memory and inbox state together.', 'test', 1.0,
-            'pending', 1, 1, 'architecture')
-        "#,
-        [],
-    )
-    .unwrap();
-    conn.execute_batch(
-        r#"
-        CREATE TRIGGER fail_inbox_approved
-        BEFORE INSERT ON memory_events
-        WHEN NEW.event_type = 'inbox_approved'
-        BEGIN
-            SELECT RAISE(ABORT, 'forced approval audit failure');
-        END;
-        "#,
-    )
-    .unwrap();
-    drop(conn);
-
-    cmd(&db)
-        .arg("inbox-approve")
-        .arg("atomic-inbox")
-        .assert()
-        .failure()
-        .stderr(contains("transaction failed: approve_inbox"));
-
-    let conn = Connection::open(&db).unwrap();
-    let memory_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM memories WHERE title = 'Atomic approval'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let inbox_status: String = conn
-        .query_row(
-            "SELECT status FROM memory_inbox WHERE id = 'atomic-inbox'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(memory_count, 0);
-    assert_eq!(inbox_status, "pending");
-}
-
-#[test]
-fn external_http_bind_requires_token_and_enforces_bearer_auth() {
-    let dir = tempdir().unwrap();
-    let db = dir.path().join("memory.db");
-
-    cmd(&db)
-        .arg("serve-http")
-        .arg("--host")
-        .arg("0.0.0.0")
-        .arg("--port")
-        .arg("0")
-        .arg("--once")
-        .assert()
-        .failure()
-        .stderr(contains("external HTTP binds require"));
-
-    let unauthorized = http_once_configured(
-        &db,
-        "127.0.0.1",
-        Some("test-http-token"),
-        None,
-        "GET /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    );
-    assert!(unauthorized.contains("401 Unauthorized"));
-
-    let authorized = http_once_configured(
-        &db,
-        "127.0.0.1",
-        Some("test-http-token"),
-        None,
-        "GET /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-http-token\r\nConnection: close\r\n\r\n",
-    );
-    assert!(authorized.contains("200 OK"));
-    assert!(authorized.contains("\"memories\""));
-
-    let token_file = dir.path().join("http-token");
-    fs::write(&token_file, "file-http-token\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&token_file, fs::Permissions::from_mode(0o600)).unwrap();
-    }
-    let file_authorized = http_once_configured(
-        &db,
-        "127.0.0.1",
-        None,
-        Some(&token_file),
-        "GET /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer file-http-token\r\nConnection: close\r\n\r\n",
-    );
-    assert!(file_authorized.contains("200 OK"));
-
-    let body = r#"{"query":"origin check"}"#;
-    let cross_origin = http_once(
-        &db,
-        &format!(
-            "POST /search HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.example\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        ),
-    );
-    assert!(cross_origin.contains("403 Forbidden"));
-    let same_origin = http_once(
-        &db,
-        &format!(
-            "POST /search HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        ),
-    );
-    assert!(same_origin.contains("200 OK"));
-}
-
-#[test]
-fn production_deployment_templates_preserve_http_security_invariants() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let systemd = fs::read_to_string(root.join("deploy/systemd/dukememory.service")).unwrap();
-    assert!(systemd.contains("serve-http --host 127.0.0.1 --port 8765"));
-    assert!(systemd.contains("--auth-token-file /etc/dukememory/http-token"));
-    assert!(systemd.contains("NoNewPrivileges=true"));
-    assert!(systemd.contains("ProtectSystem=strict"));
-    assert!(systemd.contains("KillSignal=SIGTERM"));
-
-    let caddy = fs::read_to_string(root.join("deploy/caddy/Caddyfile")).unwrap();
-    assert!(caddy.contains("reverse_proxy 127.0.0.1:8765"));
-    assert!(caddy.contains("header_up Host {host}"));
-    assert!(caddy.contains("Strict-Transport-Security"));
-
-    let nginx = fs::read_to_string(root.join("deploy/nginx/dukememory.conf")).unwrap();
-    assert!(nginx.contains("proxy_pass http://127.0.0.1:8765"));
-    assert!(nginx.contains("proxy_set_header Host $host"));
-    assert!(nginx.contains("ssl_protocols TLSv1.2 TLSv1.3"));
-
-    let guide = fs::read_to_string(root.join("docs/production-deployment.md")).unwrap();
-    assert!(guide.contains("curl --fail http://127.0.0.1:8765/health"));
-    assert!(guide.contains("DUKEMEMORY_HTTP_ALLOWED_ORIGINS=https://memory.example.com"));
-    assert!(guide.contains("DUKEMEMORY_SYNC_PASSPHRASE_FILE"));
-}
-
-#[cfg(unix)]
-#[test]
-fn http_server_drains_workers_on_termination_signal() {
-    let dir = tempdir().unwrap();
-    let db = dir.path().join("memory.db");
-    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
-        .arg("--db")
-        .arg(&db)
-        .arg("serve-http")
-        .arg("--host")
-        .arg("127.0.0.1")
-        .arg("--port")
-        .arg("0")
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut reader = BufReader::new(child.stdout.take().unwrap());
-    let mut url = String::new();
-    reader.read_line(&mut url).unwrap();
-    let port = url
-        .trim()
-        .rsplit(':')
-        .next()
-        .unwrap()
-        .parse::<u16>()
-        .unwrap();
-
-    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    write!(
-        stream,
-        "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
-    )
-    .unwrap();
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
-    assert!(response.contains("200 OK"));
-
-    let signal_status = StdCommand::new("kill")
-        .arg("-TERM")
-        .arg(child.id().to_string())
-        .status()
-        .unwrap();
-    assert!(signal_status.success());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            assert!(status.success());
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("HTTP server did not finish graceful shutdown within five seconds");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-}
-
-#[test]
-fn bitemporal_observations_are_available_through_cli() {
-    let dir = tempdir().unwrap();
-    let db = dir.path().join("memory.db");
-    let root = dir.path().join("project");
-    fs::create_dir_all(&root).unwrap();
-    let source = stdout(
-        cmd(&db)
-            .arg("add")
-            .arg("decision")
-            .arg("Evidence source")
-            .arg("The decision has a durable evidence relationship."),
-    )
-    .trim()
-    .to_string();
-    let target = stdout(
-        cmd(&db)
-            .arg("add")
-            .arg("constraint")
-            .arg("Evidence target")
-            .arg("The target constraint is independently addressable."),
-    )
-    .trim()
-    .to_string();
-
-    let observed = stdout(
-        cmd(&db)
-            .arg("observe")
-            .arg(&source)
-            .arg("--kind")
-            .arg("verified")
-            .arg("--statement")
-            .arg("A test verified the relationship")
-            .arg("--evidence-kind")
-            .arg("test")
-            .arg("--evidence-ref")
-            .arg("cargo test bitemporal")
-            .arg("--target-memory-id")
-            .arg(&target)
-            .arg("--valid-from")
-            .arg("100")
-            .arg("--root")
-            .arg(&root)
-            .arg("--json"),
-    );
-    let observed: Value = serde_json::from_str(&observed).unwrap();
-    assert_eq!(observed["memory_id"], source);
-    assert_eq!(observed["target_memory_id"], target);
-    assert_eq!(observed["valid_from"], 100);
-
-    let observations = stdout(
-        cmd(&db)
-            .arg("observations")
-            .arg(&source)
-            .arg("--valid-at")
-            .arg("100")
-            .arg("--json"),
-    );
-    let observations: Value = serde_json::from_str(&observations).unwrap();
-    assert_eq!(observations.as_array().unwrap().len(), 1);
-
-    let graph = stdout(
-        cmd(&db)
-            .arg("temporal-graph")
-            .arg("--valid-at")
-            .arg("100")
-            .arg("--json"),
-    );
-    let graph: Value = serde_json::from_str(&graph).unwrap();
-    assert_eq!(graph["edge_count"], 1);
-    assert_eq!(graph["observation_count"], 1);
+mod late_surfaces {
+    include!("cli/late_surfaces.rs");
 }

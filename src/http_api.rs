@@ -28,6 +28,16 @@ impl HttpResponse {
         }
     }
 
+    pub fn asset(content_type: &'static str, body: impl Into<Vec<u8>>) -> Self {
+        Self {
+            status: 200,
+            reason: "OK",
+            content_type,
+            body: body.into(),
+            request_id: None,
+        }
+    }
+
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::json(
             400,
@@ -76,6 +86,22 @@ impl HttpResponse {
         )
     }
 
+    pub fn request_timeout() -> Self {
+        Self::json(
+            408,
+            "Request Timeout",
+            json!({"error": {"code": "request_timeout", "message": "HTTP request deadline exceeded"}}),
+        )
+    }
+
+    pub fn service_unavailable(message: impl Into<String>) -> Self {
+        Self::json(
+            503,
+            "Service Unavailable",
+            json!({"error": {"code": "service_unavailable", "message": message.into()}}),
+        )
+    }
+
     pub fn internal_error(incident_id: &str) -> Self {
         Self::json(
             500,
@@ -112,6 +138,9 @@ impl HttpResponse {
         }
         if normalized.contains("not found") {
             return Self::not_found_message(message);
+        }
+        if normalized.contains("http request deadline exceeded") {
+            return Self::request_timeout();
         }
         if normalized.contains("constraint failed")
             || normalized.contains("already exists")
@@ -160,7 +189,7 @@ pub fn write_response(stream: &mut TcpStream, response: HttpResponse) -> Result<
             "Content-Type: {}\r\n",
             "Content-Length: {}\r\n",
             "Cache-Control: no-store\r\n",
-            "Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'\r\n",
+            "Content-Security-Policy: default-src 'none'; img-src 'self' data:; style-src 'self'; style-src-attr 'none'; script-src 'self'; script-src-attr 'none'; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'; frame-ancestors 'none'; form-action 'self'; manifest-src 'none'\r\n",
             "Cross-Origin-Opener-Policy: same-origin\r\n",
             "Permissions-Policy: camera=(), microphone=(), geolocation=()\r\n",
             "Referrer-Policy: no-referrer\r\n",

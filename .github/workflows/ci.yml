@@ -39,6 +39,8 @@ jobs:
         run: cargo check --locked --all-targets --no-default-features
       - name: Test cross-platform core
         run: cargo test --locked --no-default-features --bin dukememory
+      - name: Check release sqlite-vec feature set
+        run: cargo check --locked --all-targets --features vec
 
   quality:
     runs-on: ubuntu-latest

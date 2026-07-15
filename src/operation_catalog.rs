@@ -454,6 +454,17 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         Preview, Read, true, false, false
     ),
     operation!(
+        "memory.advanced_eval",
+        "evaluation",
+        "Audit causal, poisoning, global, and temporal memory signals",
+        &["eval advanced"],
+        &["memory_advanced_eval"],
+        &["/advanced-eval"],
+        false,
+        false;
+        Preview, Read, true, false, false
+    ),
+    operation!(
         "release.gate_v2",
         "release",
         "Run V2 release readiness checks",

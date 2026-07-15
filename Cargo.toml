@@ -44,6 +44,7 @@ vec = ["dep:sqlite-vec"]
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
+proptest = "1.11"
 tempfile = "3.13"
 
 # Install/update dry-runs hash large binaries. Optimizing SHA-256 keeps the

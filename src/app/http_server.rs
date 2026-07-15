@@ -10,8 +10,10 @@ mod security;
 const HTTP_WORKERS: usize = 4;
 const HTTP_QUEUE_CAPACITY: usize = 64;
 const HTTP_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
-const HTTP_MAX_HEADER_BYTES: usize = 1024 * 1024;
+const HTTP_MAX_HEADER_BYTES: usize = 64 * 1024;
 const HTTP_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+const HTTP_REQUEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+const HTTP_IO_SLICE: std::time::Duration = std::time::Duration::from_secs(2);
 
 struct HttpAppState {
     default_db: PathBuf,
@@ -87,9 +89,21 @@ pub(crate) fn serve_http(
     }
     while !shutdown.load(std::sync::atomic::Ordering::SeqCst) {
         match listener.accept() {
-            Ok((stream, _)) => sender
-                .send(stream)
-                .with_context(|| "HTTP worker queue stopped")?,
+            Ok((stream, _)) => match sender.try_send(stream) {
+                Ok(()) => {}
+                Err(std::sync::mpsc::TrySendError::Full(mut stream)) => {
+                    let _ = stream.set_write_timeout(Some(HTTP_IO_SLICE));
+                    let _ = crate::http_api::write_response(
+                        &mut stream,
+                        HttpResponse::service_unavailable(
+                            "HTTP worker queue is full; retry the request later",
+                        ),
+                    );
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    bail!("HTTP worker queue stopped");
+                }
+            },
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
@@ -131,6 +145,7 @@ fn handle_http_stream(state: &HttpAppState, mut stream: TcpStream) -> Result<()>
     };
     let status = response.status;
     response.request_id = Some(request_id.clone());
+    stream.set_write_timeout(Some(HTTP_REQUEST_DEADLINE))?;
     crate::http_api::write_response(&mut stream, response)?;
     eprintln!(
         "{}",
@@ -477,15 +492,66 @@ fn resolve_project_input(root: &Path, input: &Path) -> Result<PathBuf> {
 }
 
 fn memory_ui_html() -> &'static str {
-    include_str!("memory_ui.html")
+    static HTML: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HTML.get_or_init(|| {
+        let mut html = include_str!("memory_ui.html").to_string();
+        let style_start = html.find("  <style>").expect("memory UI style start");
+        let style_end = html
+            .find("  </style>")
+            .map(|index| index + "  </style>".len())
+            .expect("memory UI style end");
+        html.replace_range(
+            style_start..style_end,
+            "  <link rel=\"stylesheet\" href=\"/ui.css\">",
+        );
+        let script_start = html.find("  <script>").expect("memory UI script start");
+        let script_end = html
+            .find("  </script>")
+            .map(|index| index + "  </script>".len())
+            .expect("memory UI script end");
+        html.replace_range(
+            script_start..script_end,
+            "  <script src=\"/ui.js\" defer></script>",
+        );
+        html
+    })
+}
+
+fn memory_ui_css() -> &'static str {
+    static CSS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CSS.get_or_init(|| {
+        let html = include_str!("memory_ui.html");
+        html.split_once("  <style>")
+            .and_then(|(_, rest)| rest.split_once("  </style>"))
+            .map(|(css, _)| css.trim().to_string())
+            .expect("memory UI inline style")
+    })
+}
+
+fn memory_ui_javascript() -> &'static str {
+    static JAVASCRIPT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    JAVASCRIPT.get_or_init(|| {
+        let html = include_str!("memory_ui.html");
+        html.split_once("  <script>")
+            .and_then(|(_, rest)| rest.split_once("  </script>"))
+            .map(|(javascript, _)| javascript.trim().to_string())
+            .expect("memory UI inline script")
+    })
 }
 
 fn read_http_request(stream: &mut TcpStream) -> Result<Vec<u8>> {
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+    read_http_request_with_deadline(stream, HTTP_REQUEST_DEADLINE)
+}
+
+fn read_http_request_with_deadline(
+    stream: &mut TcpStream,
+    timeout: std::time::Duration,
+) -> Result<Vec<u8>> {
+    let deadline = std::time::Instant::now() + timeout;
     let mut buffer = Vec::with_capacity(8192);
     let mut chunk = [0_u8; 4096];
     let header_end = loop {
-        let read = stream.read(&mut chunk)?;
+        let read = read_http_chunk(stream, &mut chunk, deadline)?;
         if read == 0 {
             bail!("empty or incomplete HTTP request");
         }
@@ -508,7 +574,7 @@ fn read_http_request(stream: &mut TcpStream) -> Result<Vec<u8>> {
         .checked_add(content_length)
         .context("HTTP request size overflow")?;
     while buffer.len() < target_len {
-        let read = stream.read(&mut chunk)?;
+        let read = read_http_chunk(stream, &mut chunk, deadline)?;
         if read == 0 {
             bail!("HTTP request body ended before Content-Length");
         }
@@ -521,6 +587,34 @@ fn read_http_request(stream: &mut TcpStream) -> Result<Vec<u8>> {
     Ok(buffer)
 }
 
+fn read_http_chunk(
+    stream: &mut TcpStream,
+    chunk: &mut [u8],
+    deadline: std::time::Instant,
+) -> Result<usize> {
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            bail!("HTTP request deadline exceeded");
+        }
+        stream.set_read_timeout(Some(remaining.min(HTTP_IO_SLICE)))?;
+        match stream.read(chunk) {
+            Ok(read) => return Ok(read),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                if std::time::Instant::now() >= deadline {
+                    bail!("HTTP request deadline exceeded");
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer
         .windows(4)
@@ -530,8 +624,16 @@ fn find_header_end(buffer: &[u8]) -> Option<usize> {
 
 fn content_length(header: &[u8]) -> Result<usize> {
     let header = std::str::from_utf8(header).context("HTTP headers must be UTF-8")?;
+    let mut lines = header.split("\r\n");
+    let request_line = lines.next().unwrap_or_default();
+    let request_parts = request_line.split_whitespace().collect::<Vec<_>>();
+    if request_parts.len() != 3 || !matches!(request_parts[2], "HTTP/1.0" | "HTTP/1.1") {
+        bail!("malformed or unsupported HTTP request line");
+    }
     let mut content_length = None;
-    for line in header.split("\r\n").skip(1) {
+    let mut singleton_headers = HashSet::new();
+    let mut host_present = false;
+    for line in lines {
         if line.starts_with(' ') || line.starts_with('\t') {
             bail!("obsolete folded HTTP headers are not supported");
         }
@@ -540,13 +642,53 @@ fn content_length(header: &[u8]) -> Result<usize> {
         };
         let name = name.trim();
         let value = value.trim();
+        if name.is_empty()
+            || !name.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(
+                        byte,
+                        b'!' | b'#'
+                            | b'$'
+                            | b'%'
+                            | b'&'
+                            | b'\''
+                            | b'*'
+                            | b'+'
+                            | b'-'
+                            | b'.'
+                            | b'^'
+                            | b'_'
+                            | b'`'
+                            | b'|'
+                            | b'~'
+                    )
+            })
+        {
+            bail!("invalid HTTP header name");
+        }
+        let normalized_name = name.to_ascii_lowercase();
+        if matches!(
+            normalized_name.as_str(),
+            "host"
+                | "content-length"
+                | "authorization"
+                | "proxy-authorization"
+                | "origin"
+                | "x-dukememory-token"
+        ) && !singleton_headers.insert(normalized_name.clone())
+        {
+            bail!("duplicate {name} headers are not allowed");
+        }
+        if normalized_name == "host" {
+            if value.is_empty() {
+                bail!("Host header must not be empty");
+            }
+            host_present = true;
+        }
         if name.eq_ignore_ascii_case("transfer-encoding") {
             bail!("Transfer-Encoding is not supported");
         }
         if name.eq_ignore_ascii_case("content-length") {
-            if content_length.is_some() {
-                bail!("duplicate Content-Length headers are not allowed");
-            }
             if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
                 bail!("invalid Content-Length header");
             }
@@ -556,6 +698,9 @@ fn content_length(header: &[u8]) -> Result<usize> {
                     .context("invalid Content-Length header")?,
             );
         }
+    }
+    if request_parts[2] == "HTTP/1.1" && !host_present {
+        bail!("HTTP/1.1 requests require exactly one Host header");
     }
     Ok(content_length.unwrap_or(0))
 }
@@ -590,7 +735,9 @@ fn http_metrics(conn: &Connection) -> Result<Value> {
 
 #[cfg(test)]
 mod http_framing_tests {
-    use super::content_length;
+    use super::{content_length, read_http_request_with_deadline};
+    use proptest::prelude::*;
+    use std::io::Write;
 
     #[test]
     fn accepts_one_canonical_content_length() {
@@ -614,11 +761,71 @@ mod http_framing_tests {
             "POST / HTTP/1.1\r\nContent-Length: +1",
             "POST / HTTP/1.1\r\nContent-Length: 1, 1",
             "POST / HTTP/1.1\r\n folded: value",
+            "GET / HTTP/1.1\r\nHost: one\r\nHost: two",
+            "GET / HTTP/1.1\r\nHost: local\r\nAuthorization: Bearer one\r\nAuthorization: Bearer two",
+            "GET / HTTP/1.1\r\nUser Agent: invalid",
+            "GET / HTTP/1.1\r\nConnection: close",
         ] {
             assert!(
                 content_length(header.as_bytes()).is_err(),
                 "header={header:?}"
             );
+        }
+    }
+
+    #[test]
+    fn enforces_one_absolute_request_deadline_across_reads() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || {
+            let mut stream = std::net::TcpStream::connect(address).unwrap();
+            stream.write_all(b"G").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        });
+        let (mut stream, _) = listener.accept().unwrap();
+        let error =
+            read_http_request_with_deadline(&mut stream, std::time::Duration::from_millis(25))
+                .unwrap_err();
+        assert!(error.to_string().contains("HTTP request deadline exceeded"));
+        client.join().unwrap();
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn arbitrary_http_headers_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..70_000)) {
+            let _ = content_length(&bytes);
+        }
+
+        #[test]
+        fn canonical_content_lengths_round_trip(length in 0usize..=16 * 1024 * 1024) {
+            let header = format!(
+                "POST /memory HTTP/1.1\r\nHost: localhost\r\nContent-Length: {length}"
+            );
+            prop_assert_eq!(content_length(header.as_bytes()).unwrap(), length);
+        }
+
+        #[test]
+        fn duplicate_singleton_headers_are_rejected(
+            name in prop_oneof![
+                Just("Host"),
+                Just("Content-Length"),
+                Just("Authorization"),
+                Just("Proxy-Authorization"),
+                Just("Origin"),
+                Just("X-DukeMemory-Token"),
+            ],
+            first in "[A-Za-z0-9._-]{1,32}",
+            second in "[A-Za-z0-9._-]{1,32}",
+        ) {
+            let request_line = if name == "Host" {
+                "GET / HTTP/1.1"
+            } else {
+                "GET / HTTP/1.0"
+            };
+            let header = format!("{request_line}\r\n{name}: {first}\r\n{name}: {second}");
+            prop_assert!(content_length(header.as_bytes()).is_err());
         }
     }
 }

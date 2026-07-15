@@ -58,3 +58,14 @@ fn sbom_generator_and_advisory_exceptions_are_explicitly_pinned() {
         assert!(deny.contains("latest upstream release"));
     }
 }
+
+#[test]
+fn crates_io_publish_uses_short_lived_oidc_after_release_assets() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workflow = fs::read_to_string(root.join(".github/workflows/release.yml")).unwrap();
+    assert!(workflow.contains("crates-io:\n    needs: github-release"));
+    assert!(workflow.contains("id-token: write"));
+    assert!(workflow.contains("rust-lang/crates-io-auth-action@"));
+    assert!(workflow.contains("steps.crates-io-auth.outputs.token"));
+    assert!(!workflow.contains("secrets.CARGO_REGISTRY_TOKEN"));
+}

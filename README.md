@@ -119,6 +119,7 @@ dukememory rag-debug "what should we remember about checkout validation?" --json
 dukememory rag-answer "what should we remember about checkout validation?" --json
 dukememory graph-rag "what decisions affect checkout validation?" --json
 dukememory eval rag --json
+dukememory eval advanced --json
 dukememory explain-recall "checkout validation" --json
 dukememory memory-health-score --json
 dukememory memory-eval-story --json
@@ -466,7 +467,17 @@ dukememory graph-rag "which memory cards are related to checkout validation?" \
 dukememory eval rag \
   --budget-profile tiny \
   --json
+
+dukememory eval advanced --json
 ```
+
+`eval advanced` is a deterministic local audit rather than an LLM judge. It
+measures explicit causal paths and cycles, flags retrieval-poisoning candidates
+for review, reports connected-component coverage for dataset-wide graph
+questions, and checks valid-time/knowledge-time consistency. The global report
+states that hierarchical community summaries and dynamic community selection
+are not implemented, and the poisoning report never treats a heuristic match
+as proof of compromise.
 
 `eval rag` checks the retrieval/source-pack half of RAG without running
 generation. Stored eval cases are used when present; otherwise it runs temporary
@@ -655,10 +666,14 @@ dukememory connect-codex --apply --json
 dukememory codex-doctor --json
 ```
 
-The MCP server negotiates protocol versions `2025-11-25`, `2025-06-18`, and
-`2024-11-05`, implements the initialize/initialized lifecycle, cursor-paginates
-tool lists, supports newline and bounded streaming `Content-Length` framing,
-and never responds to notifications. `core`, `standard`, and `full` profiles
+The MCP server supports both the stable `2025-11-25`, `2025-06-18`, and
+`2024-11-05` initialize/initialized family and the locked `2026-07-28` release
+candidate. The latter is stateless: clients call `server/discover` and include
+the protocol version, client identity, and capabilities in every request's
+`params._meta`. Tool and resource lists include cache metadata in that mode.
+The server cursor-paginates tool lists, supports newline and bounded streaming
+`Content-Length` framing, and never responds to notifications. `core`,
+`standard`, and `full` profiles
 reduce tool-description overhead (`full` remains the compatibility default);
 the environment equivalents are `DUKEMEMORY_MCP_PROFILE` and
 `DUKEMEMORY_MCP_PAGE_SIZE`. Input schemas are closed Draft 2020-12 schemas with
@@ -667,7 +682,13 @@ bounded strings, arrays, integers, enums, and runtime validation.
 MCP Resources expose project status, doctrine, and `dukememory://memory/{id}`.
 With protocol `2025-11-25`, expensive tools can run as Tasks and be polled,
 listed, cancelled, and read through `tasks/get`, `tasks/list`, `tasks/cancel`,
-and `tasks/result`. Project selection is capability-scoped to the default
+and `tasks/result`. With `2026-07-28`, clients opt into the
+`io.modelcontextprotocol/tasks` extension per request; the server creates tasks
+for eligible read-only long operations and exposes `tasks/get`, `tasks/update`,
+and `tasks/cancel`. Schema v25 persists task state and terminal results in
+SQLite, scopes them to the stdio client identity, bounds legacy result waits,
+and records cancellation as an eventually consistent request. Project
+selection is capability-scoped to the default
 project, discovered sibling projects, or roots explicitly listed in
 `DUKEMEMORY_MCP_ALLOWED_ROOTS`; file ingest remains inside the selected root.
 

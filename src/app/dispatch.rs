@@ -1800,10 +1800,20 @@ pub(crate) fn run() -> Result<()> {
         Command::ReleaseGateV3 {
             root,
             since_days,
+            rag_profile,
             strict,
             run,
             json,
-        } => print_release_gate_v3(&conn, &cli.db, &root, since_days, strict, run, json)?,
+        } => print_release_gate_v3(
+            &conn,
+            &cli.db,
+            &root,
+            since_days,
+            strict,
+            run,
+            rag_profile,
+            json,
+        )?,
         Command::WebControlCenterV12 {
             root,
             target,

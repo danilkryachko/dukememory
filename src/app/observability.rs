@@ -1,5 +1,8 @@
 use super::*;
 
+mod release_gate;
+pub(crate) use release_gate::*;
+
 const FRESH_MEMORY_GRACE_MS: i64 = 86_400_000;
 const GAP_INBOX_STALE_MS: i64 = 3_600_000;
 const AUTO_SUPERSEDE_SAFE_CONFIDENCE: f64 = 0.90;
@@ -883,28 +886,6 @@ pub(crate) struct ReleaseGateV2Report {
     pub(crate) benchmark: RecallBenchmarkSuiteReport,
     pub(crate) audit_v2: AgentAuditV2Report,
     pub(crate) control_center: MemoryControlCenterV2Report,
-    pub(crate) checks: Vec<ReleaseGateCheck>,
-    pub(crate) issues: Vec<String>,
-    pub(crate) recommendations: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct ReleaseGateV3Report {
-    pub(crate) version: u32,
-    pub(crate) ok: bool,
-    pub(crate) status: String,
-    pub(crate) root: String,
-    pub(crate) strict: bool,
-    pub(crate) run: bool,
-    pub(crate) release_gate_v2: ReleaseGateV2Report,
-    pub(crate) effectiveness_v2: MemoryEffectivenessV2Report,
-    pub(crate) baselines: RecallBenchmarkBaselinesReport,
-    pub(crate) conflict_apply: MemoryConflictApplyReport,
-    pub(crate) mcp_surface_v3: McpToolSurfaceV3Report,
-    pub(crate) mcp_discipline_v3: McpDisciplineV3Report,
-    pub(crate) fleet_quality: FleetQualityReport,
-    pub(crate) rag_eval: RagEvalReport,
-    pub(crate) graph_rag_eval: GraphRagEvalReport,
     pub(crate) checks: Vec<ReleaseGateCheck>,
     pub(crate) issues: Vec<String>,
     pub(crate) recommendations: Vec<String>,
@@ -5935,267 +5916,6 @@ pub(crate) fn release_gate_v2_report(
     })
 }
 
-pub(crate) fn print_release_gate_v3(
-    conn: &Connection,
-    db: &Path,
-    root: &Path,
-    since_days: i64,
-    strict: bool,
-    run: bool,
-    json_out: bool,
-) -> Result<()> {
-    let report = release_gate_v3_report(conn, db, root, since_days, strict, run)?;
-    if json_out {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
-    }
-    println!("Release Gate v3");
-    println!("status: {}", report.status);
-    for check in &report.checks {
-        println!("{} {}", if check.ok { "ok" } else { "warn" }, check.name);
-    }
-    for issue in &report.issues {
-        println!("issue: {issue}");
-    }
-    Ok(())
-}
-
-pub(crate) fn release_gate_v3_report(
-    conn: &Connection,
-    db: &Path,
-    root: &Path,
-    since_days: i64,
-    strict: bool,
-    run: bool,
-) -> Result<ReleaseGateV3Report> {
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let release_gate_v2 = release_gate_v2_report(conn, db, &root, since_days, strict, run)?;
-    let effectiveness_v2 = memory_effectiveness_v2_report(conn, &root, since_days)?;
-    let baselines = recall_benchmark_baselines_report(conn, &root, since_days, false)?;
-    let conflict_apply = memory_conflict_apply_report(conn, 90, 12, false)?;
-    let mcp_surface_v3 = mcp_tool_surface_v3_report();
-    let mcp_discipline_v3 = mcp_discipline_v3_report(conn, db, &root, since_days, false)?;
-    let fleet_quality = fleet_quality_report(db, since_days)?;
-    let rag_sources = crate::app::rag_ingest::rag_sources_report(
-        conn,
-        &root,
-        DEFAULT_EMBED_PROVIDER,
-        DEFAULT_EMBED_ENDPOINT,
-        DEFAULT_EMBED_MODEL,
-    )?;
-    let rag_eval = rag_eval_report_with_baseline(
-        conn,
-        None,
-        8,
-        3_000,
-        DEFAULT_EMBED_PROVIDER,
-        DEFAULT_EMBED_ENDPOINT,
-        DEFAULT_EMBED_MODEL,
-        Some(&root),
-        false,
-    )?;
-    let graph_generation = crate::runtime_config::GenerationConfig {
-        provider: "mock".to_string(),
-        endpoint: "local".to_string(),
-        model: "extractive-fallback".to_string(),
-    };
-    let graph_rag_eval = graph_rag_eval_report(
-        conn,
-        None,
-        8,
-        3_000,
-        &graph_generation,
-        DEFAULT_EMBED_PROVIDER,
-        DEFAULT_EMBED_ENDPOINT,
-        DEFAULT_EMBED_MODEL,
-    )?;
-    let mut checks = release_gate_v2.checks.clone();
-    checks.push(ReleaseGateCheck {
-        name: "memory_effectiveness_v2".to_string(),
-        ok: effectiveness_v2.ok && effectiveness_v2.score >= 75.0,
-        required: true,
-        detail: format!(
-            "score={:.1} confidence={}",
-            effectiveness_v2.score, effectiveness_v2.confidence
-        ),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "recall_benchmark_baselines".to_string(),
-        ok: baselines.ok && !baselines.regression && baselines.current_score >= 80.0,
-        required: true,
-        detail: format!(
-            "current={:.1} baseline_present={} regression={}",
-            baselines.current_score, baselines.baseline_present, baselines.regression
-        ),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "memory_conflict_apply_dry_run".to_string(),
-        ok: conflict_apply.status != "manual_review",
-        required: true,
-        detail: format!(
-            "status={} safe_actions={} skipped={}",
-            conflict_apply.status,
-            conflict_apply.safe_actions.len(),
-            conflict_apply.skipped.len()
-        ),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "mcp_tool_surface_v3".to_string(),
-        ok: mcp_surface_v3.ok,
-        required: true,
-        detail: format!("missing={}", mcp_surface_v3.missing_tools.len()),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "mcp_discipline_v3".to_string(),
-        ok: mcp_discipline_v3.ok,
-        required: true,
-        detail: format!("missing={}", mcp_discipline_v3.missing_commands.len()),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "fleet_quality_observed".to_string(),
-        ok: fleet_quality.ready_projects > 0,
-        required: false,
-        detail: format!(
-            "ready={} attention={} avg_effectiveness={:.1}",
-            fleet_quality.ready_projects,
-            fleet_quality.attention_projects,
-            fleet_quality.average_effectiveness_score
-        ),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "rag_sources_freshness".to_string(),
-        ok: rag_sources.ok,
-        required: true,
-        detail: format!(
-            "ready={}/{} stale={} missing={} orphan={} chunks={} embedding_missing={} embedding_stale={}",
-            rag_sources.ready_sources,
-            rag_sources.total_sources,
-            rag_sources.stale_sources,
-            rag_sources.missing_sources,
-            rag_sources.orphan_sources,
-            rag_sources.total_chunks,
-            rag_sources.chunk_embeddings_missing,
-            rag_sources.chunk_embeddings_stale
-        ),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "rag_source_pack_eval".to_string(),
-        ok: rag_eval.ok
-            && rag_eval.recall >= 80.0
-            && rag_eval.ranking.hit_at_3_rate >= 50.0
-            && rag_eval.split.holdout_ready,
-        required: true,
-        detail: format!(
-            "recall={:.1}% passed={}/{} source={} semantic_fallbacks={} grounded={:.1}% grounded_passed={}/{} hit_at_3={:.1}% mrr={:.1}% packing_selected={}/{} packing_chunks={}/{} suppressed_overlap={} suppressed_file_cap={} suppressed_limit={} expected_selected={} expected_suppressed={} expected_missing={} evidence_selection={:.1}% evidence_candidate={:.1}% near_misses={} matrix={} matrix_coverage={:.1}% matrix_missing={} retrieval_profile={} retrieval_tuning={} holdout={}/{} holdout_recall={:.1}% holdout_grounded={:.1}% holdout_ready={}",
-            rag_eval.recall,
-            rag_eval.passed,
-            rag_eval.total,
-            rag_eval.case_source,
-            rag_eval.semantic_fallbacks,
-            rag_eval.grounded_answers.coverage,
-            rag_eval.grounded_answers.passed,
-            rag_eval.total,
-            rag_eval.ranking.hit_at_3_rate,
-            rag_eval.ranking.mean_reciprocal_rank,
-            rag_eval.packing.selected_count,
-            rag_eval.packing.candidate_count,
-            rag_eval.packing.selected_chunks,
-            rag_eval.packing.chunk_candidates,
-            rag_eval.packing.suppressed_overlap,
-            rag_eval.packing.suppressed_file_cap,
-            rag_eval.packing.suppressed_limit,
-            rag_eval.packing.expected_selected,
-            rag_eval.packing.expected_suppressed_by_packing,
-            rag_eval.packing.expected_missing_from_candidates,
-            rag_eval.evidence_placement.selection_recall,
-            rag_eval.evidence_placement.candidate_recall,
-            rag_eval.evidence_placement.near_miss_count,
-            rag_eval.eval_matrix.status,
-            rag_eval.eval_matrix.coverage,
-            rag_eval.eval_matrix.missing_dimensions.len(),
-            rag_eval.retrieval_tuning.selected_profile,
-            rag_eval.retrieval_tuning.status,
-            rag_eval.split.holdout_passed,
-            rag_eval.split.holdout_total,
-            rag_eval.split.holdout_recall,
-            rag_eval.split.holdout_grounded_coverage,
-            rag_eval.split.holdout_ready
-        ),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "rag_eval_baseline".to_string(),
-        ok: !rag_eval_baseline_blocks_release(&rag_eval.baseline.status),
-        required: true,
-        detail: format!(
-            "status={} present={} regression={} signature={} baseline={}",
-            rag_eval.baseline.status,
-            rag_eval.baseline.present,
-            rag_eval.baseline.regression,
-            rag_eval.baseline.current_signature,
-            rag_eval
-                .baseline
-                .baseline_signature
-                .as_deref()
-                .unwrap_or("-")
-        ),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "graph_rag_eval".to_string(),
-        ok: graph_rag_eval.ok || graph_rag_eval.total == 0,
-        required: true,
-        detail: format!(
-            "status={} recall={:.1}% grounded={:.1}% passed={}/{} edges={} relationship_coverage={:.1}%",
-            graph_rag_eval.status,
-            graph_rag_eval.recall,
-            graph_rag_eval.grounded_coverage,
-            graph_rag_eval.passed,
-            graph_rag_eval.total,
-            graph_rag_eval.graph.total_edges,
-            graph_rag_eval.graph.average_relationship_coverage
-        ),
-    });
-    let mut issues = release_gate_v2.issues.clone();
-    for check in &checks {
-        if check.required && !check.ok {
-            issues.push(format!("release gate v3 failed: {}", check.name));
-        }
-    }
-    issues.sort();
-    issues.dedup();
-    let mut recommendations = release_gate_v2.recommendations.clone();
-    recommendations.extend(effectiveness_v2.recommendations.clone());
-    recommendations.extend(baselines.recommendations.clone());
-    recommendations.extend(conflict_apply.recommendations.clone());
-    recommendations.extend(mcp_surface_v3.recommendations.clone());
-    recommendations.extend(mcp_discipline_v3.recommendations.clone());
-    recommendations.extend(fleet_quality.recommendations.clone());
-    recommendations.extend(rag_sources.recommendations.clone());
-    recommendations.extend(graph_rag_eval.recommendations.clone());
-    recommendations.sort();
-    recommendations.dedup();
-    let ok = issues.is_empty();
-    Ok(ReleaseGateV3Report {
-        version: 1,
-        ok,
-        status: if ok { "ready" } else { "blocked" }.to_string(),
-        root: root.display().to_string(),
-        strict,
-        run,
-        release_gate_v2,
-        effectiveness_v2,
-        baselines,
-        conflict_apply,
-        mcp_surface_v3,
-        mcp_discipline_v3,
-        fleet_quality,
-        rag_eval,
-        graph_rag_eval,
-        checks,
-        issues,
-        recommendations,
-    })
-}
-
 pub(crate) fn print_remote_sync_wizard(
     conn: &Connection,
     db: &Path,
@@ -7063,6 +6783,7 @@ fn mcp_v3_tool_names() -> Vec<String> {
     tools.extend(
         [
             "memory_effectiveness_v2",
+            "memory_advanced_eval",
             "memory_rag_ingest",
             "memory_rag_sources",
             "memory_rag_eval",
@@ -17055,37 +16776,32 @@ pub(crate) fn project_profile_snapshot(
 }
 
 pub(crate) fn read_project_embedding_config(root: &Path) -> (String, String, String) {
-    let default = (
+    let mut effective = (
         DEFAULT_EMBED_PROVIDER.to_string(),
         DEFAULT_EMBED_ENDPOINT.to_string(),
         DEFAULT_EMBED_MODEL.to_string(),
     );
-    let Ok(raw) = fs::read_to_string(root.join(".agent/config.toml")) else {
-        return default;
-    };
-    let Ok(value) = raw.parse::<toml::Value>() else {
-        return default;
-    };
-    let Some(embeddings) = value.get("embeddings") else {
-        return default;
-    };
-    (
-        embeddings
+    if let Ok(raw) = fs::read_to_string(root.join(".agent/config.toml"))
+        && let Ok(value) = raw.parse::<toml::Value>()
+        && let Some(embeddings) = value.get("embeddings")
+    {
+        effective.0 = embeddings
             .get("provider")
             .and_then(toml::Value::as_str)
             .unwrap_or(DEFAULT_EMBED_PROVIDER)
-            .to_string(),
-        embeddings
+            .to_string();
+        effective.1 = embeddings
             .get("endpoint")
             .and_then(toml::Value::as_str)
             .unwrap_or(DEFAULT_EMBED_ENDPOINT)
-            .to_string(),
-        embeddings
+            .to_string();
+        effective.2 = embeddings
             .get("model")
             .and_then(toml::Value::as_str)
             .unwrap_or(DEFAULT_EMBED_MODEL)
-            .to_string(),
-    )
+            .to_string();
+    }
+    effective
 }
 
 pub(crate) fn app_project_root_for_db(db: &Path) -> Option<PathBuf> {
@@ -19114,8 +18830,11 @@ pub(crate) fn ops_status_report(
     }
     score = score.clamp(0.0, 100.0);
 
-    let ok = score >= 70.0 && blockers.len() <= 2;
-    let status = if ok {
+    let storage_ready = storage.pressure == "ok" && storage.retention_ready;
+    let ok = score >= 70.0 && blockers.len() <= 2 && storage_ready;
+    let status = if storage.pressure == "critical" {
+        "blocked"
+    } else if ok {
         "ready"
     } else if score >= 50.0 {
         "needs-attention"
@@ -19435,8 +19154,7 @@ fn ops_storage_status(conn: &Connection, db: &Path, root: &Path) -> Result<OpsSt
         storage_quota_bytes("DUKEMEMORY_BACKUP_QUOTA_BYTES", 256 * 1024 * 1024);
     let rollback_quota_bytes =
         storage_quota_bytes("DUKEMEMORY_ROLLBACK_QUOTA_BYTES", 128 * 1024 * 1024);
-    let install_backups_quota_bytes =
-        storage_quota_bytes("DUKEMEMORY_INSTALL_BACKUP_QUOTA_BYTES", 128 * 1024 * 1024);
+    let install_backups_quota_bytes = install_backup_quota_bytes();
     let mut over_quota = Vec::new();
     for (name, bytes, quota) in [
         ("agent", agent_bytes, agent_quota_bytes),

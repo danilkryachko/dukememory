@@ -1,10 +1,18 @@
 use super::*;
 
+mod tasks;
+use tasks::*;
+
 const MCP_LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
-const MCP_SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2024-11-05"];
-const MCP_DEFAULT_TASK_TTL_MS: u64 = 3_600_000;
-const MCP_MAX_TASK_TTL_MS: u64 = 86_400_000;
-const MCP_TASK_PAGE_SIZE: usize = 50;
+const MCP_MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
+const MCP_LEGACY_PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2024-11-05"];
+const MCP_SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
+    MCP_MODERN_PROTOCOL_VERSION,
+    "2025-11-25",
+    "2025-06-18",
+    "2024-11-05",
+];
+const MCP_TASKS_EXTENSION: &str = "io.modelcontextprotocol/tasks";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum McpProfile {
@@ -32,31 +40,13 @@ impl McpProfile {
     }
 }
 
-#[derive(Debug, Clone)]
-struct McpTaskRecord {
-    task_id: String,
-    status: String,
-    status_message: String,
-    created_at: String,
-    last_updated_at: String,
-    ttl: u64,
-    poll_interval: u64,
-    expires_at_ms: i64,
-    result: Option<Value>,
-}
-
-#[derive(Debug, Default)]
-struct McpTaskStore {
-    tasks: std::sync::Mutex<BTreeMap<String, McpTaskRecord>>,
-    changed: std::sync::Condvar,
-}
-
 #[derive(Debug)]
 struct McpSessionState {
     protocol_version: Option<String>,
     initialized: bool,
     profile: McpProfile,
     page_size: usize,
+    client_key: String,
     tasks: std::sync::Arc<McpTaskStore>,
 }
 
@@ -71,6 +61,7 @@ pub(crate) fn serve_mcp(
         initialized: false,
         profile: McpProfile::parse(profile)?,
         page_size,
+        client_key: "stdio:legacy-local".to_string(),
         tasks: std::sync::Arc::new(McpTaskStore::default()),
     };
     super::mcp_transport::serve_json_rpc(content_length, |request| {
@@ -95,33 +86,151 @@ fn handle_mcp_request(db: &Path, request: Value, state: &mut McpSessionState) ->
     let is_notification = request.get("id").is_none();
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = request.get("method").and_then(Value::as_str).unwrap_or("");
+    let meta = request.get("params").and_then(|params| params.get("_meta"));
+    let requested_version = meta
+        .and_then(|meta| meta.get("io.modelcontextprotocol/protocolVersion"))
+        .and_then(Value::as_str);
+    if requested_version.is_some_and(|version| !MCP_SUPPORTED_PROTOCOL_VERSIONS.contains(&version))
+    {
+        if is_notification {
+            return None;
+        }
+        return Some(mcp_rpc_error(
+            id,
+            -32004,
+            "Unsupported protocol version",
+            Some(json!({
+                "supported": MCP_SUPPORTED_PROTOCOL_VERSIONS,
+                "requested": requested_version.unwrap_or_default(),
+            })),
+        ));
+    }
+    let modern = requested_version == Some(MCP_MODERN_PROTOCOL_VERSION);
+    let modern_client_info = meta.and_then(|meta| {
+        meta.get("io.modelcontextprotocol/clientInfo")
+            .filter(|value| {
+                value.get("name").and_then(Value::as_str).is_some()
+                    && value.get("version").and_then(Value::as_str).is_some()
+            })
+    });
+    let modern_client_capabilities = meta.and_then(|meta| {
+        meta.get("io.modelcontextprotocol/clientCapabilities")
+            .filter(|value| value.is_object())
+    });
+    if modern && (modern_client_info.is_none() || modern_client_capabilities.is_none()) {
+        if is_notification {
+            return None;
+        }
+        return Some(mcp_rpc_error(
+            id,
+            -32602,
+            "Modern MCP requests require clientInfo and clientCapabilities in params._meta",
+            None,
+        ));
+    }
+    let modern_tasks = modern_client_capabilities.is_some_and(|capabilities| {
+        capabilities
+            .get("extensions")
+            .and_then(|extensions| extensions.get(MCP_TASKS_EXTENSION))
+            .is_some_and(Value::is_object)
+    });
+    if modern && method.starts_with("tasks/") && !modern_tasks {
+        if is_notification {
+            return None;
+        }
+        return Some(mcp_rpc_error(
+            id,
+            -32003,
+            "Missing required client capability",
+            Some(json!({
+                "requiredCapabilities": {
+                    "extensions": {MCP_TASKS_EXTENSION: {}}
+                }
+            })),
+        ));
+    }
+    let owner_key = if modern {
+        mcp_client_key(modern_client_info, "modern-local")
+    } else {
+        state.client_key.clone()
+    };
     let result = match method {
-        "initialize" => initialize_mcp_session(request.get("params"), state),
-        "notifications/initialized" => {
+        "server/discover" if modern => Ok(mcp_server_discover(state)),
+        "initialize" if !modern => initialize_mcp_session(request.get("params"), state),
+        "notifications/initialized" if !modern => {
             state.initialized = true;
             Ok(json!({}))
         }
         "notifications/cancelled" => Ok(json!({})),
-        "ping" => Ok(json!({})),
-        "tools/list" if state.protocol_version.is_some() && !state.initialized => {
+        "ping" if !modern => Ok(json!({})),
+        "tools/list" if !modern && state.protocol_version.is_some() && !state.initialized => {
             Err("client must send notifications/initialized before tools/list".to_string())
         }
-        "tools/list" => mcp_list_tools(request.get("params"), state),
-        "tools/call" if state.protocol_version.is_some() && !state.initialized => {
+        "tools/list" => mcp_list_tools(request.get("params"), state).map(|mut result| {
+            if modern {
+                result["ttlMs"] = json!(60_000);
+                result["cacheScope"] = json!("public");
+            }
+            result
+        }),
+        "tools/call" if !modern && state.protocol_version.is_some() && !state.initialized => {
             Err("client must send notifications/initialized before tools/call".to_string())
         }
         "tools/call" => handle_mcp_call(
             db,
             request.get("params").cloned().unwrap_or_default(),
             state,
+            modern,
+            modern_tasks,
+            &owner_key,
         ),
-        "resources/list" => mcp_list_resources(request.get("params"), state),
-        "resources/templates/list" => Ok(mcp_resource_templates()),
+        "resources/list" => mcp_list_resources(request.get("params"), state).map(|mut result| {
+            if modern {
+                result["ttlMs"] = json!(30_000);
+                result["cacheScope"] = json!("private");
+            }
+            result
+        }),
+        "resources/templates/list" => {
+            let mut result = mcp_resource_templates();
+            if modern {
+                result["ttlMs"] = json!(30_000);
+                result["cacheScope"] = json!("private");
+            }
+            Ok(result)
+        }
         "resources/read" => mcp_read_resource(db, request.get("params")),
-        "tasks/get" if mcp_tasks_enabled(state) => mcp_task_get(request.get("params"), state),
-        "tasks/list" if mcp_tasks_enabled(state) => mcp_task_list(request.get("params"), state),
-        "tasks/result" if mcp_tasks_enabled(state) => mcp_task_result(request.get("params"), state),
-        "tasks/cancel" if mcp_tasks_enabled(state) => mcp_task_cancel(request.get("params"), state),
+        "tasks/get" if modern => {
+            mcp_task_get(db, request.get("params"), &owner_key, "extension", true)
+        }
+        "tasks/update" if modern => {
+            mcp_task_update(db, request.get("params"), &owner_key, "extension")
+        }
+        "tasks/cancel" if modern => mcp_task_cancel(
+            db,
+            request.get("params"),
+            state,
+            &owner_key,
+            "extension",
+            true,
+        ),
+        "tasks/get" if mcp_legacy_tasks_enabled(state) => {
+            mcp_task_get(db, request.get("params"), &owner_key, "legacy", false)
+        }
+        "tasks/list" if mcp_legacy_tasks_enabled(state) => {
+            mcp_task_list(db, request.get("params"), &owner_key)
+        }
+        "tasks/result" if mcp_legacy_tasks_enabled(state) => {
+            mcp_task_result(db, request.get("params"), state, &owner_key)
+        }
+        "tasks/cancel" if mcp_legacy_tasks_enabled(state) => mcp_task_cancel(
+            db,
+            request.get("params"),
+            state,
+            &owner_key,
+            "legacy",
+            false,
+        ),
         _ => Err(format!("unsupported method: {method}")),
     };
     if is_notification {
@@ -132,11 +241,81 @@ fn handle_mcp_request(db: &Path, request: Value, state: &mut McpSessionState) ->
         Err(message) => {
             let code = if method.is_empty() || message.starts_with("client must send") {
                 -32600
-            } else {
+            } else if message.starts_with("unsupported method") {
                 -32601
+            } else if method.starts_with("tasks/")
+                || method == "tools/call"
+                || method == "resources/read"
+            {
+                -32602
+            } else {
+                -32603
             };
             json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
         }
+    })
+}
+
+fn mcp_rpc_error(id: Value, code: i64, message: &str, data: Option<Value>) -> Value {
+    let mut error = json!({"code": code, "message": message});
+    if let Some(data) = data {
+        error["data"] = data;
+    }
+    json!({"jsonrpc":"2.0","id":id,"error":error})
+}
+
+fn mcp_client_key(client_info: Option<&Value>, fallback: &str) -> String {
+    let identity = client_info.map_or_else(
+        || fallback.to_string(),
+        |info| {
+            format!(
+                "{}:{}",
+                info.get("name").and_then(Value::as_str).unwrap_or(fallback),
+                info.get("version")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+            )
+        },
+    );
+    let digest = Sha256::digest(identity.as_bytes());
+    format!("stdio:{:x}", digest)
+}
+
+fn mcp_server_capabilities(modern: bool) -> Value {
+    let mut capabilities = json!({
+        "tools": {"listChanged": false},
+        "resources": {"subscribe": false, "listChanged": false}
+    });
+    if modern {
+        capabilities["extensions"] = json!({MCP_TASKS_EXTENSION: {}});
+    } else {
+        capabilities["tasks"] = json!({
+            "list": {},
+            "cancel": {},
+            "requests": {"tools": {"call": {}}}
+        });
+    }
+    capabilities
+}
+
+fn mcp_server_instructions(profile: McpProfile) -> String {
+    format!(
+        "MCP profile: {}. Call memory_budget_plan when budget is unclear, then memory_brief first for coding tasks. Use memory_impact for a touched file/symbol, memory_drift before larger edits, memory_doctrine for active project decisions, memory_agent_context for broader recall, memory_evidence for provenance, memory_auto_ingest after session logs are written, and memory_doctor before long sessions.",
+        profile.as_str()
+    )
+}
+
+fn mcp_server_discover(state: &McpSessionState) -> Value {
+    json!({
+        "supportedVersions": MCP_SUPPORTED_PROTOCOL_VERSIONS,
+        "capabilities": mcp_server_capabilities(true),
+        "serverInfo": {
+            "name": "dukememory",
+            "title": "DukeMemory",
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": "Local-first project memory with audited retrieval and maintenance"
+        },
+        "instructions": mcp_server_instructions(state.profile),
     })
 }
 
@@ -156,24 +335,25 @@ fn initialize_mcp_session(
         .and_then(|value| value.get("protocolVersion"))
         .and_then(Value::as_str)
         .unwrap_or(MCP_LATEST_PROTOCOL_VERSION);
-    let selected = if MCP_SUPPORTED_PROTOCOL_VERSIONS.contains(&requested) {
+    let selected = if MCP_LEGACY_PROTOCOL_VERSIONS.contains(&requested) {
         requested
     } else {
         MCP_LATEST_PROTOCOL_VERSION
     };
     state.protocol_version = Some(selected.to_string());
     state.initialized = false;
-    let mut capabilities = json!({
-        "tools": {"listChanged": false},
-        "resources": {"subscribe": false, "listChanged": false}
-    });
-    if selected == MCP_LATEST_PROTOCOL_VERSION {
-        capabilities["tasks"] = json!({
-            "list": {},
-            "cancel": {},
-            "requests": {"tools": {"call": {}}}
-        });
-    }
+    state.client_key = mcp_client_key(
+        params.and_then(|value| value.get("clientInfo")),
+        "legacy-local",
+    );
+    let capabilities = if selected == MCP_LATEST_PROTOCOL_VERSION {
+        mcp_server_capabilities(false)
+    } else {
+        json!({
+            "tools": {"listChanged": false},
+            "resources": {"subscribe": false, "listChanged": false}
+        })
+    };
     Ok(json!({
         "protocolVersion": selected,
         "capabilities": capabilities,
@@ -183,7 +363,7 @@ fn initialize_mcp_session(
             "version": env!("CARGO_PKG_VERSION"),
             "description": "Local-first project memory with audited retrieval and maintenance"
         },
-        "instructions": format!("MCP profile: {}. Call memory_budget_plan when budget is unclear, then memory_brief first for coding tasks. Use memory_impact for a touched file/symbol, memory_drift before larger edits, memory_doctrine for active project decisions, memory_agent_context for broader recall, memory_evidence for provenance, memory_auto_ingest after session logs are written, and memory_doctor before long sessions.", state.profile.as_str())
+        "instructions": mcp_server_instructions(state.profile)
     }))
 }
 
@@ -250,6 +430,7 @@ fn build_mcp_tools() -> Value {
             json!({"name":"memory_rag_sources","description":"Inspect indexed RAG source freshness, stale files, chunk counts, and semantic chunk embedding freshness","inputSchema":{"type":"object","properties":{"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_rag_eval","description":"Run RAG eval with matrix, grounded-answer, retrieval tuning, and optional baseline write","inputSchema":{"type":"object","properties":{"scope":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"write_baseline":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_graph_rag_eval","description":"Run deterministic graph-RAG eval for connected memory relationships and grounded graph answers","inputSchema":{"type":"object","properties":{"scope":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_advanced_eval","description":"Audit explicit causal edges, retrieval-poisoning signals, global graph coverage, and bitemporal consistency","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_auto_ranking_tune","description":"Explain or apply the selected memory retrieval ranking profile from live QA and RAG eval signals","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_memanto_gap","description":"Report Memanto-style capability coverage for dukememory","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_timeline","description":"Show one memory card timeline with audit events and real agent reads","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}}),
@@ -263,7 +444,7 @@ fn build_mcp_tools() -> Value {
             json!({"name":"memory_mcp_surface_v3","description":"Inspect the MCP V3 memory tool surface","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"}}}}),
             json!({"name":"memory_mcp_discipline_v3","description":"Verify or record MCP V3 memory discipline","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_fleet_quality","description":"Inspect V3 quality across discovered project memories","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"db":{"type":"string"}}}}),
-            json!({"name":"memory_release_gate_v3","description":"Gate releases with effectiveness, baselines, conflicts, MCP V3, and fleet visibility","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"strict":{"type":"boolean"},"run":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_release_gate_v3","description":"Gate releases with effectiveness, baselines, conflicts, MCP V3, fleet visibility, and an explicit RAG runtime profile","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"rag_profile":{"type":"string","enum":["deployment","canonical","offline"]},"strict":{"type":"boolean"},"run":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
         ]);
         for tool in items {
             enrich_mcp_tool_definition(tool);
@@ -325,6 +506,7 @@ fn mcp_profile_includes(profile: McpProfile, name: &str) -> bool {
         "memory_status",
     ];
     const STANDARD_EXTRA: &[&str] = &[
+        "memory_advanced_eval",
         "memory_auto_ingest",
         "memory_effectiveness_v2",
         "memory_graph_rag_answer",
@@ -491,6 +673,9 @@ fn handle_mcp_call(
     db: &Path,
     params: Value,
     state: &McpSessionState,
+    modern: bool,
+    modern_tasks: bool,
+    owner_key: &str,
 ) -> std::result::Result<Value, String> {
     let name = params
         .get("name")
@@ -507,14 +692,27 @@ fn handle_mcp_call(
             state.profile.as_str()
         ));
     }
-    if params.get("task").is_some() {
-        if !mcp_tasks_enabled(state) {
+    if modern && params.get("task").is_some() {
+        return Err(
+            "the 2026 Tasks extension is server-directed; remove the legacy task parameter"
+                .to_string(),
+        );
+    }
+    if modern
+        && modern_tasks
+        && mcp_tool_supports_tasks(name)
+        && mcp_task_call_is_read_only(name, &args)
+    {
+        return mcp_start_task(db, params, state, owner_key, "extension");
+    }
+    if !modern && params.get("task").is_some() {
+        if !mcp_legacy_tasks_enabled(state) {
             return Err("task-augmented calls require MCP protocol 2025-11-25".to_string());
         }
         if !mcp_tool_supports_tasks(name) {
             return Err(format!("tool {name} does not support task execution"));
         }
-        return mcp_start_task(db, params, state);
+        return mcp_start_task(db, params, state, owner_key, "legacy");
     }
     Ok(handle_mcp_tool_call(db, params).unwrap_or_else(mcp_tool_error_result))
 }
@@ -658,248 +856,6 @@ fn validate_mcp_json_value(
         }
     }
     Ok(())
-}
-
-fn mcp_tool_supports_tasks(name: &str) -> bool {
-    matches!(
-        name,
-        "memory_auto_ingest"
-            | "memory_context_pack"
-            | "memory_fleet_dashboard_v2"
-            | "memory_fleet_quality"
-            | "memory_graph_rag_answer"
-            | "memory_graph_rag_eval"
-            | "memory_guided_tour"
-            | "memory_onboard_guide"
-            | "memory_quality_ci"
-            | "memory_rag_answer"
-            | "memory_rag_eval"
-            | "memory_rag_ingest"
-            | "memory_release_gate_v2"
-            | "memory_release_gate_v3"
-    )
-}
-
-fn mcp_tasks_enabled(state: &McpSessionState) -> bool {
-    state.protocol_version.as_deref() == Some(MCP_LATEST_PROTOCOL_VERSION) && state.initialized
-}
-
-fn mcp_start_task(
-    db: &Path,
-    params: Value,
-    state: &McpSessionState,
-) -> std::result::Result<Value, String> {
-    let ttl = params
-        .get("task")
-        .and_then(|value| value.get("ttl"))
-        .and_then(Value::as_u64)
-        .unwrap_or(MCP_DEFAULT_TASK_TTL_MS)
-        .clamp(1_000, MCP_MAX_TASK_TTL_MS);
-    let task_id = Uuid::new_v4().to_string();
-    let created_at = mcp_task_timestamp();
-    let record = McpTaskRecord {
-        task_id: task_id.clone(),
-        status: "working".to_string(),
-        status_message: "The tool call is running.".to_string(),
-        created_at: created_at.clone(),
-        last_updated_at: created_at,
-        ttl,
-        poll_interval: 250,
-        expires_at_ms: now_ms().saturating_add(ttl.min(i64::MAX as u64) as i64),
-        result: None,
-    };
-    {
-        let mut tasks = state
-            .tasks
-            .tasks
-            .lock()
-            .map_err(|_| "MCP task store lock was poisoned".to_string())?;
-        cleanup_expired_mcp_tasks(&mut tasks);
-        tasks.insert(task_id.clone(), record.clone());
-    }
-
-    let store = std::sync::Arc::clone(&state.tasks);
-    let db = db.to_path_buf();
-    let task_id_for_worker = task_id.clone();
-    std::thread::Builder::new()
-        .name(format!("dukememory-mcp-task-{}", &task_id[..8]))
-        .spawn(move || {
-            let mut result =
-                handle_mcp_tool_call(&db, params).unwrap_or_else(mcp_tool_error_result);
-            let failed = result
-                .get("isError")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            attach_related_task_metadata(&mut result, &task_id_for_worker);
-            let Ok(mut tasks) = store.tasks.lock() else {
-                return;
-            };
-            let Some(task) = tasks.get_mut(&task_id_for_worker) else {
-                return;
-            };
-            if task.status == "working" {
-                task.status = if failed { "failed" } else { "completed" }.to_string();
-                task.status_message = if failed {
-                    "The tool call failed; retrieve the result for details."
-                } else {
-                    "The tool call completed."
-                }
-                .to_string();
-                task.last_updated_at = mcp_task_timestamp();
-                task.result = Some(result);
-            }
-            store.changed.notify_all();
-        })
-        .map_err(|error| format!("failed to start MCP task: {error}"))?;
-
-    Ok(json!({
-        "task": mcp_task_value(&record),
-        "_meta": {
-            "io.modelcontextprotocol/model-immediate-response": "The DukeMemory operation is running in the background; poll tasks/get and retrieve it with tasks/result."
-        }
-    }))
-}
-
-fn mcp_task_get(
-    params: Option<&Value>,
-    state: &McpSessionState,
-) -> std::result::Result<Value, String> {
-    let task_id = mcp_task_id(params)?;
-    let mut tasks = state
-        .tasks
-        .tasks
-        .lock()
-        .map_err(|_| "MCP task store lock was poisoned".to_string())?;
-    cleanup_expired_mcp_tasks(&mut tasks);
-    tasks
-        .get(task_id)
-        .map(mcp_task_value)
-        .ok_or_else(|| format!("unknown or expired task: {task_id}"))
-}
-
-fn mcp_task_list(
-    params: Option<&Value>,
-    state: &McpSessionState,
-) -> std::result::Result<Value, String> {
-    let prefix = "tasks:session:";
-    let offset = parse_mcp_cursor(params, prefix)?;
-    let mut tasks = state
-        .tasks
-        .tasks
-        .lock()
-        .map_err(|_| "MCP task store lock was poisoned".to_string())?;
-    cleanup_expired_mcp_tasks(&mut tasks);
-    let values = tasks.values().rev().map(mcp_task_value).collect::<Vec<_>>();
-    if offset > values.len() {
-        return Err("cursor is outside the current task set".to_string());
-    }
-    let end = offset.saturating_add(MCP_TASK_PAGE_SIZE).min(values.len());
-    let mut result = json!({"tasks": values[offset..end].to_vec()});
-    if end < values.len() {
-        result["nextCursor"] = Value::String(format!("{prefix}{end}"));
-    }
-    Ok(result)
-}
-
-fn mcp_task_result(
-    params: Option<&Value>,
-    state: &McpSessionState,
-) -> std::result::Result<Value, String> {
-    let task_id = mcp_task_id(params)?.to_string();
-    let mut tasks = state
-        .tasks
-        .tasks
-        .lock()
-        .map_err(|_| "MCP task store lock was poisoned".to_string())?;
-    loop {
-        cleanup_expired_mcp_tasks(&mut tasks);
-        let task = tasks
-            .get(&task_id)
-            .ok_or_else(|| format!("unknown or expired task: {task_id}"))?;
-        if let Some(result) = &task.result {
-            return Ok(result.clone());
-        }
-        tasks = state
-            .tasks
-            .changed
-            .wait(tasks)
-            .map_err(|_| "MCP task store lock was poisoned".to_string())?;
-    }
-}
-
-fn mcp_task_cancel(
-    params: Option<&Value>,
-    state: &McpSessionState,
-) -> std::result::Result<Value, String> {
-    let task_id = mcp_task_id(params)?.to_string();
-    let mut tasks = state
-        .tasks
-        .tasks
-        .lock()
-        .map_err(|_| "MCP task store lock was poisoned".to_string())?;
-    cleanup_expired_mcp_tasks(&mut tasks);
-    let task = tasks
-        .get_mut(&task_id)
-        .ok_or_else(|| format!("unknown or expired task: {task_id}"))?;
-    if matches!(task.status.as_str(), "completed" | "failed" | "cancelled") {
-        return Err(format!("task {task_id} is already terminal"));
-    }
-    task.status = "cancelled".to_string();
-    task.status_message = "The task was cancelled by request.".to_string();
-    task.last_updated_at = mcp_task_timestamp();
-    let mut result = mcp_tool_error_result("task was cancelled".to_string());
-    attach_related_task_metadata(&mut result, &task_id);
-    task.result = Some(result);
-    let value = mcp_task_value(task);
-    state.tasks.changed.notify_all();
-    Ok(value)
-}
-
-fn mcp_task_id(params: Option<&Value>) -> std::result::Result<&str, String> {
-    params
-        .and_then(|value| value.get("taskId"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "missing taskId".to_string())
-}
-
-fn mcp_task_value(task: &McpTaskRecord) -> Value {
-    json!({
-        "taskId": task.task_id,
-        "status": task.status,
-        "statusMessage": task.status_message,
-        "createdAt": task.created_at,
-        "lastUpdatedAt": task.last_updated_at,
-        "ttl": task.ttl,
-        "pollInterval": task.poll_interval,
-    })
-}
-
-fn cleanup_expired_mcp_tasks(tasks: &mut BTreeMap<String, McpTaskRecord>) {
-    let now = now_ms();
-    tasks.retain(|_, task| task.expires_at_ms > now);
-}
-
-fn attach_related_task_metadata(result: &mut Value, task_id: &str) {
-    let Some(object) = result.as_object_mut() else {
-        return;
-    };
-    let meta = object
-        .entry("_meta")
-        .or_insert_with(|| json!({}))
-        .as_object_mut();
-    if let Some(meta) = meta {
-        meta.insert(
-            "io.modelcontextprotocol/related-task".to_string(),
-            json!({"taskId": task_id}),
-        );
-    }
-}
-
-fn mcp_task_timestamp() -> String {
-    time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
 fn enrich_mcp_tool_definition(tool: &mut Value) {
@@ -2264,6 +2220,16 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             budgeted_mcp_json_response(&report, max_chars, &["cases", "recommendations"])
                 .map_err(|err| err.to_string())?
         }
+        "memory_advanced_eval" => {
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(2_400);
+            let report = advanced_eval_report(&conn).map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(
+                &report,
+                max_chars,
+                &["capabilities", "candidate_ids", "recommendations"],
+            )
+            .map_err(|err| err.to_string())?
+        }
         "memory_auto_ranking_tune" => {
             let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
             let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
@@ -2429,16 +2395,20 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         }
         "memory_release_gate_v3" => {
             let since_days = json_usize(&args, "since_days").unwrap_or(7) as i64;
+            let rag_profile =
+                ReleaseRagProfile::parse(args.get("rag_profile").and_then(Value::as_str))
+                    .map_err(|err| err.to_string())?;
             let strict = args.get("strict").and_then(Value::as_bool).unwrap_or(false);
             let run = args.get("run").and_then(Value::as_bool).unwrap_or(false);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(2200);
-            let report = release_gate_v3_report(
+            let report = release_gate_v3_report_with_profile(
                 &conn,
                 &selected_db,
                 &selected_root,
                 since_days,
                 strict,
                 run,
+                rag_profile,
             )
             .map_err(|err| err.to_string())?;
             budgeted_mcp_json_response(
@@ -3293,6 +3263,7 @@ mod tests {
             initialized: false,
             profile,
             page_size,
+            client_key: "stdio:test-client".to_string(),
             tasks: std::sync::Arc::new(McpTaskStore::default()),
         }
     }
@@ -3474,5 +3445,173 @@ mod tests {
             result["result"]["_meta"]["io.modelcontextprotocol/related-task"]["taskId"],
             task_id
         );
+    }
+
+    fn modern_meta(tasks: bool) -> Value {
+        let extensions = if tasks {
+            json!({MCP_TASKS_EXTENSION: {}})
+        } else {
+            json!({})
+        };
+        json!({
+            "io.modelcontextprotocol/protocolVersion": MCP_MODERN_PROTOCOL_VERSION,
+            "io.modelcontextprotocol/clientInfo": {"name":"dukememory-test","version":"1.0"},
+            "io.modelcontextprotocol/clientCapabilities": {"extensions": extensions}
+        })
+    }
+
+    #[test]
+    fn mcp_modern_discovery_and_tasks_are_stateless_and_durable() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join(".agent/memory.db");
+        let mut state = test_state(McpProfile::Core, 0);
+        let discovered = handle_mcp_request(
+            &db,
+            json!({
+                "jsonrpc":"2.0",
+                "id":1,
+                "method":"server/discover",
+                "params":{"_meta":modern_meta(true)}
+            }),
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(
+            discovered["result"]["supportedVersions"][0],
+            MCP_MODERN_PROTOCOL_VERSION
+        );
+        assert!(
+            discovered["result"]["capabilities"]["extensions"][MCP_TASKS_EXTENSION].is_object()
+        );
+
+        let created = handle_mcp_request(
+            &db,
+            json!({
+                "jsonrpc":"2.0",
+                "id":2,
+                "method":"tools/call",
+                "params":{
+                    "name":"memory_context_pack",
+                    "arguments":{
+                        "task":"modern durable task smoke test",
+                        "provider":"mock",
+                        "endpoint":"mock",
+                        "model":"mock-small"
+                    },
+                    "_meta":modern_meta(true)
+                }
+            }),
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(created["result"]["resultType"], "task");
+        assert!(created["result"].get("task").is_none());
+        let task_id = created["result"]["taskId"].as_str().unwrap().to_string();
+
+        let mut completed = None;
+        for id in 3..103 {
+            let response = handle_mcp_request(
+                &db,
+                json!({
+                    "jsonrpc":"2.0",
+                    "id":id,
+                    "method":"tasks/get",
+                    "params":{"taskId":task_id,"_meta":modern_meta(true)}
+                }),
+                &mut state,
+            )
+            .unwrap();
+            if response["result"]["status"] == "completed" {
+                completed = Some(response);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let completed = completed.expect("modern task should complete");
+        assert_eq!(completed["result"]["resultType"], "complete");
+        assert!(completed["result"]["result"].is_object());
+
+        let mut restarted_state = test_state(McpProfile::Core, 0);
+        let after_restart = handle_mcp_request(
+            &db,
+            json!({
+                "jsonrpc":"2.0",
+                "id":104,
+                "method":"tasks/get",
+                "params":{"taskId":task_id,"_meta":modern_meta(true)}
+            }),
+            &mut restarted_state,
+        )
+        .unwrap();
+        assert_eq!(after_restart["result"]["status"], "completed");
+
+        let missing_capability = handle_mcp_request(
+            &db,
+            json!({
+                "jsonrpc":"2.0",
+                "id":105,
+                "method":"tasks/get",
+                "params":{"taskId":task_id,"_meta":modern_meta(false)}
+            }),
+            &mut restarted_state,
+        )
+        .unwrap();
+        assert_eq!(missing_capability["error"]["code"], -32003);
+    }
+
+    #[test]
+    fn mcp_extension_cancellation_is_acknowledged_then_observed() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join(".agent/memory.db");
+        let conn = open_db(&db).unwrap();
+        let now = now_ms();
+        let task = McpTaskRecord {
+            task_id: "cancel-me".to_string(),
+            owner_key: "stdio:test-owner".to_string(),
+            protocol_version: MCP_MODERN_PROTOCOL_VERSION.to_string(),
+            lifecycle: "extension".to_string(),
+            operation_name: "memory_context_pack".to_string(),
+            status: "working".to_string(),
+            status_message: "Working.".to_string(),
+            created_at: mcp_task_timestamp(),
+            last_updated_at: mcp_task_timestamp(),
+            created_at_ms: now,
+            last_updated_at_ms: now,
+            ttl: 60_000,
+            poll_interval: 250,
+            expires_at_ms: now + 60_000,
+            result: None,
+            error: None,
+            cancellation_requested: false,
+        };
+        persist_mcp_task(&conn, &task).unwrap();
+        let state = test_state(McpProfile::Core, 0);
+        let acknowledged = mcp_task_cancel(
+            &db,
+            Some(&json!({"taskId":"cancel-me"})),
+            &state,
+            "stdio:test-owner",
+            "extension",
+            true,
+        )
+        .unwrap();
+        assert_eq!(acknowledged["resultType"], "complete");
+        let requested = load_mcp_task(&conn, "cancel-me", "stdio:test-owner", "extension")
+            .unwrap()
+            .unwrap();
+        assert_eq!(requested.status, "working");
+        assert!(requested.cancellation_requested);
+
+        complete_cancelled_mcp_task(&db, "cancel-me").unwrap();
+        let observed = mcp_task_get(
+            &db,
+            Some(&json!({"taskId":"cancel-me"})),
+            "stdio:test-owner",
+            "extension",
+            true,
+        )
+        .unwrap();
+        assert_eq!(observed["status"], "cancelled");
+        assert_eq!(observed["resultType"], "complete");
     }
 }
