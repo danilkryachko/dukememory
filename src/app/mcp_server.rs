@@ -1,113 +1,198 @@
 use super::*;
 
-pub(crate) fn serve_mcp(db: &Path, content_length: bool) -> Result<()> {
-    if content_length {
-        return serve_mcp_content_length(db);
-    }
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
-    for line in stdin.lock().lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let request: Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(err) => {
-                writeln!(
-                    stdout,
-                    "{}",
-                    json!({"jsonrpc":"2.0","error":{"code":-32700,"message":err.to_string()}})
-                )?;
-                stdout.flush()?;
-                continue;
-            }
-        };
-        let response = handle_mcp_request(db, request);
-        writeln!(stdout, "{}", response)?;
-        stdout.flush()?;
-    }
-    Ok(())
+const MCP_LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
+const MCP_SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2024-11-05"];
+const MCP_DEFAULT_TASK_TTL_MS: u64 = 3_600_000;
+const MCP_MAX_TASK_TTL_MS: u64 = 86_400_000;
+const MCP_TASK_PAGE_SIZE: usize = 50;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpProfile {
+    Core,
+    Standard,
+    Full,
 }
 
-fn serve_mcp_content_length(db: &Path) -> Result<()> {
-    let mut input = Vec::new();
-    io::stdin().read_to_end(&mut input)?;
-    let mut offset = 0usize;
-    let mut stdout = io::stdout();
-    while let Some((headers_end, length)) = next_content_length_frame(&input, offset)? {
-        let body_start = headers_end;
-        let body_end = body_start + length;
-        if body_end > input.len() {
-            bail!("incomplete MCP frame body");
+impl McpProfile {
+    fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "core" => Ok(Self::Core),
+            "standard" => Ok(Self::Standard),
+            "full" => Ok(Self::Full),
+            other => bail!("unsupported MCP profile: {other}"),
         }
-        let request: Value = serde_json::from_slice(&input[body_start..body_end])?;
-        let response = handle_mcp_request(db, request);
-        let body = serde_json::to_vec(&response)?;
-        write!(stdout, "Content-Length: {}\r\n\r\n", body.len())?;
-        stdout.write_all(&body)?;
-        stdout.flush()?;
-        offset = body_end;
     }
-    Ok(())
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Core => "core",
+            Self::Standard => "standard",
+            Self::Full => "full",
+        }
+    }
 }
 
-fn next_content_length_frame(input: &[u8], offset: usize) -> Result<Option<(usize, usize)>> {
-    let Some(header_pos) = find_bytes(&input[offset..], b"\r\n\r\n") else {
-        return Ok(None);
+#[derive(Debug, Clone)]
+struct McpTaskRecord {
+    task_id: String,
+    status: String,
+    status_message: String,
+    created_at: String,
+    last_updated_at: String,
+    ttl: u64,
+    poll_interval: u64,
+    expires_at_ms: i64,
+    result: Option<Value>,
+}
+
+#[derive(Debug, Default)]
+struct McpTaskStore {
+    tasks: std::sync::Mutex<BTreeMap<String, McpTaskRecord>>,
+    changed: std::sync::Condvar,
+}
+
+#[derive(Debug)]
+struct McpSessionState {
+    protocol_version: Option<String>,
+    initialized: bool,
+    profile: McpProfile,
+    page_size: usize,
+    tasks: std::sync::Arc<McpTaskStore>,
+}
+
+pub(crate) fn serve_mcp(
+    db: &Path,
+    content_length: bool,
+    profile: &str,
+    page_size: usize,
+) -> Result<()> {
+    let mut state = McpSessionState {
+        protocol_version: None,
+        initialized: false,
+        profile: McpProfile::parse(profile)?,
+        page_size,
+        tasks: std::sync::Arc::new(McpTaskStore::default()),
     };
-    let header_start = offset;
-    let header_end = offset + header_pos + 4;
-    let header_text = std::str::from_utf8(&input[header_start..header_end - 4])?;
-    let mut length = None;
-    for line in header_text.lines() {
-        if let Some((name, value)) = line.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            length = Some(value.trim().parse::<usize>()?);
-        }
+    super::mcp_transport::serve_json_rpc(content_length, |request| {
+        handle_mcp_request(db, request, &mut state)
+    })
+}
+
+fn handle_mcp_request(db: &Path, request: Value, state: &mut McpSessionState) -> Option<Value> {
+    let valid_request = request.as_object().is_some()
+        && request.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
+        && request.get("method").and_then(Value::as_str).is_some()
+        && request.get("id").is_none_or(|id| {
+            id.is_null() || id.is_string() || id.as_i64().is_some() || id.as_u64().is_some()
+        });
+    if !valid_request {
+        return Some(json!({
+            "jsonrpc":"2.0",
+            "id":Value::Null,
+            "error":{"code":-32600,"message":"Invalid Request"}
+        }));
     }
-    let Some(length) = length else {
-        bail!("missing Content-Length header");
-    };
-    Ok(Some((header_end, length)))
-}
-
-fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-fn handle_mcp_request(db: &Path, request: Value) -> Value {
+    let is_notification = request.get("id").is_none();
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = request.get("method").and_then(Value::as_str).unwrap_or("");
     let result = match method {
-        "initialize" => Ok(json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {"tools": {"listChanged": false}},
-            "serverInfo": {
-                "name": "dukememory",
-                "version": env!("CARGO_PKG_VERSION")
-            },
-            "instructions": "Call memory_budget_plan when budget is unclear, then memory_brief first for coding tasks. Use memory_impact for a touched file/symbol, memory_drift before larger edits, memory_doctrine for active project decisions, memory_agent_context for broader recall, memory_evidence for provenance, memory_auto_ingest after session logs are written, and memory_doctor before long sessions."
-        })),
-        "tools/list" => Ok(json!({"tools": mcp_tools()})),
-        "tools/call" => {
-            handle_mcp_tool_call(db, request.get("params").cloned().unwrap_or_default())
+        "initialize" => initialize_mcp_session(request.get("params"), state),
+        "notifications/initialized" => {
+            state.initialized = true;
+            Ok(json!({}))
         }
+        "notifications/cancelled" => Ok(json!({})),
+        "ping" => Ok(json!({})),
+        "tools/list" if state.protocol_version.is_some() && !state.initialized => {
+            Err("client must send notifications/initialized before tools/list".to_string())
+        }
+        "tools/list" => mcp_list_tools(request.get("params"), state),
+        "tools/call" if state.protocol_version.is_some() && !state.initialized => {
+            Err("client must send notifications/initialized before tools/call".to_string())
+        }
+        "tools/call" => handle_mcp_call(
+            db,
+            request.get("params").cloned().unwrap_or_default(),
+            state,
+        ),
+        "resources/list" => mcp_list_resources(request.get("params"), state),
+        "resources/templates/list" => Ok(mcp_resource_templates()),
+        "resources/read" => mcp_read_resource(db, request.get("params")),
+        "tasks/get" if mcp_tasks_enabled(state) => mcp_task_get(request.get("params"), state),
+        "tasks/list" if mcp_tasks_enabled(state) => mcp_task_list(request.get("params"), state),
+        "tasks/result" if mcp_tasks_enabled(state) => mcp_task_result(request.get("params"), state),
+        "tasks/cancel" if mcp_tasks_enabled(state) => mcp_task_cancel(request.get("params"), state),
         _ => Err(format!("unsupported method: {method}")),
     };
-    match result {
+    if is_notification {
+        return None;
+    }
+    Some(match result {
         Ok(result) => json!({"jsonrpc":"2.0","id":id,"result":result}),
         Err(message) => {
-            let code = if method.is_empty() { -32600 } else { -32601 };
+            let code = if method.is_empty() || message.starts_with("client must send") {
+                -32600
+            } else {
+                -32601
+            };
             json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
         }
+    })
+}
+
+fn mcp_tool_error_result(message: String) -> Value {
+    json!({
+        "content":[{"type":"text","text":message.clone()}],
+        "structuredContent":{"error":{"message":message}},
+        "isError":true
+    })
+}
+
+fn initialize_mcp_session(
+    params: Option<&Value>,
+    state: &mut McpSessionState,
+) -> std::result::Result<Value, String> {
+    let requested = params
+        .and_then(|value| value.get("protocolVersion"))
+        .and_then(Value::as_str)
+        .unwrap_or(MCP_LATEST_PROTOCOL_VERSION);
+    let selected = if MCP_SUPPORTED_PROTOCOL_VERSIONS.contains(&requested) {
+        requested
+    } else {
+        MCP_LATEST_PROTOCOL_VERSION
+    };
+    state.protocol_version = Some(selected.to_string());
+    state.initialized = false;
+    let mut capabilities = json!({
+        "tools": {"listChanged": false},
+        "resources": {"subscribe": false, "listChanged": false}
+    });
+    if selected == MCP_LATEST_PROTOCOL_VERSION {
+        capabilities["tasks"] = json!({
+            "list": {},
+            "cancel": {},
+            "requests": {"tools": {"call": {}}}
+        });
     }
+    Ok(json!({
+        "protocolVersion": selected,
+        "capabilities": capabilities,
+        "serverInfo": {
+            "name": "dukememory",
+            "title": "DukeMemory",
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": "Local-first project memory with audited retrieval and maintenance"
+        },
+        "instructions": format!("MCP profile: {}. Call memory_budget_plan when budget is unclear, then memory_brief first for coding tasks. Use memory_impact for a touched file/symbol, memory_drift before larger edits, memory_doctrine for active project decisions, memory_agent_context for broader recall, memory_evidence for provenance, memory_auto_ingest after session logs are written, and memory_doctor before long sessions.", state.profile.as_str())
+    }))
 }
 
 fn mcp_tools() -> Value {
+    static TOOLS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    TOOLS.get_or_init(build_mcp_tools).clone()
+}
+
+fn build_mcp_tools() -> Value {
     let mut tools = json!([
         {"name":"memory_brief","description":"Return a tiny verified task brief","inputSchema":{"type":"object","properties":{"task":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"max_chars":{"type":"number"},"scope":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["task"]}},
         {"name":"memory_impact","description":"Return lightweight impact memory for a file, symbol, or topic","inputSchema":{"type":"object","properties":{"target":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"max_chars":{"type":"number"},"scope":{"type":"string"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["target"]}},
@@ -168,6 +253,9 @@ fn mcp_tools() -> Value {
             json!({"name":"memory_auto_ranking_tune","description":"Explain or apply the selected memory retrieval ranking profile from live QA and RAG eval signals","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_memanto_gap","description":"Report Memanto-style capability coverage for dukememory","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_timeline","description":"Show one memory card timeline with audit events and real agent reads","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}}),
+            json!({"name":"memory_observe","description":"Record an evidence-backed bitemporal observation","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"target_memory_id":{"type":"string"},"kind":{"type":"string","enum":["asserted","verified","contradicted","superseded","file_changed","retrieved","outcome"]},"statement":{"type":"string"},"evidence_kind":{"type":"string"},"evidence_ref":{"type":"string"},"confidence":{"type":"number","minimum":0.0,"maximum":1.0},"valid_from":{"type":"number"},"valid_to":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","kind","statement","evidence_kind","evidence_ref"]}}),
+            json!({"name":"memory_observations","description":"List evidence observations as-of valid and knowledge time","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"valid_at":{"type":"number"},"known_at":{"type":"number"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}}),
+            json!({"name":"memory_temporal_graph","description":"Read the memory graph as-of valid and knowledge time","inputSchema":{"type":"object","properties":{"valid_at":{"type":"number"},"known_at":{"type":"number"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_conflict_review","description":"Review duplicate, stale, superseded, and contradiction-prone memory groups","inputSchema":{"type":"object","properties":{"stale_days":{"type":"number"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_effectiveness_v2","description":"Measure memory usefulness with influence, waste, and semantic-read signals","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_recall_baselines","description":"Inspect or write guarded recall benchmark baselines","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
@@ -177,8 +265,854 @@ fn mcp_tools() -> Value {
             json!({"name":"memory_fleet_quality","description":"Inspect V3 quality across discovered project memories","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"db":{"type":"string"}}}}),
             json!({"name":"memory_release_gate_v3","description":"Gate releases with effectiveness, baselines, conflicts, MCP V3, and fleet visibility","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"strict":{"type":"boolean"},"run":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
         ]);
+        for tool in items {
+            enrich_mcp_tool_definition(tool);
+        }
     }
     tools
+}
+
+fn mcp_list_tools(
+    params: Option<&Value>,
+    state: &McpSessionState,
+) -> std::result::Result<Value, String> {
+    let mut tools = mcp_tools()
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|tool| {
+            tool.get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| mcp_profile_includes(state.profile, name))
+        })
+        .collect::<Vec<_>>();
+    tools.sort_by(|left, right| {
+        left.get("name")
+            .and_then(Value::as_str)
+            .cmp(&right.get("name").and_then(Value::as_str))
+    });
+    paginated_mcp_values(
+        "tools",
+        state.profile.as_str(),
+        tools,
+        params,
+        state.page_size,
+    )
+}
+
+fn mcp_profile_includes(profile: McpProfile, name: &str) -> bool {
+    const CORE: &[&str] = &[
+        "memory_add",
+        "memory_after_task",
+        "memory_agent_context",
+        "memory_brief",
+        "memory_budget_plan",
+        "memory_context_pack",
+        "memory_doctrine",
+        "memory_doctor",
+        "memory_drift",
+        "memory_evidence",
+        "memory_feedback",
+        "memory_get",
+        "memory_impact",
+        "memory_operations",
+        "memory_project_health",
+        "memory_recall",
+        "memory_remember",
+        "memory_search",
+        "memory_should_write",
+        "memory_status",
+    ];
+    const STANDARD_EXTRA: &[&str] = &[
+        "memory_auto_ingest",
+        "memory_effectiveness_v2",
+        "memory_graph_rag_answer",
+        "memory_graph_rag_eval",
+        "memory_health_score",
+        "memory_inbox_list",
+        "memory_observations",
+        "memory_rag_answer",
+        "memory_rag_eval",
+        "memory_rag_ingest",
+        "memory_rag_sources",
+        "memory_release_gate_v2",
+        "memory_review",
+        "memory_session_claim",
+        "memory_session_cleanup",
+        "memory_session_context",
+        "memory_session_event",
+        "memory_session_finish",
+        "memory_session_recover",
+        "memory_session_release",
+        "memory_session_renew",
+        "memory_session_start",
+        "memory_session_status",
+        "memory_session_trace",
+        "memory_snapshot",
+        "memory_timeline",
+        "memory_temporal_graph",
+        "memory_observe",
+        "memory_upload",
+    ];
+    match profile {
+        McpProfile::Core => CORE.contains(&name),
+        McpProfile::Standard => CORE.contains(&name) || STANDARD_EXTRA.contains(&name),
+        McpProfile::Full => true,
+    }
+}
+
+fn paginated_mcp_values(
+    field: &str,
+    namespace: &str,
+    values: Vec<Value>,
+    params: Option<&Value>,
+    page_size: usize,
+) -> std::result::Result<Value, String> {
+    let prefix = format!("{field}:{namespace}:");
+    let offset = parse_mcp_cursor(params, &prefix)?;
+    if offset > values.len() {
+        return Err("cursor is outside the current result set".to_string());
+    }
+    let effective_page_size = if page_size == 0 {
+        values.len().max(1)
+    } else {
+        page_size.clamp(1, 100)
+    };
+    let end = offset.saturating_add(effective_page_size).min(values.len());
+    let page = values[offset..end].to_vec();
+    let mut result = serde_json::Map::new();
+    result.insert(field.to_string(), Value::Array(page));
+    if end < values.len() {
+        result.insert(
+            "nextCursor".to_string(),
+            Value::String(format!("{prefix}{end}")),
+        );
+    }
+    Ok(Value::Object(result))
+}
+
+fn parse_mcp_cursor(params: Option<&Value>, prefix: &str) -> std::result::Result<usize, String> {
+    let Some(cursor) = params
+        .and_then(|value| value.get("cursor"))
+        .and_then(Value::as_str)
+    else {
+        return Ok(0);
+    };
+    cursor
+        .strip_prefix(prefix)
+        .ok_or_else(|| "invalid or stale cursor".to_string())?
+        .parse::<usize>()
+        .map_err(|_| "invalid or stale cursor".to_string())
+}
+
+fn mcp_list_resources(
+    params: Option<&Value>,
+    state: &McpSessionState,
+) -> std::result::Result<Value, String> {
+    let resources = vec![
+        json!({
+            "uri": "dukememory://project/status",
+            "name": "project-status",
+            "title": "Project memory status",
+            "description": "Schema and card counts for the selected DukeMemory project",
+            "mimeType": "application/json"
+        }),
+        json!({
+            "uri": "dukememory://project/doctrine",
+            "name": "project-doctrine",
+            "title": "Active project doctrine",
+            "description": "Active project decisions, supersession chains, and conflicts",
+            "mimeType": "application/json"
+        }),
+    ];
+    paginated_mcp_values("resources", "project", resources, params, state.page_size)
+}
+
+fn mcp_resource_templates() -> Value {
+    json!({
+        "resourceTemplates": [{
+            "uriTemplate": "dukememory://memory/{id}",
+            "name": "memory-card",
+            "title": "Memory card by id",
+            "description": "One DukeMemory card with its links and lifecycle metadata",
+            "mimeType": "application/json"
+        }]
+    })
+}
+
+fn mcp_read_resource(db: &Path, params: Option<&Value>) -> std::result::Result<Value, String> {
+    let uri = params
+        .and_then(|value| value.get("uri"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "missing resource uri".to_string())?;
+    let conn = open_db(db).map_err(|error| error.to_string())?;
+    let payload = match uri {
+        "dukememory://project/status" => {
+            let memories: i64 = conn
+                .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            let active: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memories WHERE status = 'active'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            json!({
+                "schema": schema_version(&conn).map_err(|error| error.to_string())?,
+                "memories": memories,
+                "active": active,
+                "db": db.display().to_string(),
+            })
+        }
+        "dukememory://project/doctrine" => {
+            serde_json::to_value(doctrine_report(&conn, None).map_err(|error| error.to_string())?)
+                .map_err(|error| error.to_string())?
+        }
+        _ => {
+            let id = uri
+                .strip_prefix("dukememory://memory/")
+                .filter(|id| !id.is_empty() && !id.contains('/'))
+                .ok_or_else(|| format!("unknown resource uri: {uri}"))?;
+            serde_json::to_value(
+                get_memory_with_links(&conn, id).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?
+        }
+    };
+    let text = serde_json::to_string_pretty(&payload).map_err(|error| error.to_string())?;
+    Ok(json!({
+        "contents": [{"uri": uri, "mimeType": "application/json", "text": text}]
+    }))
+}
+
+fn handle_mcp_call(
+    db: &Path,
+    params: Value,
+    state: &McpSessionState,
+) -> std::result::Result<Value, String> {
+    let name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "missing tool name".to_string())?;
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    validate_mcp_tool_arguments(name, &args)?;
+    if !mcp_profile_includes(state.profile, name) {
+        return Err(format!(
+            "tool {name} is not available in the {} MCP profile",
+            state.profile.as_str()
+        ));
+    }
+    if params.get("task").is_some() {
+        if !mcp_tasks_enabled(state) {
+            return Err("task-augmented calls require MCP protocol 2025-11-25".to_string());
+        }
+        if !mcp_tool_supports_tasks(name) {
+            return Err(format!("tool {name} does not support task execution"));
+        }
+        return mcp_start_task(db, params, state);
+    }
+    Ok(handle_mcp_tool_call(db, params).unwrap_or_else(mcp_tool_error_result))
+}
+
+fn validate_mcp_tool_arguments(name: &str, arguments: &Value) -> std::result::Result<(), String> {
+    let tools = mcp_tools();
+    let tool = tools
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
+        .ok_or_else(|| format!("unknown tool: {name}"))?;
+    let schema = tool
+        .get("inputSchema")
+        .ok_or_else(|| format!("tool {name} has no input schema"))?;
+    validate_mcp_json_value(arguments, schema, "arguments")
+}
+
+fn validate_mcp_json_value(
+    value: &Value,
+    schema: &Value,
+    path: &str,
+) -> std::result::Result<(), String> {
+    let expected_type = schema.get("type").and_then(Value::as_str);
+    let type_ok = match expected_type {
+        Some("object") => value.is_object(),
+        Some("array") => value.is_array(),
+        Some("string") => value.is_string(),
+        Some("integer") => value.as_i64().is_some() || value.as_u64().is_some(),
+        Some("number") => value.is_number(),
+        Some("boolean") => value.is_boolean(),
+        Some("null") => value.is_null(),
+        None => true,
+        Some(other) => return Err(format!("unsupported schema type {other} at {path}")),
+    };
+    if !type_ok {
+        return Err(format!(
+            "{path} must be {}",
+            expected_type.unwrap_or("valid")
+        ));
+    }
+
+    if let Some(allowed) = schema.get("enum").and_then(Value::as_array)
+        && !allowed.contains(value)
+    {
+        return Err(format!("{path} is not one of the allowed values"));
+    }
+    if let Some(text) = value.as_str() {
+        let length = text.chars().count() as u64;
+        if schema
+            .get("minLength")
+            .and_then(Value::as_u64)
+            .is_some_and(|minimum| length < minimum)
+        {
+            return Err(format!("{path} is shorter than the allowed minimum"));
+        }
+        if schema
+            .get("maxLength")
+            .and_then(Value::as_u64)
+            .is_some_and(|maximum| length > maximum)
+        {
+            return Err(format!("{path} exceeds the allowed length"));
+        }
+    }
+    if expected_type == Some("integer") {
+        let number = value
+            .as_i64()
+            .map(i128::from)
+            .or_else(|| value.as_u64().map(i128::from))
+            .unwrap_or_default();
+        if schema
+            .get("minimum")
+            .and_then(Value::as_i64)
+            .is_some_and(|minimum| number < i128::from(minimum))
+        {
+            return Err(format!("{path} is below the allowed minimum"));
+        }
+        if schema
+            .get("maximum")
+            .and_then(Value::as_i64)
+            .is_some_and(|maximum| number > i128::from(maximum))
+        {
+            return Err(format!("{path} exceeds the allowed maximum"));
+        }
+    }
+    if expected_type == Some("number") {
+        let number = value.as_f64().unwrap_or_default();
+        if schema
+            .get("minimum")
+            .and_then(Value::as_f64)
+            .is_some_and(|minimum| number < minimum)
+        {
+            return Err(format!("{path} is below the allowed minimum"));
+        }
+        if schema
+            .get("maximum")
+            .and_then(Value::as_f64)
+            .is_some_and(|maximum| number > maximum)
+        {
+            return Err(format!("{path} exceeds the allowed maximum"));
+        }
+    }
+    if let Some(items) = value.as_array() {
+        if schema
+            .get("maxItems")
+            .and_then(Value::as_u64)
+            .is_some_and(|maximum| items.len() as u64 > maximum)
+        {
+            return Err(format!("{path} contains too many items"));
+        }
+        if let Some(item_schema) = schema.get("items") {
+            for (index, item) in items.iter().enumerate() {
+                validate_mcp_json_value(item, item_schema, &format!("{path}[{index}]"))?;
+            }
+        }
+    }
+    if let Some(object) = value.as_object() {
+        let properties = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(required) = schema.get("required").and_then(Value::as_array) {
+            for field in required.iter().filter_map(Value::as_str) {
+                if !object.contains_key(field) {
+                    return Err(format!("{path}.{field} is required"));
+                }
+            }
+        }
+        if schema.get("additionalProperties").and_then(Value::as_bool) == Some(false) {
+            for field in object.keys() {
+                if !properties.contains_key(field) {
+                    return Err(format!("{path}.{field} is not allowed"));
+                }
+            }
+        }
+        for (field, property_schema) in properties {
+            if let Some(field_value) = object.get(&field) {
+                validate_mcp_json_value(field_value, &property_schema, &format!("{path}.{field}"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mcp_tool_supports_tasks(name: &str) -> bool {
+    matches!(
+        name,
+        "memory_auto_ingest"
+            | "memory_context_pack"
+            | "memory_fleet_dashboard_v2"
+            | "memory_fleet_quality"
+            | "memory_graph_rag_answer"
+            | "memory_graph_rag_eval"
+            | "memory_guided_tour"
+            | "memory_onboard_guide"
+            | "memory_quality_ci"
+            | "memory_rag_answer"
+            | "memory_rag_eval"
+            | "memory_rag_ingest"
+            | "memory_release_gate_v2"
+            | "memory_release_gate_v3"
+    )
+}
+
+fn mcp_tasks_enabled(state: &McpSessionState) -> bool {
+    state.protocol_version.as_deref() == Some(MCP_LATEST_PROTOCOL_VERSION) && state.initialized
+}
+
+fn mcp_start_task(
+    db: &Path,
+    params: Value,
+    state: &McpSessionState,
+) -> std::result::Result<Value, String> {
+    let ttl = params
+        .get("task")
+        .and_then(|value| value.get("ttl"))
+        .and_then(Value::as_u64)
+        .unwrap_or(MCP_DEFAULT_TASK_TTL_MS)
+        .clamp(1_000, MCP_MAX_TASK_TTL_MS);
+    let task_id = Uuid::new_v4().to_string();
+    let created_at = mcp_task_timestamp();
+    let record = McpTaskRecord {
+        task_id: task_id.clone(),
+        status: "working".to_string(),
+        status_message: "The tool call is running.".to_string(),
+        created_at: created_at.clone(),
+        last_updated_at: created_at,
+        ttl,
+        poll_interval: 250,
+        expires_at_ms: now_ms().saturating_add(ttl.min(i64::MAX as u64) as i64),
+        result: None,
+    };
+    {
+        let mut tasks = state
+            .tasks
+            .tasks
+            .lock()
+            .map_err(|_| "MCP task store lock was poisoned".to_string())?;
+        cleanup_expired_mcp_tasks(&mut tasks);
+        tasks.insert(task_id.clone(), record.clone());
+    }
+
+    let store = std::sync::Arc::clone(&state.tasks);
+    let db = db.to_path_buf();
+    let task_id_for_worker = task_id.clone();
+    std::thread::Builder::new()
+        .name(format!("dukememory-mcp-task-{}", &task_id[..8]))
+        .spawn(move || {
+            let mut result =
+                handle_mcp_tool_call(&db, params).unwrap_or_else(mcp_tool_error_result);
+            let failed = result
+                .get("isError")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            attach_related_task_metadata(&mut result, &task_id_for_worker);
+            let Ok(mut tasks) = store.tasks.lock() else {
+                return;
+            };
+            let Some(task) = tasks.get_mut(&task_id_for_worker) else {
+                return;
+            };
+            if task.status == "working" {
+                task.status = if failed { "failed" } else { "completed" }.to_string();
+                task.status_message = if failed {
+                    "The tool call failed; retrieve the result for details."
+                } else {
+                    "The tool call completed."
+                }
+                .to_string();
+                task.last_updated_at = mcp_task_timestamp();
+                task.result = Some(result);
+            }
+            store.changed.notify_all();
+        })
+        .map_err(|error| format!("failed to start MCP task: {error}"))?;
+
+    Ok(json!({
+        "task": mcp_task_value(&record),
+        "_meta": {
+            "io.modelcontextprotocol/model-immediate-response": "The DukeMemory operation is running in the background; poll tasks/get and retrieve it with tasks/result."
+        }
+    }))
+}
+
+fn mcp_task_get(
+    params: Option<&Value>,
+    state: &McpSessionState,
+) -> std::result::Result<Value, String> {
+    let task_id = mcp_task_id(params)?;
+    let mut tasks = state
+        .tasks
+        .tasks
+        .lock()
+        .map_err(|_| "MCP task store lock was poisoned".to_string())?;
+    cleanup_expired_mcp_tasks(&mut tasks);
+    tasks
+        .get(task_id)
+        .map(mcp_task_value)
+        .ok_or_else(|| format!("unknown or expired task: {task_id}"))
+}
+
+fn mcp_task_list(
+    params: Option<&Value>,
+    state: &McpSessionState,
+) -> std::result::Result<Value, String> {
+    let prefix = "tasks:session:";
+    let offset = parse_mcp_cursor(params, prefix)?;
+    let mut tasks = state
+        .tasks
+        .tasks
+        .lock()
+        .map_err(|_| "MCP task store lock was poisoned".to_string())?;
+    cleanup_expired_mcp_tasks(&mut tasks);
+    let values = tasks.values().rev().map(mcp_task_value).collect::<Vec<_>>();
+    if offset > values.len() {
+        return Err("cursor is outside the current task set".to_string());
+    }
+    let end = offset.saturating_add(MCP_TASK_PAGE_SIZE).min(values.len());
+    let mut result = json!({"tasks": values[offset..end].to_vec()});
+    if end < values.len() {
+        result["nextCursor"] = Value::String(format!("{prefix}{end}"));
+    }
+    Ok(result)
+}
+
+fn mcp_task_result(
+    params: Option<&Value>,
+    state: &McpSessionState,
+) -> std::result::Result<Value, String> {
+    let task_id = mcp_task_id(params)?.to_string();
+    let mut tasks = state
+        .tasks
+        .tasks
+        .lock()
+        .map_err(|_| "MCP task store lock was poisoned".to_string())?;
+    loop {
+        cleanup_expired_mcp_tasks(&mut tasks);
+        let task = tasks
+            .get(&task_id)
+            .ok_or_else(|| format!("unknown or expired task: {task_id}"))?;
+        if let Some(result) = &task.result {
+            return Ok(result.clone());
+        }
+        tasks = state
+            .tasks
+            .changed
+            .wait(tasks)
+            .map_err(|_| "MCP task store lock was poisoned".to_string())?;
+    }
+}
+
+fn mcp_task_cancel(
+    params: Option<&Value>,
+    state: &McpSessionState,
+) -> std::result::Result<Value, String> {
+    let task_id = mcp_task_id(params)?.to_string();
+    let mut tasks = state
+        .tasks
+        .tasks
+        .lock()
+        .map_err(|_| "MCP task store lock was poisoned".to_string())?;
+    cleanup_expired_mcp_tasks(&mut tasks);
+    let task = tasks
+        .get_mut(&task_id)
+        .ok_or_else(|| format!("unknown or expired task: {task_id}"))?;
+    if matches!(task.status.as_str(), "completed" | "failed" | "cancelled") {
+        return Err(format!("task {task_id} is already terminal"));
+    }
+    task.status = "cancelled".to_string();
+    task.status_message = "The task was cancelled by request.".to_string();
+    task.last_updated_at = mcp_task_timestamp();
+    let mut result = mcp_tool_error_result("task was cancelled".to_string());
+    attach_related_task_metadata(&mut result, &task_id);
+    task.result = Some(result);
+    let value = mcp_task_value(task);
+    state.tasks.changed.notify_all();
+    Ok(value)
+}
+
+fn mcp_task_id(params: Option<&Value>) -> std::result::Result<&str, String> {
+    params
+        .and_then(|value| value.get("taskId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "missing taskId".to_string())
+}
+
+fn mcp_task_value(task: &McpTaskRecord) -> Value {
+    json!({
+        "taskId": task.task_id,
+        "status": task.status,
+        "statusMessage": task.status_message,
+        "createdAt": task.created_at,
+        "lastUpdatedAt": task.last_updated_at,
+        "ttl": task.ttl,
+        "pollInterval": task.poll_interval,
+    })
+}
+
+fn cleanup_expired_mcp_tasks(tasks: &mut BTreeMap<String, McpTaskRecord>) {
+    let now = now_ms();
+    tasks.retain(|_, task| task.expires_at_ms > now);
+}
+
+fn attach_related_task_metadata(result: &mut Value, task_id: &str) {
+    let Some(object) = result.as_object_mut() else {
+        return;
+    };
+    let meta = object
+        .entry("_meta")
+        .or_insert_with(|| json!({}))
+        .as_object_mut();
+    if let Some(meta) = meta {
+        meta.insert(
+            "io.modelcontextprotocol/related-task".to_string(),
+            json!({"taskId": task_id}),
+        );
+    }
+}
+
+fn mcp_task_timestamp() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+fn enrich_mcp_tool_definition(tool: &mut Value) {
+    let Some(object) = tool.as_object_mut() else {
+        return;
+    };
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let operation = operation_for_mcp(&name);
+    let generated_title = name
+        .trim_start_matches("memory_")
+        .split('_')
+        .map(|part| {
+            let mut chars = part.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    object.insert(
+        "title".to_string(),
+        Value::String(
+            operation
+                .map(|spec| spec.summary.to_string())
+                .unwrap_or(generated_title),
+        ),
+    );
+    if let Some(spec) = operation {
+        object.insert(
+            "x-operationId".to_string(),
+            Value::String(spec.id.to_string()),
+        );
+        object.insert(
+            "x-stability".to_string(),
+            Value::String(spec.stability.as_str().to_string()),
+        );
+        object.insert(
+            "x-authorizationScope".to_string(),
+            Value::String(spec.authorization.as_str().to_string()),
+        );
+        object.insert(
+            "x-supportsDryRun".to_string(),
+            Value::Bool(spec.supports_dry_run),
+        );
+        if let Some(schema) = object.get_mut("inputSchema").and_then(Value::as_object_mut) {
+            schema.insert(
+                "$id".to_string(),
+                Value::String(spec.input_schema.to_string()),
+            );
+        }
+    }
+    if let Some(schema) = object.get_mut("inputSchema").and_then(Value::as_object_mut) {
+        harden_mcp_input_schema(schema);
+    }
+    object.insert(
+        "outputSchema".to_string(),
+        operation.map_or_else(
+            || json!({"type":"object","additionalProperties":true}),
+            |spec| json!({"$id":spec.output_schema,"type":"object","additionalProperties":true}),
+        ),
+    );
+    object.insert("annotations".to_string(), mcp_tool_annotations(&name));
+    if mcp_tool_supports_tasks(&name) {
+        object.insert("execution".to_string(), json!({"taskSupport": "optional"}));
+    }
+}
+
+fn harden_mcp_input_schema(schema: &mut serde_json::Map<String, Value>) {
+    schema.insert(
+        "$schema".to_string(),
+        Value::String("https://json-schema.org/draft/2020-12/schema".to_string()),
+    );
+    schema.insert("additionalProperties".to_string(), Value::Bool(false));
+    let required = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect::<BTreeSet<_>>();
+    let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for (name, property) in properties {
+        let Some(property) = property.as_object_mut() else {
+            continue;
+        };
+        if property.get("type").and_then(Value::as_str) == Some("number") && name != "confidence" {
+            property.insert("type".to_string(), Value::String("integer".to_string()));
+        }
+        match property.get("type").and_then(Value::as_str) {
+            Some("integer") => apply_mcp_integer_constraints(name, property),
+            Some("number") if name == "confidence" => {
+                property.insert("minimum".to_string(), json!(0.0));
+                property.insert("maximum".to_string(), json!(1.0));
+            }
+            Some("string") => {
+                if required.contains(name) {
+                    property.insert("minLength".to_string(), json!(1));
+                }
+                property.insert(
+                    "maxLength".to_string(),
+                    json!(match name.as_str() {
+                        "body" | "text" => 1_000_000,
+                        "query" | "task" | "summary" | "note" => 50_000,
+                        "root" | "project_root" | "db" | "input" | "endpoint" => 4_096,
+                        _ => 20_000,
+                    }),
+                );
+                apply_mcp_string_enum(name, property);
+            }
+            Some("array") => {
+                property.insert("maxItems".to_string(), json!(1_000));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn apply_mcp_integer_constraints(name: &str, property: &mut serde_json::Map<String, Value>) {
+    let (minimum, maximum) = match name {
+        "offset" | "overlap_chars" => (0, 1_000_000),
+        "since_days" | "older_than_days" | "stale_days" | "as_of_days_ago"
+        | "changed_since_days" => (0, 36_500),
+        "lease_secs" | "stale_after_secs" => (1, 86_400),
+        "limit" | "max_files" => (1, 10_000),
+        "chunk_chars" => (256, 1_000_000),
+        "budget" | "max_chars" | "max_file_bytes" => (1, 16_777_216),
+        _ => (0, i64::MAX),
+    };
+    property.insert("minimum".to_string(), json!(minimum));
+    property.insert("maximum".to_string(), json!(maximum));
+}
+
+fn apply_mcp_string_enum(name: &str, property: &mut serde_json::Map<String, Value>) {
+    let values: Option<&[&str]> = match name {
+        "rating" => Some(&["useful", "useless", "missing"]),
+        "type" | "memory_type" => Some(&[
+            "product_goal",
+            "user_preference",
+            "decision",
+            "design_note",
+            "known_issue",
+            "command",
+            "task_state",
+            "domain_fact",
+            "constraint",
+            "note",
+        ]),
+        _ => None,
+    };
+    if let Some(values) = values {
+        property.insert("enum".to_string(), json!(values));
+    }
+}
+
+fn mcp_tool_annotations(name: &str) -> Value {
+    if let Some(operation) = operation_for_mcp(name) {
+        return json!({
+            "readOnlyHint": !operation.mutation,
+            "destructiveHint": operation.destructive,
+            "idempotentHint": operation.idempotent,
+            "openWorldHint": operation.open_world,
+        });
+    }
+    let mutating = matches!(
+        name,
+        "memory_add"
+            | "memory_remember"
+            | "memory_feedback"
+            | "memory_session_start"
+            | "memory_session_claim"
+            | "memory_session_renew"
+            | "memory_session_release"
+            | "memory_session_event"
+            | "memory_session_recover"
+            | "memory_session_cleanup"
+            | "memory_session_finish"
+            | "memory_auto_ingest"
+            | "memory_upload"
+            | "memory_rag_ingest"
+            | "memory_rag_eval"
+            | "memory_observe"
+            | "memory_auto_ranking_tune"
+            | "memory_recall_baselines"
+            | "memory_conflict_apply"
+            | "memory_mcp_discipline_v3"
+            | "memory_release_gate_v3"
+    );
+    let destructive = matches!(name, "memory_session_cleanup" | "memory_conflict_apply");
+    let open_world = matches!(
+        name,
+        "memory_auto_ingest"
+            | "memory_upload"
+            | "memory_rag_ingest"
+            | "memory_rag_answer"
+            | "memory_graph_rag_answer"
+            | "memory_guided_tour"
+            | "memory_explain_component"
+            | "memory_onboard_guide"
+    );
+    json!({
+        "readOnlyHint": !mutating,
+        "destructiveHint": destructive,
+        "idempotentHint": !mutating,
+        "openWorldHint": open_world,
+    })
 }
 
 fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, String> {
@@ -190,10 +1124,10 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    let selected_db = mcp_selected_db(db, &args);
+    let selected_db = mcp_selected_db(db, &args)?;
     let conn = open_db(&selected_db).map_err(|err| err.to_string())?;
     let memory_app = MemoryApplication::new(MemoryStore::new(&conn));
-    let selected_root = mcp_selected_root(&selected_db, &args);
+    let selected_root = mcp_selected_root(&selected_db);
     let text = match name {
         "memory_session_start" => {
             let task = json_string(&args, "task").ok_or_else(|| "missing task".to_string())?;
@@ -1045,11 +1979,9 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         "memory_auto_ingest" => {
             let input =
                 json_string(&args, "input").unwrap_or_else(|| ".agent/sessions".to_string());
+            let input = mcp_resolve_project_input(&selected_root, Path::new(&input))?;
             let scope = json_string(&args, "scope").unwrap_or_else(|| "project".to_string());
-            let dry_run = args
-                .get("dry_run")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
+            let dry_run = args.get("dry_run").and_then(Value::as_bool).unwrap_or(true);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
             let include_body = args
                 .get("include_body")
@@ -1057,7 +1989,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 .unwrap_or(false);
             let report = auto_ingest_sessions(
                 &conn,
-                Path::new(&input),
+                &input,
                 &scope,
                 false,
                 DEFAULT_EMBED_ENDPOINT,
@@ -1201,17 +2133,18 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         }
         "memory_upload" => {
             let input = json_string(&args, "input").ok_or_else(|| "missing input".to_string())?;
+            let input = mcp_resolve_project_input(&selected_root, Path::new(&input))?;
             let scope = json_string(&args, "scope").unwrap_or_else(|| "project".to_string());
             let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(1200);
-            let report =
-                memory_upload_report(&conn, &selected_root, Path::new(&input), &scope, apply)
-                    .map_err(|err| err.to_string())?;
+            let report = memory_upload_report(&conn, &selected_root, &input, &scope, apply)
+                .map_err(|err| err.to_string())?;
             budgeted_mcp_json_response(&report, max_chars, &["candidates", "quality_checks"])
                 .map_err(|err| err.to_string())?
         }
         "memory_rag_ingest" => {
             let input = json_string(&args, "input").ok_or_else(|| "missing input".to_string())?;
+            let input = mcp_resolve_project_input(&selected_root, Path::new(&input))?;
             let scope = json_string(&args, "scope").unwrap_or_else(|| "project".to_string());
             let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
             let embed = args.get("embed").and_then(Value::as_bool).unwrap_or(false);
@@ -1226,7 +2159,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 &conn,
                 crate::app::rag_ingest::RagIngestRequest {
                     root: &selected_root,
-                    input: Path::new(&input),
+                    input: &input,
                     scope: &scope,
                     apply,
                     embed,
@@ -1357,6 +2290,63 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let report =
                 memory_timeline_report(&conn, &id, limit).map_err(|err| err.to_string())?;
             budgeted_mcp_json_response(&report, max_chars, &["recent_events", "recent_reads"])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_observe" => {
+            let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            let kind = json_string(&args, "kind").ok_or_else(|| "missing kind".to_string())?;
+            let statement =
+                json_string(&args, "statement").ok_or_else(|| "missing statement".to_string())?;
+            let evidence_kind = json_string(&args, "evidence_kind")
+                .ok_or_else(|| "missing evidence_kind".to_string())?;
+            let evidence_ref = json_string(&args, "evidence_ref")
+                .ok_or_else(|| "missing evidence_ref".to_string())?;
+            let target_memory_id = json_string(&args, "target_memory_id");
+            let observation = record_memory_observation(
+                &conn,
+                &selected_root,
+                &MemoryObservationRequest {
+                    memory_id: &id,
+                    target_memory_id: target_memory_id.as_deref(),
+                    kind: &kind,
+                    statement: &statement,
+                    evidence_kind: &evidence_kind,
+                    evidence_ref: &evidence_ref,
+                    confidence: args
+                        .get("confidence")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(1.0),
+                    valid_from: json_i64(&args, "valid_from"),
+                    valid_to: json_i64(&args, "valid_to"),
+                },
+            )
+            .map_err(|err| err.to_string())?;
+            serde_json::to_string_pretty(&observation).map_err(|err| err.to_string())?
+        }
+        "memory_observations" => {
+            let id = json_string(&args, "id").ok_or_else(|| "missing id".to_string())?;
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(2_000);
+            let observations = list_memory_observations(
+                &conn,
+                &id,
+                json_i64(&args, "valid_at"),
+                json_i64(&args, "known_at"),
+                json_usize(&args, "limit").unwrap_or(100),
+            )
+            .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&observations, max_chars, &[])
+                .map_err(|err| err.to_string())?
+        }
+        "memory_temporal_graph" => {
+            let max_chars = json_usize(&args, "max_chars").unwrap_or(4_000);
+            let report = temporal_memory_graph_report(
+                &conn,
+                json_i64(&args, "valid_at"),
+                json_i64(&args, "known_at"),
+                json_usize(&args, "limit").unwrap_or(500),
+            )
+            .map_err(|err| err.to_string())?;
+            budgeted_mcp_json_response(&report, max_chars, &["edges", "nodes"])
                 .map_err(|err| err.to_string())?
         }
         "memory_conflict_review" => {
@@ -1620,7 +2610,16 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         }
         other => return Err(format!("unsupported tool: {other}")),
     };
-    Ok(json!({"content":[{"type":"text","text":text}]}))
+    let structured = match serde_json::from_str::<Value>(&text) {
+        Ok(Value::Object(object)) => Value::Object(object),
+        Ok(value) => json!({"value": value}),
+        Err(_) => json!({"text": text.clone()}),
+    };
+    Ok(json!({
+        "content":[{"type":"text","text":text}],
+        "structuredContent": structured,
+        "isError": false
+    }))
 }
 
 fn log_mcp_context_read(
@@ -2141,36 +3140,79 @@ fn update_returned_count(value: &mut Value, array_key: &str, count_key: &str) {
     }
 }
 
-fn mcp_selected_db(default_db: &Path, args: &Value) -> PathBuf {
-    if let Some(db) = json_string(args, "db").filter(|value| !value.trim().is_empty()) {
-        return expand_mcp_path(&db);
-    }
-    for key in ["root", "project_root", "project"] {
-        if let Some(root) = json_string(args, key).filter(|value| !value.trim().is_empty()) {
-            return project_memory_db(&root);
-        }
-    }
-    if let Some(scope) = json_string(args, "scope")
-        && mcp_scope_looks_like_project_root(&scope)
-    {
-        return project_memory_db(&scope);
-    }
-    default_db.to_path_buf()
+fn mcp_selected_db(default_db: &Path, args: &Value) -> std::result::Result<PathBuf, String> {
+    let requested =
+        if let Some(db) = json_string(args, "db").filter(|value| !value.trim().is_empty()) {
+            Some(expand_mcp_path(&db))
+        } else {
+            ["root", "project_root", "project"]
+                .into_iter()
+                .find_map(|key| {
+                    json_string(args, key)
+                        .filter(|value| !value.trim().is_empty())
+                        .map(|root| project_memory_db(&root))
+                })
+                .or_else(|| {
+                    json_string(args, "scope")
+                        .filter(|scope| mcp_scope_looks_like_project_root(scope))
+                        .map(|scope| project_memory_db(&scope))
+                })
+        };
+    let Some(requested) = requested else {
+        return Ok(default_db.to_path_buf());
+    };
+    let requested_key = app_canonical_or_absolute(&requested);
+    let allowed = mcp_allowed_project_dbs(default_db)?;
+    allowed
+        .into_iter()
+        .find(|candidate| app_canonical_or_absolute(candidate) == requested_key)
+        .ok_or_else(|| {
+            format!(
+                "MCP project is outside allowed roots: {}; use a discovered sibling project or set DUKEMEMORY_MCP_ALLOWED_ROOTS explicitly",
+                requested.display()
+            )
+        })
 }
 
-fn mcp_selected_root(selected_db: &Path, args: &Value) -> PathBuf {
-    for key in ["root", "project_root", "project"] {
-        if let Some(root) = json_string(args, key).filter(|value| !value.trim().is_empty()) {
-            return expand_mcp_path(&root);
+fn mcp_allowed_project_dbs(default_db: &Path) -> std::result::Result<Vec<PathBuf>, String> {
+    let mut allowed = discover_project_dbs(default_db).map_err(|err| err.to_string())?;
+    if let Some(value) = std::env::var_os("DUKEMEMORY_MCP_ALLOWED_ROOTS") {
+        for root in std::env::split_paths(&value) {
+            let db = if root.file_name().is_some_and(|name| name == "memory.db") {
+                root
+            } else {
+                root.join(DEFAULT_DB)
+            };
+            app_push_unique_db(&mut allowed, &db);
         }
     }
+    Ok(allowed)
+}
+
+fn mcp_selected_root(selected_db: &Path) -> PathBuf {
     app_project_root_for_db(selected_db).unwrap_or_else(|| {
         selected_db
             .parent()
-            .and_then(Path::parent)
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."))
     })
+}
+
+fn mcp_resolve_project_input(root: &Path, input: &Path) -> std::result::Result<PathBuf, String> {
+    let root = app_canonical_or_absolute(root);
+    let candidate = if input.is_absolute() {
+        input.to_path_buf()
+    } else {
+        root.join(input)
+    };
+    let candidate = app_canonical_or_absolute(&candidate);
+    if !candidate.starts_with(&root) {
+        return Err(format!(
+            "MCP file input is outside selected project root: {}",
+            candidate.display()
+        ));
+    }
+    Ok(candidate)
 }
 
 fn mcp_memory_scope(args: &Value) -> Option<String> {
@@ -2245,6 +3287,16 @@ fn json_i64(value: &Value, key: &str) -> Option<i64> {
 mod tests {
     use super::*;
 
+    fn test_state(profile: McpProfile, page_size: usize) -> McpSessionState {
+        McpSessionState {
+            protocol_version: None,
+            initialized: false,
+            profile,
+            page_size,
+            tasks: std::sync::Arc::new(McpTaskStore::default()),
+        }
+    }
+
     #[test]
     fn mcp_effective_limit_tracks_response_budget() {
         assert_eq!(mcp_effective_limit(20, 900), 4);
@@ -2256,5 +3308,171 @@ mod tests {
         assert_eq!(mcp_snapshot_query_candidate_limit(8, 3_000), 24);
         assert_eq!(mcp_snapshot_query_candidate_limit(100, 3_000), 100);
         assert_eq!(mcp_snapshot_query_candidate_limit(20, 5_000), 40);
+    }
+
+    #[test]
+    fn mcp_profiles_and_tool_pagination_bound_discovery() {
+        let core = test_state(McpProfile::Core, 5);
+        for tool in mcp_tools().as_array().unwrap().iter().filter(|tool| {
+            tool.get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| mcp_profile_includes(McpProfile::Core, name))
+        }) {
+            let name = tool["name"].as_str().unwrap();
+            assert!(
+                operation_for_mcp(name).is_some(),
+                "core tool {name} is uncataloged"
+            );
+        }
+        let first = mcp_list_tools(None, &core).unwrap();
+        assert_eq!(first["tools"].as_array().unwrap().len(), 5);
+        let cursor = first["nextCursor"].as_str().unwrap();
+        let second = mcp_list_tools(Some(&json!({"cursor": cursor})), &core).unwrap();
+        assert_eq!(second["tools"].as_array().unwrap().len(), 5);
+
+        let full = test_state(McpProfile::Full, 0);
+        let full = mcp_list_tools(None, &full).unwrap();
+        assert!(full["tools"].as_array().unwrap().len() > 50);
+        assert!(full.get("nextCursor").is_none());
+    }
+
+    #[test]
+    fn mcp_input_schemas_are_closed_and_integer_bounded() {
+        for tool in mcp_tools().as_array().unwrap() {
+            let schema = &tool["inputSchema"];
+            assert_eq!(schema["type"], "object", "tool={}", tool["name"]);
+            assert_eq!(
+                schema["additionalProperties"], false,
+                "tool={}",
+                tool["name"]
+            );
+            for (name, property) in schema["properties"].as_object().unwrap() {
+                if property["type"] == "number" {
+                    assert_eq!(name, "confidence");
+                }
+                if property["type"] == "integer" {
+                    assert!(property.get("minimum").is_some(), "field={name}");
+                    assert!(property.get("maximum").is_some(), "field={name}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mcp_argument_validation_rejects_unknown_and_malformed_fields() {
+        assert!(validate_mcp_tool_arguments("memory_brief", &json!({"task":"review"})).is_ok());
+        assert!(validate_mcp_tool_arguments("memory_brief", &json!({})).is_err());
+        assert!(
+            validate_mcp_tool_arguments("memory_brief", &json!({"task":"review", "limit":"ten"}))
+                .is_err()
+        );
+        assert!(
+            validate_mcp_tool_arguments(
+                "memory_brief",
+                &json!({"task":"review", "unexpected":true})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_mcp_tool_arguments("memory_feedback", &json!({"rating":"maybe"})).is_err()
+        );
+        let observation = json!({
+            "id":"abc123",
+            "kind":"verified",
+            "statement":"verified by test",
+            "evidence_kind":"test",
+            "evidence_ref":"cargo test",
+            "confidence":0.95
+        });
+        assert!(validate_mcp_tool_arguments("memory_observe", &observation).is_ok());
+        let mut invalid_observation = observation;
+        invalid_observation["confidence"] = json!(1.1);
+        assert!(validate_mcp_tool_arguments("memory_observe", &invalid_observation).is_err());
+    }
+
+    #[test]
+    fn mcp_resources_and_tasks_follow_latest_protocol_contract() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join(".agent/memory.db");
+        let mut state = test_state(McpProfile::Core, 0);
+        let initialized = handle_mcp_request(
+            &db,
+            json!({
+                "jsonrpc":"2.0",
+                "id":1,
+                "method":"initialize",
+                "params":{"protocolVersion": MCP_LATEST_PROTOCOL_VERSION}
+            }),
+            &mut state,
+        )
+        .unwrap();
+        assert!(initialized["result"]["capabilities"]["resources"].is_object());
+        assert!(initialized["result"]["capabilities"]["tasks"].is_object());
+        assert!(
+            handle_mcp_request(
+                &db,
+                json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+                &mut state,
+            )
+            .is_none()
+        );
+
+        let resource = handle_mcp_request(
+            &db,
+            json!({
+                "jsonrpc":"2.0",
+                "id":2,
+                "method":"resources/read",
+                "params":{"uri":"dukememory://project/status"}
+            }),
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(
+            resource["result"]["contents"][0]["mimeType"],
+            "application/json"
+        );
+
+        let created = handle_mcp_request(
+            &db,
+            json!({
+                "jsonrpc":"2.0",
+                "id":3,
+                "method":"tools/call",
+                "params":{
+                    "name":"memory_context_pack",
+                    "arguments":{
+                        "task":"task protocol smoke test",
+                        "provider":"mock",
+                        "endpoint":"mock",
+                        "model":"mock-small"
+                    },
+                    "task":{"ttl":60_000}
+                }
+            }),
+            &mut state,
+        )
+        .unwrap();
+        let task_id = created["result"]["task"]["taskId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(created["result"]["task"]["status"], "working");
+
+        let result = handle_mcp_request(
+            &db,
+            json!({
+                "jsonrpc":"2.0",
+                "id":4,
+                "method":"tasks/result",
+                "params":{"taskId":task_id}
+            }),
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(
+            result["result"]["_meta"]["io.modelcontextprotocol/related-task"]["taskId"],
+            task_id
+        );
     }
 }

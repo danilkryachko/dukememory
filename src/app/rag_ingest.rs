@@ -105,6 +105,7 @@ pub(crate) struct RagIngestSource {
     pub(crate) content_hash: String,
     pub(crate) bytes: usize,
     pub(crate) chunks: usize,
+    pub(crate) chunking: &'static str,
     pub(crate) applied: bool,
     pub(crate) unchanged: bool,
 }
@@ -170,8 +171,8 @@ pub(crate) fn print_rag_ingest(conn: &Connection, request: RagIngestRequest<'_>)
     }
     for source in &report.sources {
         println!(
-            "- {} chunks={} unchanged={} hash={}",
-            source.path, source.chunks, source.unchanged, source.content_hash
+            "- {} chunks={} chunking={} unchanged={} hash={}",
+            source.path, source.chunks, source.chunking, source.unchanged, source.content_hash
         );
     }
     for skipped in &report.skipped {
@@ -464,7 +465,7 @@ pub(crate) fn rag_ingest_report(
             });
             continue;
         }
-        let chunks = chunk_text(&content, chunk_chars, overlap_chars);
+        let (chunks, chunking) = chunk_source(&path, &content, chunk_chars, overlap_chars);
         if chunks.is_empty() {
             skipped.push(RagIngestSkip {
                 path: display_path,
@@ -495,6 +496,7 @@ pub(crate) fn rag_ingest_report(
             content_hash: file_hash,
             bytes,
             chunks: chunks.len(),
+            chunking,
             applied: request.apply,
             unchanged,
         });
@@ -850,6 +852,35 @@ fn is_rag_text_file(path: &Path) -> bool {
 }
 
 fn chunk_text(content: &str, chunk_chars: usize, overlap_chars: usize) -> Vec<RagChunkDraft> {
+    chunk_text_with_boundaries(content, chunk_chars, overlap_chars, &HashSet::new())
+}
+
+fn chunk_source(
+    path: &Path,
+    content: &str,
+    chunk_chars: usize,
+    overlap_chars: usize,
+) -> (Vec<RagChunkDraft>, &'static str) {
+    let lines = content.lines().collect::<Vec<_>>();
+    if lines.is_empty() {
+        return (Vec::new(), "lines");
+    }
+    let boundaries = structural_boundaries(path, &lines);
+    if boundaries.len() < 2 {
+        return (chunk_text(content, chunk_chars, overlap_chars), "lines");
+    }
+    (
+        chunk_text_with_boundaries(content, chunk_chars, overlap_chars, &boundaries),
+        "structure_aware",
+    )
+}
+
+fn chunk_text_with_boundaries(
+    content: &str,
+    chunk_chars: usize,
+    overlap_chars: usize,
+    boundaries: &HashSet<usize>,
+) -> Vec<RagChunkDraft> {
     let lines = content.lines().collect::<Vec<_>>();
     if lines.is_empty() {
         return Vec::new();
@@ -859,7 +890,20 @@ fn chunk_text(content: &str, chunk_chars: usize, overlap_chars: usize) -> Vec<Ra
     while start < lines.len() {
         let mut end = start;
         let mut chars = 0usize;
-        while end < lines.len() && (chars < chunk_chars || end == start) {
+        while end < lines.len() {
+            if end > start
+                && boundaries.contains(&end)
+                && chars >= chunk_chars.saturating_mul(3) / 5
+            {
+                break;
+            }
+            if end > start
+                && chars >= chunk_chars
+                && (boundaries.is_empty()
+                    || chars >= chunk_chars.saturating_mul(3).saturating_div(2))
+            {
+                break;
+            }
             chars = chars.saturating_add(lines[end].chars().count() + 1);
             end += 1;
         }
@@ -875,6 +919,10 @@ fn chunk_text(content: &str, chunk_chars: usize, overlap_chars: usize) -> Vec<Ra
         if end >= lines.len() {
             break;
         }
+        if boundaries.contains(&end) {
+            start = end;
+            continue;
+        }
         let mut overlap_start = end;
         let mut overlap = 0usize;
         while overlap_start > start && overlap < overlap_chars {
@@ -888,6 +936,105 @@ fn chunk_text(content: &str, chunk_chars: usize, overlap_chars: usize) -> Vec<Ra
         };
     }
     chunks
+}
+
+fn structural_boundaries(path: &Path, lines: &[&str]) -> HashSet<usize> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let supported = matches!(
+        extension.as_str(),
+        "md" | "rs" | "py" | "js" | "jsx" | "ts" | "tsx" | "sql" | "sh"
+    );
+    if !supported {
+        return HashSet::new();
+    }
+    let mut boundaries = HashSet::from([0_usize]);
+    let mut markdown_fence = false;
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        let top_level = line.len().saturating_sub(trimmed.len()) == 0;
+        let boundary = match extension.as_str() {
+            "md" => {
+                if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                    markdown_fence = !markdown_fence;
+                }
+                let heading_text = trimmed.trim_start_matches('#');
+                !markdown_fence
+                    && heading_text.len() < trimmed.len()
+                    && heading_text.chars().next().is_some_and(char::is_whitespace)
+            }
+            "rs" => top_level && rust_declaration(trimmed),
+            "py" => {
+                top_level
+                    && (trimmed.starts_with("def ")
+                        || trimmed.starts_with("async def ")
+                        || trimmed.starts_with("class "))
+            }
+            "js" | "jsx" | "ts" | "tsx" => top_level && javascript_declaration(trimmed),
+            "sql" => {
+                top_level
+                    && [
+                        "create ", "alter ", "insert ", "update ", "delete ", "select ",
+                    ]
+                    .iter()
+                    .any(|prefix| trimmed.to_ascii_lowercase().starts_with(prefix))
+            }
+            "sh" => top_level && trimmed.ends_with("() {") && !trimmed.starts_with('#'),
+            _ => false,
+        };
+        if boundary {
+            boundaries.insert(index);
+        }
+    }
+    boundaries
+}
+
+fn rust_declaration(line: &str) -> bool {
+    let declaration = if let Some(rest) = line.strip_prefix("pub ") {
+        rest
+    } else if line.starts_with("pub(") {
+        line.split_once(") ").map(|(_, rest)| rest).unwrap_or(line)
+    } else {
+        line
+    };
+    [
+        "async fn ",
+        "const ",
+        "enum ",
+        "extern ",
+        "fn ",
+        "impl ",
+        "mod ",
+        "static ",
+        "struct ",
+        "trait ",
+        "type ",
+    ]
+    .iter()
+    .any(|prefix| declaration.starts_with(prefix))
+}
+
+fn javascript_declaration(line: &str) -> bool {
+    let declaration = line
+        .strip_prefix("export default ")
+        .or_else(|| line.strip_prefix("export "))
+        .unwrap_or(line);
+    [
+        "abstract class ",
+        "async function ",
+        "class ",
+        "const ",
+        "enum ",
+        "function ",
+        "interface ",
+        "let ",
+        "type ",
+    ]
+    .iter()
+    .any(|prefix| declaration.starts_with(prefix))
 }
 
 fn rag_source_chunks_current(
@@ -1099,6 +1246,36 @@ mod rag_ingest_tests {
                 .windows(2)
                 .all(|pair| pair[0].start_line < pair[1].start_line)
         );
+    }
+
+    #[test]
+    fn chunk_source_aligns_rust_chunks_to_top_level_declarations() {
+        let content = "use std::path::Path;\n\npub fn alpha() {\n    let a = \"alpha alpha alpha alpha alpha\";\n}\n\npub(crate) async fn beta() {\n    let b = \"beta beta beta beta beta\";\n}\n\nstruct Gamma {\n    value: usize,\n}\n";
+        let (chunks, strategy) = chunk_source(Path::new("src/lib.rs"), content, 70, 16);
+        assert_eq!(strategy, "structure_aware");
+        assert!(chunks.len() >= 2);
+        assert!(
+            chunks
+                .iter()
+                .skip(1)
+                .all(|chunk| rust_declaration(chunk.content.lines().next().unwrap_or_default()))
+        );
+        assert!(
+            chunks
+                .windows(2)
+                .all(|pair| pair[0].end_line < pair[1].start_line)
+        );
+    }
+
+    #[test]
+    fn markdown_headings_inside_code_fences_are_not_boundaries() {
+        let lines = "# Intro\ntext\n```md\n## Not a section\n```\n## Real section\ntext"
+            .lines()
+            .collect::<Vec<_>>();
+        let boundaries = structural_boundaries(Path::new("README.md"), &lines);
+        assert!(boundaries.contains(&0));
+        assert!(!boundaries.contains(&3));
+        assert!(boundaries.contains(&5));
     }
 
     #[test]

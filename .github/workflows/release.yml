@@ -65,30 +65,53 @@ jobs:
           - runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: dukememory-x86_64-unknown-linux-gnu
+            binary: dukememory
+            checksum: sha256sum
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: dukememory-aarch64-unknown-linux-gnu
+            binary: dukememory
+            checksum: sha256sum
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset: dukememory-x86_64-unknown-linux-musl
+            binary: dukememory
             checksum: sha256sum
           - runner: macos-14
             target: aarch64-apple-darwin
             asset: dukememory-aarch64-apple-darwin
+            binary: dukememory
             checksum: shasum
           - runner: macos-15-intel
             target: x86_64-apple-darwin
             asset: dukememory-x86_64-apple-darwin
+            binary: dukememory
             checksum: shasum
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: dukememory-x86_64-pc-windows-msvc
+            binary: dukememory.exe
+            checksum: sha256sum
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: ${{ matrix.target }}
+      - name: Install musl linker
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Build release binary
+        shell: bash
         run: cargo build --locked --release --features vec --target "${{ matrix.target }}"
       - name: Smoke-test installed binary
-        run: scripts/release-smoke.sh "target/${{ matrix.target }}/release/dukememory" "${GITHUB_REF_NAME#v}"
+        shell: bash
+        run: scripts/release-smoke.sh "target/${{ matrix.target }}/release/${{ matrix.binary }}" "${GITHUB_REF_NAME#v}"
       - name: Package artifact and checksum
         shell: bash
         run: |
           mkdir -p "dist/${{ matrix.asset }}"
-          cp "target/${{ matrix.target }}/release/dukememory" "dist/${{ matrix.asset }}/"
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.asset }}/"
           cp README.md CHANGELOG.md LICENSE TRADEMARKS.md "dist/${{ matrix.asset }}/"
           tar -C dist -czf "dist/${{ matrix.asset }}.tar.gz" "${{ matrix.asset }}"
           if [[ "${{ matrix.checksum }}" = "sha256sum" ]]; then
@@ -111,6 +134,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
@@ -122,6 +147,14 @@ jobs:
           cd dist
           sha256sum dukememory.cdx.json >dukememory.cdx.json.sha256
           cat ./*.sha256 | sort >SHA256SUMS
+      - name: Attest final release assets
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/SHA256SUMS
+            dist/dukememory.cdx.json
       - name: Publish immutable GitHub release assets
         env:
           GH_TOKEN: ${{ github.token }}

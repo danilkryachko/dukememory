@@ -3,12 +3,14 @@ use anyhow::Error;
 use serde_json::{Value, json};
 use std::io::{Result, Write};
 use std::net::TcpStream;
+use uuid::Uuid;
 
 pub struct HttpResponse {
     pub status: u16,
     pub reason: &'static str,
     pub content_type: &'static str,
     pub body: Vec<u8>,
+    pub request_id: Option<String>,
 }
 
 impl HttpResponse {
@@ -22,6 +24,7 @@ impl HttpResponse {
             reason: "OK",
             content_type: "text/html; charset=utf-8",
             body: body.into().into_bytes(),
+            request_id: None,
         }
     }
 
@@ -73,11 +76,15 @@ impl HttpResponse {
         )
     }
 
-    pub fn internal_error(message: impl Into<String>) -> Self {
+    pub fn internal_error(incident_id: &str) -> Self {
         Self::json(
             500,
             "Internal Server Error",
-            json!({"error": {"code": "internal_error", "message": message.into()}}),
+            json!({"error": {
+                "code": "internal_error",
+                "message": "internal server error",
+                "incident_id": incident_id
+            }}),
         )
     }
 
@@ -98,6 +105,7 @@ impl HttpResponse {
             || normalized.contains("must not be empty")
             || normalized.contains("must be between")
             || normalized.contains("links must")
+            || normalized.contains("outside selected project root")
             || normalized.contains("looks like it may contain a secret")
         {
             return Self::bad_request(message);
@@ -111,7 +119,16 @@ impl HttpResponse {
         {
             return Self::conflict(message);
         }
-        Self::internal_error(message)
+        let incident_id = Uuid::new_v4().simple().to_string()[..12].to_string();
+        eprintln!(
+            "{}",
+            json!({
+                "event": "http_internal_error",
+                "incident_id": incident_id.clone(),
+                "error": error.chain().map(ToString::to_string).collect::<Vec<_>>(),
+            })
+        );
+        Self::internal_error(&incident_id)
     }
 
     fn json(status: u16, reason: &'static str, body: Value) -> Self {
@@ -125,11 +142,17 @@ impl HttpResponse {
             reason,
             content_type: "application/json",
             body,
+            request_id: None,
         }
     }
 }
 
 pub fn write_response(stream: &mut TcpStream, response: HttpResponse) -> Result<()> {
+    let request_id_header = response
+        .request_id
+        .as_deref()
+        .map(|id| format!("X-Request-Id: {id}\r\n"))
+        .unwrap_or_default();
     write!(
         stream,
         concat!(
@@ -143,12 +166,14 @@ pub fn write_response(stream: &mut TcpStream, response: HttpResponse) -> Result<
             "Referrer-Policy: no-referrer\r\n",
             "X-Content-Type-Options: nosniff\r\n",
             "X-Frame-Options: DENY\r\n",
+            "{}",
             "Connection: close\r\n\r\n"
         ),
         response.status,
         response.reason,
         response.content_type,
         response.body.len(),
+        request_id_header,
     )?;
     stream.write_all(&response.body)
 }
@@ -176,6 +201,22 @@ mod tests {
         assert_eq!(
             HttpResponse::from_error(&anyhow::anyhow!("UNIQUE constraint failed")).status,
             409
+        );
+    }
+
+    #[test]
+    fn internal_errors_are_opaque_and_have_an_incident_id() {
+        let response = HttpResponse::from_error(&anyhow::anyhow!(
+            "sqlite failure at /private/project/.agent/memory.db"
+        ));
+        assert_eq!(response.status, 500);
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["error"]["message"], "internal server error");
+        assert!(body["error"]["incident_id"].as_str().is_some());
+        assert!(
+            !String::from_utf8(response.body)
+                .unwrap()
+                .contains("/private/project")
         );
     }
 }

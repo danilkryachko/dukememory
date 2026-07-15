@@ -2270,6 +2270,179 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
 }
 
 #[test]
+fn mcp_negotiates_lifecycle_ignores_notifications_and_returns_typed_tools() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join(".agent/memory.db");
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
+        .arg("--db")
+        .arg(&db)
+        .arg("serve-mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        for request in [
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
+            serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+            serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            serde_json::json!({"jsonrpc":"2.0","id":3,"method":"ping","params":{}}),
+            serde_json::json!({"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}),
+        ] {
+            writeln!(stdin, "{request}").unwrap();
+        }
+    }
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let responses = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        responses.len(),
+        4,
+        "notifications must not receive responses"
+    );
+    assert_eq!(responses[0]["result"]["protocolVersion"], "2025-11-25");
+    assert!(
+        responses[1]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("notifications/initialized")
+    );
+    assert_eq!(responses[2]["result"], serde_json::json!({}));
+    let brief = responses[3]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "memory_brief")
+        .unwrap();
+    assert_eq!(brief["annotations"]["readOnlyHint"], true);
+    assert_eq!(brief["outputSchema"]["type"], "object");
+    assert_eq!(brief["x-operationId"], "retrieval.brief");
+    assert_eq!(brief["x-stability"], "stable");
+    assert_eq!(brief["x-authorizationScope"], "project_read");
+    assert_eq!(
+        brief["inputSchema"]["$id"],
+        "https://dukememory.local/schemas/retrieval.brief/input"
+    );
+    let ingest = responses[3]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "memory_rag_ingest")
+        .unwrap();
+    assert_eq!(ingest["x-operationId"], "rag.ingest");
+    assert_eq!(ingest["annotations"]["readOnlyHint"], false);
+    assert_eq!(ingest["annotations"]["idempotentHint"], true);
+    assert_eq!(ingest["annotations"]["openWorldHint"], true);
+    assert_eq!(ingest["x-supportsDryRun"], true);
+}
+
+#[test]
+fn mcp_rejects_unlisted_projects_and_file_inputs_outside_the_selected_root() {
+    let allowed = tempdir().unwrap();
+    let external = tempdir().unwrap();
+    let db = allowed.path().join("project/.agent/memory.db");
+    let external_db = external.path().join("project/.agent/memory.db");
+    let external_file = external.path().join("secret.md");
+    fs::create_dir_all(external_file.parent().unwrap()).unwrap();
+    fs::write(&external_file, "outside project content must not be read").unwrap();
+    cmd(&db).arg("stats").assert().success();
+    cmd(&external_db).arg("stats").assert().success();
+
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
+        .arg("--db")
+        .arg(&db)
+        .arg("serve-mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_brief","arguments":{"task":"escape","db":external_db}}})
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_upload","arguments":{"input":external_file,"apply":false}}})
+        )
+        .unwrap();
+    }
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("outside allowed roots"));
+    assert!(stdout.contains("outside selected project root"));
+    assert!(!stdout.contains("outside project content must not be read"));
+}
+
+#[test]
+fn http_mutations_preview_by_default_and_file_reads_stay_inside_project_root() {
+    let dir = tempdir().unwrap();
+    let external = tempdir().unwrap();
+    let root = dir.path().join("project");
+    let db = root.join(".agent/memory.db");
+    let sessions = root.join(".agent/sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(
+        sessions.join("session.md"),
+        "TODO durable HTTP preview candidate must not be written by default.\n",
+    )
+    .unwrap();
+    let external_file = external.path().join("outside.md");
+    fs::write(&external_file, "external content must remain unread").unwrap();
+    cmd(&db).arg("stats").assert().success();
+
+    let auto_ingest_body = serde_json::json!({"input": sessions}).to_string();
+    let auto_ingest = http_once(
+        &db,
+        &format!(
+            "POST /auto-ingest HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            auto_ingest_body.len(),
+            auto_ingest_body
+        ),
+    );
+    assert!(auto_ingest.contains("200 OK"));
+    assert!(auto_ingest.contains("would_ingest"));
+    assert!(!stdout(cmd(&db).arg("inbox-list")).contains("HTTP preview candidate"));
+
+    let auto_feedback = http_once(
+        &db,
+        "POST /auto-feedback HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+    );
+    assert!(auto_feedback.contains("\"applied\":false"));
+
+    let conflict_apply = http_once(
+        &db,
+        "POST /memory-conflict-apply HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+    );
+    assert!(conflict_apply.contains("\"applied\":false"));
+
+    let upload_body = serde_json::json!({"input": external_file}).to_string();
+    let upload = http_once(
+        &db,
+        &format!(
+            "POST /memory-upload HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            upload_body.len(),
+            upload_body
+        ),
+    );
+    assert!(upload.contains("400 Bad Request"));
+    assert!(upload.contains("outside selected project root"));
+    assert!(!upload.contains("external content must remain unread"));
+}
+
+#[test]
 fn mcp_memory_search_filters_query_useless_feedback() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
@@ -4301,7 +4474,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .arg("status")
         .assert()
         .success()
-        .stdout(contains("expected: 22"));
+        .stdout(contains("expected: 24"));
     cmd(&db)
         .arg("schema")
         .arg("verify")
@@ -4374,7 +4547,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .assert()
         .success()
         .stdout(contains("version:"))
-        .stdout(contains("schema: 22"));
+        .stdout(contains("schema: 24"));
 
     let install_dir = dir.path().join("install");
     let target = install_dir.join("dukememory");
@@ -4836,8 +5009,12 @@ fn v11_auto_ingest_and_decision_doctrine() {
         .unwrap()
         .parse::<u16>()
         .unwrap();
-    let body = serde_json::json!({"input": sessions.display().to_string(), "scope": "project"})
-        .to_string();
+    let body = serde_json::json!({
+        "input": sessions.display().to_string(),
+        "scope": "project",
+        "dry_run": false
+    })
+    .to_string();
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     write!(
         stream,
@@ -4850,7 +5027,10 @@ fn v11_auto_ingest_and_decision_doctrine() {
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
     assert!(response.contains("200 OK"));
-    assert!(response.contains("\"inbox_added\":1"));
+    assert!(
+        response.contains("\"inbox_added\":1"),
+        "unexpected auto-ingest response: {response}"
+    );
     assert!(child.wait().unwrap().success());
 
     fs::write(
@@ -4910,7 +5090,7 @@ fn v11_release_bundle_bench_and_self_host() {
 
     let bench = stdout(cmd(&db).arg("bench").arg("--json"));
     let bench_json: Value = serde_json::from_str(&bench).unwrap();
-    assert_eq!(bench_json["schema"], 22);
+    assert_eq!(bench_json["schema"], 24);
     assert_eq!(bench_json["memory_count"], 4);
     assert!(bench_json["db_bytes"].as_u64().unwrap() > 0);
 
@@ -4926,7 +5106,7 @@ fn v11_release_bundle_bench_and_self_host() {
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(bundle.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(manifest["schema"], 22);
+    assert_eq!(manifest["schema"], 24);
     assert_eq!(manifest["memory_stats"]["total"], 4);
     assert_eq!(manifest["binary_sha256"].as_str().unwrap().len(), 64);
 }
@@ -4960,7 +5140,7 @@ fn v12_always_on_operations() {
     );
     let health_json: Value = serde_json::from_str(&health).unwrap();
     assert_eq!(health_json["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(health_json["schema"], 22);
+    assert_eq!(health_json["schema"], 24);
     assert_eq!(health_json["endpoint_ok"], true);
 
     for _ in 0..3 {
@@ -5034,7 +5214,7 @@ fn v13_stabilization_integrity_optimize_and_large_http_request() {
     let integrity = stdout(cmd(&db).arg("integrity").arg("--json"));
     let integrity_json: Value = serde_json::from_str(&integrity).unwrap();
     assert_eq!(integrity_json["ok"], true);
-    assert_eq!(integrity_json["schema"], 22);
+    assert_eq!(integrity_json["schema"], 24);
     assert_eq!(integrity_json["integrity_check"], "ok");
 
     let optimized = stdout(cmd(&db).arg("optimize").arg("--vacuum").arg("--json"));
@@ -17133,4 +17313,77 @@ fn http_server_drains_workers_on_termination_signal() {
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
+}
+
+#[test]
+fn bitemporal_observations_are_available_through_cli() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let root = dir.path().join("project");
+    fs::create_dir_all(&root).unwrap();
+    let source = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("decision")
+            .arg("Evidence source")
+            .arg("The decision has a durable evidence relationship."),
+    )
+    .trim()
+    .to_string();
+    let target = stdout(
+        cmd(&db)
+            .arg("add")
+            .arg("constraint")
+            .arg("Evidence target")
+            .arg("The target constraint is independently addressable."),
+    )
+    .trim()
+    .to_string();
+
+    let observed = stdout(
+        cmd(&db)
+            .arg("observe")
+            .arg(&source)
+            .arg("--kind")
+            .arg("verified")
+            .arg("--statement")
+            .arg("A test verified the relationship")
+            .arg("--evidence-kind")
+            .arg("test")
+            .arg("--evidence-ref")
+            .arg("cargo test bitemporal")
+            .arg("--target-memory-id")
+            .arg(&target)
+            .arg("--valid-from")
+            .arg("100")
+            .arg("--root")
+            .arg(&root)
+            .arg("--json"),
+    );
+    let observed: Value = serde_json::from_str(&observed).unwrap();
+    assert_eq!(observed["memory_id"], source);
+    assert_eq!(observed["target_memory_id"], target);
+    assert_eq!(observed["valid_from"], 100);
+
+    let observations = stdout(
+        cmd(&db)
+            .arg("observations")
+            .arg(&source)
+            .arg("--valid-at")
+            .arg("100")
+            .arg("--json"),
+    );
+    let observations: Value = serde_json::from_str(&observations).unwrap();
+    assert_eq!(observations.as_array().unwrap().len(), 1);
+
+    let graph = stdout(
+        cmd(&db)
+            .arg("temporal-graph")
+            .arg("--valid-at")
+            .arg("100")
+            .arg("--json"),
+    );
+    let graph: Value = serde_json::from_str(&graph).unwrap();
+    assert_eq!(graph["edge_count"], 1);
+    assert_eq!(graph["observation_count"], 1);
 }

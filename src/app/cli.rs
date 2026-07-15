@@ -358,6 +358,15 @@ pub(crate) enum Command {
     ServeMcp {
         #[arg(long)]
         content_length: bool,
+        #[arg(
+            long,
+            env = "DUKEMEMORY_MCP_PROFILE",
+            default_value = "full",
+            value_parser = ["core", "standard", "full"]
+        )]
+        profile: String,
+        #[arg(long, env = "DUKEMEMORY_MCP_PAGE_SIZE", default_value_t = 0)]
+        page_size: usize,
     },
     /// Print a compact project briefing.
     ProjectSummary {
@@ -1688,6 +1697,64 @@ pub(crate) enum Command {
     },
     /// Report how dukememory covers Memanto-style memory product capabilities.
     MemantoGapReport {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Record an evidence-backed bitemporal observation for a memory card.
+    Observe {
+        id: String,
+        #[arg(
+            long,
+            value_parser = [
+                "asserted",
+                "verified",
+                "contradicted",
+                "superseded",
+                "file_changed",
+                "retrieved",
+                "outcome"
+            ]
+        )]
+        kind: String,
+        #[arg(long)]
+        statement: String,
+        #[arg(long)]
+        evidence_kind: String,
+        #[arg(long)]
+        evidence_ref: String,
+        #[arg(long)]
+        target_memory_id: Option<String>,
+        #[arg(long, default_value_t = 1.0)]
+        confidence: f64,
+        #[arg(long)]
+        valid_from: Option<i64>,
+        #[arg(long)]
+        valid_to: Option<i64>,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List evidence observations as-of valid and knowledge time.
+    Observations {
+        id: String,
+        #[arg(long)]
+        valid_at: Option<i64>,
+        #[arg(long)]
+        known_at: Option<i64>,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render the memory graph as-of valid and knowledge time.
+    TemporalGraph {
+        #[arg(long)]
+        valid_at: Option<i64>,
+        #[arg(long)]
+        known_at: Option<i64>,
+        #[arg(long, default_value_t = 500)]
+        limit: usize,
         #[arg(long)]
         json: bool,
     },
@@ -3118,6 +3185,12 @@ pub(crate) enum EvalCommand {
         expected: String,
         #[arg(long, default_value_t = 4000)]
         budget: usize,
+        #[arg(
+            long,
+            default_value = "development",
+            value_parser = ["development", "holdout"]
+        )]
+        split: String,
     },
     Run {
         #[arg(long)]

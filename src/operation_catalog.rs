@@ -23,6 +23,47 @@ pub(crate) const HTTP_MEMORY_STATUS: &str = "/memory/status";
 pub(crate) const HTTP_MEMORY_DELETE: &str = "/memory/delete";
 pub(crate) const HTTP_SEARCH: &str = "/search";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum OperationStability {
+    Stable,
+    Preview,
+    Deprecated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum OperationAuthorization {
+    #[serde(rename = "project_read")]
+    Read,
+    #[serde(rename = "project_write")]
+    Write,
+    #[serde(rename = "project_maintenance")]
+    Maintenance,
+    #[serde(rename = "project_filesystem")]
+    Filesystem,
+}
+
+impl OperationStability {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Preview => "preview",
+            Self::Deprecated => "deprecated",
+        }
+    }
+}
+
+impl OperationAuthorization {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "project_read",
+            Self::Write => "project_write",
+            Self::Maintenance => "project_maintenance",
+            Self::Filesystem => "project_filesystem",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct OperationSpec {
     pub(crate) id: &'static str,
@@ -31,8 +72,15 @@ pub(crate) struct OperationSpec {
     pub(crate) cli: &'static [&'static str],
     pub(crate) mcp: &'static [&'static str],
     pub(crate) http: &'static [&'static str],
+    pub(crate) stability: OperationStability,
+    pub(crate) authorization: OperationAuthorization,
     pub(crate) mutation: bool,
     pub(crate) supports_dry_run: bool,
+    pub(crate) idempotent: bool,
+    pub(crate) destructive: bool,
+    pub(crate) open_world: bool,
+    pub(crate) input_schema: &'static str,
+    pub(crate) output_schema: &'static str,
 }
 
 macro_rules! operation {
@@ -44,13 +92,54 @@ macro_rules! operation {
             cli: $cli,
             mcp: $mcp,
             http: $http,
+            stability: OperationStability::Stable,
+            authorization: if $mutation {
+                OperationAuthorization::Write
+            } else {
+                OperationAuthorization::Read
+            },
             mutation: $mutation,
             supports_dry_run: $dry_run,
+            idempotent: !$mutation,
+            destructive: false,
+            open_world: false,
+            input_schema: concat!("https://dukememory.local/schemas/", $id, "/input"),
+            output_schema: concat!("https://dukememory.local/schemas/", $id, "/output"),
+        }
+    };
+    ($id:literal, $category:literal, $summary:literal, $cli:expr, $mcp:expr, $http:expr, $mutation:literal, $dry_run:literal;
+        $stability:ident, $authorization:ident, $idempotent:literal, $destructive:literal, $open_world:literal) => {
+        OperationSpec {
+            id: $id,
+            category: $category,
+            summary: $summary,
+            cli: $cli,
+            mcp: $mcp,
+            http: $http,
+            stability: OperationStability::$stability,
+            authorization: OperationAuthorization::$authorization,
+            mutation: $mutation,
+            supports_dry_run: $dry_run,
+            idempotent: $idempotent,
+            destructive: $destructive,
+            open_world: $open_world,
+            input_schema: concat!("https://dukememory.local/schemas/", $id, "/input"),
+            output_schema: concat!("https://dukememory.local/schemas/", $id, "/output"),
         }
     };
 }
 
 pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
+    operation!(
+        "catalog.list",
+        "catalog",
+        "List stable cross-surface operations",
+        &["operations"],
+        &[MCP_OPERATIONS],
+        &[HTTP_OPERATIONS],
+        false,
+        false
+    ),
     operation!(
         "memory.create",
         "memory",
@@ -89,7 +178,8 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         &[],
         &[HTTP_MEMORY_UPDATE],
         true,
-        false
+        false;
+        Stable, Write, true, false, false
     ),
     operation!(
         "memory.status",
@@ -99,7 +189,8 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         &[],
         &[HTTP_MEMORY_STATUS],
         true,
-        false
+        false;
+        Stable, Write, true, false, false
     ),
     operation!(
         "memory.delete",
@@ -109,7 +200,83 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         &[],
         &[HTTP_MEMORY_DELETE],
         true,
+        false;
+        Stable, Maintenance, true, true, false
+    ),
+    operation!(
+        "memory.feedback",
+        "memory",
+        "Record retrieval usefulness feedback",
+        &["feedback"],
+        &["memory_feedback"],
+        &["/feedback"],
+        true,
+        false;
+        Stable, Write, false, false, false
+    ),
+    operation!(
+        "memory.doctrine",
+        "memory",
+        "Read active project decisions",
+        &["doctrine"],
+        &["memory_doctrine"],
+        &["/doctrine"],
+        false,
         false
+    ),
+    operation!(
+        "memory.evidence",
+        "memory",
+        "Read provenance for one memory card",
+        &["evidence"],
+        &["memory_evidence"],
+        &["/evidence"],
+        false,
+        false
+    ),
+    operation!(
+        "evidence.observe",
+        "evidence",
+        "Record a bitemporal evidence observation",
+        &["observe"],
+        &["memory_observe"],
+        &[],
+        true,
+        false;
+        Preview, Write, false, false, false
+    ),
+    operation!(
+        "evidence.list",
+        "evidence",
+        "Read evidence observations as-of two times",
+        &["observations"],
+        &["memory_observations"],
+        &[],
+        false,
+        false;
+        Preview, Read, true, false, false
+    ),
+    operation!(
+        "graph.temporal",
+        "graph",
+        "Read the bitemporal memory graph",
+        &["temporal-graph"],
+        &["memory_temporal_graph"],
+        &[],
+        false,
+        false;
+        Preview, Read, true, false, false
+    ),
+    operation!(
+        "memory.drift",
+        "memory",
+        "Detect memory drift against project files",
+        &["drift"],
+        &["memory_drift"],
+        &["/drift"],
+        false,
+        false;
+        Stable, Filesystem, true, false, true
     ),
     operation!(
         "retrieval.brief",
@@ -142,6 +309,36 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         false
     ),
     operation!(
+        "retrieval.agent_context",
+        "retrieval",
+        "Build agent-native project context",
+        &["context"],
+        &["memory_agent_context"],
+        &[],
+        false,
+        false
+    ),
+    operation!(
+        "retrieval.budget_plan",
+        "retrieval",
+        "Choose the smallest useful context budget",
+        &["budget-plan"],
+        &["memory_budget_plan"],
+        &["/budget-plan"],
+        false,
+        false
+    ),
+    operation!(
+        "retrieval.recall",
+        "retrieval",
+        "Return compressed temporal recall",
+        &["recall"],
+        &["memory_recall"],
+        &["/recall"],
+        false,
+        false
+    ),
+    operation!(
         "retrieval.rag_answer",
         "retrieval",
         "Answer from grounded project memory",
@@ -149,7 +346,8 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         &["memory_rag_answer"],
         &[],
         false,
-        false
+        false;
+        Stable, Read, true, false, true
     ),
     operation!(
         "retrieval.graph_rag_answer",
@@ -159,7 +357,8 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         &["memory_graph_rag_answer"],
         &[],
         false,
-        false
+        false;
+        Preview, Read, true, false, true
     ),
     operation!(
         "memory.doctor",
@@ -172,6 +371,46 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         false
     ),
     operation!(
+        "control.status",
+        "control",
+        "Read the cached project control snapshot",
+        &[],
+        &["memory_status"],
+        &[],
+        false,
+        false
+    ),
+    operation!(
+        "control.should_write",
+        "control",
+        "Decide whether a durable memory write is warranted",
+        &[],
+        &["memory_should_write"],
+        &[],
+        false,
+        false
+    ),
+    operation!(
+        "control.after_task",
+        "control",
+        "Return after-task memory guidance",
+        &[],
+        &["memory_after_task"],
+        &[],
+        false,
+        false
+    ),
+    operation!(
+        "control.project_health",
+        "control",
+        "Read compact project memory health",
+        &[],
+        &["memory_project_health"],
+        &[],
+        false,
+        false
+    ),
+    operation!(
         "rag.ingest",
         "rag",
         "Index local source files",
@@ -179,7 +418,8 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         &["memory_rag_ingest"],
         &["/rag-ingest"],
         true,
-        true
+        true;
+        Stable, Filesystem, true, false, true
     ),
     operation!(
         "rag.sources",
@@ -198,8 +438,9 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         &["eval rag"],
         &["memory_rag_eval"],
         &["/rag-eval"],
-        false,
-        false
+        true,
+        false;
+        Stable, Maintenance, true, false, false
     ),
     operation!(
         "rag.graph_eval",
@@ -209,7 +450,8 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         &["memory_graph_rag_eval"],
         &["/graph-rag-eval"],
         false,
-        false
+        false;
+        Preview, Read, true, false, false
     ),
     operation!(
         "release.gate_v2",
@@ -218,8 +460,9 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         &["release-gate-v2"],
         &["memory_release_gate_v2"],
         &["/release-gate-v2"],
-        false,
-        false
+        true,
+        false;
+        Deprecated, Maintenance, true, false, true
     ),
     operation!(
         "release.gate_v3",
@@ -228,8 +471,9 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         &["release-gate-v3"],
         &["memory_release_gate_v3"],
         &["/release-gate-v3"],
-        false,
-        false
+        true,
+        false;
+        Stable, Maintenance, true, false, true
     ),
     operation!(
         "agent_session.start",
@@ -289,7 +533,8 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         &["memory_session_event"],
         &["/agent-sessions/event"],
         true,
-        false
+        false;
+        Stable, Write, true, false, false
     ),
     operation!(
         "agent_session.recover",
@@ -339,9 +584,22 @@ pub(crate) const OPERATION_CATALOG: &[OperationSpec] = &[
         &["memory_session_cleanup"],
         &["/agent-sessions/cleanup"],
         true,
-        true
+        true;
+        Stable, Maintenance, true, true, false
     ),
 ];
+
+pub(crate) fn operation_for_mcp(name: &str) -> Option<&'static OperationSpec> {
+    OPERATION_CATALOG
+        .iter()
+        .find(|operation| operation.mcp.contains(&name))
+}
+
+pub(crate) fn operation_for_http(path: &str) -> Option<&'static OperationSpec> {
+    OPERATION_CATALOG
+        .iter()
+        .find(|operation| operation.http.contains(&path))
+}
 
 pub(crate) fn print_operation_catalog(json_out: bool) -> Result<()> {
     if json_out {
@@ -362,24 +620,30 @@ fn render_operation_markdown() -> String {
     let mut output = String::from(
         "# Operation catalog\n\n\
          Generated from `src/operation_catalog.rs`. This is the stable operation contract shared by CLI, MCP, and HTTP.\n\n\
-         | Operation | Category | Summary | CLI | MCP | HTTP | Mutation | Dry run |\n\
-         | --- | --- | --- | --- | --- | --- | --- | --- |\n",
+         Every JSON entry also exposes stable `input_schema` and `output_schema` identifiers used by MCP.\n\n\
+         | Operation | Category | Summary | CLI | MCP | HTTP | Stability | Authorization | Mutation | Dry run | Idempotent | Destructive | Open world |\n\
+         | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
     );
     for operation in OPERATION_CATALOG {
         output.push_str(&format!(
-            "| `{}` | `{}` | {} | {} | {} | {} | {} | {} |\n",
+            "| `{}` | `{}` | {} | {} | {} | {} | `{}` | `{}` | {} | {} | {} | {} | {} |\n",
             operation.id,
             operation.category,
             operation.summary,
             markdown_names(operation.cli),
             markdown_names(operation.mcp),
             markdown_names(operation.http),
+            operation.stability.as_str(),
+            operation.authorization.as_str(),
             if operation.mutation { "yes" } else { "no" },
             if operation.supports_dry_run {
                 "yes"
             } else {
                 "no"
             },
+            if operation.idempotent { "yes" } else { "no" },
+            if operation.destructive { "yes" } else { "no" },
+            if operation.open_world { "yes" } else { "no" },
         ));
     }
     output
@@ -409,18 +673,36 @@ mod tests {
         let mut cli = HashSet::new();
         let mut mcp = HashSet::new();
         let mut http = HashSet::new();
+        let mut schemas = HashSet::new();
         for operation in OPERATION_CATALOG {
             assert!(ids.insert(operation.id));
+            assert!(schemas.insert(operation.input_schema));
+            assert!(schemas.insert(operation.output_schema));
+            assert!(!operation.mutation || operation.authorization != OperationAuthorization::Read);
+            assert!(!operation.destructive || operation.mutation);
+            assert!(!operation.supports_dry_run || operation.mutation);
             for name in operation.cli {
                 assert!(cli.insert(*name), "duplicate CLI operation: {name}");
             }
             for name in operation.mcp {
                 assert!(mcp.insert(*name), "duplicate MCP operation: {name}");
+                assert_eq!(
+                    operation_for_mcp(name).map(|found| found.id),
+                    Some(operation.id)
+                );
             }
             for path in operation.http {
                 assert!(http.insert(*path), "duplicate HTTP operation: {path}");
             }
         }
+        assert_eq!(
+            operation_for_mcp("memory_rag_ingest").map(|operation| operation.id),
+            Some("rag.ingest")
+        );
+        assert_eq!(
+            operation_for_http("/memory/delete").map(|operation| operation.destructive),
+            Some(true)
+        );
     }
 
     #[test]

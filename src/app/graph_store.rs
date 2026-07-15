@@ -50,21 +50,32 @@ pub(crate) fn insert_memory_edge(
         bail!("memory edge must connect two different memories");
     }
     let (source_id, target_id) = canonical_memory_edge(source_id, target_id, kind);
+    let observed_at = now_ms();
     let changed = conn.execute(
         "INSERT OR IGNORE INTO memory_edges \
-         (source_id, target_id, kind, confidence, provenance, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![source_id, target_id, kind, confidence, provenance, now_ms()],
+         (source_id, target_id, kind, confidence, provenance, created_at, valid_from, observed_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?6)",
+        params![
+            source_id,
+            target_id,
+            kind,
+            confidence,
+            provenance,
+            observed_at
+        ],
     )?;
     Ok(changed == 1)
 }
 
 pub(crate) fn list_memory_edges(conn: &Connection) -> Result<Vec<StoredMemoryEdge>> {
+    let as_of = now_ms();
     let mut stmt = conn.prepare(
         "SELECT source_id, target_id, kind, confidence, provenance \
-         FROM memory_edges ORDER BY source_id, target_id, kind",
+         FROM memory_edges \
+         WHERE valid_from <= ?1 AND (valid_to IS NULL OR valid_to >= ?1) AND observed_at <= ?1 \
+         ORDER BY source_id, target_id, kind",
     )?;
-    stmt.query_map([], |row| {
+    stmt.query_map(params![as_of], |row| {
         Ok(StoredMemoryEdge {
             source_id: row.get(0)?,
             target_id: row.get(1)?,

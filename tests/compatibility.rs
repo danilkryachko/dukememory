@@ -135,7 +135,7 @@ fn schema_v21_migrates_then_survives_verified_backup_restore() {
         .execute_batch(
             "PRAGMA foreign_keys = OFF;\
              DROP TABLE memory_edges;\
-             DELETE FROM schema_versions WHERE version = 22;",
+             DELETE FROM schema_versions WHERE version >= 22;",
         )
         .unwrap();
     drop(connection);
@@ -147,7 +147,7 @@ fn schema_v21_migrates_then_survives_verified_backup_restore() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(version, 22);
+    assert_eq!(version, 24);
     let (source_id, target_id) = if first_id < second_id {
         (&first_id, &second_id)
     } else {
@@ -236,7 +236,7 @@ fn legacy_read_events_gain_session_link_before_session_index_creation() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(schema, 22);
+    assert_eq!(schema, 24);
 }
 
 #[test]

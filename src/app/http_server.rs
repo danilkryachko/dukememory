@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "http_ingest_routes.rs"]
+mod ingest_routes;
 #[path = "http_routes.rs"]
 mod routes;
 #[path = "http_security.rs"]
@@ -8,10 +10,18 @@ mod security;
 const HTTP_WORKERS: usize = 4;
 const HTTP_QUEUE_CAPACITY: usize = 64;
 const HTTP_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
+const HTTP_MAX_HEADER_BYTES: usize = 1024 * 1024;
+const HTTP_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 struct HttpAppState {
     default_db: PathBuf,
     auth_token: Option<String>,
+}
+
+#[derive(Default)]
+struct HttpRequestMeta {
+    method: String,
+    path: String,
 }
 
 pub(crate) fn serve_http(
@@ -104,25 +114,32 @@ pub(crate) fn resolve_http_auth_token(
 
 fn handle_http_stream(state: &HttpAppState, mut stream: TcpStream) -> Result<()> {
     let started = std::time::Instant::now();
+    let request_id = Uuid::new_v4().simple().to_string()[..16].to_string();
+    let mut request_meta = HttpRequestMeta::default();
     let peer = stream
         .peer_addr()
         .map(|address| address.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
-    let response = match routes::handle_http_request(
+    let mut response = match routes::handle_http_request(
         &state.default_db,
         &mut stream,
         state.auth_token.as_deref(),
+        &mut request_meta,
     ) {
         Ok(response) => response,
         Err(err) => HttpResponse::from_error(&err),
     };
     let status = response.status;
+    response.request_id = Some(request_id.clone());
     crate::http_api::write_response(&mut stream, response)?;
     eprintln!(
         "{}",
         json!({
             "event": "http_access",
             "peer": peer,
+            "request_id": request_id,
+            "method": request_meta.method,
+            "path": request_meta.path,
             "status": status,
             "elapsed_ms": started.elapsed().as_millis(),
         })
@@ -442,6 +459,23 @@ fn canonical_or_absolute(path: &Path) -> PathBuf {
     })
 }
 
+fn resolve_project_input(root: &Path, input: &Path) -> Result<PathBuf> {
+    let root = canonical_or_absolute(root);
+    let candidate = if input.is_absolute() {
+        input.to_path_buf()
+    } else {
+        root.join(input)
+    };
+    let candidate = canonical_or_absolute(&candidate);
+    if !candidate.starts_with(&root) {
+        bail!(
+            "file input is outside selected project root: {}",
+            candidate.display()
+        );
+    }
+    Ok(candidate)
+}
+
 fn memory_ui_html() -> &'static str {
     include_str!("memory_ui.html")
 }
@@ -459,19 +493,27 @@ fn read_http_request(stream: &mut TcpStream) -> Result<Vec<u8>> {
         if let Some(pos) = find_header_end(&buffer) {
             break pos;
         }
-        if buffer.len() > 1024 * 1024 {
+        if buffer.len() > HTTP_MAX_HEADER_BYTES {
             bail!("HTTP request headers are too large");
         }
     };
+    if header_end > HTTP_MAX_HEADER_BYTES {
+        bail!("HTTP request headers are too large");
+    }
     let content_length = content_length(&buffer[..header_end.saturating_sub(4)])?;
-    let target_len = header_end + content_length;
+    if content_length > HTTP_MAX_BODY_BYTES {
+        bail!("HTTP request body is too large");
+    }
+    let target_len = header_end
+        .checked_add(content_length)
+        .context("HTTP request size overflow")?;
     while buffer.len() < target_len {
         let read = stream.read(&mut chunk)?;
         if read == 0 {
             bail!("HTTP request body ended before Content-Length");
         }
         buffer.extend_from_slice(&chunk[..read]);
-        if buffer.len() > 16 * 1024 * 1024 {
+        if buffer.len() > target_len.max(HTTP_MAX_HEADER_BYTES + HTTP_MAX_BODY_BYTES) {
             bail!("HTTP request body is too large");
         }
     }
@@ -488,17 +530,34 @@ fn find_header_end(buffer: &[u8]) -> Option<usize> {
 
 fn content_length(header: &[u8]) -> Result<usize> {
     let header = std::str::from_utf8(header).context("HTTP headers must be UTF-8")?;
-    for line in header.lines() {
-        if let Some((name, value)) = line.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            return value
-                .trim()
-                .parse::<usize>()
-                .context("invalid Content-Length header");
+    let mut content_length = None;
+    for line in header.split("\r\n").skip(1) {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            bail!("obsolete folded HTTP headers are not supported");
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            bail!("malformed HTTP header line");
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            bail!("Transfer-Encoding is not supported");
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                bail!("duplicate Content-Length headers are not allowed");
+            }
+            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                bail!("invalid Content-Length header");
+            }
+            content_length = Some(
+                value
+                    .parse::<usize>()
+                    .context("invalid Content-Length header")?,
+            );
         }
     }
-    Ok(0)
+    Ok(content_length.unwrap_or(0))
 }
 
 fn http_snapshot(conn: &Connection) -> Result<Value> {
@@ -527,4 +586,39 @@ fn http_metrics(conn: &Connection) -> Result<Value> {
         "events": events,
         "schema": schema_version(conn)?
     }))
+}
+
+#[cfg(test)]
+mod http_framing_tests {
+    use super::content_length;
+
+    #[test]
+    fn accepts_one_canonical_content_length() {
+        assert_eq!(
+            content_length(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 42").unwrap(),
+            42
+        );
+        assert_eq!(
+            content_length(b"GET / HTTP/1.1\r\nHost: localhost").unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_unsupported_body_framing() {
+        for header in [
+            "POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1",
+            "POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2",
+            "POST / HTTP/1.1\r\nTransfer-Encoding: chunked",
+            "POST / HTTP/1.1\r\nTransfer-Encoding: identity\r\nContent-Length: 1",
+            "POST / HTTP/1.1\r\nContent-Length: +1",
+            "POST / HTTP/1.1\r\nContent-Length: 1, 1",
+            "POST / HTTP/1.1\r\n folded: value",
+        ] {
+            assert!(
+                content_length(header.as_bytes()).is_err(),
+                "header={header:?}"
+            );
+        }
+    }
 }

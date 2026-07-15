@@ -14,7 +14,10 @@
 [Architecture](docs/architecture.md) · [Operation catalog](docs/operations.md) · [Production deployment](docs/production-deployment.md)
 
 Run `dukememory operations --json` to inspect the same stable contract exposed
-by MCP `memory_operations` and HTTP `GET /operations`.
+by MCP `memory_operations` and HTTP `GET /operations`. Each operation declares
+stability, authorization scope, mutation/dry-run behavior, idempotency,
+destructiveness, open-world access, and stable input/output schema identifiers;
+catalogued MCP tools derive their annotations from this contract.
 
 Supply-chain policy, SBOM generation, and the two reviewed upstream exceptions
 are documented in [docs/supply-chain.md](docs/supply-chain.md).
@@ -47,6 +50,8 @@ Transcript-based memory quickly turns into noise.
 - **One-command Codex wiring** so future chats know memory is installed.
 - **Lightweight control surfaces** for health scoring, explainable recall, effectiveness, baselines, safe conflict cleanup, governance, sync dry-runs, and release gates.
 - **One stable control snapshot** shared by CLI, MCP, HTTP, and the web UI, with revision-aware caching, RAG/diff panels, and compatibility aliases for pinned clients.
+- **Bitemporal evidence graph** that separates when a fact was valid from when the agent observed it, with Git worktree/commit provenance.
+- **Production guardrails** for outbound HTTP, bounded request framing, storage quotas, correlation ids, and holdout-gated RAG releases.
 
 ## What It Remembers
 
@@ -74,7 +79,8 @@ context cost.
 
 ## Install
 
-Published releases include native Linux/macOS archives and a combined
+Published releases include native Linux (x86_64, ARM64, and x86_64 musl),
+macOS (Apple Silicon and Intel), and Windows x86_64 archives plus a combined
 `SHA256SUMS` manifest. Verify the archive checksum before installing. For a
 source build with the production vector backend:
 
@@ -129,6 +135,8 @@ dukememory recall-benchmark-baselines --json
 dukememory import-review docs/project-notes.md --json
 dukememory memory-upload docs/project-notes.md --json
 dukememory memanto-gap-report --json
+dukememory observations <memory-id> --json
+dukememory temporal-graph --json
 dukememory memory-timeline <memory-id> --json
 dukememory memory-conflict-review --json
 dukememory memory-conflict-apply --json
@@ -146,6 +154,27 @@ dukememory add decision \
 dukememory embed-index
 ```
 
+Record evidence with separate valid and observation time:
+
+```bash
+dukememory observe <memory-id> \
+  --kind verified \
+  --statement "The implementation still enforces the documented constraint" \
+  --evidence-kind test \
+  --evidence-ref "cargo test checkout_constraint" \
+  --target-memory-id <related-memory-id> \
+  --confidence 0.95 \
+  --json
+
+dukememory observations <memory-id> --valid-at 1784000000000 --json
+dukememory temporal-graph --valid-at 1784000000000 --known-at 1784100000000 --json
+```
+
+An observation stores `valid_from`/`valid_to` (when the claim applies) and
+`observed_at` (when DukeMemory learned it). Linked observations create graph
+edges whose provenance points back to the observation and records the current
+Git branch, commit, and worktree root.
+
 ## Local First
 
 `dukememory` stores data in the project by default:
@@ -159,6 +188,12 @@ dukememory embed-index
 No cloud service is required. The default local profile uses MiniLM embeddings
 stored in SQLite; semantic recall remains optional for projects that only need
 FTS.
+
+On Unix, new database directories are created with mode `700` and the SQLite
+database plus WAL/SHM sidecars are forced to mode `600`. SQLite
+`secure_delete=FAST` reduces residual deleted content. This is access hardening,
+not application-level database encryption; use encrypted host storage for
+sensitive projects and age-encrypted bundles for remote sync.
 
 ## Evidence-Backed Agent Sessions
 
@@ -406,7 +441,10 @@ scorer if a native query fails; an explicitly requested
 RAG commands use the same embedding provider for memory cards and can be
 inspected before generation. `embed-index` also embeds indexed source chunks,
 so semantic RAG can retrieve file evidence even when exact FTS terms are weak.
-Text/code files can also be indexed as local source chunks:
+Text/code files can also be indexed as local source chunks. Markdown headings
+and top-level Rust, Python, JavaScript/TypeScript, SQL, and shell declarations
+are used as preferred chunk boundaries; other content keeps bounded line-based
+chunking:
 
 ```bash
 dukememory rag-ingest README.md --json
@@ -437,7 +475,7 @@ regressions before explicit benchmark cases are written. Each case reports the
 same packed source selection diagnostics as `rag-debug`, including selected
 chunk counts and overlap/file-cap suppression. Failing cases also distinguish
 expected evidence that was selected, suppressed by packing, or missing from the
-retrieved candidates. The v3 report includes `evidence_placement` with
+retrieved candidates. The v6 report includes `evidence_placement` with
 selection recall, candidate recall, near-miss count, and suppression reasons so
 file-cap or limit pressure is visible without reading every case. It also adds
 `eval_matrix` coverage across source chunks, memory cards, CLI/MCP/HTTP
@@ -446,9 +484,17 @@ packing near-misses, plus `retrieval_tuning` with the recommended ranking
 profile from actual eval failures or near-misses. It also builds a deterministic
 grounded answer from the selected source pack and checks that expected evidence
 reaches the answer with a valid selected citation. The top-level `packing`,
-`evidence_placement`, `grounded_answers`, `eval_matrix`, and
+`evidence_placement`, `grounded_answers`, `ranking`, `eval_matrix`, and
 `retrieval_tuning` summaries aggregate those counts across the whole eval run
-for release-gate inspection.
+for release-gate inspection. `ranking` reports the expected evidence rank,
+Hit@1/3/5, and mean reciprocal rank so ordering regressions remain visible even
+when recall stays at 100%. Cases are explicitly split into `development` and
+`holdout`; auto-generated probes never count as holdout. Release readiness
+requires at least five holdout cases with 100% retrieval and grounded-answer
+success. Baseline v3 fingerprints the canonical case corpus and retrieval
+configuration, so changed cases or model/provider settings block comparison
+instead of producing a misleading pass. The release gate also requires Hit@3
+of at least 50% and records Hit@3/MRR for regression comparison.
 Chunked RAG sources provide file/document evidence for answers, while durable
 decisions and constraints should still be saved as reviewed memory cards.
 The same source-chunk indexing path is exposed to agents as MCP
@@ -467,8 +513,8 @@ The same RAG source-pack recall is surfaced in `memory-eval-story`,
 `rag_source_pack_eval`, whose detail includes the aggregate `eval rag` packing
 and grounded-answer summaries.
 `rag-answer`, `rag-debug`, and `graph-rag` JSON reports include a compact
-`trace` array with ranked evidence ids, scores, reasons, and chunk file
-locations when source chunks are used. `graph-rag` also returns `graph_summary`
+`trace` array with ranked evidence ids, scores, reasons, chunk file locations,
+stable evidence references, and content hashes. `graph-rag` also returns `graph_summary`
 with seed/expanded node counts, edge density, isolated nodes, relationship
 coverage, max relationships per node, and relationship kinds for a quick
 graph-connectivity read. RAG source packing also suppresses
@@ -550,6 +596,21 @@ in session storage. State-changing browser requests are restricted to the
 request host. Extra trusted origins can be listed, comma-separated, in
 `DUKEMEMORY_HTTP_ALLOWED_ORIGINS`.
 
+Maintenance endpoints that can apply changes are preview-first unless an
+explicit `apply: true` (or documented legacy equivalent) is supplied. File
+ingest endpoints only resolve inputs inside the selected project root. Internal
+failures return an incident id instead of leaking SQL, filesystem paths, or
+error chains to clients; the full chain is emitted to stderr with that id.
+Every response also returns `X-Request-Id`, and the same id, method, sanitized
+path, status, peer, and elapsed time are emitted in the JSON access event.
+
+Outbound model/provider requests use a central egress policy: only HTTP(S), no
+URL credentials, redirects disabled, DNS checked and pinned, and private,
+link-local, metadata, or special-use destinations blocked except explicit
+loopback development endpoints. Additional exact hosts can be allowed with
+`DUKEMEMORY_EGRESS_ALLOW_HOSTS`; request timeout defaults to 60 seconds and can
+be changed with `DUKEMEMORY_MODEL_TIMEOUT_SECS`.
+
 The built-in server is plain HTTP. Terminate TLS at a trusted reverse proxy
 (for example Caddy or nginx) whenever traffic leaves the host, preserve the
 original `Host` header, and restrict network access with a firewall. Access
@@ -577,14 +638,38 @@ It combines usage, usefulness, quality, embeddings, autonomous maintenance, and
 local-first multi-device readiness. Memory gaps become reviewable suggestions
 instead of noisy automatic writes.
 
+Storage health reports byte quotas and `ok`/`warn`/`critical` pressure. Defaults
+are 512 MiB for `.agent`, 256 MiB for database backups, and 128 MiB each for
+autonomous rollbacks and install backups. Override them with
+`DUKEMEMORY_AGENT_QUOTA_BYTES`, `DUKEMEMORY_BACKUP_QUOTA_BYTES`,
+`DUKEMEMORY_ROLLBACK_QUOTA_BYTES`, and
+`DUKEMEMORY_INSTALL_BACKUP_QUOTA_BYTES`; backup rotation enforces both count and
+byte limits while retaining the newest verified backup.
+
 ## MCP And Codex
 
 ```bash
-dukememory serve-mcp
+dukememory serve-mcp --profile core --page-size 20
 dukememory install-skill
 dukememory connect-codex --apply --json
 dukememory codex-doctor --json
 ```
+
+The MCP server negotiates protocol versions `2025-11-25`, `2025-06-18`, and
+`2024-11-05`, implements the initialize/initialized lifecycle, cursor-paginates
+tool lists, supports newline and bounded streaming `Content-Length` framing,
+and never responds to notifications. `core`, `standard`, and `full` profiles
+reduce tool-description overhead (`full` remains the compatibility default);
+the environment equivalents are `DUKEMEMORY_MCP_PROFILE` and
+`DUKEMEMORY_MCP_PAGE_SIZE`. Input schemas are closed Draft 2020-12 schemas with
+bounded strings, arrays, integers, enums, and runtime validation.
+
+MCP Resources expose project status, doctrine, and `dukememory://memory/{id}`.
+With protocol `2025-11-25`, expensive tools can run as Tasks and be polled,
+listed, cancelled, and read through `tasks/get`, `tasks/list`, `tasks/cancel`,
+and `tasks/result`. Project selection is capability-scoped to the default
+project, discovered sibling projects, or roots explicitly listed in
+`DUKEMEMORY_MCP_ALLOWED_ROOTS`; file ingest remains inside the selected root.
 
 Agent rule: read `brief`, use `impact`, run `drift` before broad edits, write
 only durable outcomes, then re-index embeddings after important writes.

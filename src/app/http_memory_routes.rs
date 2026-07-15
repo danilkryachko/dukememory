@@ -24,6 +24,7 @@ pub(crate) fn route_memory_operation(
         ("POST", HTTP_SEARCH) => search_memories(conn, body)?,
         _ => return Ok(None),
     };
+    debug_assert!(path == HTTP_OPERATIONS || operation_for_http(path).is_some());
     Ok(Some(response))
 }
 

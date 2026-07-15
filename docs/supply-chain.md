@@ -17,3 +17,14 @@ cargo cyclonedx --format json --all-features --target all \
   --spec-version 1.5 --override-filename dukememory.cdx
 jq -e '.bomFormat == "CycloneDX" and (.components | length > 0)' dukememory.cdx.json
 ```
+
+Tagged releases also generate GitHub/Sigstore build-provenance attestations for
+every archive, checksum, the combined `SHA256SUMS`, and the CycloneDX SBOM. The
+attestation action is pinned to the reviewed immutable SHA for `actions/attest
+v4.1.1`. After downloading an asset, verify both its checksum and provenance:
+
+```bash
+sha256sum --check SHA256SUMS --ignore-missing
+gh attestation verify dukememory-x86_64-unknown-linux-gnu.tar.gz \
+  --repo danilkryachko/dukememory
+```

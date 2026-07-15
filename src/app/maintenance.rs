@@ -350,7 +350,8 @@ pub(crate) fn auto_ingest_sessions(
     dry_run: bool,
 ) -> Result<AutoIngestReport> {
     validate_scope(scope)?;
-    let files = collect_session_files(input)?;
+    let input = input.canonicalize().unwrap_or_else(|_| input.to_path_buf());
+    let files = collect_session_files(&input)?;
     let mut report = AutoIngestReport {
         scanned: files.len(),
         ingested: 0,
@@ -474,9 +475,8 @@ pub(crate) fn suggest_from_llm(
         "Extract durable project memory from this transcript. Return lines only in this format: type|title|body. Valid types: product_goal,user_preference,decision,design_note,known_issue,command,task_state,domain_fact,constraint,note.\n\n{text}"
     );
     let url = format!("{}/api/generate", endpoint.trim_end_matches('/'));
-    let value: Value = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(180))
-        .build()?
+    let (client, url) = egress::blocking_http_client(&url, std::time::Duration::from_secs(60))?;
+    let value: Value = client
         .post(url)
         .json(&json!({"model": model, "prompt": prompt, "stream": false}))
         .send()?

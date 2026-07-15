@@ -4,6 +4,7 @@ pub(super) fn handle_http_request(
     db: &Path,
     stream: &mut TcpStream,
     auth_token: Option<&str>,
+    request_meta: &mut HttpRequestMeta,
 ) -> Result<HttpResponse> {
     let buffer = read_http_request(stream)?;
     let raw = String::from_utf8_lossy(&buffer);
@@ -14,6 +15,8 @@ pub(super) fn handle_http_request(
     let method = parts.first().copied().unwrap_or("");
     let raw_path = parts.get(1).copied().unwrap_or("/");
     let (path, query) = split_query(raw_path);
+    request_meta.method = method.to_string();
+    request_meta.path = path.to_string();
     let headers = lines
         .filter_map(|line| {
             let (name, value) = line.split_once(':')?;
@@ -60,6 +63,11 @@ pub(super) fn handle_http_request(
     let request_context = project_context(db, selected_project.as_deref())?;
     let conn = open_db(&request_context.db)?;
     let memory_app = MemoryApplication::new(MemoryStore::new(&conn));
+    if let Some(response) =
+        super::ingest_routes::route_ingest_operation(db, &conn, method, path, query, body)?
+    {
+        return Ok(response);
+    }
     if let Some(response) = route_memory_operation(&conn, &memory_app, method, path, query, body)? {
         return Ok(response);
     }
@@ -1541,133 +1549,6 @@ pub(super) fn handle_http_request(
                 write_baseline,
             )?}))
         }
-        ("POST", "/import-review/apply") => {
-            let value = parse_json_body(body)?;
-            let ctx = selected_project_from_body(db, &value)?;
-            let input = value
-                .get("input")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .unwrap_or_else(|| ctx.root.join("README.md"));
-            let scope = value
-                .get("scope")
-                .and_then(Value::as_str)
-                .unwrap_or("project");
-            let apply = value.get("apply").and_then(Value::as_bool).unwrap_or(false);
-            HttpResponse::ok(json!({"import_review": import_review_report(
-                &conn,
-                &ctx.root,
-                &input,
-                scope,
-                apply,
-            )?}))
-        }
-        ("POST", "/memory-upload") => {
-            let value = parse_json_body(body)?;
-            let ctx = selected_project_from_body(db, &value)?;
-            let input = value
-                .get("input")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .with_context(|| "memory-upload requires input")?;
-            let scope = value
-                .get("scope")
-                .and_then(Value::as_str)
-                .unwrap_or("project");
-            let apply = value.get("apply").and_then(Value::as_bool).unwrap_or(false);
-            HttpResponse::ok(json!({"memory_upload": memory_upload_report(
-                &conn,
-                &ctx.root,
-                &input,
-                scope,
-                apply,
-            )?}))
-        }
-        ("POST", "/rag-ingest") => {
-            let value = parse_json_body(body)?;
-            let ctx = selected_project_from_body(db, &value)?;
-            let input = value
-                .get("input")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .with_context(|| "rag-ingest requires input")?;
-            let scope = value
-                .get("scope")
-                .and_then(Value::as_str)
-                .unwrap_or("project");
-            let apply = value.get("apply").and_then(Value::as_bool).unwrap_or(false);
-            let embed = value.get("embed").and_then(Value::as_bool).unwrap_or(false);
-            let provider = value
-                .get("provider")
-                .and_then(Value::as_str)
-                .unwrap_or(DEFAULT_EMBED_PROVIDER);
-            let endpoint = value
-                .get("endpoint")
-                .and_then(Value::as_str)
-                .unwrap_or(DEFAULT_EMBED_ENDPOINT);
-            let model = value
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or(DEFAULT_EMBED_MODEL);
-            HttpResponse::ok(
-                json!({"rag_ingest": crate::app::rag_ingest::rag_ingest_report(
-                &conn,
-                crate::app::rag_ingest::RagIngestRequest {
-                    root: &ctx.root,
-                    input: &input,
-                    scope,
-                    apply,
-                    embed,
-                    provider,
-                    endpoint,
-                    model,
-                    chunk_chars: value
-                        .get("chunk_chars")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(900) as usize,
-                    overlap_chars: value
-                        .get("overlap_chars")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(140) as usize,
-                    max_file_bytes: value
-                        .get("max_file_bytes")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(200_000) as usize,
-                    max_files: value
-                        .get("max_files")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(128) as usize,
-                    json: true,
-                },
-            )?}),
-            )
-        }
-        ("GET", "/rag-sources") => {
-            let params = parse_query(query);
-            let selected = params.get("project").map(String::as_str);
-            let ctx = project_context(db, selected)?;
-            let provider = params
-                .get("provider")
-                .map(String::as_str)
-                .unwrap_or(DEFAULT_EMBED_PROVIDER);
-            let endpoint = params
-                .get("endpoint")
-                .map(String::as_str)
-                .unwrap_or(DEFAULT_EMBED_ENDPOINT);
-            let model = params
-                .get("model")
-                .map(String::as_str)
-                .unwrap_or(DEFAULT_EMBED_MODEL);
-            HttpResponse::ok(
-                json!({"rag_sources": crate::app::rag_ingest::rag_sources_report(
-                &conn,
-                &ctx.root,
-                provider,
-                endpoint,
-                model,
-            )?}),
-            )
-        }
         ("GET", "/memanto-gap-report") => {
             HttpResponse::ok(json!({"memanto_gap": memanto_gap_report(&conn)?}))
         }
@@ -1989,7 +1870,7 @@ pub(super) fn handle_http_request(
                 false,
             )?}))
         }
-        ("POST", "/memory-conflict-apply/apply") | ("POST", "/memory-conflict-apply") => {
+        ("POST", "/memory-conflict-apply/apply") => {
             let value = parse_json_body(body)?;
             let stale_days = value
                 .get("stale_days")
@@ -2001,6 +1882,25 @@ pub(super) fn handle_http_request(
                 .map(|value| value as usize)
                 .unwrap_or(20);
             let apply = value.get("apply").and_then(Value::as_bool).unwrap_or(true);
+            HttpResponse::ok(json!({"conflict_apply": memory_conflict_apply_report(
+                &conn,
+                stale_days,
+                limit,
+                apply,
+            )?}))
+        }
+        ("POST", "/memory-conflict-apply") => {
+            let value = parse_json_body(body)?;
+            let stale_days = value
+                .get("stale_days")
+                .and_then(Value::as_i64)
+                .unwrap_or(30);
+            let limit = value
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map(|value| value as usize)
+                .unwrap_or(20);
+            let apply = value.get("apply").and_then(Value::as_bool).unwrap_or(false);
             HttpResponse::ok(json!({"conflict_apply": memory_conflict_apply_report(
                 &conn,
                 stale_days,
@@ -2532,9 +2432,15 @@ pub(super) fn handle_http_request(
             let value = parse_json_body(body)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
-            let apply = !value
-                .get("dry_run")
+            let apply = value
+                .get("apply")
                 .and_then(Value::as_bool)
+                .or_else(|| {
+                    value
+                        .get("dry_run")
+                        .and_then(Value::as_bool)
+                        .map(|dry_run| !dry_run)
+                })
                 .unwrap_or(false);
             HttpResponse::ok(json!({"auto_feedback": auto_feedback_v2_report(
                 &conn,
@@ -3313,31 +3219,6 @@ pub(super) fn handle_http_request(
             let evidence = evidence_report(&conn, id)?;
             let request_count = memory_request_count(&conn, id)?;
             HttpResponse::ok(json!({"evidence": evidence, "request_count": request_count}))
-        }
-        ("POST", "/auto-ingest") => {
-            let value = parse_json_body(body)?;
-            let input = value
-                .get("input")
-                .and_then(Value::as_str)
-                .unwrap_or(".agent/sessions");
-            let scope = value
-                .get("scope")
-                .and_then(Value::as_str)
-                .unwrap_or("project");
-            let dry_run = value
-                .get("dry_run")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let report = auto_ingest_sessions(
-                &conn,
-                Path::new(input),
-                scope,
-                false,
-                DEFAULT_EMBED_ENDPOINT,
-                "qwen3:14b",
-                dry_run,
-            )?;
-            HttpResponse::ok(json!({"auto_ingest": report}))
         }
         ("POST", "/doctor") => HttpResponse::ok(json!({
             "secrets": scan_secret_findings(&conn)?.len(),

@@ -496,7 +496,7 @@ fn graph_edge_limit(limit: usize) -> usize {
 }
 
 fn graph_node_summary_limit(limit: usize) -> usize {
-    if limit <= 6 { 240 } else { 180 }
+    if limit <= 6 { 320 } else { 280 }
 }
 
 fn graph_missing_evidence(
@@ -815,13 +815,13 @@ fn graph_extractive_answer(
         .any(|ch| ('\u{0400}'..='\u{04FF}').contains(&ch));
     let node_text = nodes
         .iter()
-        .take(4)
+        .take(6)
         .map(|node| {
             format!(
                 "{} [{}]: {}",
                 node.title,
                 node.id,
-                truncate_chars(&node.summary, 160)
+                truncate_chars(&node.summary, 260)
             )
         })
         .collect::<Vec<_>>()
@@ -951,6 +951,42 @@ mod graph_rag_tests {
         assert_eq!(summary.edge_density, 0.167);
         assert_eq!(summary.relationship_kinds.get("relates_to"), Some(&1));
         assert_eq!(summary.status, "partial");
+    }
+
+    #[test]
+    fn graph_extractive_answer_keeps_specific_guard_phrase() {
+        let mut nodes = vec![node("guard-node", "active", 80.0)];
+        nodes[0].title =
+            "GraphRAG requires selected citations before accepting generation".to_string();
+        nodes[0].summary = "Graph answers fall back to the extractive graph answer when they are empty, contain prompt fragments, or do not mention any selected graph node id. Tests cover short uncited output and cited generated output that should remain accepted."
+            .to_string();
+
+        let answer = graph_extractive_answer(
+            "What does GraphRAG require before accepting generated answers?",
+            &nodes,
+            &[],
+            &[],
+        );
+
+        assert!(answer.contains("selected graph node id"));
+        assert!(answer.contains("[guard-node]"));
+    }
+
+    #[test]
+    fn graph_extractive_answer_includes_fifth_selected_node() {
+        let nodes = (0..6)
+            .map(|index| {
+                let mut node = node(&format!("node-{index}"), "active", 100.0 - index as f64);
+                node.summary = format!("selected graph evidence {index}");
+                node
+            })
+            .collect::<Vec<_>>();
+
+        let answer =
+            graph_extractive_answer("Which selected graph evidence matters?", &nodes, &[], &[]);
+
+        assert!(answer.contains("[node-4]"));
+        assert!(answer.contains("selected graph evidence 4"));
     }
 
     #[test]

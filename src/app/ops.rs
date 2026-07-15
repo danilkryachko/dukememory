@@ -164,10 +164,8 @@ fn model_endpoint_ok(endpoint: &str) -> bool {
         return true;
     }
     let url = format!("{}/api/tags", endpoint.trim_end_matches('/'));
-    reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_millis(1500))
-        .build()
-        .and_then(|client| client.get(url).send())
+    egress::blocking_http_client(&url, std::time::Duration::from_millis(1500))
+        .and_then(|(client, url)| client.get(url).send().map_err(Into::into))
         .map(|response| response.status().is_success())
         .unwrap_or(false)
 }
@@ -189,6 +187,8 @@ struct BackupPolicyReport {
     temp_pruned: Vec<String>,
     sidecar_pruned: Vec<String>,
     kept: Vec<String>,
+    retained_bytes: u64,
+    quota_bytes: u64,
     dry_run: bool,
 }
 
@@ -351,12 +351,31 @@ fn run_backup_policy_impl(
     backups.sort();
     backups.reverse();
 
-    let kept = backups
-        .iter()
-        .take(keep)
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>();
-    let prune_paths = backups.into_iter().skip(keep).collect::<Vec<_>>();
+    let quota_bytes = std::env::var("DUKEMEMORY_BACKUP_QUOTA_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(256 * 1024 * 1024);
+    let mut kept = Vec::new();
+    let mut prune_paths = Vec::new();
+    let mut retained_bytes = 0_u64;
+    for (index, path) in backups.into_iter().enumerate() {
+        let bytes = if dry_run && path == backup_path {
+            fs::metadata(db).map(|metadata| metadata.len()).unwrap_or(0)
+        } else {
+            fs::metadata(&path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0)
+        };
+        let within_count = index < keep;
+        let within_quota = kept.is_empty() || retained_bytes.saturating_add(bytes) <= quota_bytes;
+        if within_count && within_quota {
+            retained_bytes = retained_bytes.saturating_add(bytes);
+            kept.push(path.display().to_string());
+        } else {
+            prune_paths.push(path);
+        }
+    }
     let mut pruned = Vec::new();
     for path in prune_paths {
         pruned.push(path.display().to_string());
@@ -402,6 +421,8 @@ fn run_backup_policy_impl(
         temp_pruned,
         sidecar_pruned,
         kept,
+        retained_bytes,
+        quota_bytes,
         dry_run,
     };
     if quiet {
@@ -413,6 +434,10 @@ fn run_backup_policy_impl(
         println!("backup: {}", backup_path.display());
         println!("verified: {}", report.verified);
         println!("kept: {}", report.kept.len());
+        println!(
+            "retained_bytes: {}/{}",
+            report.retained_bytes, report.quota_bytes
+        );
         println!("pruned: {}", report.pruned.len());
         if dry_run {
             println!("dry_run: true");

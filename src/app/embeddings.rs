@@ -911,9 +911,7 @@ fn store_rag_chunk_embedding(
 
 fn fetch_ollama_embedding(endpoint: &str, model: &str, text: &str) -> Result<Vec<f32>> {
     let url = format!("{}/api/embeddings", endpoint.trim_end_matches('/'));
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()?;
+    let (client, url) = egress::blocking_http_client(&url, std::time::Duration::from_secs(60))?;
     let response = client
         .post(url)
         .json(&OllamaEmbeddingRequest {
@@ -947,9 +945,7 @@ struct OpenAiEmbeddingData {
 
 fn fetch_openai_embedding(endpoint: &str, model: &str, text: &str) -> Result<Vec<f32>> {
     let url = format!("{}/v1/embeddings", endpoint.trim_end_matches('/'));
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()?;
+    let (client, url) = egress::blocking_http_client(&url, std::time::Duration::from_secs(60))?;
     let mut request = client
         .post(url)
         .json(&OpenAiEmbeddingRequest { model, input: text });
@@ -1056,13 +1052,9 @@ fn provider_models(provider: &str, endpoint: &str) -> Result<Vec<ProviderModel>>
         }]),
         "ollama" => {
             let url = format!("{}/api/tags", endpoint.trim_end_matches('/'));
-            let value: Value = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()?
-                .get(url)
-                .send()?
-                .error_for_status()?
-                .json()?;
+            let (client, url) =
+                egress::blocking_http_client(&url, std::time::Duration::from_secs(30))?;
+            let value: Value = client.get(url).send()?.error_for_status()?.json()?;
             let models = value
                 .get("models")
                 .and_then(Value::as_array)
@@ -1082,10 +1074,9 @@ fn provider_models(provider: &str, endpoint: &str) -> Result<Vec<ProviderModel>>
         }
         "openai" | "openai-compatible" | "openai_compatible" => {
             let url = format!("{}/v1/models", endpoint.trim_end_matches('/'));
-            let mut request = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()?
-                .get(url);
+            let (client, url) =
+                egress::blocking_http_client(&url, std::time::Duration::from_secs(30))?;
+            let mut request = client.get(url);
             if let Ok(key) = std::env::var("DUKEMEMORY_OPENAI_API_KEY")
                 && !key.trim().is_empty()
             {
@@ -1750,18 +1741,28 @@ fn embedding_provider_health(
     let result = match provider_key.as_str() {
         "ollama" => {
             let url = format!("{endpoint_key}/api/tags");
-            provider_health_client(&endpoint_key)
-                .build()
-                .and_then(|client| client.get(url).send())
-                .and_then(|response| response.error_for_status().map(|_| ()))
-                .map_err(Into::into)
+            egress::blocking_http_client(
+                &url,
+                std::time::Duration::from_millis(PROVIDER_HEALTH_TIMEOUT_MS),
+            )
+            .and_then(|(client, url)| {
+                client
+                    .get(url)
+                    .send()?
+                    .error_for_status()
+                    .map(|_| ())
+                    .map_err(Into::into)
+            })
         }
         "openai" | "openai-compatible" | "openai_compatible" => {
             let url = format!("{endpoint_key}/v1/models");
-            let client = match provider_health_client(&endpoint_key).build() {
-                Ok(client) => client,
+            let (client, url) = match egress::blocking_http_client(
+                &url,
+                std::time::Duration::from_millis(PROVIDER_HEALTH_TIMEOUT_MS),
+            ) {
+                Ok(target) => target,
                 Err(error) => {
-                    let health = provider_health_error(started, error.into());
+                    let health = provider_health_error(started, error);
                     store_embedding_provider_health(conn, &provider_key, &endpoint_key, &health);
                     return health;
                 }
@@ -1789,29 +1790,6 @@ fn embedding_provider_health(
     };
     store_embedding_provider_health(conn, &provider_key, &endpoint_key, &health);
     health
-}
-
-fn provider_health_client(endpoint: &str) -> reqwest::blocking::ClientBuilder {
-    let builder = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_millis(PROVIDER_HEALTH_TIMEOUT_MS));
-    if endpoint_is_loopback(endpoint) {
-        builder.no_proxy()
-    } else {
-        builder
-    }
-}
-
-fn endpoint_is_loopback(endpoint: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(endpoint) else {
-        return false;
-    };
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|address| address.is_loopback())
 }
 
 fn cached_embedding_provider_health(

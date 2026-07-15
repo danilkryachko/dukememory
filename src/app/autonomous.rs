@@ -3778,10 +3778,8 @@ fn autopilot_endpoint_ok(provider: &str, endpoint: &str) -> bool {
     } else {
         format!("{}/v1/models", endpoint.trim_end_matches('/'))
     };
-    reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_millis(1500))
-        .build()
-        .and_then(|client| client.get(url).send())
+    egress::blocking_http_client(&url, std::time::Duration::from_millis(1500))
+        .and_then(|(client, url)| client.get(url).send().map_err(Into::into))
         .map(|response| response.status().is_success())
         .unwrap_or(false)
 }

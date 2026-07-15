@@ -25,6 +25,21 @@ jobs:
       - name: Check declared minimum Rust version
         run: cargo check --locked
 
+  platform:
+    name: Platform (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Check minimal cross-platform build
+        run: cargo check --locked --all-targets --no-default-features
+      - name: Test cross-platform core
+        run: cargo test --locked --no-default-features --bin dukememory
+
   quality:
     runs-on: ubuntu-latest
     steps:

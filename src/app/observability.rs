@@ -296,6 +296,7 @@ pub(crate) struct ProjectDiffReport {
     pub(crate) root: String,
     pub(crate) changed_only: bool,
     pub(crate) changed_files: Vec<String>,
+    pub(crate) git: GitWorktreeContext,
     pub(crate) missing_links: usize,
     pub(crate) conflicts: usize,
     pub(crate) stale_active: usize,
@@ -303,6 +304,20 @@ pub(crate) struct ProjectDiffReport {
     pub(crate) impact: ProjectDiffImpactSummary,
     pub(crate) drift: DriftReport,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct GitWorktreeContext {
+    pub(crate) available: bool,
+    pub(crate) worktree_root: String,
+    pub(crate) common_git_dir: String,
+    pub(crate) branch: Option<String>,
+    pub(crate) head_commit: Option<String>,
+    pub(crate) head_committed_at: Option<String>,
+    pub(crate) detached: bool,
+    pub(crate) dirty: bool,
+    pub(crate) observed_at: i64,
+    pub(crate) temporal_basis: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1470,6 +1485,8 @@ pub(crate) struct MemoryEffectivenessV2Report {
     pub(crate) confirmed_rate: f64,
     pub(crate) wasted_read_rate: f64,
     pub(crate) semantic_result_rate: f64,
+    pub(crate) active_card_count: usize,
+    pub(crate) ignored_card_count: usize,
     pub(crate) top_useful_cards: Vec<MemoryEffectivenessCard>,
     pub(crate) ignored_cards: Vec<MemoryEffectivenessCard>,
     pub(crate) weak_reads: Vec<MemoryEffectivenessRead>,
@@ -2111,6 +2128,7 @@ pub(crate) struct WebRagEvalQuickSummary {
     pub(crate) grounded_answers: RagEvalGroundedSummary,
     pub(crate) eval_matrix: RagEvalMatrixSummary,
     pub(crate) retrieval_tuning: RagEvalRetrievalTuningSummary,
+    pub(crate) split: RagEvalSplitSummary,
     pub(crate) baseline: RagEvalBaselineSummary,
     pub(crate) detail: String,
 }
@@ -2154,6 +2172,7 @@ pub(crate) struct MemoryDiffReviewReport {
     pub(crate) root: String,
     pub(crate) applied: bool,
     pub(crate) changed_files: Vec<String>,
+    pub(crate) git: GitWorktreeContext,
     pub(crate) impact: MemoryDiffImpactSummary,
     pub(crate) suggested_memory: Vec<String>,
     pub(crate) candidate_cards: Vec<MemoryDiffCandidate>,
@@ -2186,6 +2205,11 @@ pub(crate) struct MemoryDiffCandidate {
     pub(crate) confidence: f64,
     pub(crate) link: String,
     pub(crate) reason: String,
+    pub(crate) worktree_root: String,
+    pub(crate) branch: Option<String>,
+    pub(crate) base_commit: Option<String>,
+    pub(crate) observed_at: i64,
+    pub(crate) temporal_basis: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -2645,6 +2669,11 @@ pub(crate) struct OpsStorageStatus {
     pub(crate) rollback_count: usize,
     pub(crate) install_backups_bytes: u64,
     pub(crate) install_backups_count: usize,
+    pub(crate) agent_quota_bytes: u64,
+    pub(crate) backups_quota_bytes: u64,
+    pub(crate) rollback_quota_bytes: u64,
+    pub(crate) install_backups_quota_bytes: u64,
+    pub(crate) over_quota: Vec<String>,
     pub(crate) retention_ready: bool,
     pub(crate) pressure: String,
 }
@@ -6047,10 +6076,13 @@ pub(crate) fn release_gate_v3_report(
     });
     checks.push(ReleaseGateCheck {
         name: "rag_source_pack_eval".to_string(),
-        ok: rag_eval.ok && rag_eval.recall >= 80.0,
+        ok: rag_eval.ok
+            && rag_eval.recall >= 80.0
+            && rag_eval.ranking.hit_at_3_rate >= 50.0
+            && rag_eval.split.holdout_ready,
         required: true,
         detail: format!(
-            "recall={:.1}% passed={}/{} source={} semantic_fallbacks={} grounded={:.1}% grounded_passed={}/{} packing_selected={}/{} packing_chunks={}/{} suppressed_overlap={} suppressed_file_cap={} suppressed_limit={} expected_selected={} expected_suppressed={} expected_missing={} evidence_selection={:.1}% evidence_candidate={:.1}% near_misses={} matrix={} matrix_coverage={:.1}% matrix_missing={} retrieval_profile={} retrieval_tuning={}",
+            "recall={:.1}% passed={}/{} source={} semantic_fallbacks={} grounded={:.1}% grounded_passed={}/{} hit_at_3={:.1}% mrr={:.1}% packing_selected={}/{} packing_chunks={}/{} suppressed_overlap={} suppressed_file_cap={} suppressed_limit={} expected_selected={} expected_suppressed={} expected_missing={} evidence_selection={:.1}% evidence_candidate={:.1}% near_misses={} matrix={} matrix_coverage={:.1}% matrix_missing={} retrieval_profile={} retrieval_tuning={} holdout={}/{} holdout_recall={:.1}% holdout_grounded={:.1}% holdout_ready={}",
             rag_eval.recall,
             rag_eval.passed,
             rag_eval.total,
@@ -6059,6 +6091,8 @@ pub(crate) fn release_gate_v3_report(
             rag_eval.grounded_answers.coverage,
             rag_eval.grounded_answers.passed,
             rag_eval.total,
+            rag_eval.ranking.hit_at_3_rate,
+            rag_eval.ranking.mean_reciprocal_rank,
             rag_eval.packing.selected_count,
             rag_eval.packing.candidate_count,
             rag_eval.packing.selected_chunks,
@@ -6076,12 +6110,17 @@ pub(crate) fn release_gate_v3_report(
             rag_eval.eval_matrix.coverage,
             rag_eval.eval_matrix.missing_dimensions.len(),
             rag_eval.retrieval_tuning.selected_profile,
-            rag_eval.retrieval_tuning.status
+            rag_eval.retrieval_tuning.status,
+            rag_eval.split.holdout_passed,
+            rag_eval.split.holdout_total,
+            rag_eval.split.holdout_recall,
+            rag_eval.split.holdout_grounded_coverage,
+            rag_eval.split.holdout_ready
         ),
     });
     checks.push(ReleaseGateCheck {
         name: "rag_eval_baseline".to_string(),
-        ok: !matches!(rag_eval.baseline.status.as_str(), "invalid" | "regressed"),
+        ok: !rag_eval_baseline_blocks_release(&rag_eval.baseline.status),
         required: true,
         detail: format!(
             "status={} present={} regression={} signature={} baseline={}",
@@ -6595,10 +6634,10 @@ pub(crate) fn memory_quality_ci_report(
         })
         .map(|check| check.name.clone())
         .collect::<Vec<_>>();
-    if !(rag_eval.ok && rag_eval.recall >= 80.0) {
+    if !(rag_eval.ok && rag_eval.recall >= 80.0 && rag_eval.split.holdout_ready) {
         failed_checks.push("rag_source_pack_eval".to_string());
     }
-    if matches!(rag_eval.baseline.status.as_str(), "invalid" | "regressed") {
+    if rag_eval_baseline_blocks_release(&rag_eval.baseline.status) {
         failed_checks.push("rag_eval_baseline".to_string());
     }
     if graph_rag_eval.total > 0 && !graph_rag_eval.ok {
@@ -6611,7 +6650,8 @@ pub(crate) fn memory_quality_ci_report(
         && gate.benchmark.score >= 80.0
         && gate.audit_v2.score >= 80.0
         && rag_eval.ok
-        && !matches!(rag_eval.baseline.status.as_str(), "invalid" | "regressed")
+        && rag_eval.split.holdout_ready
+        && !rag_eval_baseline_blocks_release(&rag_eval.baseline.status)
         && (graph_rag_eval.total == 0 || graph_rag_eval.ok);
     Ok(MemoryQualityCiReport {
         version: 1,
@@ -8923,18 +8963,21 @@ pub(crate) fn memory_effectiveness_lab_report(
     let read_count = usage.read_count.max(trace.traced_reads);
     let empty_rate = ratio(trace.empty_reads, read_count.max(1));
     let questioned_rate = ratio(trace.questioned_reads, trace.influenced_reads.max(1));
-    let confirmed_rate = ratio(trace.confirmed_reads, trace.influenced_reads.max(1));
-    let semantic_penalty = if usage.semantic_eligible_total > 0 {
-        (1.0 - usage.semantic_eligible_result_rate).max(0.0) * 15.0
-    } else {
-        0.0
-    };
-    let score = (70.0 + roi.score * 0.20 + confirmed_rate * 20.0
-        - empty_rate * 25.0
-        - questioned_rate * 20.0
-        - semantic_penalty)
-        .clamp(0.0, 100.0);
+    let influenced_rate = ratio(trace.influenced_reads, read_count.max(1));
+    let score = memory_effectiveness_score(MemoryEffectivenessScoreInput {
+        read_count,
+        influenced_reads: trace.influenced_reads,
+        confirmed_reads: trace.confirmed_reads,
+        empty_reads: trace.empty_reads,
+        questioned_reads: trace.questioned_reads,
+        semantic_eligible_total: usage.semantic_eligible_total,
+        semantic_result_rate: usage.semantic_eligible_result_rate,
+        roi_score: roi.score,
+    });
     let mut issues = trace.issues.clone();
+    if read_count >= 20 && influenced_rate < 0.25 {
+        issues.push("too few memory reads have explicit downstream influence evidence".to_string());
+    }
     if empty_rate > 0.35 && read_count > 3 {
         issues.push("too many memory reads returned no useful cards".to_string());
     }
@@ -9018,6 +9061,7 @@ pub(crate) fn memory_effectiveness_v2_report(
         .usage
         .top_memories
         .iter()
+        .filter(|item| matches!(item.status.as_str(), "active" | "uncertain"))
         .take(8)
         .map(|item| MemoryEffectivenessCard {
             id: item.id.clone(),
@@ -9027,15 +9071,20 @@ pub(crate) fn memory_effectiveness_v2_report(
             reason: "frequently reused by recent memory reads".to_string(),
         })
         .collect::<Vec<_>>();
-    let used_ids = base
-        .usage
-        .top_memories
-        .iter()
-        .map(|item| item.id.clone())
+    let since_ms = now_ms().saturating_sub(since_days.max(0).saturating_mul(86_400_000));
+    let used_ids = read_events(conn, since_ms, usize::MAX)?
+        .into_iter()
+        .flat_map(|event| event.memory_ids)
         .collect::<BTreeSet<_>>();
-    let ignored_cards = query_memories(conn, None, &[], &["active".to_string()], None, 200)?
+    let active_cards = query_memories(conn, None, &[], &["active".to_string()], None, usize::MAX)?;
+    let active_card_count = active_cards.len();
+    let ignored = active_cards
         .into_iter()
         .filter(|memory| !used_ids.contains(&memory.id))
+        .collect::<Vec<_>>();
+    let ignored_card_count = ignored.len();
+    let ignored_cards = ignored
+        .into_iter()
         .take(8)
         .map(|memory| MemoryEffectivenessCard {
             id: memory.id,
@@ -9082,37 +9131,17 @@ pub(crate) fn memory_effectiveness_v2_report(
         "low"
     }
     .to_string();
-    let clean_read_quality = wasted_read_rate <= 0.25
-        && (base.semantic_result_rate >= 0.80 || base.usage.semantic_eligible_total == 0)
-        && base.score >= 75.0;
-    let high_confidence_clean_reads = clean_read_quality && base.score >= 90.0;
+    let ignored_card_limit = ignored_card_limit(active_card_count);
     let checks = vec![
         InstallPolishCheck {
             name: "influenced_reads".to_string(),
-            ok: influenced_rate >= 0.50 || base.read_count < 5 || clean_read_quality,
-            detail: if influenced_rate >= 0.50 || base.read_count < 5 {
-                format!("{:.0}% influenced", influenced_rate * 100.0)
-            } else {
-                format!(
-                    "{:.0}% explicitly influenced; clean reads keep this advisory",
-                    influenced_rate * 100.0
-                )
-            },
+            ok: influenced_rate >= 0.25 || base.read_count < 20,
+            detail: format!("{:.0}% explicitly influenced", influenced_rate * 100.0),
         },
         InstallPolishCheck {
             name: "confirmed_reads".to_string(),
-            ok: confirmed_rate >= 0.60 || base.influenced_reads < 5 || high_confidence_clean_reads,
-            detail: if confirmed_rate >= 0.60
-                || base.influenced_reads < 5
-                || !high_confidence_clean_reads
-            {
-                format!("{:.0}% confirmed", confirmed_rate * 100.0)
-            } else {
-                format!(
-                    "{:.0}% confirmed; high-score clean reads keep this advisory",
-                    confirmed_rate * 100.0
-                )
-            },
+            ok: confirmed_rate >= 0.60 || base.influenced_reads < 5,
+            detail: format!("{:.0}% confirmed", confirmed_rate * 100.0),
         },
         InstallPolishCheck {
             name: "wasted_reads".to_string(),
@@ -9129,10 +9158,10 @@ pub(crate) fn memory_effectiveness_v2_report(
         },
         InstallPolishCheck {
             name: "ignored_cards".to_string(),
-            ok: ignored_cards.len() <= 10,
+            ok: ignored_card_count <= ignored_card_limit,
             detail: format!(
-                "{} active cards without recent reads sampled",
-                ignored_cards.len()
+                "{} of {} active cards had no recent reads (limit {})",
+                ignored_card_count, active_card_count, ignored_card_limit
             ),
         },
     ];
@@ -9163,6 +9192,8 @@ pub(crate) fn memory_effectiveness_v2_report(
         confirmed_rate,
         wasted_read_rate,
         semantic_result_rate: base.semantic_result_rate,
+        active_card_count,
+        ignored_card_count,
         top_useful_cards,
         ignored_cards,
         weak_reads,
@@ -9170,6 +9201,108 @@ pub(crate) fn memory_effectiveness_v2_report(
         base,
         recommendations,
     })
+}
+
+#[derive(Clone, Copy)]
+struct MemoryEffectivenessScoreInput {
+    read_count: usize,
+    influenced_reads: usize,
+    confirmed_reads: usize,
+    empty_reads: usize,
+    questioned_reads: usize,
+    semantic_eligible_total: usize,
+    semantic_result_rate: f64,
+    roi_score: f64,
+}
+
+fn memory_effectiveness_score(input: MemoryEffectivenessScoreInput) -> f64 {
+    let MemoryEffectivenessScoreInput {
+        read_count,
+        influenced_reads,
+        confirmed_reads,
+        empty_reads,
+        questioned_reads,
+        semantic_eligible_total,
+        semantic_result_rate,
+        roi_score,
+    } = input;
+    let influence = if read_count < 5 {
+        1.0
+    } else {
+        ratio(influenced_reads, read_count)
+    };
+    let confirmation = if influenced_reads < 5 {
+        1.0
+    } else {
+        ratio(confirmed_reads, influenced_reads)
+    };
+    let clean_reads = if read_count == 0 {
+        1.0
+    } else {
+        (1.0 - ratio(empty_reads.saturating_add(questioned_reads), read_count)).max(0.0)
+    };
+    let semantic_results = if semantic_eligible_total == 0 {
+        1.0
+    } else {
+        semantic_result_rate.clamp(0.0, 1.0)
+    };
+    (influence * 35.0
+        + confirmation * 20.0
+        + clean_reads * 15.0
+        + semantic_results * 15.0
+        + roi_score.clamp(0.0, 100.0) * 0.15)
+        .clamp(0.0, 100.0)
+}
+
+fn ignored_card_limit(active_card_count: usize) -> usize {
+    10.max(active_card_count.div_ceil(4))
+}
+
+#[cfg(test)]
+mod memory_effectiveness_tests {
+    use super::{MemoryEffectivenessScoreInput, ignored_card_limit, memory_effectiveness_score};
+
+    fn score_input(read_count: usize) -> MemoryEffectivenessScoreInput {
+        MemoryEffectivenessScoreInput {
+            read_count,
+            influenced_reads: 0,
+            confirmed_reads: 0,
+            empty_reads: 0,
+            questioned_reads: 0,
+            semantic_eligible_total: 0,
+            semantic_result_rate: 0.0,
+            roi_score: 100.0,
+        }
+    }
+
+    #[test]
+    fn low_sample_sessions_are_not_penalized_for_missing_feedback() {
+        let score = memory_effectiveness_score(score_input(0));
+        assert_eq!(score, 100.0);
+    }
+
+    #[test]
+    fn mature_sessions_need_explicit_influence_evidence() {
+        let score = memory_effectiveness_score(score_input(100));
+        assert!(score < 75.0, "score was {score}");
+
+        let partially_traced = memory_effectiveness_score(MemoryEffectivenessScoreInput {
+            influenced_reads: 15,
+            confirmed_reads: 15,
+            semantic_eligible_total: 10,
+            semantic_result_rate: 1.0,
+            ..score_input(100)
+        });
+        assert!(partially_traced < 75.0, "score was {partially_traced}");
+    }
+
+    #[test]
+    fn ignored_card_limit_uses_the_full_active_population() {
+        assert_eq!(ignored_card_limit(8), 10);
+        assert_eq!(ignored_card_limit(40), 10);
+        assert_eq!(ignored_card_limit(41), 11);
+        assert_eq!(ignored_card_limit(100), 25);
+    }
 }
 
 pub(crate) fn print_recall_benchmark_baselines(
@@ -10450,7 +10583,8 @@ pub(crate) fn memory_eval_story_report(
     let ok = !benchmark.regression
         && harness.score >= 60.0
         && effectiveness.score >= 60.0
-        && rag_eval.ok;
+        && rag_eval.ok
+        && rag_eval.split.holdout_ready;
     let commands = vec![
         "dukememory memory-eval-story --json".to_string(),
         "dukememory recall-benchmark-suite --json".to_string(),
@@ -10467,6 +10601,12 @@ pub(crate) fn memory_eval_story_report(
         format!(
             "RAG source-pack recall {:.1}% ({}/{})",
             rag_eval.recall, rag_eval.passed, rag_eval.total
+        ),
+        format!(
+            "RAG holdout recall {:.1}% ({}/{})",
+            rag_eval.split.holdout_recall,
+            rag_eval.split.holdout_passed,
+            rag_eval.split.holdout_total
         ),
         "benchmarks are local, reproducible, and project-specific; they are not broad public dataset claims".to_string(),
     ];
@@ -10494,7 +10634,12 @@ pub(crate) fn memory_eval_story_report(
         MemoryEvalProofPoint {
             name: "rag_source_pack".to_string(),
             value: format!("{:.1}%", rag_eval.recall),
-            status: if rag_eval.ok { "ready" } else { "attention" }.to_string(),
+            status: if rag_eval.ok && rag_eval.split.holdout_ready {
+                "ready"
+            } else {
+                "attention"
+            }
+            .to_string(),
         },
         MemoryEvalProofPoint {
             name: "baseline_write".to_string(),
@@ -13099,7 +13244,7 @@ pub(crate) fn web_control_center_v12_report(
         WebControlPanel {
             name: "rag_eval_baseline".to_string(),
             status: match rag_eval.baseline.status.as_str() {
-                "matched" | "written" | "changed" | "present" => "ready",
+                "matched" | "written" | "present" => "ready",
                 "missing" | "unconfigured" => "optional",
                 _ => "attention",
             }
@@ -13359,7 +13504,8 @@ pub(crate) fn web_control_center_v12_report(
         && diff_apply.ok
         && mcp_discipline_v3.ok
         && graph_rag_ok
-        && rag_eval.ok;
+        && rag_eval.ok
+        && rag_eval.split.holdout_ready;
     Ok(WebControlCenterV12Report {
         version: 1,
         ok,
@@ -13462,6 +13608,24 @@ fn web_rag_eval_quick_summary(conn: &Connection, root: &Path) -> Result<WebRagEv
         .and_then(|value| value.get("selection_recall"))
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
+    let holdout_total = baseline_value
+        .as_ref()
+        .and_then(|value| value.get("holdout_total"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let holdout_recall = baseline_value
+        .as_ref()
+        .and_then(|value| value.get("holdout_recall"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let holdout_grounded_coverage = baseline_value
+        .as_ref()
+        .and_then(|value| value.get("holdout_grounded_coverage"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let holdout_passed = ((holdout_recall / 100.0) * holdout_total as f64).round() as usize;
+    let holdout_ready =
+        holdout_total >= 5 && holdout_recall >= 99.9 && holdout_grounded_coverage >= 99.9;
     let total = baseline_total.unwrap_or(total);
     let passed = baseline_passed.unwrap_or(0);
     let failed = total.saturating_sub(passed);
@@ -13488,7 +13652,8 @@ fn web_rag_eval_quick_summary(conn: &Connection, root: &Path) -> Result<WebRagEv
         && failed == 0
         && grounded_coverage >= 99.9
         && missing_dimensions.is_empty()
-        && !matches!(baseline.status.as_str(), "invalid" | "regressed");
+        && holdout_ready
+        && !rag_eval_baseline_blocks_release(&baseline.status);
     let status = if ok {
         "ready"
     } else if total == 0 {
@@ -13497,6 +13662,8 @@ fn web_rag_eval_quick_summary(conn: &Connection, root: &Path) -> Result<WebRagEv
         "attention"
     }
     .to_string();
+    let development_total = total.saturating_sub(holdout_total);
+    let development_passed = passed.saturating_sub(holdout_passed);
     Ok(WebRagEvalQuickSummary {
         ok,
         status,
@@ -13536,6 +13703,17 @@ fn web_rag_eval_quick_summary(conn: &Connection, root: &Path) -> Result<WebRagEv
                 "quick web summary uses the latest RAG eval baseline; run GET /rag-eval for full retrieval diagnostics"
                     .to_string(),
             ],
+        },
+        split: RagEvalSplitSummary {
+            development_total,
+            development_passed,
+            development_recall: web_ratio_percent(development_passed, development_total),
+            holdout_total,
+            holdout_passed,
+            holdout_recall,
+            holdout_grounded_coverage,
+            recommended_min_holdout_cases: 5,
+            holdout_ready,
         },
         baseline,
         detail: "quick summary; full RAG eval is available through /rag-eval".to_string(),
@@ -13620,6 +13798,8 @@ fn web_rag_eval_baseline_quick_summary(root: &Path) -> Result<RagEvalBaselineSum
             baseline_matrix_coverage: None,
             baseline_candidate_recall: None,
             baseline_selection_recall: None,
+            baseline_hit_at_3_rate: None,
+            baseline_mean_reciprocal_rank: None,
             detail: "no RAG eval baseline has been written for this project".to_string(),
         });
     };
@@ -13637,6 +13817,8 @@ fn web_rag_eval_baseline_quick_summary(root: &Path) -> Result<RagEvalBaselineSum
             baseline_matrix_coverage: None,
             baseline_candidate_recall: None,
             baseline_selection_recall: None,
+            baseline_hit_at_3_rate: None,
+            baseline_mean_reciprocal_rank: None,
             detail: "RAG eval baseline file exists but could not be parsed".to_string(),
         });
     };
@@ -13658,6 +13840,8 @@ fn web_rag_eval_baseline_quick_summary(root: &Path) -> Result<RagEvalBaselineSum
         baseline_matrix_coverage: value.get("matrix_coverage").and_then(Value::as_f64),
         baseline_candidate_recall: value.get("candidate_recall").and_then(Value::as_f64),
         baseline_selection_recall: value.get("selection_recall").and_then(Value::as_f64),
+        baseline_hit_at_3_rate: value.get("hit_at_3_rate").and_then(Value::as_f64),
+        baseline_mean_reciprocal_rank: value.get("mean_reciprocal_rank").and_then(Value::as_f64),
         detail: "baseline present; run GET /rag-eval for full signature comparison".to_string(),
     })
 }
@@ -13945,6 +14129,12 @@ pub(crate) fn print_memory_diff_review(
     println!("Memory Diff Review");
     println!("changed_files: {}", report.changed_files.len());
     println!(
+        "git: branch={} head={} basis={}",
+        report.git.branch.as_deref().unwrap_or("detached"),
+        report.git.head_commit.as_deref().unwrap_or("unknown"),
+        report.git.temporal_basis
+    );
+    println!(
         "impact: severity={} candidates={} write_ready={}",
         report.impact.severity, report.impact.candidate_count, report.impact.write_ready_count
     );
@@ -13963,13 +14153,14 @@ pub(crate) fn memory_diff_review_report(
     apply: bool,
 ) -> Result<MemoryDiffReviewReport> {
     let diff = project_diff_report(conn, root, true)?;
+    let git = diff.git.clone();
     let mut suggested_memory = Vec::new();
     let mut candidate_cards = Vec::new();
     for file in diff.changed_files.iter().take(10) {
         suggested_memory.push(format!(
             "review durable task_state/design_note for changed file {file}"
         ));
-        candidate_cards.push(memory_diff_candidate_for_file(file));
+        candidate_cards.push(memory_diff_candidate_for_file(file, &git));
     }
     if diff.changed_files.is_empty() {
         suggested_memory.push("no changed files detected; no memory write suggested".to_string());
@@ -14000,6 +14191,7 @@ pub(crate) fn memory_diff_review_report(
             serde_json::to_string_pretty(&json!({
                 "version": 1,
                 "changed_files": &diff.changed_files,
+                "git": &git,
                 "impact": &impact,
                 "suggested_memory": &suggested_memory,
                 "candidate_cards": &candidate_cards,
@@ -14020,6 +14212,7 @@ pub(crate) fn memory_diff_review_report(
         root: diff.root,
         applied: apply,
         changed_files: diff.changed_files,
+        git,
         impact,
         suggested_memory,
         candidate_cards,
@@ -14070,7 +14263,7 @@ fn memory_diff_impact_summary(
     }
 }
 
-fn memory_diff_candidate_for_file(file: &str) -> MemoryDiffCandidate {
+fn memory_diff_candidate_for_file(file: &str, git: &GitWorktreeContext) -> MemoryDiffCandidate {
     let memory_type = if file.ends_with("Cargo.toml")
         || file.ends_with("Cargo.lock")
         || file.ends_with("README.md")
@@ -14098,6 +14291,11 @@ fn memory_diff_candidate_for_file(file: &str) -> MemoryDiffCandidate {
         confidence,
         link: format!("file:{file}"),
         reason: "changed file may carry reusable project context".to_string(),
+        worktree_root: git.worktree_root.clone(),
+        branch: git.branch.clone(),
+        base_commit: git.head_commit.clone(),
+        observed_at: git.observed_at,
+        temporal_basis: git.temporal_basis.clone(),
     }
 }
 
@@ -15276,6 +15474,12 @@ pub(crate) fn print_project_diff(
     println!("Project Intelligence Diff");
     println!("ok: {}", report.ok);
     println!("changed_files: {}", report.changed_files.len());
+    println!(
+        "git: branch={} head={} basis={}",
+        report.git.branch.as_deref().unwrap_or("detached"),
+        report.git.head_commit.as_deref().unwrap_or("unknown"),
+        report.git.temporal_basis
+    );
     println!("missing_links: {}", report.missing_links);
     println!("conflicts: {}", report.conflicts);
     println!("stale_active: {}", report.stale_active);
@@ -15300,6 +15504,7 @@ pub(crate) fn project_diff_report(
     changed_only: bool,
 ) -> Result<ProjectDiffReport> {
     let drift = drift_report(conn, root, changed_only)?;
+    let git = git_worktree_context(root, !drift.changed_files.is_empty());
     let since_ms = now_ms().saturating_sub(86_400_000);
     let mut stmt = conn.prepare(
         "SELECT id FROM memories WHERE updated_at >= ?1 ORDER BY updated_at DESC LIMIT 20",
@@ -15327,6 +15532,7 @@ pub(crate) fn project_diff_report(
         root: drift.root.clone(),
         changed_only,
         changed_files: drift.changed_files.clone(),
+        git,
         missing_links: drift.missing_links.len(),
         conflicts: drift.conflicts.len(),
         stale_active: drift.stale_active.len(),
@@ -15335,6 +15541,136 @@ pub(crate) fn project_diff_report(
         drift,
         recommendations,
     })
+}
+
+fn git_worktree_context(root: &Path, dirty: bool) -> GitWorktreeContext {
+    let observed_at = now_ms();
+    let fallback_root = root
+        .canonicalize()
+        .unwrap_or_else(|_| root.to_path_buf())
+        .display()
+        .to_string();
+    let git_value = |args: &[&str]| -> Option<String> {
+        let output = ProcessCommand::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (!value.is_empty()).then_some(value)
+    };
+    let worktree_root = git_value(&["rev-parse", "--show-toplevel"]);
+    let Some(worktree_root) = worktree_root else {
+        return GitWorktreeContext {
+            available: false,
+            worktree_root: fallback_root,
+            common_git_dir: String::new(),
+            branch: None,
+            head_commit: None,
+            head_committed_at: None,
+            detached: false,
+            dirty,
+            observed_at,
+            temporal_basis: "filesystem_observation".to_string(),
+        };
+    };
+    let worktree_path = PathBuf::from(&worktree_root);
+    let common_git_dir = git_value(&["rev-parse", "--git-common-dir"])
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                worktree_path.join(path)
+            }
+        })
+        .map(|path| path.canonicalize().unwrap_or(path))
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let branch = git_value(&["branch", "--show-current"]);
+    let head_commit = git_value(&["rev-parse", "HEAD"]);
+    let head_committed_at = git_value(&["show", "-s", "--format=%cI", "HEAD"]);
+    GitWorktreeContext {
+        available: true,
+        worktree_root,
+        common_git_dir,
+        detached: branch.is_none() && head_commit.is_some(),
+        branch,
+        head_commit,
+        head_committed_at,
+        dirty,
+        observed_at,
+        temporal_basis: if dirty {
+            "worktree_after_head"
+        } else {
+            "head_commit"
+        }
+        .to_string(),
+    }
+}
+
+#[cfg(test)]
+mod git_worktree_context_tests {
+    use super::*;
+
+    fn git(root: &Path, args: &[&str]) {
+        let output = ProcessCommand::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?}: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn git_context_distinguishes_linked_worktree_and_observation_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let worktree = dir.path().join("feature-worktree");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        std::fs::write(repo.join("README.md"), "initial\n").unwrap();
+        git(&repo, &["add", "README.md"]);
+        git(
+            &repo,
+            &[
+                "-c",
+                "user.name=DukeMemory Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "initial",
+            ],
+        );
+        let worktree_text = worktree.display().to_string();
+        git(&repo, &["worktree", "add", "-b", "feature", &worktree_text]);
+        std::fs::write(worktree.join("README.md"), "changed\n").unwrap();
+
+        let context = git_worktree_context(&worktree, true);
+        assert!(context.available);
+        assert_eq!(context.branch.as_deref(), Some("feature"));
+        assert!(context.head_commit.is_some());
+        assert!(context.dirty);
+        assert_eq!(context.temporal_basis, "worktree_after_head");
+        assert_eq!(
+            Path::new(&context.worktree_root),
+            worktree.canonicalize().unwrap()
+        );
+        assert!(context.observed_at > 0);
+    }
 }
 
 fn project_diff_impact_summary(
@@ -18581,10 +18917,11 @@ pub(crate) fn ops_status_report(
                 .to_string(),
         );
     }
-    if storage.pressure == "warn" {
+    if storage.pressure != "ok" {
         issues.push(format!(
-            "local memory storage is growing: .agent={} bytes",
-            storage.agent_bytes
+            "local memory storage exceeds policy: pressure={} over_quota={}",
+            storage.pressure,
+            storage.over_quota.join(",")
         ));
         recommendations.push(
             "run dukememory autonomous run-once --level normal to refresh retention".to_string(),
@@ -18680,7 +19017,7 @@ pub(crate) fn ops_status_report(
     if !blockers.is_empty() {
         score -= blockers.len().min(5) as f64 * 3.0;
     }
-    if storage.pressure == "warn" {
+    if storage.pressure != "ok" {
         score -= 4.0;
     }
     if repair_loop.failed_actions > 0 {
@@ -18995,10 +19332,39 @@ fn ops_storage_status(conn: &Connection, db: &Path, root: &Path) -> Result<OpsSt
     let install_backups_count = count_named_files(&install_backup_dir, |name| {
         name.starts_with("dukememory") && name.ends_with(".bak")
     })?;
+    let agent_quota_bytes = storage_quota_bytes("DUKEMEMORY_AGENT_QUOTA_BYTES", 512 * 1024 * 1024);
+    let backups_quota_bytes =
+        storage_quota_bytes("DUKEMEMORY_BACKUP_QUOTA_BYTES", 256 * 1024 * 1024);
+    let rollback_quota_bytes =
+        storage_quota_bytes("DUKEMEMORY_ROLLBACK_QUOTA_BYTES", 128 * 1024 * 1024);
+    let install_backups_quota_bytes =
+        storage_quota_bytes("DUKEMEMORY_INSTALL_BACKUP_QUOTA_BYTES", 128 * 1024 * 1024);
+    let mut over_quota = Vec::new();
+    for (name, bytes, quota) in [
+        ("agent", agent_bytes, agent_quota_bytes),
+        ("backups", backups_bytes, backups_quota_bytes),
+        ("rollbacks", rollback_bytes, rollback_quota_bytes),
+        (
+            "install_backups",
+            install_backups_bytes,
+            install_backups_quota_bytes,
+        ),
+    ] {
+        if bytes > quota {
+            over_quota.push(name.to_string());
+        }
+    }
     let retention_ready = backups_count <= 10
         && rollback_count <= 10
-        && install_backups_count <= DEFAULT_INSTALL_BACKUP_KEEP;
-    let pressure = if agent_bytes > 512 * 1024 * 1024
+        && install_backups_count <= DEFAULT_INSTALL_BACKUP_KEEP
+        && over_quota.is_empty();
+    let critical = agent_bytes > agent_quota_bytes.saturating_mul(5) / 4
+        || backups_bytes > backups_quota_bytes.saturating_mul(5) / 4
+        || rollback_bytes > rollback_quota_bytes.saturating_mul(5) / 4
+        || install_backups_bytes > install_backups_quota_bytes.saturating_mul(5) / 4;
+    let pressure = if critical {
+        "critical"
+    } else if !over_quota.is_empty()
         || backups_count > 20
         || rollback_count > 20
         || install_backups_count > 20
@@ -19021,9 +19387,22 @@ fn ops_storage_status(conn: &Connection, db: &Path, root: &Path) -> Result<OpsSt
         rollback_count,
         install_backups_bytes,
         install_backups_count,
+        agent_quota_bytes,
+        backups_quota_bytes,
+        rollback_quota_bytes,
+        install_backups_quota_bytes,
+        over_quota,
         retention_ready,
         pressure,
     })
+}
+
+fn storage_quota_bytes(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
 }
 
 fn sqlite_i64_pragma(conn: &Connection, sql: &str) -> Result<i64> {

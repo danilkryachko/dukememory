@@ -22,6 +22,8 @@ flowchart LR
 - `src/storage.rs` exposes the crate-private `MemoryStore`; SQLite details stay under `src/app/`.
 - `src/operation_catalog.rs` maps stable memory, retrieval, RAG, release, and agent-session operations across CLI, MCP, and HTTP. The checked-in table is in [operations.md](operations.md).
 - `src/http_api.rs` owns transport-neutral HTTP responses, status mapping, and response security headers.
+- `src/app/mcp_transport.rs` owns bounded newline and Content-Length framing; `mcp_server.rs` owns JSON-RPC lifecycle, tool schemas, and dispatch.
+- `src/app/http_ingest_routes.rs` isolates project-contained file ingest routes from the broader HTTP diagnostic surface.
 
 Legacy maintenance and observability commands remain grouped under `src/app/`. New cross-surface behavior should enter through the application layer instead of adding independent mutation logic to each adapter.
 
@@ -35,17 +37,25 @@ Every core mutation follows the same sequence:
 4. `MemoryStore` writes the memory, links, and audit event in one SQLite transaction.
 5. The adapter maps the result to its own response format.
 
-HTTP maps bad input to `400`, missing resources to `404`, conflicts to `409`, and unexpected failures to `500`.
+HTTP maps bad input to `400`, missing resources to `404`, conflicts to `409`, and unexpected failures to opaque `500` responses with incident ids. File ingest resolves canonical paths under the selected project root, and mutation-capable maintenance routes are preview-first.
 
 ## SQLite lifecycle
 
-The current schema version is stored in `schema_meta`. Migrations are version-gated and transactional; startup verifies critical tables, columns, indexes, triggers, and the final schema version. HTTP resolves the selected project once per request and opens one connection for that request. Process-local initialization caching avoids rerunning schema setup for an already verified database.
+The current schema version is stored in `schema_meta`. Migrations are version-gated and transactional; startup verifies critical tables, columns, indexes, triggers, and the final schema version. HTTP resolves the selected project once per request and opens one connection for that request. Process-local initialization caching avoids rerunning schema setup for an already verified database. Unix database files and sidecars are mode `600`, newly created database directories are mode `700`, and SQLite uses `secure_delete=FAST`.
 
-Graph edges live in `memory_edges` with foreign keys, uniqueness, confidence bounds, provenance, and atomic audit writes. Symmetric `relates_to` edges are canonicalized for storage and traversed in both directions.
+Graph edges live in `memory_edges` with foreign keys, uniqueness, confidence bounds, provenance, and atomic audit writes. Symmetric `relates_to` edges are canonicalized for storage and traversed in both directions. Schema v24 adds valid time (`valid_from`/`valid_to`), knowledge time (`observed_at`), and an optional source observation. `memory_observations` keeps evidence kind/reference plus Git branch, commit, and worktree context, allowing an as-of graph to answer both “what was valid then?” and “what did the agent know then?”.
 
 ## Retrieval policy
 
 Retrieval loads a `RetrievalPolicy` once into `RetrievalQualitySignals`. The environment override `DUKEMEMORY_RANKING_PROFILE` wins; otherwise the policy comes from the selected database project's `.agent/ranking-profile.json`. Ranking never reads policy from the process working directory per result.
+
+RAG ingest prefers language-aware structural boundaries for supported text/code formats while retaining bounded line chunking as a fallback. Every selected RAG source carries a stable evidence reference and content hash; eval v6 reports expected rank, Hit@1/3/5, MRR, development/holdout metrics, packing, grounding, and matrix coverage. Baseline v3 binds results to both the canonical case corpus and retrieval configuration.
+
+## Transport and egress boundaries
+
+MCP profiles bound the advertised tool surface; list cursors, Resources, and 2025-11-25 Tasks avoid forcing one large synchronous context exchange. Tool input is validated against closed, bounded Draft 2020-12 schemas before dispatch.
+
+HTTP rejects ambiguous framing before reading the body and attaches a correlation id to every response/access event. Provider egress centrally validates HTTP(S) URLs, disables redirects, checks and pins DNS results, and blocks private, link-local, metadata, and special-use destinations unless explicitly allowed.
 
 ## Local model safety
 

@@ -81,9 +81,10 @@ fn generate_local_completion(_endpoint: &str, _model: &str, _prompt: &str) -> Re
 
 fn fetch_ollama_completion(endpoint: &str, model: &str, prompt: &str) -> Result<String> {
     let url = format!("{}/api/chat", endpoint.trim_end_matches('/'));
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()?;
+    let (client, url) = egress::blocking_http_client(
+        &url,
+        std::time::Duration::from_secs(model_request_timeout_secs()),
+    )?;
     let messages = vec![OllamaChatMessage {
         role: "user",
         content: prompt,
@@ -103,9 +104,10 @@ fn fetch_ollama_completion(endpoint: &str, model: &str, prompt: &str) -> Result<
 
 fn fetch_openai_completion(endpoint: &str, model: &str, prompt: &str) -> Result<String> {
     let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()?;
+    let (client, url) = egress::blocking_http_client(
+        &url,
+        std::time::Duration::from_secs(model_request_timeout_secs()),
+    )?;
     let messages = vec![OpenAiChatMessage {
         role: "user",
         content: prompt,
@@ -129,6 +131,14 @@ fn fetch_openai_completion(endpoint: &str, model: &str, prompt: &str) -> Result<
         .map(|item| item.message.content)
         .unwrap_or_default();
     Ok(content)
+}
+
+fn model_request_timeout_secs() -> u64 {
+    std::env::var("DUKEMEMORY_MODEL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| value.clamp(1, 300))
+        .unwrap_or(60)
 }
 
 pub(crate) fn generate_tour_narrative(

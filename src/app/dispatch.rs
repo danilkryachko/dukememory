@@ -505,7 +505,11 @@ pub(crate) fn run() -> Result<()> {
         )?,
         Command::VecStatus => print_vec_status(&conn),
         Command::VecIndex { rebuild, json } => print_vec_index(&conn, rebuild, json)?,
-        Command::ServeMcp { content_length } => mcp_server::serve_mcp(&cli.db, content_length)?,
+        Command::ServeMcp {
+            content_length,
+            profile,
+            page_size,
+        } => mcp_server::serve_mcp(&cli.db, content_length, &profile, page_size)?,
         Command::ProjectSummary { max_chars, json } => {
             print_project_summary(&conn, max_chars, json)?
         }
@@ -1599,6 +1603,53 @@ pub(crate) fn run() -> Result<()> {
             json,
         } => print_memory_upload(&conn, &root, &input, &scope, apply, json)?,
         Command::MemantoGapReport { json } => print_memanto_gap_report(&conn, json)?,
+        Command::Observe {
+            id,
+            kind,
+            statement,
+            evidence_kind,
+            evidence_ref,
+            target_memory_id,
+            confidence,
+            valid_from,
+            valid_to,
+            root,
+            json,
+        } => {
+            let observation = record_memory_observation(
+                &conn,
+                &root,
+                &MemoryObservationRequest {
+                    memory_id: &id,
+                    target_memory_id: target_memory_id.as_deref(),
+                    kind: &kind,
+                    statement: &statement,
+                    evidence_kind: &evidence_kind,
+                    evidence_ref: &evidence_ref,
+                    confidence,
+                    valid_from,
+                    valid_to,
+                },
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&observation)?);
+            } else {
+                println!("{}", observation.id);
+            }
+        }
+        Command::Observations {
+            id,
+            valid_at,
+            known_at,
+            limit,
+            json,
+        } => print_memory_observations(&conn, &id, valid_at, known_at, limit, json)?,
+        Command::TemporalGraph {
+            valid_at,
+            known_at,
+            limit,
+            json,
+        } => print_temporal_memory_graph(&conn, valid_at, known_at, limit, json)?,
         Command::MemoryTimeline { id, limit, json } => {
             print_memory_timeline(&conn, &id, limit, json)?
         }

@@ -1384,11 +1384,12 @@ pub(crate) fn handle_eval(
             query,
             expected,
             budget,
+            split,
         } => {
             let id = Uuid::new_v4().simple().to_string()[..12].to_string();
             conn.execute(
-                "INSERT INTO eval_cases (id, name, query, expected, budget, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id, name, query, expected, budget as i64, now_ms()],
+                "INSERT INTO eval_cases (id, name, query, expected, budget, split, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![id, name, query, expected, budget as i64, split, now_ms()],
             )?;
             println!("{id}");
         }
@@ -1520,8 +1521,10 @@ pub(crate) struct RagEvalReport {
     pub(crate) packing: RagEvalPackingSummary,
     pub(crate) evidence_placement: RagEvalEvidencePlacementSummary,
     pub(crate) grounded_answers: RagEvalGroundedSummary,
+    pub(crate) ranking: RagEvalRankingSummary,
     pub(crate) eval_matrix: RagEvalMatrixSummary,
     pub(crate) retrieval_tuning: RagEvalRetrievalTuningSummary,
+    pub(crate) split: RagEvalSplitSummary,
     pub(crate) baseline: RagEvalBaselineSummary,
     pub(crate) cases: Vec<RagEvalCaseResult>,
     pub(crate) recommendations: Vec<String>,
@@ -1568,7 +1571,21 @@ pub(crate) struct RagEvalGroundedSummary {
     pub(crate) unknown_citation_cases: usize,
 }
 
+#[derive(Debug, Serialize, Default)]
+pub(crate) struct RagEvalRankingSummary {
+    pub(crate) total: usize,
+    pub(crate) hit_at_1: usize,
+    pub(crate) hit_at_3: usize,
+    pub(crate) hit_at_5: usize,
+    pub(crate) hit_at_1_rate: f64,
+    pub(crate) hit_at_3_rate: f64,
+    pub(crate) hit_at_5_rate: f64,
+    pub(crate) mean_reciprocal_rank: f64,
+}
+
 const RAG_EVAL_RECOMMENDED_STORED_CASES: usize = 12;
+const RAG_EVAL_RECOMMENDED_HOLDOUT_CASES: usize = 5;
+const RAG_EVAL_PROTOCOL_VERSION: u32 = 1;
 const RAG_EVAL_MATRIX_DIMENSIONS: [&str; 9] = [
     "source_chunk",
     "memory_card",
@@ -1608,6 +1625,19 @@ pub(crate) struct RagEvalRetrievalTuningSummary {
 }
 
 #[derive(Debug, Serialize, Default)]
+pub(crate) struct RagEvalSplitSummary {
+    pub(crate) development_total: usize,
+    pub(crate) development_passed: usize,
+    pub(crate) development_recall: f64,
+    pub(crate) holdout_total: usize,
+    pub(crate) holdout_passed: usize,
+    pub(crate) holdout_recall: f64,
+    pub(crate) holdout_grounded_coverage: f64,
+    pub(crate) recommended_min_holdout_cases: usize,
+    pub(crate) holdout_ready: bool,
+}
+
+#[derive(Debug, Serialize, Default)]
 pub(crate) struct RagEvalBaselineSummary {
     pub(crate) status: String,
     pub(crate) path: String,
@@ -1621,6 +1651,8 @@ pub(crate) struct RagEvalBaselineSummary {
     pub(crate) baseline_matrix_coverage: Option<f64>,
     pub(crate) baseline_candidate_recall: Option<f64>,
     pub(crate) baseline_selection_recall: Option<f64>,
+    pub(crate) baseline_hit_at_3_rate: Option<f64>,
+    pub(crate) baseline_mean_reciprocal_rank: Option<f64>,
     pub(crate) detail: String,
 }
 
@@ -1628,6 +1660,10 @@ pub(crate) struct RagEvalBaselineSummary {
 struct RagEvalBaselineFile {
     version: u32,
     signature: String,
+    #[serde(default)]
+    corpus_signature: String,
+    #[serde(default)]
+    config_signature: String,
     total: usize,
     passed: usize,
     recall: f64,
@@ -1635,6 +1671,16 @@ struct RagEvalBaselineFile {
     matrix_coverage: f64,
     candidate_recall: f64,
     selection_recall: f64,
+    #[serde(default)]
+    hit_at_3_rate: f64,
+    #[serde(default)]
+    mean_reciprocal_rank: f64,
+    #[serde(default)]
+    holdout_total: usize,
+    #[serde(default)]
+    holdout_recall: f64,
+    #[serde(default)]
+    holdout_grounded_coverage: f64,
     covered_dimensions: usize,
     dimensions: std::collections::BTreeMap<String, usize>,
     written_at: i64,
@@ -1656,8 +1702,10 @@ pub(crate) struct RagEvalCaseResult {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) case_source: String,
+    pub(crate) split: String,
     pub(crate) query: String,
     pub(crate) expected: String,
+    pub(crate) expected_rank: Option<usize>,
     pub(crate) passed: bool,
     pub(crate) detail: String,
     pub(crate) confidence: String,
@@ -1683,6 +1731,7 @@ struct RagEvalCase {
     expected: String,
     budget: usize,
     source: String,
+    split: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1800,6 +1849,13 @@ fn run_rag_eval(
             report.grounded_answers.unknown_citation_cases
         );
         println!(
+            "ranking: hit@1={:.1}% hit@3={:.1}% hit@5={:.1}% mrr={:.1}%",
+            report.ranking.hit_at_1_rate,
+            report.ranking.hit_at_3_rate,
+            report.ranking.hit_at_5_rate,
+            report.ranking.mean_reciprocal_rank
+        );
+        println!(
             "eval_matrix: status={} coverage={:.1}% stored={} auto={} covered={}/{} missing={:?}",
             report.eval_matrix.status,
             report.eval_matrix.coverage,
@@ -1820,6 +1876,17 @@ fn run_rag_eval(
             report.retrieval_tuning.semantic_fallback_rate
         );
         println!(
+            "split: development={}/{} ({:.1}%) holdout={}/{} ({:.1}%) grounded={:.1}% ready={}",
+            report.split.development_passed,
+            report.split.development_total,
+            report.split.development_recall,
+            report.split.holdout_passed,
+            report.split.holdout_total,
+            report.split.holdout_recall,
+            report.split.holdout_grounded_coverage,
+            report.split.holdout_ready
+        );
+        println!(
             "baseline: status={} present={} written={} regression={} path={} detail={}",
             report.baseline.status,
             report.baseline.present,
@@ -1830,10 +1897,13 @@ fn run_rag_eval(
         );
         for case in &report.cases {
             println!(
-                "{}  {}  {}  confidence={} citations={}",
+                "{}  {}  {}  rank={} confidence={} citations={}",
                 if case.passed { "pass" } else { "fail" },
                 case.id,
                 case.name,
+                case.expected_rank
+                    .map(|rank| rank.to_string())
+                    .unwrap_or_else(|| "missing".to_string()),
                 case.confidence,
                 case.citation_count
             );
@@ -1946,6 +2016,9 @@ pub(crate) fn rag_eval_report_with_baseline(
     write_baseline: bool,
 ) -> Result<RagEvalReport> {
     let cases = load_rag_eval_cases(conn, budget)?;
+    let corpus_signature = rag_eval_corpus_signature(&cases)?;
+    let config_signature =
+        rag_eval_config_signature(scope, limit, budget, provider, endpoint, model)?;
     let case_source = if cases.iter().any(|case| case.source == "stored") {
         "stored"
     } else if cases.is_empty() {
@@ -1966,23 +2039,24 @@ pub(crate) fn rag_eval_report_with_baseline(
             endpoint,
             model,
         )?;
-        let haystack = debug
-            .source_pack
-            .iter()
-            .map(|source| {
-                format!(
-                    "{} {} {} {}",
-                    source.id,
-                    source.title,
-                    source.summary,
-                    source.reasons.join(" ")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-            .to_lowercase();
         let expected_lower = case.expected.to_lowercase();
-        let passed = !expected_lower.trim().is_empty() && haystack.contains(&expected_lower);
+        let expected_rank = (!expected_lower.trim().is_empty())
+            .then(|| {
+                debug.source_pack.iter().position(|source| {
+                    format!(
+                        "{} {} {} {}",
+                        source.id,
+                        source.title,
+                        source.summary,
+                        source.reasons.join(" ")
+                    )
+                    .to_lowercase()
+                    .contains(&expected_lower)
+                })
+            })
+            .flatten()
+            .map(|index| index + 1);
+        let passed = expected_rank.is_some();
         let expected_suppressed_sources =
             rag_eval_expected_suppressed_sources(&case.expected, &debug.packing);
         let expected_suppressed_titles = expected_suppressed_sources
@@ -2008,8 +2082,10 @@ pub(crate) fn rag_eval_report_with_baseline(
             id: case.id,
             name: case.name,
             case_source: case.source,
+            split: case.split,
             query: case.query,
             expected: case.expected,
+            expected_rank,
             passed,
             detail: if passed {
                 "expected text found in RAG source pack".to_string()
@@ -2062,6 +2138,7 @@ pub(crate) fn rag_eval_report_with_baseline(
     let packing = rag_eval_packing_summary(&results);
     let evidence_placement = rag_eval_evidence_placement_summary(&results);
     let grounded_answers = rag_eval_grounded_summary(&results);
+    let ranking = rag_eval_ranking_summary(&results);
     let eval_matrix = rag_eval_matrix_summary(&results);
     let retrieval_tuning = rag_eval_retrieval_tuning_summary(
         &results,
@@ -2069,15 +2146,22 @@ pub(crate) fn rag_eval_report_with_baseline(
         &packing,
         semantic_fallbacks,
     );
+    let split = rag_eval_split_summary(&results);
     let baseline = rag_eval_baseline_summary(
         baseline_root,
         write_baseline,
-        total,
-        passed,
-        recall,
-        grounded_answers.coverage,
-        &eval_matrix,
-        &retrieval_tuning,
+        &RagEvalBaselineInput {
+            total,
+            passed,
+            recall,
+            grounded_coverage: grounded_answers.coverage,
+            eval_matrix: &eval_matrix,
+            retrieval_tuning: &retrieval_tuning,
+            ranking: &ranking,
+            split: &split,
+            corpus_signature: &corpus_signature,
+            config_signature: &config_signature,
+        },
     )?;
     let mut recommendations = Vec::new();
     if total == 0 {
@@ -2104,6 +2188,12 @@ pub(crate) fn rag_eval_report_with_baseline(
             "inspect grounded_answer fields: retrieval found evidence that did not make it into the final grounded answer".to_string(),
         );
     }
+    if ranking.hit_at_3_rate < 80.0 {
+        recommendations.push(format!(
+            "expected evidence reaches the top 3 in only {:.1}% of cases; tune ranking before expanding context budgets",
+            ranking.hit_at_3_rate
+        ));
+    }
     if evidence_placement.near_miss_count > 0 {
         recommendations.push(
             "inspect expected_suppressed_reasons: expected evidence was retrievable but suppressed by source packing".to_string(),
@@ -2128,6 +2218,17 @@ pub(crate) fn rag_eval_report_with_baseline(
             eval_matrix.recommended_min_stored_cases
         ));
     }
+    if split.holdout_total < split.recommended_min_holdout_cases {
+        recommendations.push(format!(
+            "add at least {} independent holdout RAG cases with `eval add-case --split holdout`; current holdout has {}",
+            split.recommended_min_holdout_cases, split.holdout_total
+        ));
+    } else if !split.holdout_ready {
+        recommendations.push(
+            "holdout RAG cases are failing; tune only on development cases, then rerun the untouched holdout"
+                .to_string(),
+        );
+    }
     if !eval_matrix.missing_dimensions.is_empty() {
         recommendations.push(format!(
             "add RAG eval cases for missing matrix dimensions: {}",
@@ -2150,7 +2251,7 @@ pub(crate) fn rag_eval_report_with_baseline(
     }
     let ok = total > 0 && failed == 0 && grounded_answers.failed == 0;
     Ok(RagEvalReport {
-        version: 4,
+        version: 6,
         ok,
         status: if ok {
             "ready"
@@ -2171,33 +2272,35 @@ pub(crate) fn rag_eval_report_with_baseline(
         packing,
         evidence_placement,
         grounded_answers,
+        ranking,
         eval_matrix,
         retrieval_tuning,
+        split,
         baseline,
         cases: results,
         recommendations,
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn rag_eval_baseline_summary(
-    baseline_root: Option<&Path>,
-    write_baseline: bool,
+struct RagEvalBaselineInput<'a> {
     total: usize,
     passed: usize,
     recall: f64,
     grounded_coverage: f64,
-    eval_matrix: &RagEvalMatrixSummary,
-    retrieval_tuning: &RagEvalRetrievalTuningSummary,
+    eval_matrix: &'a RagEvalMatrixSummary,
+    retrieval_tuning: &'a RagEvalRetrievalTuningSummary,
+    ranking: &'a RagEvalRankingSummary,
+    split: &'a RagEvalSplitSummary,
+    corpus_signature: &'a str,
+    config_signature: &'a str,
+}
+
+fn rag_eval_baseline_summary(
+    baseline_root: Option<&Path>,
+    write_baseline: bool,
+    input: &RagEvalBaselineInput<'_>,
 ) -> Result<RagEvalBaselineSummary> {
-    let current = rag_eval_baseline_file(
-        total,
-        passed,
-        recall,
-        grounded_coverage,
-        eval_matrix,
-        retrieval_tuning,
-    )?;
+    let current = rag_eval_baseline_file(input)?;
     let Some(root) = baseline_root else {
         return Ok(RagEvalBaselineSummary {
             status: "unconfigured".to_string(),
@@ -2212,6 +2315,8 @@ fn rag_eval_baseline_summary(
             baseline_matrix_coverage: None,
             baseline_candidate_recall: None,
             baseline_selection_recall: None,
+            baseline_hit_at_3_rate: None,
+            baseline_mean_reciprocal_rank: None,
             detail: "no project root was supplied for RAG eval baseline comparison".to_string(),
         });
     };
@@ -2232,6 +2337,8 @@ fn rag_eval_baseline_summary(
             baseline_matrix_coverage: Some(current.matrix_coverage),
             baseline_candidate_recall: Some(current.candidate_recall),
             baseline_selection_recall: Some(current.selection_recall),
+            baseline_hit_at_3_rate: Some(current.hit_at_3_rate),
+            baseline_mean_reciprocal_rank: Some(current.mean_reciprocal_rank),
             detail: "wrote current RAG eval matrix baseline".to_string(),
         });
     }
@@ -2250,6 +2357,8 @@ fn rag_eval_baseline_summary(
             baseline_matrix_coverage: None,
             baseline_candidate_recall: None,
             baseline_selection_recall: None,
+            baseline_hit_at_3_rate: None,
+            baseline_mean_reciprocal_rank: None,
             detail: "no RAG eval baseline has been written for this project".to_string(),
         });
     };
@@ -2267,18 +2376,35 @@ fn rag_eval_baseline_summary(
             baseline_matrix_coverage: None,
             baseline_candidate_recall: None,
             baseline_selection_recall: None,
+            baseline_hit_at_3_rate: None,
+            baseline_mean_reciprocal_rank: None,
             detail: "RAG eval baseline file exists but could not be parsed".to_string(),
         });
     };
 
-    let regression = current.recall + 0.1 < baseline.recall
-        || current.grounded_coverage + 0.1 < baseline.grounded_coverage
-        || current.matrix_coverage + 0.1 < baseline.matrix_coverage
-        || current.candidate_recall + 0.1 < baseline.candidate_recall
-        || current.selection_recall + 0.1 < baseline.selection_recall
-        || current.passed < baseline.passed
-        || current.covered_dimensions < baseline.covered_dimensions;
-    let status = if regression {
+    let corpus_changed = baseline.corpus_signature.is_empty()
+        || current.corpus_signature != baseline.corpus_signature;
+    let config_changed = baseline.config_signature.is_empty()
+        || current.config_signature != baseline.config_signature;
+    let comparable = !corpus_changed && !config_changed;
+    let regression = comparable
+        && (current.recall + 0.1 < baseline.recall
+            || current.grounded_coverage + 0.1 < baseline.grounded_coverage
+            || current.matrix_coverage + 0.1 < baseline.matrix_coverage
+            || current.candidate_recall + 0.1 < baseline.candidate_recall
+            || current.selection_recall + 0.1 < baseline.selection_recall
+            || current.hit_at_3_rate + 5.0 < baseline.hit_at_3_rate
+            || current.mean_reciprocal_rank + 5.0 < baseline.mean_reciprocal_rank
+            || current.holdout_recall + 0.1 < baseline.holdout_recall
+            || current.holdout_grounded_coverage + 0.1 < baseline.holdout_grounded_coverage
+            || current.holdout_total < baseline.holdout_total
+            || current.passed < baseline.passed
+            || current.covered_dimensions < baseline.covered_dimensions);
+    let status = if corpus_changed {
+        "corpus_changed"
+    } else if config_changed {
+        "config_changed"
+    } else if regression {
         "regressed"
     } else if current.signature == baseline.signature {
         "matched"
@@ -2286,10 +2412,35 @@ fn rag_eval_baseline_summary(
         "changed"
     }
     .to_string();
-    let detail = if regression {
+    let detail = if corpus_changed {
         format!(
-            "current recall {:.1}% / matrix {:.1}% is below baseline recall {:.1}% / matrix {:.1}%",
-            current.recall, current.matrix_coverage, baseline.recall, baseline.matrix_coverage
+            "RAG eval corpus changed (current {}, baseline {}); review cases and write a new baseline",
+            current.corpus_signature,
+            if baseline.corpus_signature.is_empty() {
+                "legacy"
+            } else {
+                &baseline.corpus_signature
+            }
+        )
+    } else if config_changed {
+        format!(
+            "RAG eval configuration changed (current {}, baseline {}); rerun and accept a new baseline",
+            current.config_signature,
+            if baseline.config_signature.is_empty() {
+                "legacy"
+            } else {
+                &baseline.config_signature
+            }
+        )
+    } else if regression {
+        format!(
+            "current recall {:.1}% / hit@3 {:.1}% / MRR {:.1}% is below baseline recall {:.1}% / hit@3 {:.1}% / MRR {:.1}%",
+            current.recall,
+            current.hit_at_3_rate,
+            current.mean_reciprocal_rank,
+            baseline.recall,
+            baseline.hit_at_3_rate,
+            baseline.mean_reciprocal_rank
         )
     } else if current.signature == baseline.signature {
         "current RAG eval matrix matches baseline".to_string()
@@ -2309,18 +2460,25 @@ fn rag_eval_baseline_summary(
         baseline_matrix_coverage: Some(baseline.matrix_coverage),
         baseline_candidate_recall: Some(baseline.candidate_recall),
         baseline_selection_recall: Some(baseline.selection_recall),
+        baseline_hit_at_3_rate: Some(baseline.hit_at_3_rate),
+        baseline_mean_reciprocal_rank: Some(baseline.mean_reciprocal_rank),
         detail,
     })
 }
 
-fn rag_eval_baseline_file(
-    total: usize,
-    passed: usize,
-    recall: f64,
-    grounded_coverage: f64,
-    eval_matrix: &RagEvalMatrixSummary,
-    retrieval_tuning: &RagEvalRetrievalTuningSummary,
-) -> Result<RagEvalBaselineFile> {
+fn rag_eval_baseline_file(input: &RagEvalBaselineInput<'_>) -> Result<RagEvalBaselineFile> {
+    let RagEvalBaselineInput {
+        total,
+        passed,
+        recall,
+        grounded_coverage,
+        eval_matrix,
+        retrieval_tuning,
+        ranking,
+        split,
+        corpus_signature,
+        config_signature,
+    } = input;
     let payload = json!({
         "total": total,
         "passed": passed,
@@ -2331,23 +2489,88 @@ fn rag_eval_baseline_file(
         "dimensions": eval_matrix.dimensions,
         "candidate_recall": retrieval_tuning.candidate_recall,
         "selection_recall": retrieval_tuning.selection_recall,
+        "hit_at_3_rate": ranking.hit_at_3_rate,
+        "mean_reciprocal_rank": ranking.mean_reciprocal_rank,
+        "holdout_total": split.holdout_total,
+        "holdout_recall": split.holdout_recall,
+        "holdout_grounded_coverage": split.holdout_grounded_coverage,
+        "corpus_signature": corpus_signature,
+        "config_signature": config_signature,
     });
     let mut hasher = Sha256::new();
     hasher.update(serde_json::to_vec(&payload)?);
     Ok(RagEvalBaselineFile {
-        version: 1,
+        version: 3,
         signature: format!("{:x}", hasher.finalize())[..16].to_string(),
-        total,
-        passed,
-        recall,
-        grounded_coverage,
+        corpus_signature: corpus_signature.to_string(),
+        config_signature: config_signature.to_string(),
+        total: *total,
+        passed: *passed,
+        recall: *recall,
+        grounded_coverage: *grounded_coverage,
         matrix_coverage: eval_matrix.coverage,
         candidate_recall: retrieval_tuning.candidate_recall,
         selection_recall: retrieval_tuning.selection_recall,
+        hit_at_3_rate: ranking.hit_at_3_rate,
+        mean_reciprocal_rank: ranking.mean_reciprocal_rank,
+        holdout_total: split.holdout_total,
+        holdout_recall: split.holdout_recall,
+        holdout_grounded_coverage: split.holdout_grounded_coverage,
         covered_dimensions: eval_matrix.covered_dimensions,
         dimensions: eval_matrix.dimensions.clone(),
         written_at: now_ms(),
     })
+}
+
+fn rag_eval_corpus_signature(cases: &[RagEvalCase]) -> Result<String> {
+    let mut canonical_cases = cases
+        .iter()
+        .map(|case| {
+            json!({
+                "id": case.id,
+                "name": case.name,
+                "query": case.query,
+                "expected": case.expected,
+                "budget": case.budget,
+                "source": case.source,
+                "split": case.split,
+            })
+        })
+        .collect::<Vec<_>>();
+    canonical_cases.sort_by_key(|case| serde_json::to_string(case).unwrap_or_default());
+    short_eval_signature(&canonical_cases)
+}
+
+fn rag_eval_config_signature(
+    scope: Option<&str>,
+    limit: usize,
+    budget: usize,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> Result<String> {
+    short_eval_signature(&json!({
+        "protocol_version": RAG_EVAL_PROTOCOL_VERSION,
+        "scope": scope,
+        "limit": limit,
+        "budget": budget,
+        "provider": provider,
+        "endpoint": endpoint,
+        "model": model,
+    }))
+}
+
+fn short_eval_signature(payload: &impl Serialize) -> Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(payload)?);
+    Ok(format!("{:x}", hasher.finalize())[..16].to_string())
+}
+
+pub(crate) fn rag_eval_baseline_blocks_release(status: &str) -> bool {
+    matches!(
+        status,
+        "invalid" | "regressed" | "changed" | "corpus_changed" | "config_changed"
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2634,6 +2857,76 @@ fn rag_eval_grounded_summary(cases: &[RagEvalCaseResult]) -> RagEvalGroundedSumm
             .iter()
             .filter(|case| !case.grounded_answer.unknown_citations.is_empty())
             .count(),
+    }
+}
+
+fn rag_eval_ranking_summary(cases: &[RagEvalCaseResult]) -> RagEvalRankingSummary {
+    let total = cases.len();
+    let hit_at_1 = cases
+        .iter()
+        .filter(|case| case.expected_rank.is_some_and(|rank| rank <= 1))
+        .count();
+    let hit_at_3 = cases
+        .iter()
+        .filter(|case| case.expected_rank.is_some_and(|rank| rank <= 3))
+        .count();
+    let hit_at_5 = cases
+        .iter()
+        .filter(|case| case.expected_rank.is_some_and(|rank| rank <= 5))
+        .count();
+    let mean_reciprocal_rank = if total == 0 {
+        0.0
+    } else {
+        (cases
+            .iter()
+            .filter_map(|case| case.expected_rank)
+            .map(|rank| 1.0 / rank as f64)
+            .sum::<f64>()
+            / total as f64
+            * 1_000.0)
+            .round()
+            / 10.0
+    };
+    RagEvalRankingSummary {
+        total,
+        hit_at_1,
+        hit_at_3,
+        hit_at_5,
+        hit_at_1_rate: eval_ratio_percent(hit_at_1, total),
+        hit_at_3_rate: eval_ratio_percent(hit_at_3, total),
+        hit_at_5_rate: eval_ratio_percent(hit_at_5, total),
+        mean_reciprocal_rank,
+    }
+}
+
+fn rag_eval_split_summary(cases: &[RagEvalCaseResult]) -> RagEvalSplitSummary {
+    let development = cases
+        .iter()
+        .filter(|case| case.split == "development")
+        .collect::<Vec<_>>();
+    let holdout = cases
+        .iter()
+        .filter(|case| case.split == "holdout")
+        .collect::<Vec<_>>();
+    let development_passed = development.iter().filter(|case| case.passed).count();
+    let holdout_passed = holdout.iter().filter(|case| case.passed).count();
+    let holdout_grounded = holdout
+        .iter()
+        .filter(|case| case.grounded_answer.passed)
+        .count();
+    let holdout_total = holdout.len();
+    RagEvalSplitSummary {
+        development_total: development.len(),
+        development_passed,
+        development_recall: eval_ratio_percent(development_passed, development.len()),
+        holdout_total,
+        holdout_passed,
+        holdout_recall: eval_ratio_percent(holdout_passed, holdout_total),
+        holdout_grounded_coverage: eval_ratio_percent(holdout_grounded, holdout_total),
+        recommended_min_holdout_cases: RAG_EVAL_RECOMMENDED_HOLDOUT_CASES,
+        holdout_ready: holdout_total >= RAG_EVAL_RECOMMENDED_HOLDOUT_CASES
+            && holdout_passed == holdout_total
+            && holdout_grounded == holdout_total,
     }
 }
 
@@ -2988,7 +3281,7 @@ fn rag_eval_expected_evidence_status(
 
 fn load_rag_eval_cases(conn: &Connection, default_budget: usize) -> Result<Vec<RagEvalCase>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, query, expected, budget FROM eval_cases ORDER BY created_at ASC",
+        "SELECT id, name, query, expected, budget, split FROM eval_cases ORDER BY created_at ASC",
     )?;
     let rows = stmt.query_map([], |row| {
         let budget = row.get::<_, i64>(4)?;
@@ -3003,6 +3296,7 @@ fn load_rag_eval_cases(conn: &Connection, default_budget: usize) -> Result<Vec<R
                 default_budget
             },
             source: "stored".to_string(),
+            split: row.get(5)?,
         })
     })?;
     let mut cases = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -3024,6 +3318,7 @@ fn load_rag_eval_cases(conn: &Connection, default_budget: usize) -> Result<Vec<R
             expected: id,
             budget: default_budget,
             source: "auto".to_string(),
+            split: "auto".to_string(),
         })
     })?;
     cases = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -3032,7 +3327,7 @@ fn load_rag_eval_cases(conn: &Connection, default_budget: usize) -> Result<Vec<R
 
 fn load_graph_rag_eval_cases(conn: &Connection, default_budget: usize) -> Result<Vec<RagEvalCase>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, query, expected, budget FROM eval_cases \
+        "SELECT id, name, query, expected, budget, split FROM eval_cases \
          WHERE lower(name || ' ' || query || ' ' || expected) LIKE '%graph%' \
             OR lower(name || ' ' || query || ' ' || expected) LIKE '%relationship%' \
             OR lower(name || ' ' || query || ' ' || expected) LIKE '% related%' \
@@ -3052,6 +3347,7 @@ fn load_graph_rag_eval_cases(conn: &Connection, default_budget: usize) -> Result
                 default_budget
             },
             source: "stored_graph".to_string(),
+            split: row.get(5)?,
         })
     })?;
     let cases = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -3087,6 +3383,7 @@ fn load_graph_rag_eval_cases(conn: &Connection, default_budget: usize) -> Result
             },
             budget: default_budget,
             source: "auto_graph".to_string(),
+            split: "auto".to_string(),
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -4130,6 +4427,69 @@ mod tests {
         }
     }
 
+    fn rag_eval_case(id: &str, expected: &str, budget: usize) -> RagEvalCase {
+        RagEvalCase {
+            id: id.to_string(),
+            name: format!("case {id}"),
+            query: format!("query {id}"),
+            expected: expected.to_string(),
+            budget,
+            source: "stored".to_string(),
+            split: "development".to_string(),
+        }
+    }
+
+    #[test]
+    fn rag_eval_corpus_signature_is_order_independent_and_content_aware() {
+        let first = rag_eval_case("a", "memory-a", 1_000);
+        let second = rag_eval_case("b", "memory-b", 2_000);
+        let forward = rag_eval_corpus_signature(&[first, second]).unwrap();
+
+        let reversed = rag_eval_corpus_signature(&[
+            rag_eval_case("b", "memory-b", 2_000),
+            rag_eval_case("a", "memory-a", 1_000),
+        ])
+        .unwrap();
+        let changed = rag_eval_corpus_signature(&[
+            rag_eval_case("a", "memory-a", 1_000),
+            rag_eval_case("b", "different", 2_000),
+        ])
+        .unwrap();
+
+        assert_eq!(forward, reversed);
+        assert_ne!(forward, changed);
+    }
+
+    #[test]
+    fn rag_eval_config_signature_covers_retrieval_inputs() {
+        let baseline =
+            rag_eval_config_signature(None, 6, 3_000, "local", "local", "model").unwrap();
+        let changed_limit =
+            rag_eval_config_signature(None, 8, 3_000, "local", "local", "model").unwrap();
+        let changed_scope =
+            rag_eval_config_signature(Some("project"), 6, 3_000, "local", "local", "model")
+                .unwrap();
+
+        assert_ne!(baseline, changed_limit);
+        assert_ne!(baseline, changed_scope);
+    }
+
+    #[test]
+    fn changed_rag_baselines_block_release_until_reviewed() {
+        for status in [
+            "invalid",
+            "regressed",
+            "changed",
+            "corpus_changed",
+            "config_changed",
+        ] {
+            assert!(rag_eval_baseline_blocks_release(status), "status={status}");
+        }
+        for status in ["matched", "written", "missing", "unconfigured"] {
+            assert!(!rag_eval_baseline_blocks_release(status), "status={status}");
+        }
+    }
+
     fn rag_eval_source(id: &str, summary: &str) -> RagSource {
         RagSource {
             id: id.to_string(),
@@ -4145,6 +4505,13 @@ mod tests {
             reasons: vec!["test".to_string()],
             summary: summary.to_string(),
             links: Vec::new(),
+            provenance: RagSourceProvenance {
+                origin: "memory_store".to_string(),
+                evidence_ref: format!("dukememory:memory:{id}"),
+                content_hash: "test-hash".to_string(),
+                source: Some("test".to_string()),
+                updated_at: Some(1),
+            },
             path: None,
             chunk_index: None,
             start_line: None,
@@ -4170,8 +4537,10 @@ mod tests {
             id: "case".to_string(),
             name: "case".to_string(),
             case_source: "stored".to_string(),
+            split: "development".to_string(),
             query: "query".to_string(),
             expected: "expected".to_string(),
+            expected_rank: (expected_evidence_status == "selected").then_some(1),
             passed: expected_evidence_status == "selected",
             detail: "detail".to_string(),
             confidence: "medium".to_string(),
@@ -4230,8 +4599,10 @@ mod tests {
             id: "case-1".to_string(),
             name: "packing visible".to_string(),
             case_source: "stored".to_string(),
+            split: "development".to_string(),
             query: "how is RAG packed?".to_string(),
             expected: "packing".to_string(),
+            expected_rank: Some(2),
             passed: true,
             detail: "expected text found in RAG source pack".to_string(),
             confidence: "medium".to_string(),
@@ -4408,6 +4779,30 @@ mod tests {
         assert_eq!(grounded.coverage, 50.0);
         assert_eq!(grounded.expected_in_answer, 1);
         assert_eq!(grounded.cited_answers, 1);
+
+        let ranking = rag_eval_ranking_summary(&cases);
+        assert_eq!(ranking.total, 2);
+        assert_eq!(ranking.hit_at_1, 1);
+        assert_eq!(ranking.hit_at_3_rate, 50.0);
+        assert_eq!(ranking.mean_reciprocal_rank, 50.0);
+    }
+
+    #[test]
+    fn rag_eval_holdout_requires_enough_untouched_grounded_cases() {
+        let mut cases = (0..RAG_EVAL_RECOMMENDED_HOLDOUT_CASES)
+            .map(|_| {
+                let mut case = rag_eval_case_with_packing("selected", RagPackingReport::default());
+                case.split = "holdout".to_string();
+                case
+            })
+            .collect::<Vec<_>>();
+        let ready = rag_eval_split_summary(&cases);
+        assert!(ready.holdout_ready);
+        assert_eq!(ready.holdout_recall, 100.0);
+
+        cases.pop();
+        let insufficient = rag_eval_split_summary(&cases);
+        assert!(!insufficient.holdout_ready);
     }
 
     #[test]

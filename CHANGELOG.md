@@ -7,10 +7,13 @@
 - Schema v22 memory-to-memory graph edges with canonical symmetric storage,
   provenance, transactional inference, reverse traversal, and graph-RAG
   regression coverage.
+- Schema v23 development/holdout RAG cases and schema v24 bitemporal evidence
+  observations, including valid-time/knowledge-time graph queries and Git
+  branch, commit, and worktree provenance through CLI and MCP.
 - A typed memory domain and application boundary shared by CLI, MCP, and HTTP,
   with centralized type, scope, status, confidence, sensitivity, and link
   invariants.
-- A 29-operation catalog generated from one Rust definition and exposed through
+- A 44-operation catalog generated from one Rust definition and exposed through
   `dukememory operations`, MCP `memory_operations`, HTTP `/operations`, and
   checked-in Markdown.
 - Absolute p95/QPS vector-search gates, a 4096-vector CI benchmark, and
@@ -18,6 +21,17 @@
   domain-boundary, and supply-chain suites.
 - CycloneDX 1.5 SBOM generation and release artifacts, immutable GitHub Action
   pins, and tests that reject mutable action references.
+- MCP 2025-11-25 lifecycle/framing support, capability-scoped project selection,
+  typed tool results, and bounded malformed-frame coverage.
+- MCP core/standard/full profiles, cursor pagination, Resources, optional Tasks,
+  cached strict Draft 2020-12 tool schemas, and runtime argument validation.
+- RAG Eval v5 expected-rank, Hit@1/3/5, and MRR metrics; structure-aware source
+  chunking and content-hashed evidence provenance.
+- macOS/Windows core CI and Sigstore build-provenance attestations for final
+  release archives, checksums, and SBOMs.
+- Byte-based storage quotas with warn/critical pressure, quota-aware backup
+  rotation, HTTP request correlation ids, and Linux ARM64/musl plus Windows
+  release targets.
 
 ### Changed
 
@@ -32,6 +46,14 @@
   model output instead of a hard-coded constant.
 - `age` is upgraded from 0.11.4 to 0.12.1; remaining unmaintained build-time
   transitive exceptions are documented with explicit upstream removal gates.
+- The stable operation catalog now declares stability, authorization,
+  idempotency, destructive/open-world effects, and schema identifiers; MCP
+  annotations for catalogued tools are derived from it.
+- MCP framing and HTTP file-ingest routing now live in focused modules with
+  independent boundary tests.
+- RAG Eval v6 now separates development and holdout results, requires a minimum
+  reviewed holdout set for release readiness, and fingerprints the eval corpus
+  and retrieval configuration in baseline v3.
 
 ### Fixed
 
@@ -41,8 +63,18 @@
   graph inference writes.
 - Return stable client/server HTTP status classes with security headers, and
   preserve core CRUD behavior after routing decomposition.
+- Keep MCP and HTTP file/DB selection inside allowed project capabilities,
+  default maintenance endpoints to preview, and return opaque incident ids for
+  unexpected HTTP failures.
+- Enforce private Unix permissions on SQLite databases/WAL/SHM and enable
+  `secure_delete=FAST` without claiming application-level database encryption.
 - Preserve v21 data, leased-session event sequences, graph edges, and schema
-  integrity across v22 migration plus strict verified backup/restore.
+  integrity across v22-v24 migrations plus strict verified backup/restore.
+- Create indexes that depend on v23/v24 columns only after legacy tables have
+  been migrated, so real v22 databases upgrade without bootstrap SQL failures.
+- Block redirect/DNS-rebinding SSRF paths for model/provider egress and reject
+  transfer-encoding ambiguity, duplicate content lengths, folded headers, and
+  oversized HTTP bodies before allocation.
 
 ## 0.42.0 — 2026-07-14 (local development)
 

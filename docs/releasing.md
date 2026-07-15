@@ -40,8 +40,9 @@ publishing token only inside the protected environment.
    annotated tag `v0.43.0` on that commit.
 4. Push the tag. `.github/workflows/release.yml` verifies the version, package,
    formatting, Clippy, tests, the performance gate, dependency policy, and the
-   CycloneDX SBOM; builds native Linux x86_64, macOS arm64, and macOS x86_64
-   archives; smoke-tests an installed copy; emits the SBOM plus per-archive and
+   CycloneDX SBOM; builds Linux x86_64 GNU, Linux ARM64 GNU, Linux x86_64 musl,
+   macOS arm64/x86_64, and Windows x86_64 archives; smoke-tests an installed
+   copy; emits the SBOM plus per-archive and
    combined SHA-256 manifests; creates the GitHub release; and publishes the
    crate with `cargo publish --locked`.
 5. Verify the GitHub assets and `SHA256SUMS`, then confirm the version on

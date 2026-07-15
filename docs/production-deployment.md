@@ -30,10 +30,21 @@ Create `/etc/dukememory/dukememory.env`:
 
 ```ini
 DUKEMEMORY_HTTP_ALLOWED_ORIGINS=https://memory.example.com
+DUKEMEMORY_AGENT_QUOTA_BYTES=536870912
+DUKEMEMORY_BACKUP_QUOTA_BYTES=268435456
+DUKEMEMORY_ROLLBACK_QUOTA_BYTES=134217728
+DUKEMEMORY_INSTALL_BACKUP_QUOTA_BYTES=134217728
 ```
 
 The service also accepts `DUKEMEMORY_SYNC_PASSPHRASE_FILE` here when encrypted
 sync is automated. Keep that file outside the repository with mode `600`.
+
+Local SQLite files are not application-level encrypted. DukeMemory enforces
+mode `600` on the database and WAL/SHM sidecars, creates new database directories
+with mode `700`, and enables SQLite `secure_delete=FAST`; production hosts should
+still use encrypted storage (for example LUKS or FileVault) when memory content
+is sensitive. Remote/VDS bundles should use the built-in authenticated age
+encryption.
 
 ## 3. Start the systemd service
 
@@ -81,7 +92,10 @@ dukememory --db /var/lib/dukememory/.agent/memory.db vec-index --json
 
 The first request verifies TLS and the unauthenticated liveness endpoint. The
 second verifies bearer authentication. Access logs are one-line JSON on stderr
-and therefore appear in the systemd journal. Rotate the HTTP token by replacing
+and therefore appear in the systemd journal; every response/access event shares
+an `X-Request-Id`. `ops-status --json` reports byte quotas, over-quota areas,
+retention readiness, and `ok`/`warn`/`critical` pressure. Backup policy enforces
+both `--keep` and `DUKEMEMORY_BACKUP_QUOTA_BYTES`. Rotate the HTTP token by replacing
 the file atomically and restarting the service.
 
 For encrypted VDS sync, monitor `sync status --json`. A healthy status has
