@@ -640,6 +640,55 @@ fn memory_qa_reports_only_actionable_missing_feedback() {
 }
 
 #[test]
+fn memory_qa_keeps_ambiguous_duplicate_candidates_advisory() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+
+    for suffix in ["client", "server", "runtime", "smoke", "probe"] {
+        cmd(&db)
+            .arg("add")
+            .arg("design_note")
+            .arg(format!("launcher play preflight check {suffix}"))
+            .arg(format!(
+                "The launcher play preflight check has a distinct {suffix} concern and should remain manually reviewable."
+            ))
+            .assert()
+            .success();
+    }
+
+    let qa = stdout(
+        cmd(&db)
+            .arg("memory-qa")
+            .arg("--root")
+            .arg(dir.path())
+            .arg("--json"),
+    );
+    let qa_json: Value = serde_json::from_str(&qa).unwrap();
+    assert!(qa_json["duplicate_candidates"].as_u64().unwrap() > 3);
+    assert_eq!(
+        qa_json["actionable_duplicate_candidates"].as_u64().unwrap(),
+        0
+    );
+    assert!(
+        qa_json["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|issue| !issue.as_str().unwrap().contains("duplicate candidates"))
+    );
+    assert!(
+        qa_json["recommendations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|recommendation| recommendation
+                .as_str()
+                .unwrap()
+                .contains("ambiguous duplicate candidates"))
+    );
+}
+
+#[test]
 fn dashboard_prefers_current_resolved_live_eval_over_stale_status() {
     let dir = tempdir().unwrap();
     let project = dir.path().join("resolved_project");

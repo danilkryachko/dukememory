@@ -2,6 +2,7 @@ use super::*;
 
 const FRESH_MEMORY_GRACE_MS: i64 = 86_400_000;
 const GAP_INBOX_STALE_MS: i64 = 3_600_000;
+const AUTO_SUPERSEDE_SAFE_CONFIDENCE: f64 = 0.90;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct MemoryReadEvent {
@@ -2532,6 +2533,7 @@ pub(crate) struct MemoryQaReport {
     pub(crate) stale: usize,
     pub(crate) too_long: usize,
     pub(crate) duplicate_candidates: usize,
+    pub(crate) actionable_duplicate_candidates: usize,
     pub(crate) embedding_missing: usize,
     pub(crate) embedding_stale: usize,
     pub(crate) autonomous_ok: Option<bool>,
@@ -2591,6 +2593,7 @@ pub(crate) struct OpsQualityLoopStatus {
     pub(crate) stale_cards: usize,
     pub(crate) too_long_cards: usize,
     pub(crate) duplicate_candidates: usize,
+    pub(crate) actionable_duplicate_candidates: usize,
     pub(crate) reversible_cleanup_ready: bool,
 }
 
@@ -5559,7 +5562,7 @@ pub(crate) fn auto_supersede_v2_report(
                 title: candidate.title.clone(),
                 reason: candidate.reason.clone(),
                 confidence,
-                safe_to_apply: confidence >= 0.90,
+                safe_to_apply: confidence >= AUTO_SUPERSEDE_SAFE_CONFIDENCE,
             }
         })
         .collect::<Vec<_>>();
@@ -5569,8 +5572,8 @@ pub(crate) fn auto_supersede_v2_report(
         for candidate in &candidates {
             if !candidate.safe_to_apply {
                 skipped.push(format!(
-                    "{}: confidence {:.2} below 0.90",
-                    candidate.duplicate_id, candidate.confidence
+                    "{}: confidence {:.2} below {:.2}",
+                    candidate.duplicate_id, candidate.confidence, AUTO_SUPERSEDE_SAFE_CONFIDENCE
                 ));
                 continue;
             }
@@ -13908,6 +13911,13 @@ fn auto_supersede_confidence(candidate: &MergeCandidate) -> f64 {
     (0.86_f64 + title_bonus).min(0.96)
 }
 
+fn actionable_duplicate_candidate_count(candidates: &[MergeCandidate]) -> usize {
+    candidates
+        .iter()
+        .filter(|candidate| auto_supersede_confidence(candidate) >= AUTO_SUPERSEDE_SAFE_CONFIDENCE)
+        .count()
+}
+
 fn memory_title_exists(conn: &Connection, memory_type: &str, title: &str) -> Result<bool> {
     let exists: i64 = conn.query_row(
         "SELECT COUNT(*) FROM memories WHERE type = ?1 AND title = ?2 AND status IN ('active', 'uncertain')",
@@ -18436,13 +18446,21 @@ pub(crate) fn memory_qa_report(
         ));
         recommendations.push("compact long cards into bounded summaries".to_string());
     }
-    if usefulness.duplicate_candidates.len() > 3 {
+    let duplicate_candidates = usefulness.duplicate_candidates.len();
+    let actionable_duplicate_candidates =
+        actionable_duplicate_candidate_count(&usefulness.duplicate_candidates);
+    if actionable_duplicate_candidates > 3 {
         issues.push(format!(
-            "{} duplicate candidates detected",
-            usefulness.duplicate_candidates.len()
+            "{} actionable duplicate candidates detected",
+            actionable_duplicate_candidates
         ));
         recommendations.push(
-            "let autonomous supersede safe duplicates or review merge-candidates".to_string(),
+            "review auto-supersede-v2 candidates, then apply safe reversible supersedes"
+                .to_string(),
+        );
+    } else if duplicate_candidates > 3 {
+        recommendations.push(
+            format!("{duplicate_candidates} ambiguous duplicate candidates need manual review; no safe auto-supersede candidates met the confidence threshold"),
         );
     }
     if let Some(embedding) = &embedding {
@@ -18513,7 +18531,7 @@ pub(crate) fn memory_qa_report(
         .min(5) as f64
         * 3.0;
     score -= usefulness.too_long.len().min(10) as f64 * 3.0;
-    score -= usefulness.duplicate_candidates.len().min(10) as f64 * 2.0;
+    score -= actionable_duplicate_candidates.min(10) as f64 * 2.0;
     score -= embedding
         .as_ref()
         .map(|item| item.missing + item.stale)
@@ -18558,7 +18576,8 @@ pub(crate) fn memory_qa_report(
         unused: usefulness.unused.len(),
         stale: usefulness.stale.len(),
         too_long: usefulness.too_long.len(),
-        duplicate_candidates: usefulness.duplicate_candidates.len(),
+        duplicate_candidates,
+        actionable_duplicate_candidates,
         embedding_missing: embedding.as_ref().map(|item| item.missing).unwrap_or(0),
         embedding_stale: embedding.as_ref().map(|item| item.stale).unwrap_or(0),
         autonomous_ok: autonomous.map(|status| status.ok),
@@ -18592,10 +18611,11 @@ pub(crate) fn print_ops_status(
             report.effectiveness.token_saving_estimate
         );
         println!(
-            "quality: avg={:.1} weak={} duplicates={} reversible_cleanup={}",
+            "quality: avg={:.1} weak={} duplicates={} actionable_duplicates={} reversible_cleanup={}",
             report.quality_loop.average_score,
             report.quality_loop.weakest_cards,
             report.quality_loop.duplicate_candidates,
+            report.quality_loop.actionable_duplicate_candidates,
             report.quality_loop.reversible_cleanup_ready
         );
         println!(
@@ -18843,6 +18863,8 @@ pub(crate) fn ops_status_report(
     let repair_loop = ops_repair_loop_status(conn, since_days)?;
     let gap_inbox = dashboard_gap_inbox_status(conn).unwrap_or_default();
 
+    let actionable_duplicate_candidates =
+        actionable_duplicate_candidate_count(&usefulness.duplicate_candidates);
     let quality_loop = OpsQualityLoopStatus {
         average_score: quality.average_score,
         total_cards: quality.total,
@@ -18851,6 +18873,7 @@ pub(crate) fn ops_status_report(
         stale_cards: usefulness.stale.len(),
         too_long_cards: usefulness.too_long.len(),
         duplicate_candidates: usefulness.duplicate_candidates.len(),
+        actionable_duplicate_candidates,
         reversible_cleanup_ready: rollback_ready || status_file.exists(),
     };
 
@@ -18992,10 +19015,10 @@ pub(crate) fn ops_status_report(
                 .unwrap_or("health check failed")
         ));
     }
-    if quality_loop.duplicate_candidates > 8 {
+    if quality_loop.actionable_duplicate_candidates > 8 {
         blockers.push(format!(
-            "{} duplicate candidates should be resolved before sharing",
-            quality_loop.duplicate_candidates
+            "{} safe duplicate candidates should be resolved before sharing",
+            quality_loop.actionable_duplicate_candidates
         ));
     }
     if !qa.ok {
