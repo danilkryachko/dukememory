@@ -2451,6 +2451,7 @@ pub(crate) struct ProjectDashboardItem {
     pub(crate) db: String,
     pub(crate) memories: i64,
     pub(crate) pending_inbox: i64,
+    pub(crate) actionable_pending_inbox: usize,
     pub(crate) quality_average: Option<f64>,
     pub(crate) autonomous_ok: Option<bool>,
     pub(crate) autonomous_age_secs: Option<i64>,
@@ -8964,11 +8965,13 @@ pub(crate) fn memory_effectiveness_lab_report(
     let trace = decision_trace_report(conn, since_days, 30)?;
     let roi = roi_report(conn, since_days)?;
     let read_count = usage.read_count.max(trace.traced_reads);
-    let empty_rate = ratio(trace.empty_reads, read_count.max(1));
+    let influence_sample_count =
+        influence_evidence_sample_count(read_count, trace.traced_reads, trace.influenced_reads);
+    let empty_rate = ratio(trace.empty_reads, influence_sample_count.max(1));
     let questioned_rate = ratio(trace.questioned_reads, trace.influenced_reads.max(1));
-    let influenced_rate = ratio(trace.influenced_reads, read_count.max(1));
+    let influenced_rate = ratio(trace.influenced_reads, influence_sample_count.max(1));
     let score = memory_effectiveness_score(MemoryEffectivenessScoreInput {
-        read_count,
+        read_count: influence_sample_count,
         influenced_reads: trace.influenced_reads,
         confirmed_reads: trace.confirmed_reads,
         empty_reads: trace.empty_reads,
@@ -8987,7 +8990,7 @@ pub(crate) fn memory_effectiveness_lab_report(
     if questioned_rate > 0.25 && trace.influenced_reads > 3 {
         issues.push("questioned memory influence is high".to_string());
     }
-    if usage.semantic_eligible_total > 0 && usage.semantic_eligible_result_rate < 0.70 {
+    if usage.semantic_eligible_total >= 3 && usage.semantic_eligible_result_rate < 0.70 {
         issues.push("semantic eligible reads often return empty results".to_string());
     }
     issues.sort();
@@ -9054,11 +9057,16 @@ pub(crate) fn memory_effectiveness_v2_report(
 ) -> Result<MemoryEffectivenessV2Report> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let base = memory_effectiveness_lab_report(conn, &root, since_days)?;
-    let influenced_rate = ratio(base.influenced_reads, base.read_count.max(1));
+    let influence_sample_count = influence_evidence_sample_count(
+        base.read_count,
+        base.trace.traced_reads,
+        base.influenced_reads,
+    );
+    let influenced_rate = ratio(base.influenced_reads, influence_sample_count.max(1));
     let confirmed_rate = ratio(base.confirmed_reads, base.influenced_reads.max(1));
     let wasted_read_rate = ratio(
         base.empty_reads + base.questioned_reads,
-        base.read_count.max(1),
+        influence_sample_count.max(1),
     );
     let top_useful_cards = base
         .usage
@@ -9244,7 +9252,7 @@ fn memory_effectiveness_score(input: MemoryEffectivenessScoreInput) -> f64 {
     } else {
         (1.0 - ratio(empty_reads.saturating_add(questioned_reads), read_count)).max(0.0)
     };
-    let semantic_results = if semantic_eligible_total == 0 {
+    let semantic_results = if semantic_eligible_total < 3 {
         1.0
     } else {
         semantic_result_rate.clamp(0.0, 1.0)
@@ -9257,13 +9265,28 @@ fn memory_effectiveness_score(input: MemoryEffectivenessScoreInput) -> f64 {
         .clamp(0.0, 100.0)
 }
 
+fn influence_evidence_sample_count(
+    total_read_count: usize,
+    traced_reads: usize,
+    influenced_reads: usize,
+) -> usize {
+    if traced_reads >= 20 || traced_reads >= total_read_count {
+        traced_reads.max(influenced_reads)
+    } else {
+        total_read_count
+    }
+}
+
 fn ignored_card_limit(active_card_count: usize) -> usize {
     10.max(active_card_count.div_ceil(4))
 }
 
 #[cfg(test)]
 mod memory_effectiveness_tests {
-    use super::{MemoryEffectivenessScoreInput, ignored_card_limit, memory_effectiveness_score};
+    use super::{
+        MemoryEffectivenessScoreInput, ignored_card_limit, influence_evidence_sample_count,
+        memory_effectiveness_score,
+    };
 
     fn score_input(read_count: usize) -> MemoryEffectivenessScoreInput {
         MemoryEffectivenessScoreInput {
@@ -9297,6 +9320,45 @@ mod memory_effectiveness_tests {
             ..score_input(100)
         });
         assert!(partially_traced < 75.0, "score was {partially_traced}");
+    }
+
+    #[test]
+    fn effectiveness_uses_representative_trace_window_as_evidence_denominator() {
+        let sample = influence_evidence_sample_count(188, 30, 27);
+        assert_eq!(sample, 30);
+
+        let score = memory_effectiveness_score(MemoryEffectivenessScoreInput {
+            read_count: sample,
+            influenced_reads: 27,
+            confirmed_reads: 21,
+            empty_reads: 3,
+            questioned_reads: 0,
+            semantic_eligible_total: 20,
+            semantic_result_rate: 1.0,
+            roi_score: 100.0,
+        });
+        assert!(score >= 75.0, "score was {score}");
+    }
+
+    #[test]
+    fn effectiveness_keeps_total_read_denominator_for_tiny_trace_samples() {
+        let sample = influence_evidence_sample_count(188, 3, 3);
+        assert_eq!(sample, 188);
+    }
+
+    #[test]
+    fn low_semantic_sample_does_not_penalize_effectiveness_score() {
+        let score = memory_effectiveness_score(MemoryEffectivenessScoreInput {
+            read_count: 2,
+            influenced_reads: 1,
+            confirmed_reads: 1,
+            empty_reads: 1,
+            questioned_reads: 0,
+            semantic_eligible_total: 2,
+            semantic_result_rate: 0.5,
+            roi_score: 100.0,
+        });
+        assert!(score >= 75.0, "score was {score}");
     }
 
     #[test]
@@ -17317,6 +17379,7 @@ pub(crate) fn dashboard_repair_history_report(
             db: db.display().to_string(),
             memories: 0,
             pending_inbox: 0,
+            actionable_pending_inbox: 0,
             quality_average: None,
             autonomous_ok: None,
             autonomous_age_secs: None,
@@ -17905,6 +17968,8 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
             .ok();
             let (memories, pending_inbox) = app_project_counts(&db).unwrap_or((0, 0));
             let embedding_missing = embedding.as_ref().map(|status| status.missing);
+            let actionable_pending_inbox =
+                actionable_pending_inbox_count(&conn).unwrap_or_else(|_| pending_inbox.max(0) as usize);
             let repair_loop =
                 ops_repair_loop_status(&conn, 30).unwrap_or_else(|_| empty_repair_loop_status());
             let gap_inbox = dashboard_gap_inbox_status(&conn).unwrap_or_default();
@@ -18039,15 +18104,15 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                     embed_repair_command(&db),
                 );
             }
-            if pending_inbox > 0 {
+            if actionable_pending_inbox > 0 {
                 attention_reasons.push("pending_inbox".to_string());
-                recommendations.push("review pending memory inbox".to_string());
+                recommendations.push("review actionable pending memory inbox".to_string());
                 push_repair_action(
                     &mut repair_actions,
                     "review_inbox",
                     "pending_inbox",
                     false,
-                    "Review pending inbox suggestions before accepting them.",
+                    "Review actionable pending inbox suggestions before accepting them.",
                     inbox_review_command(&db),
                 );
             }
@@ -18090,6 +18155,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                 db: db.display().to_string(),
                 memories,
                 pending_inbox,
+                actionable_pending_inbox,
                 quality_average: quality.map(|quality| quality.average_score),
                 autonomous_ok: autonomous.as_ref().map(|status| status.ok),
                 autonomous_age_secs,
@@ -18158,7 +18224,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
             project.autonomous_ok == Some(true)
                 && project.autonomous_fresh != Some(false)
                 && project.embedding_missing.unwrap_or(0) == 0
-                && project.pending_inbox == 0
+                && project.actionable_pending_inbox == 0
                 && project.recommendations.is_empty()
         })
         .count();
@@ -19249,6 +19315,15 @@ fn dashboard_gap_inbox_status(conn: &Connection) -> Result<DashboardGapInboxStat
     )?;
     status.stale_pending = stale_pending.max(0) as usize;
     Ok(status)
+}
+
+fn actionable_pending_inbox_count(conn: &Connection) -> Result<usize> {
+    Ok(inbox_v2_report(conn, usize::MAX, false)?
+        .groups
+        .into_iter()
+        .filter(|group| group.recommendation != "keep_pending")
+        .map(|group| group.count)
+        .sum())
 }
 
 fn active_dashboard_memory_gap_count(

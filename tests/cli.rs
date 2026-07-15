@@ -754,6 +754,80 @@ fn dashboard_prefers_current_resolved_live_eval_over_stale_status() {
 }
 
 #[test]
+fn dashboard_keeps_low_confidence_pending_inbox_advisory() {
+    let dir = tempdir().unwrap();
+    let project = dir.path().join("inbox_project");
+    fs::create_dir_all(project.join(".agent")).unwrap();
+    let db = project.join(".agent").join("memory.db");
+
+    cmd(&db)
+        .arg("add")
+        .arg("decision")
+        .arg("Initialize schema")
+        .arg("Create the memory database before recording inbox items.")
+        .assert()
+        .success();
+
+    let conn = Connection::open(&db).unwrap();
+    conn.execute(
+        "INSERT INTO memory_inbox \
+         (id, type, scope, title, body, source, confidence, status, created_at, updated_at) \
+         VALUES (?1, ?2, 'project', ?3, ?4, ?5, ?6, 'pending', ?7, ?7)",
+        params![
+            "low-confidence-inbox",
+            "task_state",
+            "Review memory quality: advisory pending item",
+            "Low-confidence inbox suggestions should remain visible but advisory.",
+            "autonomous_quality",
+            0.58_f64,
+            now_ms()
+        ],
+    )
+    .unwrap();
+
+    let dashboard = stdout(cmd(&db).arg("dashboard").arg("--json"));
+    let dashboard_json: Value = serde_json::from_str(&dashboard).unwrap();
+    let project_json = dashboard_json["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["name"] == "inbox_project")
+        .unwrap_or_else(|| &dashboard_json["projects"][0]);
+    assert_eq!(project_json["pending_inbox"], 1);
+    assert_eq!(project_json["actionable_pending_inbox"], 0);
+    assert!(
+        project_json["attention_reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|reason| reason != "pending_inbox")
+    );
+
+    conn.execute(
+        "UPDATE memory_inbox SET confidence = 0.95 WHERE id = 'low-confidence-inbox'",
+        [],
+    )
+    .unwrap();
+    let dashboard = stdout(cmd(&db).arg("dashboard").arg("--json"));
+    let dashboard_json: Value = serde_json::from_str(&dashboard).unwrap();
+    let project_json = dashboard_json["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["name"] == "inbox_project")
+        .unwrap_or_else(|| &dashboard_json["projects"][0]);
+    assert_eq!(project_json["pending_inbox"], 1);
+    assert_eq!(project_json["actionable_pending_inbox"], 1);
+    assert!(
+        project_json["attention_reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "pending_inbox")
+    );
+}
+
+#[test]
 fn memory_qa_reports_semantic_empty_result_health() {
     let dir = tempdir().unwrap();
     let db = dir.path().join("memory.db");
