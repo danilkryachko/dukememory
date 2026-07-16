@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
   schedule:
     - cron: "23 2 * * 4"
 
@@ -30,3 +31,13 @@ jobs:
         uses: github/codeql-action/analyze@f52b05f4acaaa234e44466e66d29050e135ea9ef # v4.36.0
         with:
           category: /language:rust
+
+  codeql-gate:
+    if: always()
+    needs: [rust]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require CodeQL analysis
+        env:
+          CODEQL_RESULT: ${{ needs.rust.result }}
+        run: test "${CODEQL_RESULT}" = success

@@ -4698,7 +4698,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .arg("status")
         .assert()
         .success()
-        .stdout(contains("expected: 27"));
+        .stdout(contains("expected: 28"));
     cmd(&db)
         .arg("schema")
         .arg("verify")

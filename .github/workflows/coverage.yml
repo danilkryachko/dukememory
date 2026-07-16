@@ -2,6 +2,7 @@ name: Coverage gate
 
 on:
   pull_request:
+  merge_group:
   workflow_dispatch:
   schedule:
     - cron: "41 4 * * 3"
@@ -37,3 +38,13 @@ jobs:
         with:
           name: lcov-${{ github.sha }}
           path: lcov.info
+
+  coverage-gate:
+    if: always()
+    needs: [coverage]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require coverage enforcement
+        env:
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
+        run: test "${COVERAGE_RESULT}" = success

@@ -2,14 +2,7 @@ name: Fuzz smoke tests
 
 on:
   pull_request:
-    paths:
-      - "src/protocol.rs"
-      - "src/app/http_server.rs"
-      - "src/app/mcp_transport.rs"
-      - "src/app/egress.rs"
-      - "src/rag_security.rs"
-      - "fuzz/**"
-      - ".github/workflows/fuzz.yml"
+  merge_group:
   schedule:
     - cron: "17 3 * * 1"
   workflow_dispatch:
@@ -50,3 +43,13 @@ jobs:
           name: fuzz-${{ matrix.target }}-${{ github.sha }}
           path: fuzz/artifacts
           if-no-files-found: ignore
+
+  fuzz-gate:
+    if: always()
+    needs: [fuzz]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every fuzz target
+        env:
+          FUZZ_RESULT: ${{ needs.fuzz.result }}
+        run: test "${FUZZ_RESULT}" = success

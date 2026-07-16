@@ -14,6 +14,12 @@ The release workflow requests read-only repository access by default. Only the
 GitHub release job receives `contents: write`; the crates.io job receives only
 `id-token: write` inside the protected environment.
 
+Protect `main` with strict, merge-queue-compatible required checks named
+`ci-gate`, `supply-chain-gate`, `coverage-gate`, `fuzz-gate`, and
+`codeql-gate`. These are stable sentinel jobs that fail unless every job or
+matrix entry in their workflow succeeds. Require the sentinels rather than
+individual matrix jobs, whose names and counts can change as coverage expands.
+
 ## Release sequence
 
 1. Update `Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`, and user-facing docs.
@@ -69,7 +75,9 @@ GitHub release job receives `contents: write`; the crates.io job receives only
    combined SHA-256 manifests; creates the GitHub release; and publishes the
    crate with `cargo publish --locked`.
    Separate pinned CodeQL, mutation, fuzz, and coverage workflows provide the
-   scheduled and pull-request companion gates.
+   scheduled and pull-request companion gates. CodeQL, fuzz, and coverage also
+   run for merge groups so the protected-branch sentinels cannot be bypassed by
+   a merge queue.
 5. Verify the GitHub assets and `SHA256SUMS`, then confirm the version on
    crates.io. Never move or reuse a released version tag.
 

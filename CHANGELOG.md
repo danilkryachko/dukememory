@@ -94,6 +94,9 @@
 - Lightweight web RAG evaluation summaries now live outside the 19k-line
   observability aggregate; CI lowers that file's growth ceiling and freezes the
   reviewed 22 direct/5 optional runtime dependency budget.
+- Coverage, every fuzz target, and CodeQL now terminate in stable sentinel jobs
+  on pull requests and merge groups; the protected branch can require those
+  sentinels together with the existing CI and supply-chain aggregators.
 
 ### Fixed
 

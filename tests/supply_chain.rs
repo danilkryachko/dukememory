@@ -104,6 +104,30 @@ fn release_evidence_gate_is_reproducible_and_required_by_ci() {
 }
 
 #[test]
+fn security_workflows_expose_merge_queue_safe_sentinel_checks() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows");
+    let coverage = fs::read_to_string(root.join("coverage.yml")).unwrap();
+    let fuzz = fs::read_to_string(root.join("fuzz.yml")).unwrap();
+    let codeql = fs::read_to_string(root.join("codeql.yml")).unwrap();
+
+    for workflow in [&coverage, &fuzz, &codeql] {
+        assert!(workflow.contains("pull_request:"));
+        assert!(workflow.contains("merge_group:"));
+        assert!(workflow.contains("if: always()"));
+    }
+    assert!(coverage.contains("coverage-gate:"));
+    assert!(coverage.contains("needs: [coverage]"));
+    assert!(fuzz.contains("fuzz-gate:"));
+    assert!(fuzz.contains("needs: [fuzz]"));
+    assert!(codeql.contains("codeql-gate:"));
+    assert!(codeql.contains("needs: [rust]"));
+    assert!(
+        !fuzz.contains("    paths:"),
+        "a required fuzz sentinel must run on every pull request"
+    );
+}
+
+#[test]
 fn mcp_conformance_claim_is_versioned_and_explicitly_scoped() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let profile: serde_json::Value = serde_json::from_str(
