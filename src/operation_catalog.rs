@@ -763,9 +763,7 @@ mod tests {
     #[test]
     fn checked_in_operation_documentation_matches_the_catalog() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/operations.md");
-        assert_eq!(
-            std::fs::read_to_string(path).unwrap(),
-            render_operation_markdown()
-        );
+        let checked_in = std::fs::read_to_string(path).unwrap().replace("\r\n", "\n");
+        assert_eq!(checked_in, render_operation_markdown());
     }
 }

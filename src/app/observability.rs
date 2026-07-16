@@ -15656,7 +15656,7 @@ mod git_worktree_context_tests {
         assert!(context.dirty);
         assert_eq!(context.temporal_basis, "worktree_after_head");
         assert_eq!(
-            Path::new(&context.worktree_root),
+            Path::new(&context.worktree_root).canonicalize().unwrap(),
             worktree.canonicalize().unwrap()
         );
         assert!(context.observed_at > 0);
