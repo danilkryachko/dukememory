@@ -97,6 +97,10 @@
 - Coverage, every fuzz target, and CodeQL now terminate in stable sentinel jobs
   on pull requests and merge groups; the protected branch can require those
   sentinels together with the existing CI and supply-chain aggregators.
+- The bounded native OTLP/HTTP JSON exporter now emits access logs, server
+  spans, and HTTP request count/duration metrics; optional telemetry identifier
+  hashing or omission protects peer/client addresses before local or remote
+  emission.
 
 ### Fixed
 

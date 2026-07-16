@@ -72,6 +72,7 @@ pub(crate) struct DeploymentObservabilityProfile {
     pub(crate) request_ids: bool,
     pub(crate) metrics_endpoint: String,
     pub(crate) otlp_exporter: String,
+    pub(crate) client_identifier_protection: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -178,6 +179,10 @@ pub(crate) fn deployment_profile_report(
     } else {
         sync_passphrase_is_configured()
     };
+    let telemetry_identifier_protection = std::env::var("DUKEMEMORY_TELEMETRY_IDENTIFIERS")
+        .unwrap_or_else(|_| "plain".to_string())
+        .trim()
+        .to_string();
     let mut blockers = Vec::new();
     match request.mode {
         DeploymentMode::Local => {
@@ -222,6 +227,12 @@ pub(crate) fn deployment_profile_report(
     }
     if token_file_status == Some(false) {
         blockers.push("HTTP token file is missing, empty, or has unsafe permissions".to_string());
+    }
+    if !matches!(
+        telemetry_identifier_protection.as_str(),
+        "plain" | "hash" | "omit"
+    ) {
+        blockers.push("DUKEMEMORY_TELEMETRY_IDENTIFIERS must be plain, hash, or omit".to_string());
     }
     if read_token_file_status == Some(false) {
         blockers.push(
@@ -283,9 +294,17 @@ pub(crate) fn deployment_profile_report(
         "use encrypted host storage for the SQLite database; application-level database encryption is not implemented"
             .to_string(),
     ];
-    if otlp::environment_status() == "disabled" {
+    if otlp::environment_status() != "otlp_http_json_logs_traces_metrics" {
         recommendations.push(
-            "set OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_PROTOCOL=http/json to export batched access logs"
+            "set OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_PROTOCOL=http/json to export bounded logs, traces, and metrics"
+                .to_string(),
+        );
+    }
+    if matches!(request.mode, DeploymentMode::ReverseProxy)
+        && telemetry_identifier_protection == "plain"
+    {
+        recommendations.push(
+            "set DUKEMEMORY_TELEMETRY_IDENTIFIERS=hash or omit before exporting public client addresses"
                 .to_string(),
         );
     }
@@ -323,6 +342,7 @@ pub(crate) fn deployment_profile_report(
             request_ids: true,
             metrics_endpoint: "/metrics".to_string(),
             otlp_exporter: otlp::environment_status().to_string(),
+            client_identifier_protection: telemetry_identifier_protection,
         },
         encryption: DeploymentEncryptionProfile {
             database_at_rest: "host_managed".to_string(),
@@ -398,6 +418,7 @@ mod tests {
         });
         assert!(local.ok);
         assert_eq!(local.observability.otlp_exporter, "disabled");
+        assert_eq!(local.observability.client_identifier_protection, "plain");
         assert_eq!(local.encryption.database_at_rest, "host_managed");
 
         let public = deployment_profile_report(DeploymentProfileRequest {

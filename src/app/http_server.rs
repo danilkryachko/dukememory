@@ -25,7 +25,8 @@ struct HttpAppState {
     rate_limiter: security::HttpRateLimiter,
     concurrency_limiter: security::HttpConcurrencyLimiter,
     mcp_http: mcp_server::McpHttpService,
-    otlp_logs: Option<otlp::OtlpLogExporter>,
+    otlp: Option<otlp::OtlpExporter>,
+    telemetry_identifiers: TelemetryIdentifierPolicy,
 }
 
 #[derive(Default)]
@@ -33,6 +34,38 @@ struct HttpRequestMeta {
     method: String,
     path: String,
     client: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TelemetryIdentifierPolicy {
+    Plain,
+    Hash,
+    Omit,
+}
+
+impl TelemetryIdentifierPolicy {
+    fn from_environment() -> Result<Self> {
+        match std::env::var("DUKEMEMORY_TELEMETRY_IDENTIFIERS")
+            .unwrap_or_else(|_| "plain".to_string())
+            .trim()
+        {
+            "plain" => Ok(Self::Plain),
+            "hash" => Ok(Self::Hash),
+            "omit" => Ok(Self::Omit),
+            _ => bail!("DUKEMEMORY_TELEMETRY_IDENTIFIERS must be plain, hash, or omit"),
+        }
+    }
+
+    fn protect(self, value: &str) -> String {
+        match self {
+            Self::Plain => value.to_string(),
+            Self::Hash => {
+                let digest = format!("{:x}", Sha256::digest(value.as_bytes()));
+                format!("sha256:{}", &digest[..24])
+            }
+            Self::Omit => "redacted".to_string(),
+        }
+    }
 }
 
 pub(crate) fn serve_http(
@@ -58,7 +91,8 @@ pub(crate) fn serve_http(
     let rate_limiter = security::HttpRateLimiter::from_environment()?;
     let concurrency_limiter = security::HttpConcurrencyLimiter::from_environment()?;
     let mcp_http = mcp_server::McpHttpService::new(mcp_profile, mcp_page_size)?;
-    let otlp_logs = otlp::OtlpLogExporter::from_environment()?;
+    let otlp = otlp::OtlpExporter::from_environment()?;
+    let telemetry_identifiers = TelemetryIdentifierPolicy::from_environment()?;
     println!("http://{addr}");
     let state = std::sync::Arc::new(HttpAppState {
         default_db: db.to_path_buf(),
@@ -67,7 +101,8 @@ pub(crate) fn serve_http(
         rate_limiter,
         concurrency_limiter,
         mcp_http,
-        otlp_logs,
+        otlp,
+        telemetry_identifiers,
     });
 
     if once {
@@ -166,8 +201,8 @@ fn handle_http_stream(state: &HttpAppState, mut stream: TcpStream) -> Result<()>
     crate::http_api::write_response(&mut stream, response)?;
     let access_event = json!({
         "event": "http_access",
-        "peer": peer,
-        "client": if request_meta.client.is_empty() { "unknown" } else { &request_meta.client },
+        "peer": state.telemetry_identifiers.protect(&peer),
+        "client": state.telemetry_identifiers.protect(if request_meta.client.is_empty() { "unknown" } else { &request_meta.client }),
         "request_id": request_id,
         "method": request_meta.method,
         "path": request_meta.path,
@@ -175,7 +210,7 @@ fn handle_http_stream(state: &HttpAppState, mut stream: TcpStream) -> Result<()>
         "elapsed_ms": started.elapsed().as_millis(),
     });
     eprintln!("{access_event}");
-    if let Some(exporter) = &state.otlp_logs {
+    if let Some(exporter) = &state.otlp {
         exporter.emit_http_access(&access_event);
     }
     Ok(())
@@ -671,7 +706,7 @@ fn http_metrics(conn: &Connection) -> Result<Value> {
 
 #[cfg(test)]
 mod http_framing_tests {
-    use super::{content_length, read_http_request_with_deadline};
+    use super::{TelemetryIdentifierPolicy, content_length, read_http_request_with_deadline};
     use proptest::prelude::*;
     use std::io::Write;
 
@@ -724,6 +759,22 @@ mod http_framing_tests {
                 .unwrap_err();
         assert!(error.to_string().contains("HTTP request deadline exceeded"));
         client.join().unwrap();
+    }
+
+    #[test]
+    fn telemetry_identifier_policy_can_hash_or_omit_client_addresses() {
+        let hashed = TelemetryIdentifierPolicy::Hash.protect("203.0.113.7:443");
+        assert!(hashed.starts_with("sha256:"));
+        assert_eq!(hashed.len(), 31);
+        assert_ne!(hashed, "203.0.113.7:443");
+        assert_eq!(
+            TelemetryIdentifierPolicy::Omit.protect("203.0.113.7:443"),
+            "redacted"
+        );
+        assert_eq!(
+            TelemetryIdentifierPolicy::Plain.protect("203.0.113.7:443"),
+            "203.0.113.7:443"
+        );
     }
 
     proptest! {

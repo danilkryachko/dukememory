@@ -705,6 +705,11 @@ failures return an incident id instead of leaking SQL, filesystem paths, or
 error chains to clients; the full chain is emitted to stderr with that id.
 Every response also returns `X-Request-Id`, and the same id, method, sanitized
 path, status, peer, and elapsed time are emitted in the JSON access event.
+Set a generic `OTEL_EXPORTER_OTLP_ENDPOINT` with `http/json` to export bounded
+OTLP logs, server traces, and HTTP request count/duration metrics. Public
+deployments can set `DUKEMEMORY_TELEMETRY_IDENTIFIERS=hash` or `omit` to protect
+peer and derived client addresses in stderr and OTLP without losing request-id
+correlation.
 
 Outbound model/provider requests use a central egress policy: only HTTP(S), no
 URL credentials, redirects disabled, DNS checked and pinned, and private,

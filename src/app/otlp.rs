@@ -9,6 +9,182 @@ const OTLP_QUEUE_CAPACITY: usize = 512;
 const OTLP_BATCH_DELAY: Duration = Duration::from_millis(250);
 const OTLP_DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
+pub(crate) struct OtlpExporter {
+    logs: Option<OtlpLogExporter>,
+    traces: Option<OtlpSignalExporter>,
+    metrics: Option<OtlpSignalExporter>,
+}
+
+impl OtlpExporter {
+    pub(crate) fn from_environment() -> Result<Option<Self>> {
+        let logs = OtlpLogExporter::from_environment()?;
+        let traces = OtlpSignalExporter::from_environment(OtlpSignal::Traces)?;
+        let metrics = OtlpSignalExporter::from_environment(OtlpSignal::Metrics)?;
+        if logs.is_none() && traces.is_none() && metrics.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            logs,
+            traces,
+            metrics,
+        }))
+    }
+
+    pub(crate) fn emit_http_access(&self, event: &Value) {
+        if let Some(logs) = &self.logs {
+            logs.emit_http_access(event);
+        }
+        if let Some(traces) = &self.traces {
+            traces.emit(otlp_span_record(event));
+        }
+        if let Some(metrics) = &self.metrics {
+            metrics.emit(otlp_metric_record(event));
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum OtlpSignal {
+    Traces,
+    Metrics,
+}
+
+impl OtlpSignal {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Traces => "traces",
+            Self::Metrics => "metrics",
+        }
+    }
+
+    fn path(self) -> &'static str {
+        match self {
+            Self::Traces => "v1/traces",
+            Self::Metrics => "v1/metrics",
+        }
+    }
+
+    fn endpoint_env(self) -> &'static str {
+        match self {
+            Self::Traces => "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            Self::Metrics => "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+        }
+    }
+
+    fn protocol_env(self) -> &'static str {
+        match self {
+            Self::Traces => "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+            Self::Metrics => "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+        }
+    }
+
+    fn headers_env(self) -> &'static str {
+        match self {
+            Self::Traces => "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+            Self::Metrics => "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+        }
+    }
+
+    fn timeout_env(self) -> &'static str {
+        match self {
+            Self::Traces => "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+            Self::Metrics => "OTEL_EXPORTER_OTLP_METRICS_TIMEOUT",
+        }
+    }
+}
+
+struct OtlpSignalExporter {
+    signal: OtlpSignal,
+    sender: Option<SyncSender<Value>>,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl OtlpSignalExporter {
+    fn from_environment(signal: OtlpSignal) -> Result<Option<Self>> {
+        let Some(endpoint) = otlp_signal_endpoint(signal)? else {
+            return Ok(None);
+        };
+        let protocol = nonempty_env(signal.protocol_env())
+            .or_else(|| nonempty_env("OTEL_EXPORTER_OTLP_PROTOCOL"))
+            .unwrap_or_else(|| "http/json".to_string());
+        if protocol != "http/json" {
+            bail!(
+                "DukeMemory's native {} exporter supports OTLP/HTTP JSON; set {}=http/json",
+                signal.name(),
+                signal.protocol_env()
+            );
+        }
+        Self::new(
+            signal,
+            &endpoint,
+            otlp_signal_timeout(signal)?,
+            otlp_signal_headers(signal)?,
+        )
+        .map(Some)
+    }
+
+    fn new(
+        signal: OtlpSignal,
+        endpoint: &str,
+        timeout: Duration,
+        headers: HeaderMap,
+    ) -> Result<Self> {
+        let (client, endpoint) = egress::blocking_http_client(endpoint, timeout)
+            .with_context(|| format!("invalid OTLP {} endpoint", signal.name()))?;
+        let (sender, receiver) = std::sync::mpsc::sync_channel(OTLP_QUEUE_CAPACITY);
+        let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_shutdown = std::sync::Arc::clone(&shutdown);
+        let worker = std::thread::Builder::new()
+            .name(format!("dukememory-otlp-{}", signal.name()))
+            .spawn(move || {
+                export_signal_batches(
+                    signal,
+                    receiver,
+                    client,
+                    endpoint,
+                    headers,
+                    &worker_shutdown,
+                )
+            })
+            .with_context(|| format!("failed to start OTLP {} exporter", signal.name()))?;
+        Ok(Self {
+            signal,
+            sender: Some(sender),
+            shutdown,
+            worker: Some(worker),
+        })
+    }
+
+    fn emit(&self, record: Value) {
+        let Some(sender) = &self.sender else {
+            return;
+        };
+        match sender.try_send(record) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => eprintln!(
+                "OTLP {} queue is full; dropping one HTTP record",
+                self.signal.name()
+            ),
+            Err(TrySendError::Disconnected(_)) => eprintln!(
+                "OTLP {} exporter stopped; dropping one HTTP record",
+                self.signal.name()
+            ),
+        }
+    }
+}
+
+impl Drop for OtlpSignalExporter {
+    fn drop(&mut self) {
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.sender.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 pub(crate) struct OtlpLogExporter {
     sender: Option<SyncSender<Value>>,
     shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -78,12 +254,21 @@ impl Drop for OtlpLogExporter {
 }
 
 pub(crate) fn environment_status() -> &'static str {
-    if std::env::var_os("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT").is_some()
-        || std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_some()
-    {
-        "otlp_http_json_configured"
-    } else {
-        "disabled"
+    if nonempty_env("OTEL_EXPORTER_OTLP_ENDPOINT").is_some() {
+        return "otlp_http_json_logs_traces_metrics";
+    }
+    let configured = [
+        "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+    ]
+    .into_iter()
+    .filter(|name| nonempty_env(name).is_some())
+    .count();
+    match configured {
+        0 => "disabled",
+        3 => "otlp_http_json_logs_traces_metrics",
+        _ => "otlp_http_json_partial",
     }
 }
 
@@ -96,6 +281,19 @@ fn otlp_logs_endpoint() -> Result<Option<String>> {
     };
     let mut url = reqwest::Url::parse(&base).context("invalid OTEL_EXPORTER_OTLP_ENDPOINT")?;
     let path = format!("{}/v1/logs", url.path().trim_end_matches('/'));
+    url.set_path(&path);
+    Ok(Some(url.to_string()))
+}
+
+fn otlp_signal_endpoint(signal: OtlpSignal) -> Result<Option<String>> {
+    if let Some(endpoint) = nonempty_env(signal.endpoint_env()) {
+        return Ok(Some(endpoint));
+    }
+    let Some(base) = nonempty_env("OTEL_EXPORTER_OTLP_ENDPOINT") else {
+        return Ok(None);
+    };
+    let mut url = reqwest::Url::parse(&base).context("invalid OTEL_EXPORTER_OTLP_ENDPOINT")?;
+    let path = format!("{}/{}", url.path().trim_end_matches('/'), signal.path());
     url.set_path(&path);
     Ok(Some(url.to_string()))
 }
@@ -116,14 +314,22 @@ fn otlp_timeout() -> Result<Duration> {
 }
 
 fn otlp_headers() -> Result<HeaderMap> {
-    let mut headers = HeaderMap::new();
-    for raw in [
+    parse_otlp_headers([
         nonempty_env("OTEL_EXPORTER_OTLP_HEADERS"),
         nonempty_env("OTEL_EXPORTER_OTLP_LOGS_HEADERS"),
-    ]
-    .into_iter()
-    .flatten()
-    {
+    ])
+}
+
+fn otlp_signal_headers(signal: OtlpSignal) -> Result<HeaderMap> {
+    parse_otlp_headers([
+        nonempty_env("OTEL_EXPORTER_OTLP_HEADERS"),
+        nonempty_env(signal.headers_env()),
+    ])
+}
+
+fn parse_otlp_headers<const N: usize>(values: [Option<String>; N]) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    for raw in values.into_iter().flatten() {
         for pair in raw
             .split(',')
             .map(str::trim)
@@ -139,6 +345,21 @@ fn otlp_headers() -> Result<HeaderMap> {
         }
     }
     Ok(headers)
+}
+
+fn otlp_signal_timeout(signal: OtlpSignal) -> Result<Duration> {
+    let raw =
+        nonempty_env(signal.timeout_env()).or_else(|| nonempty_env("OTEL_EXPORTER_OTLP_TIMEOUT"));
+    let Some(raw) = raw else {
+        return Ok(OTLP_DEFAULT_TIMEOUT);
+    };
+    let milliseconds = raw
+        .parse::<u64>()
+        .context("OTLP timeout must be an integer number of milliseconds")?;
+    if !(1..=60_000).contains(&milliseconds) {
+        bail!("OTLP timeout must be between 1 and 60000 milliseconds");
+    }
+    Ok(Duration::from_millis(milliseconds))
 }
 
 fn nonempty_env(name: &str) -> Option<String> {
@@ -189,6 +410,170 @@ fn export_batches(
     }
 }
 
+fn export_signal_batches(
+    signal: OtlpSignal,
+    receiver: Receiver<Value>,
+    client: reqwest::blocking::Client,
+    endpoint: reqwest::Url,
+    headers: HeaderMap,
+    shutdown: &std::sync::atomic::AtomicBool,
+) {
+    loop {
+        let first = match receiver.recv_timeout(OTLP_BATCH_DELAY) {
+            Ok(record) => record,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+        };
+        let mut records = vec![first];
+        while records.len() < OTLP_BATCH_SIZE {
+            match receiver.try_recv() {
+                Ok(record) => records.push(record),
+                Err(_) => break,
+            }
+        }
+        let body = match signal {
+            OtlpSignal::Traces => otlp_traces_payload(records),
+            OtlpSignal::Metrics => otlp_metrics_payload(records),
+        };
+        match client
+            .post(endpoint.clone())
+            .headers(headers.clone())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&body)
+            .send()
+        {
+            Ok(response) if response.status().is_success() => {}
+            Ok(response) => eprintln!(
+                "OTLP {} export failed with collector status {}",
+                signal.name(),
+                response.status().as_u16()
+            ),
+            Err(err) => eprintln!("OTLP {} export failed: {err}", signal.name()),
+        }
+        if shutdown.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+    }
+}
+
+fn unix_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
+fn otlp_span_record(event: &Value) -> Value {
+    let request_id = event["request_id"].as_str().unwrap_or("unknown");
+    let digest = format!("{:x}", Sha256::digest(request_id.as_bytes()));
+    let end = unix_nanos();
+    let elapsed_ms = event["elapsed_ms"].as_u64().unwrap_or_default() as u128;
+    let start = end.saturating_sub(elapsed_ms.saturating_mul(1_000_000));
+    let status = event["status"].as_u64().unwrap_or_default();
+    let method = event["method"].as_str().unwrap_or("UNKNOWN");
+    let path = event["path"].as_str().unwrap_or("/");
+    json!({
+        "traceId": &digest[..32],
+        "spanId": &digest[32..48],
+        "name": format!("{method} {path}"),
+        "kind": 2,
+        "startTimeUnixNano": start.to_string(),
+        "endTimeUnixNano": end.to_string(),
+        "attributes": [
+            {"key": "http.request.method", "value": {"stringValue": method}},
+            {"key": "url.path", "value": {"stringValue": path}},
+            {"key": "http.response.status_code", "value": {"intValue": status.to_string()}},
+            {"key": "dukememory.request_id", "value": {"stringValue": request_id}}
+        ],
+        "status": {
+            "code": if status >= 500 { 2 } else { 1 }
+        }
+    })
+}
+
+fn otlp_metric_record(event: &Value) -> Value {
+    let now = unix_nanos().to_string();
+    let method = event["method"].as_str().unwrap_or("UNKNOWN");
+    let path = event["path"].as_str().unwrap_or("/");
+    let status = event["status"].as_u64().unwrap_or_default();
+    let attributes = json!([
+        {"key": "http.request.method", "value": {"stringValue": method}},
+        {"key": "url.path", "value": {"stringValue": path}},
+        {"key": "http.response.status_code", "value": {"intValue": status.to_string()}}
+    ]);
+    json!({
+        "timeUnixNano": now,
+        "attributes": attributes,
+        "elapsedMs": event["elapsed_ms"].as_f64().unwrap_or_default()
+    })
+}
+
+fn otlp_traces_payload(spans: Vec<Value>) -> Value {
+    json!({
+        "resourceSpans": [{
+            "resource": otlp_resource(),
+            "scopeSpans": [{
+                "scope": {"name": "dukememory.http", "version": env!("CARGO_PKG_VERSION")},
+                "spans": spans
+            }]
+        }]
+    })
+}
+
+fn otlp_metrics_payload(records: Vec<Value>) -> Value {
+    let count_points = records
+        .iter()
+        .map(|record| {
+            json!({
+                "timeUnixNano": record["timeUnixNano"],
+                "attributes": record["attributes"],
+                "asInt": "1"
+            })
+        })
+        .collect::<Vec<_>>();
+    let duration_points = records
+        .iter()
+        .map(|record| {
+            json!({
+                "timeUnixNano": record["timeUnixNano"],
+                "attributes": record["attributes"],
+                "asDouble": record["elapsedMs"]
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "resourceMetrics": [{
+            "resource": otlp_resource(),
+            "scopeMetrics": [{
+                "scope": {"name": "dukememory.http", "version": env!("CARGO_PKG_VERSION")},
+                "metrics": [
+                    {
+                        "name": "http.server.request.count",
+                        "unit": "{request}",
+                        "sum": {
+                            "aggregationTemporality": 1,
+                            "isMonotonic": true,
+                            "dataPoints": count_points
+                        }
+                    },
+                    {
+                        "name": "http.server.request.duration",
+                        "unit": "ms",
+                        "gauge": {"dataPoints": duration_points}
+                    }
+                ]
+            }]
+        }]
+    })
+}
+
+fn otlp_resource() -> Value {
+    json!({"attributes": [
+        {"key": "service.name", "value": {"stringValue": "dukememory"}},
+        {"key": "service.version", "value": {"stringValue": env!("CARGO_PKG_VERSION")}}
+    ]})
+}
+
 fn otlp_log_record(event: &Value) -> Value {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -223,10 +608,7 @@ fn otlp_log_record(event: &Value) -> Value {
 fn otlp_logs_payload(records: Vec<Value>) -> Value {
     json!({
         "resourceLogs": [{
-            "resource": {"attributes": [{
-                "key": "service.name",
-                "value": {"stringValue": "dukememory"}
-            }]},
+            "resource": otlp_resource(),
             "scopeLogs": [{
                 "scope": {"name": "dukememory.http", "version": env!("CARGO_PKG_VERSION")},
                 "logRecords": records
@@ -317,6 +699,43 @@ mod tests {
                 .any(|attribute| {
                     attribute["key"] == "elapsed_ms" && attribute["value"]["intValue"] == "12"
                 })
+        );
+    }
+
+    #[test]
+    fn trace_and_metric_payloads_use_bounded_http_semantic_fields() {
+        let event = json!({
+            "event": "http_access",
+            "request_id": "request-123",
+            "method": "GET",
+            "path": "/memory",
+            "status": 200,
+            "elapsed_ms": 12
+        });
+        let span = otlp_span_record(&event);
+        assert_eq!(span["traceId"].as_str().unwrap().len(), 32);
+        assert_eq!(span["spanId"].as_str().unwrap().len(), 16);
+        assert_eq!(span["name"], "GET /memory");
+        assert_eq!(span["status"]["code"], 1);
+
+        let traces = otlp_traces_payload(vec![span]);
+        assert_eq!(
+            traces["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["name"],
+            "GET /memory"
+        );
+        let metrics = otlp_metrics_payload(vec![otlp_metric_record(&event)]);
+        assert_eq!(
+            metrics["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]["name"],
+            "http.server.request.count"
+        );
+        assert_eq!(
+            metrics["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][1]["name"],
+            "http.server.request.duration"
+        );
+        assert_eq!(
+            metrics["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][1]["gauge"]["dataPoints"]
+                [0]["asDouble"],
+            12.0
         );
     }
 }

@@ -47,6 +47,7 @@ DUKEMEMORY_HTTP_MAX_CONCURRENT_REQUESTS=4
 DUKEMEMORY_HTTP_MAX_CONCURRENT_PER_CLIENT=4
 DUKEMEMORY_MCP_MAX_CONCURRENT_TASKS=32
 DUKEMEMORY_MCP_MAX_CONCURRENT_TASKS_PER_OWNER=4
+DUKEMEMORY_TELEMETRY_IDENTIFIERS=hash
 DUKEMEMORY_SQLITE_DURABILITY=strict
 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 OTEL_EXPORTER_OTLP_PROTOCOL=http/json
@@ -118,11 +119,15 @@ non-HTTPS origin, origin-policy mismatches, unsafe token files, and an encrypted
 sync target without a valid passphrase. Invalid HTTP/MCP admission limits and
 per-owner limits above their global bounds are also blockers. It states the current limits
 explicitly: SQLite at-rest encryption is host-managed. Production
-observability includes JSON access logs, request IDs, `/metrics`, and a bounded
-batched OTLP/HTTP JSON logs exporter. A signal-specific
-`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` is used as-is; the generic endpoint gets the
-standard `/v1/logs` suffix. Global and logs-specific OTLP headers/timeouts are
-supported. Outbound collector connections use the same pinned-DNS egress
+observability includes JSON access logs, request IDs, `/metrics`, and bounded
+batched OTLP/HTTP JSON logs, traces, and request-count/duration metrics.
+Signal-specific `OTEL_EXPORTER_OTLP_{LOGS,TRACES,METRICS}_ENDPOINT` values are
+used as-is; the generic endpoint receives the standard `/v1/logs`, `/v1/traces`,
+and `/v1/metrics` suffixes. Global and signal-specific OTLP protocols,
+headers, and timeouts are supported. `DUKEMEMORY_TELEMETRY_IDENTIFIERS` can be
+`plain`, `hash`, or `omit`; use `hash` or `omit` for public traffic so peer and
+derived client addresses are protected in both stderr logs and exported data.
+Outbound collector connections use the same pinned-DNS egress
 policy as model providers. Prefer exact scheme/host/port entries in
 `DUKEMEMORY_EGRESS_ALLOW_ORIGINS`; when that variable is configured, the older
 host-only `DUKEMEMORY_EGRESS_ALLOW_HOSTS` fallback is ignored. Plaintext
@@ -188,9 +193,11 @@ second verifies bearer authentication. The third verifies the MCP Streamable
 HTTP endpoint and should return an `MCP-Session-Id`; keep that identifier secret
 and send it only to the same origin. Access logs are one-line JSON on stderr
 and therefore appear in the systemd journal; every response/access event shares
-an `X-Request-Id`. When OTLP is configured, the same event is sent
-asynchronously in batches of at most 64 records; a bounded queue prevents a
-slow collector from applying unbounded memory pressure. `ops-status --json` reports byte quotas, over-quota areas,
+an `X-Request-Id`. When OTLP is configured, the request produces a log record,
+server span, monotonic request-count point, and request-duration point. Each
+signal is sent asynchronously in batches of at most 64 records through its own
+bounded queue, so a slow collector cannot apply unbounded memory pressure.
+`ops-status --json` reports byte quotas, over-quota areas,
 retention readiness, and `ok`/`warn`/`critical` pressure. Backup policy enforces
 both `--keep` and `DUKEMEMORY_BACKUP_QUOTA_BYTES`. Rotate the HTTP token by replacing
 the file atomically and restarting the service.
