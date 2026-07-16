@@ -67,6 +67,12 @@ pub(crate) struct PoisoningEvalReport {
     pub(crate) detector_benchmark_coverage: f64,
     pub(crate) detector_false_positives: usize,
     pub(crate) attack_resistance_status: String,
+    pub(crate) attack_fixture_version: u32,
+    pub(crate) attack_vectors: usize,
+    pub(crate) attack_filter_passed: usize,
+    pub(crate) attack_filter_total: usize,
+    pub(crate) attack_filter_false_positives: usize,
+    pub(crate) attack_filter_false_negatives: usize,
     pub(crate) scanned_memories: usize,
     pub(crate) scanned_chunks: usize,
     pub(crate) prompt_injection_candidates: usize,
@@ -75,6 +81,8 @@ pub(crate) struct PoisoningEvalReport {
     pub(crate) unattributed_active_memories: usize,
     pub(crate) contradicted_observations: usize,
     pub(crate) provenance_coverage: f64,
+    pub(crate) memory_provenance_coverage: f64,
+    pub(crate) chunk_provenance_coverage: f64,
     pub(crate) dominant_graph_nodes: usize,
     pub(crate) candidate_ids: Vec<String>,
     pub(crate) sampled: bool,
@@ -264,9 +272,9 @@ pub(crate) fn advanced_eval_report(conn: &Connection) -> Result<AdvancedEvalRepo
             "raise active-memory provenance coverage to at least {MIN_POISONING_PROVENANCE_COVERAGE:.0}% by attaching a source or evidence observation"
         ));
     }
-    if poisoning.attack_resistance_status == "not_evaluated" {
+    if poisoning.attack_filter_passed < poisoning.attack_filter_total {
         recommendations.push(
-            "run retrieval-and-generation attack cases before making an attack-resistance claim; the local detector benchmark measures triage coverage only"
+            "keep poisoned chunks quarantined and expand attack fixtures before making an end-to-end generation-resistance claim"
                 .to_string(),
         );
     }
@@ -511,6 +519,10 @@ fn poisoning_eval(
         conn,
         "SELECT COUNT(*) FROM memories m WHERE m.status = 'active' AND ((m.source IS NOT NULL AND trim(m.source) <> '') OR EXISTS (SELECT 1 FROM memory_observations o WHERE o.memory_id = m.id))",
     )?;
+    let attributed_chunks = scalar_count(
+        conn,
+        "SELECT COUNT(*) FROM rag_chunks c JOIN memory_sources s ON s.id = c.source_id WHERE trim(c.path) <> '' AND trim(c.content_hash) <> '' AND trim(s.path) <> '' AND trim(s.content_hash) <> ''",
+    )?;
     let unattributed = total_active.saturating_sub(attributed);
     let contradictions = scalar_count(
         conn,
@@ -530,8 +542,14 @@ fn poisoning_eval(
             .filter(|degree| (**degree as f64 / edges.len() as f64) >= 0.5)
             .count()
     };
-    let provenance_coverage = percent(attributed, total_active);
+    let memory_provenance_coverage = percent(attributed, total_active);
+    let chunk_provenance_coverage = percent(attributed_chunks, total_chunks);
+    let provenance_coverage = percent(
+        attributed.saturating_add(attributed_chunks),
+        total_active.saturating_add(total_chunks),
+    );
     let detector_benchmark = poisoning_detector_benchmark();
+    let attack_filter = rag_attack_filter_benchmark();
     let low_confidence_ratio = ratio(low_confidence, total_active);
     let unattributed_ratio = ratio(unattributed, total_active);
     let risk_score = ((prompt_candidates.min(2) as f64 * 20.0)
@@ -563,7 +581,18 @@ fn poisoning_eval(
         detector_benchmark_total: detector_benchmark.total,
         detector_benchmark_coverage: percent(detector_benchmark.passed, detector_benchmark.total),
         detector_false_positives: detector_benchmark.false_positives,
-        attack_resistance_status: "not_evaluated".to_string(),
+        attack_resistance_status: if attack_filter.passed == attack_filter.total {
+            "pre_retrieval_filter_passed"
+        } else {
+            "pre_retrieval_filter_failed"
+        }
+        .to_string(),
+        attack_fixture_version: attack_filter.fixture_version,
+        attack_vectors: attack_filter.attack_vectors,
+        attack_filter_passed: attack_filter.passed,
+        attack_filter_total: attack_filter.total,
+        attack_filter_false_positives: attack_filter.false_positives,
+        attack_filter_false_negatives: attack_filter.false_negatives,
         scanned_memories,
         scanned_chunks,
         prompt_injection_candidates: prompt_candidates,
@@ -572,38 +601,14 @@ fn poisoning_eval(
         unattributed_active_memories: unattributed,
         contradicted_observations: contradictions,
         provenance_coverage,
+        memory_provenance_coverage,
+        chunk_provenance_coverage,
         dominant_graph_nodes: dominant_nodes,
         candidate_ids: candidates,
         sampled: scanned_memories < total_active || scanned_chunks < total_chunks,
-        limitation: "deterministic heuristic triage only; it does not measure whether poisoned evidence changes retrieval or generated answers"
+        limitation: "deterministic triage plus a pre-retrieval quarantine fixture benchmark; it does not claim resistance to novel attacks or measure generated-answer behavior"
             .to_string(),
     })
-}
-
-fn looks_like_prompt_injection(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    let compact = lower
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .collect::<String>();
-    let compact_markers = [
-        "ignorepreviousinstructions",
-        "ignoreallpreviousinstructions",
-        "disregardpreviousinstructions",
-        "disregardpriordirectives",
-        "revealthesystemprompt",
-        "revealsystemprompt",
-        "overridethesystemprompt",
-        "overridesystemprompt",
-        "overridethesystemmessage",
-        "forgetallpriorrules",
-        "imstartsystem",
-    ];
-    compact_markers
-        .iter()
-        .any(|marker| compact.contains(marker))
-        || lower.contains("<|system|>")
-        || lower.contains("[system prompt]")
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -865,7 +870,14 @@ mod tests {
         assert_eq!(report.status, "attention");
         assert_eq!(report.poisoning.status, "provenance_gap");
         assert_eq!(report.poisoning.provenance_coverage, 0.0);
-        assert_eq!(report.poisoning.attack_resistance_status, "not_evaluated");
+        assert_eq!(
+            report.poisoning.attack_resistance_status,
+            "pre_retrieval_filter_passed"
+        );
+        assert_eq!(
+            report.poisoning.attack_filter_passed,
+            report.poisoning.attack_filter_total
+        );
     }
 
     #[test]

@@ -18,16 +18,8 @@ pub(crate) fn blocking_http_client(
 }
 
 fn validate_http_target(raw_url: &str) -> Result<(reqwest::Url, String, Vec<SocketAddr>, bool)> {
+    dukememory::protocol::validate_egress_url_shape(raw_url)?;
     let url = reqwest::Url::parse(raw_url).context("invalid HTTP endpoint URL")?;
-    if !matches!(url.scheme(), "http" | "https") {
-        bail!("egress endpoint must use http or https");
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        bail!("egress endpoint must not contain URL credentials");
-    }
-    if url.fragment().is_some() {
-        bail!("egress endpoint must not contain a URL fragment");
-    }
     let host = url
         .host_str()
         .context("egress endpoint must include a host")?

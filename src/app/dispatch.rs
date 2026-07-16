@@ -725,7 +725,11 @@ pub(crate) fn run() -> Result<()> {
         } => embeddings::embed_watch(&conn, &provider, &endpoint, &model, interval_secs, once)?,
         Command::Completions { shell } => print_completions(shell),
         Command::Man => print_manpage(),
-        Command::Audit { limit, json } => print_audit(&conn, limit, json)?,
+        Command::Audit {
+            limit,
+            verify,
+            json,
+        } => print_audit(&conn, limit, verify, json)?,
         Command::UsageReport {
             since_days,
             limit,
@@ -1400,11 +1404,84 @@ pub(crate) fn run() -> Result<()> {
             ),
             json,
         )?,
+        Command::RagShadow {
+            question,
+            scope,
+            limit,
+            budget,
+            budget_profile,
+            provider,
+            endpoint,
+            model,
+            json,
+        } => print_memory_rag_shadow(
+            &conn,
+            &question,
+            scope.as_deref(),
+            limit,
+            budget
+                .or_else(|| budget_profile_chars(budget_profile))
+                .unwrap_or(3000),
+            select_cli_or_config(
+                &provider,
+                DEFAULT_EMBED_PROVIDER,
+                &runtime.config.embeddings.provider,
+            ),
+            select_cli_or_config(
+                &endpoint,
+                DEFAULT_EMBED_ENDPOINT,
+                &runtime.config.embeddings.endpoint,
+            ),
+            select_cli_or_config(
+                &model,
+                DEFAULT_EMBED_MODEL,
+                &runtime.config.embeddings.model,
+            ),
+            json,
+        )?,
+        Command::DecisionCapsule {
+            question,
+            root,
+            scope,
+            limit,
+            budget,
+            budget_profile,
+            provider,
+            endpoint,
+            model,
+            json,
+        } => print_decision_capsule(
+            &conn,
+            &root,
+            &question,
+            scope.as_deref(),
+            limit,
+            budget
+                .or_else(|| budget_profile_chars(budget_profile))
+                .unwrap_or(3000),
+            select_cli_or_config(
+                &provider,
+                DEFAULT_EMBED_PROVIDER,
+                &runtime.config.embeddings.provider,
+            ),
+            select_cli_or_config(
+                &endpoint,
+                DEFAULT_EMBED_ENDPOINT,
+                &runtime.config.embeddings.endpoint,
+            ),
+            select_cli_or_config(
+                &model,
+                DEFAULT_EMBED_MODEL,
+                &runtime.config.embeddings.model,
+            ),
+            json,
+        )?,
         Command::RagIngest {
             input,
             root,
             scope,
             apply,
+            reviewed,
             embed,
             provider,
             endpoint,
@@ -1421,6 +1498,7 @@ pub(crate) fn run() -> Result<()> {
                 input: &input,
                 scope: &scope,
                 apply,
+                reviewed,
                 embed,
                 provider: select_cli_or_config(
                     &provider,
@@ -1441,6 +1519,38 @@ pub(crate) fn run() -> Result<()> {
                 overlap_chars,
                 max_file_bytes,
                 max_files,
+                json,
+            },
+        )?,
+        Command::RagRefresh {
+            root,
+            apply,
+            embed,
+            provider,
+            endpoint,
+            model,
+            json,
+        } => print_rag_refresh(
+            &conn,
+            RagRefreshRequest {
+                root: &root,
+                apply,
+                embed,
+                provider: select_cli_or_config(
+                    &provider,
+                    DEFAULT_EMBED_PROVIDER,
+                    &runtime.config.embeddings.provider,
+                ),
+                endpoint: select_cli_or_config(
+                    &endpoint,
+                    DEFAULT_EMBED_ENDPOINT,
+                    &runtime.config.embeddings.endpoint,
+                ),
+                model: select_cli_or_config(
+                    &model,
+                    DEFAULT_EMBED_MODEL,
+                    &runtime.config.embeddings.model,
+                ),
                 json,
             },
         )?,
@@ -1661,9 +1771,12 @@ pub(crate) fn run() -> Result<()> {
         Command::TemporalGraph {
             valid_at,
             known_at,
+            commit,
             limit,
             json,
-        } => print_temporal_memory_graph(&conn, valid_at, known_at, limit, json)?,
+        } => {
+            print_temporal_memory_graph(&conn, valid_at, known_at, commit.as_deref(), limit, json)?
+        }
         Command::MemoryTimeline { id, limit, json } => {
             print_memory_timeline(&conn, &id, limit, json)?
         }
@@ -1815,6 +1928,7 @@ pub(crate) fn run() -> Result<()> {
             root,
             since_days,
             rag_profile,
+            profile,
             strict,
             run,
             json,
@@ -1826,6 +1940,7 @@ pub(crate) fn run() -> Result<()> {
             strict,
             run,
             rag_profile,
+            profile,
             json,
         )?,
         Command::WebControlCenterV12 {
@@ -2035,12 +2150,22 @@ pub(crate) fn run() -> Result<()> {
             once,
             auth_token,
             auth_token_file,
+            mcp_profile,
+            mcp_page_size,
         } => {
             let auth_token = http_server::resolve_http_auth_token(
                 auth_token.as_deref(),
                 auth_token_file.as_deref(),
             )?;
-            http_server::serve_http(&cli.db, &host, port, once, auth_token.as_deref())?;
+            http_server::serve_http(
+                &cli.db,
+                &host,
+                port,
+                once,
+                auth_token.as_deref(),
+                &mcp_profile,
+                mcp_page_size,
+            )?;
         }
         Command::VecValidate { backend } => vec_validate(&conn, backend)?,
         Command::MergeCandidates { limit, json } => print_merge_candidates(&conn, limit, json)?,

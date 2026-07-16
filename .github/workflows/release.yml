@@ -31,9 +31,12 @@ jobs:
       - name: Release quality gate
         run: |
           cargo fmt --all -- --check
+          scripts/dependency-budget.sh
           cargo clippy --locked --all-targets --all-features -- -D warnings
           cargo test --locked --features vec
           cargo test --locked --test performance -- --ignored --nocapture
+      - name: Verify byte-reproducible minimal profile
+        run: scripts/reproducible-build-check.sh
       - name: Release supply-chain gate
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
@@ -104,6 +107,9 @@ jobs:
       - name: Build release binary
         shell: bash
         run: cargo build --locked --release --features vec --target "${{ matrix.target }}"
+      - name: Enforce full binary size budget
+        shell: bash
+        run: scripts/binary-size-budget.sh "target/${{ matrix.target }}/release/${{ matrix.binary }}" 57671680
       - name: Smoke-test installed binary
         shell: bash
         run: scripts/release-smoke.sh "target/${{ matrix.target }}/release/${{ matrix.binary }}" "${GITHUB_REF_NAME#v}"
@@ -129,8 +135,47 @@ jobs:
             dist/${{ matrix.asset }}.sha256
           if-no-files-found: error
 
+  build-minimal:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - name: Build minimal local-first binary
+        run: >-
+          cargo build --locked --profile release-minimal --no-default-features --features vec
+          --target x86_64-unknown-linux-gnu
+      - name: Enforce minimal binary size budget
+        run: >-
+          scripts/binary-size-budget.sh
+          target/x86_64-unknown-linux-gnu/release-minimal/dukememory
+          12582912
+      - name: Smoke-test minimal binary
+        run: >-
+          scripts/release-smoke.sh
+          target/x86_64-unknown-linux-gnu/release-minimal/dukememory
+          "${GITHUB_REF_NAME#v}"
+      - name: Package minimal artifact and checksum
+        run: |
+          asset=dukememory-minimal-x86_64-unknown-linux-gnu
+          mkdir -p "dist/${asset}"
+          cp target/x86_64-unknown-linux-gnu/release-minimal/dukememory "dist/${asset}/"
+          cp README.md CHANGELOG.md LICENSE TRADEMARKS.md "dist/${asset}/"
+          tar -C dist -czf "dist/${asset}.tar.gz" "${asset}"
+          cd dist
+          sha256sum "${asset}.tar.gz" >"${asset}.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dukememory-minimal-x86_64-unknown-linux-gnu
+          path: |
+            dist/dukememory-minimal-x86_64-unknown-linux-gnu.tar.gz
+            dist/dukememory-minimal-x86_64-unknown-linux-gnu.sha256
+          if-no-files-found: error
+
   github-release:
-    needs: [build, sbom]
+    needs: [build, build-minimal, sbom]
     runs-on: ubuntu-latest
     permissions:
       contents: write

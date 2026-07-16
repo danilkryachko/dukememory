@@ -20,6 +20,18 @@ pub(crate) struct MemoryReadEvent {
     pub(crate) created_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AuditIntegrityReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) events: usize,
+    pub(crate) checkpoints: usize,
+    pub(crate) first_event_id: Option<i64>,
+    pub(crate) last_event_id: Option<i64>,
+    pub(crate) head_hash: String,
+    pub(crate) errors: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct UsageReport {
     pub(crate) since_days: i64,
@@ -2752,22 +2764,200 @@ pub(crate) fn log_read_event(conn: &Connection, input: ReadEventInput<'_>) -> Re
     Ok(())
 }
 
-pub(crate) fn print_audit(conn: &Connection, limit: usize, json_out: bool) -> Result<()> {
+pub(crate) fn audit_integrity_report(conn: &Connection) -> Result<AuditIntegrityReport> {
+    let mut errors = Vec::new();
+    let mut checkpoint_count = 0usize;
+    let mut previous_checkpoint_hash = "genesis".to_string();
+    let mut latest_anchor = None;
+    let mut stmt = conn.prepare(
+        "SELECT id, created_at, deleted_through_id, deleted_count, first_retained_id, anchor_hash, previous_checkpoint_hash, checkpoint_hash FROM audit_checkpoints ORDER BY id ASC",
+    )?;
+    for row in stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+        ))
+    })? {
+        let (
+            id,
+            created_at,
+            deleted_through_id,
+            deleted_count,
+            first_retained_id,
+            anchor_hash,
+            stored_previous,
+            stored_hash,
+        ) = row?;
+        checkpoint_count += 1;
+        if stored_previous != previous_checkpoint_hash {
+            errors.push(format!("checkpoint:{id}:previous_hash_mismatch"));
+        }
+        let expected_hash = audit_checkpoint_hash(
+            id,
+            created_at,
+            deleted_through_id,
+            deleted_count,
+            first_retained_id,
+            &anchor_hash,
+            &stored_previous,
+        );
+        if stored_hash != expected_hash {
+            errors.push(format!("checkpoint:{id}:hash_mismatch"));
+        }
+        previous_checkpoint_hash = stored_hash;
+        latest_anchor = Some(anchor_hash);
+    }
+    drop(stmt);
+
+    let mut expected_previous = latest_anchor.unwrap_or_else(|| "genesis".to_string());
+    let mut event_count = 0usize;
+    let mut first_event_id = None;
+    let mut last_event_id = None;
+    let mut stmt = conn.prepare(
+        "SELECT id, event_type, memory_id, detail, created_at, previous_hash, event_hash FROM memory_events ORDER BY id ASC",
+    )?;
+    for row in stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+        ))
+    })? {
+        let (id, event_type, memory_id, detail, created_at, stored_previous, stored_hash) = row?;
+        event_count += 1;
+        first_event_id.get_or_insert(id);
+        last_event_id = Some(id);
+        if stored_previous != expected_previous {
+            errors.push(format!("event:{id}:previous_hash_mismatch"));
+        }
+        let expected_hash = audit_event_hash(
+            id,
+            &event_type,
+            memory_id.as_deref(),
+            &detail,
+            created_at,
+            &stored_previous,
+        );
+        if stored_hash != expected_hash {
+            errors.push(format!("event:{id}:hash_mismatch"));
+        }
+        expected_previous = stored_hash;
+        if errors.len() >= 50 {
+            break;
+        }
+    }
+    Ok(AuditIntegrityReport {
+        version: 1,
+        ok: errors.is_empty(),
+        events: event_count,
+        checkpoints: checkpoint_count,
+        first_event_id,
+        last_event_id,
+        head_hash: expected_previous,
+        errors,
+    })
+}
+
+pub(crate) fn print_audit(
+    conn: &Connection,
+    limit: usize,
+    verify: bool,
+    json_out: bool,
+) -> Result<()> {
     let events = audit_events(conn, limit)?;
     if json_out {
-        println!("{}", serde_json::to_string_pretty(&events)?);
-    } else if events.is_empty() {
-        println!("audit: none");
-    } else {
-        for event in events {
-            let memory_id = event.memory_id.unwrap_or_else(|| "-".to_string());
+        if verify {
             println!(
-                "{}  {}  {}  {}",
-                event.id, event.event_type, memory_id, event.detail
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "integrity": audit_integrity_report(conn)?,
+                    "events": events,
+                }))?
             );
+        } else {
+            println!("{}", serde_json::to_string_pretty(&events)?);
+        }
+    } else {
+        if events.is_empty() {
+            println!("audit: none");
+        } else {
+            for event in events {
+                let memory_id = event.memory_id.unwrap_or_else(|| "-".to_string());
+                println!(
+                    "{}  {}  {}  {}",
+                    event.id, event.event_type, memory_id, event.detail
+                );
+            }
+        }
+        if verify {
+            let integrity = audit_integrity_report(conn)?;
+            println!(
+                "integrity: {} events={} checkpoints={} head={}",
+                if integrity.ok { "ok" } else { "failed" },
+                integrity.events,
+                integrity.checkpoints,
+                integrity.head_hash
+            );
+            for error in integrity.errors {
+                println!("integrity_error: {error}");
+            }
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod audit_integrity_tests {
+    use super::*;
+    use crate::app::ops::run_cleanup_quiet;
+
+    #[test]
+    fn audit_hash_chain_detects_row_tampering() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let conn = open_db(&temp.path().join("memory.db"))?;
+        log_event(&conn, "one", None, "first")?;
+        log_event(&conn, "two", Some("memory-a"), "second")?;
+        assert!(audit_integrity_report(&conn)?.ok);
+
+        conn.execute(
+            "UPDATE memory_events SET detail = 'tampered' WHERE event_type = 'one'",
+            [],
+        )?;
+        let report = audit_integrity_report(&conn)?;
+        assert!(!report.ok);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("hash_mismatch"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retention_checkpoint_preserves_verifiable_chain() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let conn = open_db(&temp.path().join("memory.db"))?;
+        for index in 0..5 {
+            log_event(&conn, "fixture", None, &format!("event-{index}"))?;
+        }
+        run_cleanup_quiet(&conn, 2, 30)?;
+        let report = audit_integrity_report(&conn)?;
+        assert!(report.ok, "{:?}", report.errors);
+        assert_eq!(report.checkpoints, 1);
+        assert_eq!(report.events, 3); // two retained rows plus the cleanup event
+        Ok(())
+    }
 }
 
 pub(crate) fn print_usage_report(
@@ -4030,14 +4220,17 @@ pub(crate) fn action_journal_report(
         "#,
     )?;
     let rows = stmt
-        .query_map(params![since_ms, limit.min(i64::MAX as usize)], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-            ))
-        })?
+        .query_map(
+            params![since_ms, limit.min(i64::MAX as usize) as i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut items = Vec::new();
     for (id, event_type, detail, created_at) in rows {
@@ -10971,7 +11164,7 @@ pub(crate) fn memory_conflict_apply_report(
 fn timeline_events(conn: &Connection, id: &str, limit: usize) -> Result<Vec<MemoryEvent>> {
     let mut stmt = conn.prepare(
         r#"
-        SELECT id, event_type, memory_id, detail, created_at
+        SELECT id, event_type, memory_id, detail, created_at, previous_hash, event_hash
         FROM memory_events
         WHERE memory_id = ?1
         ORDER BY created_at DESC, id DESC
@@ -10987,6 +11180,8 @@ fn timeline_events(conn: &Connection, id: &str, limit: usize) -> Result<Vec<Memo
                 memory_id: row.get(2)?,
                 detail: row.get(3)?,
                 created_at: row.get(4)?,
+                previous_hash: row.get(5)?,
+                event_hash: row.get(6)?,
             })
         },
     )?
@@ -14261,7 +14456,9 @@ pub(crate) fn sync_latency_report(
         .zip(target_read_ms)
         .map(|(write, read)| write.saturating_add(read));
     let mut issues = Vec::new();
-    if measured_roundtrip.is_some_and(|ms| ms > 800) || remote.estimated_roundtrip_ms > 800 {
+    if measured_roundtrip.is_some_and(|ms| ms > 800)
+        || (target.is_some() && remote.estimated_roundtrip_ms > 800)
+    {
         issues.push("remote sync latency is high for interactive reads".to_string());
     }
     let recommended_mode = if issues.is_empty() {
@@ -15934,14 +16131,16 @@ pub(crate) fn release_gate_report(
     let autonomous_loop =
         autonomous_loop_report(conn, db, &root, since_days, AutonomousLevel::Normal, false)?;
     let usefulness_engine = usefulness_engine_report(conn, &root, since_days, false)?;
-    let sync_latency = sync_latency_report(conn, db, &root, None, 1)?;
+    let sync_target = std::env::var_os("DUKEMEMORY_SYNC_TARGET").map(PathBuf::from);
+    let sync_required = sync_target.is_some();
+    let sync_latency = sync_latency_report(conn, db, &root, sync_target.as_deref(), 1)?;
     let action_journal = action_journal_report(conn, since_days, 30)?;
     let sync_profile = sync_profile_report(
         conn,
         db,
         &root,
         SyncProfileMode::LocalFirstBackup,
-        None,
+        sync_target.as_deref(),
         false,
         false,
     )?;
@@ -16024,9 +16223,13 @@ pub(crate) fn release_gate_report(
         },
         ReleaseGateCheck {
             name: "sync_latency".to_string(),
-            ok: sync_latency.ok,
-            required: true,
-            detail: sync_latency.recommended_mode.clone(),
+            ok: !sync_required || sync_latency.ok,
+            required: sync_required,
+            detail: if sync_required {
+                sync_latency.recommended_mode.clone()
+            } else {
+                "optional: DUKEMEMORY_SYNC_TARGET is not configured".to_string()
+            },
         },
         ReleaseGateCheck {
             name: "action_journal".to_string(),
@@ -16039,11 +16242,13 @@ pub(crate) fn release_gate_report(
         },
         ReleaseGateCheck {
             name: "sync_profile".to_string(),
-            ok: sync_profile.ok
-                || (sync_profile.blockers.len() == 1
-                    && sync_profile.blockers[0] == "sync profile needs --target PATH"),
-            required: true,
-            detail: sync_profile.profile.clone(),
+            ok: !sync_required || sync_profile.ok,
+            required: sync_required,
+            detail: if sync_required {
+                sync_profile.profile.clone()
+            } else {
+                "optional: local-only deployment".to_string()
+            },
         },
         ReleaseGateCheck {
             name: "agent_enforce".to_string(),

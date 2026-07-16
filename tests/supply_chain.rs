@@ -69,3 +69,24 @@ fn crates_io_publish_uses_short_lived_oidc_after_release_assets() {
     assert!(workflow.contains("steps.crates-io-auth.outputs.token"));
     assert!(!workflow.contains("secrets.CARGO_REGISTRY_TOKEN"));
 }
+
+#[test]
+fn mcp_conformance_claim_is_versioned_and_explicitly_scoped() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let profile: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.join("mcp-conformance-profile.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(profile["suite_version"], "0.1.16");
+    assert_eq!(profile["protocol_version"], "2026-07-28");
+    assert!(
+        profile["generic_scenarios"]
+            .as_array()
+            .is_some_and(|items| items.len() >= 5)
+    );
+    assert!(
+        profile["fixture_bound_scenarios_not_claimed"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+}

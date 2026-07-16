@@ -118,6 +118,8 @@ pub(crate) struct MemoryEvent {
     pub(crate) memory_id: Option<String>,
     pub(crate) detail: String,
     pub(crate) created_at: i64,
+    pub(crate) previous_hash: String,
+    pub(crate) event_hash: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -157,7 +159,22 @@ pub(crate) struct DriftReport {
     pub(crate) missing_links: Vec<LinkReport>,
     pub(crate) conflicts: Vec<MergeCandidate>,
     pub(crate) stale_active: Vec<BriefItem>,
+    pub(crate) stale_evidence: Vec<EvidenceFreshness>,
     pub(crate) warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct EvidenceFreshness {
+    pub(crate) observation_id: String,
+    pub(crate) memory_id: String,
+    pub(crate) memory_title: String,
+    pub(crate) memory_status: String,
+    pub(crate) path: String,
+    pub(crate) recorded_hash: String,
+    pub(crate) current_hash: Option<String>,
+    pub(crate) status: String,
+    pub(crate) detail: String,
+    pub(crate) observed_at: i64,
 }
 
 #[derive(Debug, Serialize)]

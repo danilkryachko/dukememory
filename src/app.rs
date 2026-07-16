@@ -34,7 +34,7 @@ const DEFAULT_INSTALL_BACKUP_KEEP: usize = 3;
 // Native release binaries with local model support can exceed 128 MiB. Keep
 // the byte budget aligned with the three-backup retention policy.
 const DEFAULT_INSTALL_BACKUP_QUOTA_BYTES: u64 = 512 * 1024 * 1024;
-const CURRENT_SCHEMA_VERSION: i64 = 25;
+const CURRENT_SCHEMA_VERSION: i64 = 27;
 const EXPORT_VERSION: u32 = 1;
 
 mod advanced_eval;
@@ -70,6 +70,7 @@ mod observability;
 mod observations;
 mod onboard;
 mod ops;
+mod otlp;
 mod project;
 mod rag;
 pub(crate) mod rag_ingest;
@@ -82,6 +83,7 @@ mod sync_planning;
 mod sync_transport;
 mod topology;
 mod vec_backend;
+use crate::rag_security::*;
 use advanced_eval::*;
 use agent_session::*;
 use agent_session_ops::*;
@@ -382,7 +384,7 @@ fn parse_sync_input(input: &Path) -> Result<(MemoryExport, Option<SyncBundleMani
     } else {
         raw
     };
-    let value: Value = serde_json::from_slice(&plaintext)
+    let value = dukememory::protocol::parse_sync_payload_json(&plaintext)
         .with_context(|| format!("failed to parse sync bundle {}", input.display()))?;
     if value.get("kind").and_then(Value::as_str) == Some("dukememory.sync.bundle") {
         let bundle: SyncBundle = serde_json::from_value(value)?;
@@ -829,19 +831,21 @@ fn memory_request_count(conn: &Connection, memory_id: &str) -> Result<usize> {
 fn audit_events(conn: &Connection, limit: usize) -> Result<Vec<MemoryEvent>> {
     let mut stmt = conn.prepare(
         r#"
-        SELECT id, event_type, memory_id, detail, created_at
+        SELECT id, event_type, memory_id, detail, created_at, previous_hash, event_hash
         FROM memory_events
         ORDER BY created_at DESC, id DESC
         LIMIT ?1
         "#,
     )?;
-    stmt.query_map(params![limit.min(i64::MAX as usize)], |row| {
+    stmt.query_map(params![limit.min(i64::MAX as usize) as i64], |row| {
         Ok(MemoryEvent {
             id: row.get(0)?,
             event_type: row.get(1)?,
             memory_id: row.get(2)?,
             detail: row.get(3)?,
             created_at: row.get(4)?,
+            previous_hash: row.get(5)?,
+            event_hash: row.get(6)?,
         })
     })?
     .collect::<rusqlite::Result<Vec<_>>>()
@@ -851,22 +855,27 @@ fn audit_events(conn: &Connection, limit: usize) -> Result<Vec<MemoryEvent>> {
 fn memory_events(conn: &Connection, memory_id: &str, limit: usize) -> Result<Vec<MemoryEvent>> {
     let mut stmt = conn.prepare(
         r#"
-        SELECT id, event_type, memory_id, detail, created_at
+        SELECT id, event_type, memory_id, detail, created_at, previous_hash, event_hash
         FROM memory_events
         WHERE memory_id = ?1
         ORDER BY created_at DESC, id DESC
         LIMIT ?2
         "#,
     )?;
-    stmt.query_map(params![memory_id, limit.min(i64::MAX as usize)], |row| {
-        Ok(MemoryEvent {
-            id: row.get(0)?,
-            event_type: row.get(1)?,
-            memory_id: row.get(2)?,
-            detail: row.get(3)?,
-            created_at: row.get(4)?,
-        })
-    })?
+    stmt.query_map(
+        params![memory_id, limit.min(i64::MAX as usize) as i64],
+        |row| {
+            Ok(MemoryEvent {
+                id: row.get(0)?,
+                event_type: row.get(1)?,
+                memory_id: row.get(2)?,
+                detail: row.get(3)?,
+                created_at: row.get(4)?,
+                previous_hash: row.get(5)?,
+                event_hash: row.get(6)?,
+            })
+        },
+    )?
     .collect::<rusqlite::Result<Vec<_>>>()
     .map_err(Into::into)
 }
@@ -3914,6 +3923,14 @@ fn print_build_info(runtime: &crate::runtime_config::RuntimeConfig) {
     println!("vec_feature: {}", info.vec_feature);
     println!("target: {}", info.os);
     println!("arch: {}", info.arch);
+    println!("sqlite_version: {}", info.sqlite_version);
+    println!("sqlite_version_number: {}", info.sqlite_version_number);
+    println!("sqlite_minimum_safe: {}", info.sqlite_minimum_safe);
+    println!("sqlite_safe: {}", info.sqlite_safe);
+    let durability = db::SqliteDurabilityProfile::from_environment()
+        .map(|profile| profile.as_str())
+        .unwrap_or("invalid");
+    println!("sqlite_durability: {durability}");
     println!("config: {}", runtime.config_path.display());
     println!("embed_provider: {}", runtime.config.embeddings.provider);
     println!("embed_endpoint: {}", runtime.config.embeddings.endpoint);

@@ -361,7 +361,7 @@ pub(crate) enum Command {
         #[arg(
             long,
             env = "DUKEMEMORY_MCP_PROFILE",
-            default_value = "full",
+            default_value = "core",
             value_parser = ["core", "standard", "full"]
         )]
         profile: String,
@@ -660,6 +660,9 @@ pub(crate) enum Command {
     Audit {
         #[arg(long, default_value_t = 50)]
         limit: usize,
+        /// Verify the event/checkpoint hash chains.
+        #[arg(long)]
+        verify: bool,
         #[arg(long)]
         json: bool,
     },
@@ -1065,6 +1068,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Aggregate the next-generation memory control center.
+    #[command(hide = true)]
     MemoryControlCenterV2 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1144,6 +1148,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Release gate with memory-health, recall benchmark, and audit v2 checks.
+    #[command(hide = true)]
     ReleaseGateV2 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1179,6 +1184,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Run the V2 autonomous memory loop with governance and quality gates.
+    #[command(hide = true)]
     AutonomousLoopV2 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1212,6 +1218,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Inspect all discovered project memories with V2 health metrics.
+    #[command(hide = true)]
     FleetDashboardV2 {
         #[arg(long, default_value_t = 7)]
         since_days: i64,
@@ -1232,6 +1239,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Inspect MCP exposure for V2 memory control tools.
+    #[command(hide = true)]
     McpToolSurfaceV2 {
         #[arg(long)]
         json: bool,
@@ -1336,6 +1344,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Enforce MCP memory discipline for startup, write decisions, and after-task cleanup.
+    #[command(hide = true)]
     McpDisciplineV2 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1358,6 +1367,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Upgrade all discovered project memories with richer version/action summaries.
+    #[command(hide = true)]
     UpgradeAllProjectsV2 {
         #[arg(long)]
         from: Option<PathBuf>,
@@ -1462,6 +1472,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render or write the second-generation compact project memory contract.
+    #[command(hide = true)]
     MemoryContractV2 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1583,6 +1594,48 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Compare hybrid retrieval with an FTS-only shadow strategy.
+    RagShadow {
+        question: String,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        #[arg(long)]
+        budget: Option<usize>,
+        #[arg(long, value_enum)]
+        budget_profile: Option<BudgetProfile>,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        model: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Assemble an auditable decision context with evidence, risks, and trust lanes.
+    DecisionCapsule {
+        question: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        #[arg(long)]
+        budget: Option<usize>,
+        #[arg(long, value_enum)]
+        budget_profile: Option<BudgetProfile>,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        model: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Index text/code files as chunked RAG sources.
     RagIngest {
         input: PathBuf,
@@ -1592,6 +1645,9 @@ pub(crate) enum Command {
         scope: String,
         #[arg(long)]
         apply: bool,
+        /// Mark the exact indexed content hash as operator-reviewed.
+        #[arg(long, requires = "apply")]
+        reviewed: bool,
         #[arg(long)]
         embed: bool,
         #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
@@ -1608,6 +1664,23 @@ pub(crate) enum Command {
         max_file_bytes: usize,
         #[arg(long, default_value_t = 128)]
         max_files: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Detect and optionally refresh stale indexed RAG sources.
+    RagRefresh {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        embed: bool,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        model: String,
         #[arg(long)]
         json: bool,
     },
@@ -1735,7 +1808,10 @@ pub(crate) enum Command {
         kind: String,
         #[arg(long)]
         statement: String,
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Evidence type; use `file` to capture a project-contained file with exact SHA-256"
+        )]
         evidence_kind: String,
         #[arg(long)]
         evidence_ref: String,
@@ -1770,6 +1846,9 @@ pub(crate) enum Command {
         valid_at: Option<i64>,
         #[arg(long)]
         known_at: Option<i64>,
+        /// Reconstruct knowledge at the latest evidence event for this exact commit.
+        #[arg(long, conflicts_with = "known_at")]
+        commit: Option<String>,
         #[arg(long, default_value_t = 500)]
         limit: usize,
         #[arg(long)]
@@ -1979,6 +2058,8 @@ pub(crate) enum Command {
         since_days: i64,
         #[arg(long, value_enum, default_value = "deployment")]
         rag_profile: ReleaseRagProfile,
+        #[arg(long, value_enum, default_value = "all")]
+        profile: ReleaseGateProfile,
         #[arg(long)]
         strict: bool,
         #[arg(long)]
@@ -2258,6 +2339,15 @@ pub(crate) enum Command {
         auth_token: Option<String>,
         #[arg(long, env = "DUKEMEMORY_HTTP_TOKEN_FILE")]
         auth_token_file: Option<PathBuf>,
+        #[arg(
+            long,
+            env = "DUKEMEMORY_MCP_PROFILE",
+            default_value = "core",
+            value_parser = ["core", "standard", "full"]
+        )]
+        mcp_profile: String,
+        #[arg(long, env = "DUKEMEMORY_MCP_PAGE_SIZE", default_value_t = 0)]
+        mcp_page_size: usize,
     },
     /// Validate JSON fallback storage or the bundled sqlite-vec search backend.
     #[command(alias = "vec-migrate")]

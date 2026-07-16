@@ -11,6 +11,7 @@ pub struct HttpResponse {
     pub content_type: &'static str,
     pub body: Vec<u8>,
     pub request_id: Option<String>,
+    pub headers: Vec<(&'static str, String)>,
 }
 
 impl HttpResponse {
@@ -25,6 +26,7 @@ impl HttpResponse {
             content_type: "text/html; charset=utf-8",
             body: body.into().into_bytes(),
             request_id: None,
+            headers: Vec::new(),
         }
     }
 
@@ -35,7 +37,39 @@ impl HttpResponse {
             content_type,
             body: body.into(),
             request_id: None,
+            headers: Vec::new(),
         }
+    }
+
+    pub fn accepted() -> Self {
+        Self::empty(202, "Accepted")
+    }
+
+    pub fn no_content() -> Self {
+        Self::empty(204, "No Content")
+    }
+
+    pub fn method_not_allowed() -> Self {
+        Self::json(
+            405,
+            "Method Not Allowed",
+            json!({"error": {"code": "method_not_allowed", "message": "method not allowed"}}),
+        )
+    }
+
+    pub fn json_rpc(status: u16, reason: &'static str, body: Value) -> Self {
+        Self::json(status, reason, body)
+    }
+
+    pub fn with_header(mut self, name: &'static str, value: impl Into<String>) -> Self {
+        let value = value.into();
+        if !value
+            .bytes()
+            .any(|byte| byte == b'\r' || byte == b'\n' || byte.is_ascii_control())
+        {
+            self.headers.push((name, value));
+        }
+        self
     }
 
     pub fn bad_request(message: impl Into<String>) -> Self {
@@ -92,6 +126,15 @@ impl HttpResponse {
             "Request Timeout",
             json!({"error": {"code": "request_timeout", "message": "HTTP request deadline exceeded"}}),
         )
+    }
+
+    pub fn too_many_requests(retry_after_seconds: u64) -> Self {
+        Self::json(
+            429,
+            "Too Many Requests",
+            json!({"error": {"code": "rate_limited", "message": "HTTP request rate limit exceeded"}}),
+        )
+        .with_header("Retry-After", retry_after_seconds.to_string())
     }
 
     pub fn service_unavailable(message: impl Into<String>) -> Self {
@@ -172,6 +215,18 @@ impl HttpResponse {
             content_type: "application/json",
             body,
             request_id: None,
+            headers: Vec::new(),
+        }
+    }
+
+    fn empty(status: u16, reason: &'static str) -> Self {
+        Self {
+            status,
+            reason,
+            content_type: "application/json",
+            body: Vec::new(),
+            request_id: None,
+            headers: Vec::new(),
         }
     }
 }
@@ -182,6 +237,11 @@ pub fn write_response(stream: &mut TcpStream, response: HttpResponse) -> Result<
         .as_deref()
         .map(|id| format!("X-Request-Id: {id}\r\n"))
         .unwrap_or_default();
+    let extra_headers = response
+        .headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect::<String>();
     write!(
         stream,
         concat!(
@@ -196,6 +256,7 @@ pub fn write_response(stream: &mut TcpStream, response: HttpResponse) -> Result<
             "X-Content-Type-Options: nosniff\r\n",
             "X-Frame-Options: DENY\r\n",
             "{}",
+            "{}",
             "Connection: close\r\n\r\n"
         ),
         response.status,
@@ -203,6 +264,7 @@ pub fn write_response(stream: &mut TcpStream, response: HttpResponse) -> Result<
         response.content_type,
         response.body.len(),
         request_id_header,
+        extra_headers,
     )?;
     stream.write_all(&response.body)
 }

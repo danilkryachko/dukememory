@@ -167,14 +167,28 @@ dukememory observe <memory-id> \
   --confidence 0.95 \
   --json
 
+# File-backed evidence is captured with an exact SHA-256 and project-relative path.
+dukememory observe <memory-id> \
+  --kind verified \
+  --statement "The checked-in policy still supports this decision" \
+  --evidence-kind file \
+  --evidence-ref docs/policy.md \
+  --json
+
 dukememory observations <memory-id> --valid-at 1784000000000 --json
 dukememory temporal-graph --valid-at 1784000000000 --known-at 1784100000000 --json
+dukememory temporal-graph --commit <exact-git-commit> --json
 ```
 
 An observation stores `valid_from`/`valid_to` (when the claim applies) and
 `observed_at` (when DukeMemory learned it). Linked observations create graph
 edges whose provenance points back to the observation and records the current
-Git branch, commit, and worktree root.
+Git branch, commit, and worktree root. `evidence-kind=file` accepts only a
+regular file contained by the selected project root, caps hashing work at 16
+MiB, and stores an exact content hash. Drift/review reports surface changed or
+missing evidence, and RAG answer generation excludes those stale memory cards
+until a new verified observation is recorded. Detection is non-destructive: it
+does not silently rewrite the card's durable status.
 
 ## Local First
 
@@ -195,6 +209,11 @@ database plus WAL/SHM sidecars are forced to mode `600`. SQLite
 `secure_delete=FAST` reduces residual deleted content. This is access hardening,
 not application-level database encryption; use encrypted host storage for
 sensitive projects and age-encrypted bundles for remote sync.
+The bundled SQLite runtime is release-gated at `>=3.51.3` (currently 3.51.3).
+Set `DUKEMEMORY_SQLITE_DURABILITY=strict` for `synchronous=FULL`, full-fsync,
+and checkpoint-fsync semantics; the default `balanced` profile retains WAL plus
+`synchronous=NORMAL`. `dukememory audit --verify` validates the event and
+retention-checkpoint hash chains.
 
 ## Evidence-Backed Agent Sessions
 
@@ -451,10 +470,14 @@ chunking:
 dukememory rag-ingest README.md --json
 dukememory rag-ingest README.md --apply --embed --json
 dukememory rag-sources --json
+dukememory rag-refresh --apply --embed --json
 
 dukememory rag-debug "what changed in checkout validation?" \
   --budget-profile tiny \
   --json
+
+dukememory rag-shadow "what changed in checkout validation?" --json
+dukememory decision-capsule "should we change checkout validation?" --json
 
 dukememory rag-answer "what changed in checkout validation?" \
   --budget-profile normal \
@@ -511,6 +534,9 @@ decisions and constraints should still be saved as reviewed memory cards.
 The same source-chunk indexing path is exposed to agents as MCP
 `memory_rag_ingest` and to the local web API as `POST /rag-ingest`; both remain
 dry-run unless `apply` is explicitly true.
+New source hashes begin in `unreviewed_project_source`. An operator can promote
+the exact hash with `rag-ingest PATH --apply --reviewed`; a later content change
+creates a new unreviewed hash instead of inheriting trust.
 Use `rag-sources`, MCP `memory_rag_sources`, or HTTP `GET /rag-sources` to
 verify that indexed files are still present, fresh, backed by chunks, and backed
 by current semantic chunk embeddings for the configured embedding provider.
@@ -519,6 +545,19 @@ relying on semantic chunk recall. `--embed` refreshes only the source chunks
 touched by that ingest pass. Re-ingesting unchanged sources leaves existing
 chunks in place and preserves current chunk embeddings; `embed-index` remains
 the full repair command.
+`rag-refresh` is the guarded source watcher: its default is a dry-run listing
+changed files, missing chunks, and embedding drift; `--apply --embed` refreshes
+only those indexed source paths. Source reports and every RAG citation carry a
+`trust_lane`. Prompt-shaped chunks stay stored for audit under the
+`quarantined_content` lane but are filtered before both semantic and FTS
+retrieval. The versioned adversarial fixture covers direct, NFKC/full-width,
+zero-width, homoglyph, Base64, protocol-token, and multilingual vectors.
+Reviewed cards use `durable_memory`, uncertain cards use
+`unreviewed_memory`, and agent/session/import sources use `agent_observation`.
+`rag-shadow` compares the live hybrid ranking with an FTS-only
+challenger without changing production ranking. `decision-capsule` packages
+the selected evidence, constraints, known risks, source freshness, trust-lane
+counts, stable evidence references, and next actions for an auditable decision.
 The same RAG source-pack recall is surfaced in `memory-eval-story`,
 `benchmark-polish`, and the required `release-gate-v3` check
 `rag_source_pack_eval`, whose detail includes the aggregate `eval rag` packing
@@ -571,6 +610,15 @@ too weak or uncited.
 Use `cargo build --no-default-features` for a smaller FTS-only binary without
 the ONNX, tokenizer, or Hugging Face dependency stack.
 
+For a compact production artifact with sqlite-vec and reproducible-build
+settings, use:
+
+```bash
+cargo build --locked --profile release-minimal \
+  --no-default-features --features vec
+scripts/reproducible-build-check.sh
+```
+
 Ollama and OpenAI-compatible embedding providers are still supported:
 
 ```bash
@@ -602,10 +650,33 @@ dukememory serve-http --host 0.0.0.0 --port 8765 \
 
 `--auth-token` and `DUKEMEMORY_HTTP_TOKEN` remain available for compatibility;
 `DUKEMEMORY_HTTP_TOKEN_FILE` is the environment equivalent of the file option.
+For dashboards and agents that must never mutate state, configure a different
+mode-`600` token through `DUKEMEMORY_HTTP_READ_TOKEN_FILE`. HTTP and MCP then
+enforce operation-catalog scopes and fail closed on unknown mutating requests.
+`DUKEMEMORY_HTTP_RATE_LIMIT_PER_MINUTE` sets the per-client fixed-window limit
+(default `600`); `DUKEMEMORY_HTTP_RATE_LIMIT_MAX_CLIENTS` bounds the identity
+table (default `2048`). `DUKEMEMORY_HTTP_MAX_CONCURRENT_REQUESTS` and
+`DUKEMEMORY_HTTP_MAX_CONCURRENT_PER_CLIENT` bound simultaneous work. Exhausted
+clients receive `429` with `Retry-After`, while saturated concurrency returns
+`503`. Asynchronous MCP tasks are independently bounded globally and per
+authenticated owner by `DUKEMEMORY_MCP_MAX_CONCURRENT_TASKS` and
+`DUKEMEMORY_MCP_MAX_CONCURRENT_TASKS_PER_OWNER`.
 API clients send `Authorization: Bearer ...`; the web UI asks once and keeps it
-in session storage. State-changing browser requests are restricted to the
-request host. Extra trusted origins can be listed, comma-separated, in
-`DUKEMEMORY_HTTP_ALLOWED_ORIGINS`.
+in session storage. The listener validates `Host` independently from `Origin`
+so a DNS-rebound hostname cannot inherit trust merely by matching both headers.
+State-changing browser requests accept only the exact bound loopback origins or
+origins listed, comma-separated, in `DUKEMEMORY_HTTP_ALLOWED_ORIGINS`; requests
+marked `Sec-Fetch-Site: cross-site` are rejected.
+
+OAuth/OIDC deployments can use a validating authentication gateway with
+`DUKEMEMORY_HTTP_TRUSTED_PROXY_AUTH=true`, an explicit
+`DUKEMEMORY_HTTP_TRUSTED_PROXY_CIDRS` allowlist, and HTTPS
+`DUKEMEMORY_OAUTH_AUTHORIZATION_SERVERS`. DukeMemory accepts the gateway's
+hashed principal identity and validated `memory:read`/`memory:write` scopes only
+from those peers, publishes RFC 9728 protected-resource metadata, and binds MCP
+sessions/tasks to that principal. The gateway must strip client-supplied auth,
+identity, scope, and forwarding headers and validate issuer, audience/resource,
+expiry, and signature. See the production guide for the complete trust boundary.
 
 Maintenance endpoints that can apply changes are preview-first unless an
 explicit `apply: true` (or documented legacy equivalent) is supplied. File
@@ -660,7 +731,8 @@ byte limits while retaining the newest verified backup.
 ## MCP And Codex
 
 ```bash
-dukememory serve-mcp --profile core --page-size 20
+dukememory serve-mcp
+dukememory serve-http --host 127.0.0.1 --port 8765 --mcp-profile core
 dukememory install-skill
 dukememory connect-codex --apply --json
 dukememory codex-doctor --json
@@ -672,12 +744,24 @@ candidate. The latter is stateless: clients call `server/discover` and include
 the protocol version, client identity, and capabilities in every request's
 `params._meta`. Tool and resource lists include cache metadata in that mode.
 The server cursor-paginates tool lists, supports newline and bounded streaming
-`Content-Length` framing, and never responds to notifications. `core`,
-`standard`, and `full` profiles
-reduce tool-description overhead (`full` remains the compatibility default);
-the environment equivalents are `DUKEMEMORY_MCP_PROFILE` and
-`DUKEMEMORY_MCP_PAGE_SIZE`. Input schemas are closed Draft 2020-12 schemas with
-bounded strings, arrays, integers, enums, and runtime validation.
+`Content-Length` framing, and never responds to notifications. The compact
+12-tool `core` profile is the default for both stdio and HTTP; `standard` adds
+CRUD, context, RAG, review, and agent-session tools, while `full` preserves the
+complete compatibility surface. Select them with `--profile` for `serve-mcp`,
+`--mcp-profile` for `serve-http`, or `DUKEMEMORY_MCP_PROFILE`; page sizes use
+`--page-size`, `--mcp-page-size`, or `DUKEMEMORY_MCP_PAGE_SIZE`. Input schemas
+are closed Draft 2020-12 schemas with bounded strings, arrays, integers, enums,
+and runtime validation.
+
+`serve-http` exposes JSON-response Streamable HTTP at `POST /mcp`. Stable MCP
+initialization returns an `MCP-Session-Id`; later requests send that ID and may
+terminate it with `DELETE /mcp`. The locked `2026-07-28` candidate is stateless
+and requires matching `Mcp-Method`/`Mcp-Name` routing headers. Server-initiated
+SSE is intentionally not advertised, so `GET /mcp` returns `405`. Run the
+official smoke scenarios locally with
+`scripts/mcp-conformance.sh target/debug/dukememory`. The reviewed claim lives
+in `mcp-conformance-profile.json`: generic protocol scenarios are distinguished
+from suite fixtures that require conformance-owned tool/resource names.
 
 MCP Resources expose project status, doctrine, and `dukememory://memory/{id}`.
 With protocol `2025-11-25`, expensive tools can run as Tasks and be polled,
@@ -781,7 +865,9 @@ dukememory fleet-supervisor --json
 dukememory web-control-center-v10 --json
 dukememory fleet-supervisor-watch-install --dry-run --json
 dukememory web-control-center-v11 --json
-dukememory release-gate-v3 --json
+dukememory release-gate-v3 --profile code --json
+dukememory release-gate-v3 --profile project --json
+dukememory release-gate-v3 --profile deployment --json
 dukememory web-control-center --json
 dukememory agent-session status --json
 dukememory runner-profile doctor --json
@@ -802,6 +888,13 @@ selected, intent maps define project direction, probes measure retrieval quality
 safe supersede and diff apply keep durable cards clean, governance policy bounds
 autonomous writes, sync stays local-first, and release gates catch memory
 regressions before publishing.
+
+Release gate v3 reports all three boundaries but evaluates only the selected
+`--profile all|code|project|deployment` for its top-level status. Remote sync is
+optional for a local-only deployment and becomes a required deployment check
+only when `DUKEMEMORY_SYNC_TARGET` is configured. Memory-card hygiene remains
+visible as an advisory check; a high, evidence-backed effectiveness score is
+not failed merely because some active cards were not read recently.
 
 `memory-control-center` currently maps to V2. The stable `web-control-center`
 returns a compact one-request snapshot with sessions, runner readiness, RAG eval

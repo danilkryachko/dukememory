@@ -13,6 +13,8 @@ const MCP_SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
     "2024-11-05",
 ];
 const MCP_TASKS_EXTENSION: &str = "io.modelcontextprotocol/tasks";
+const MCP_HTTP_SESSION_TTL_MS: i64 = 3_600_000;
+const MCP_HTTP_MAX_SESSIONS: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum McpProfile {
@@ -47,7 +49,282 @@ struct McpSessionState {
     profile: McpProfile,
     page_size: usize,
     client_key: String,
+    principal_key: String,
     tasks: std::sync::Arc<McpTaskStore>,
+}
+
+struct McpHttpSession {
+    state: std::sync::Arc<std::sync::Mutex<McpSessionState>>,
+    principal_key: String,
+    last_used_at: i64,
+}
+
+pub(crate) struct McpHttpService {
+    profile: McpProfile,
+    page_size: usize,
+    tasks: std::sync::Arc<McpTaskStore>,
+    sessions: std::sync::Mutex<HashMap<String, McpHttpSession>>,
+}
+
+pub(crate) struct McpHttpReply {
+    pub(crate) status: u16,
+    pub(crate) body: Option<Value>,
+    pub(crate) session_id: Option<String>,
+    pub(crate) protocol_version: Option<String>,
+}
+
+impl McpHttpService {
+    pub(crate) fn new(profile: &str, page_size: usize) -> Result<Self> {
+        Ok(Self {
+            profile: McpProfile::parse(profile)?,
+            page_size,
+            tasks: std::sync::Arc::new(McpTaskStore::from_environment()?),
+            sessions: std::sync::Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn session_state(&self, client_key: &str, principal_key: &str) -> McpSessionState {
+        McpSessionState {
+            protocol_version: None,
+            initialized: false,
+            profile: self.profile,
+            page_size: self.page_size,
+            client_key: client_key.to_string(),
+            principal_key: principal_key.to_string(),
+            tasks: std::sync::Arc::clone(&self.tasks),
+        }
+    }
+
+    pub(crate) fn handle_post(
+        &self,
+        db: &Path,
+        request: Value,
+        session_id: Option<&str>,
+        protocol_header: Option<&str>,
+        principal_key: &str,
+    ) -> Result<McpHttpReply> {
+        let id = request.get("id").cloned().unwrap_or(Value::Null);
+        let method = request.get("method").and_then(Value::as_str).unwrap_or("");
+        let modern_meta = request
+            .get("params")
+            .and_then(|params| params.get("_meta"))
+            .and_then(|meta| meta.get("io.modelcontextprotocol/protocolVersion"))
+            .and_then(Value::as_str);
+        let modern = modern_meta == Some(MCP_MODERN_PROTOCOL_VERSION)
+            || protocol_header == Some(MCP_MODERN_PROTOCOL_VERSION);
+
+        if modern {
+            if session_id.is_some() {
+                return Ok(mcp_http_error(
+                    400,
+                    id,
+                    -32600,
+                    "stateless MCP requests must not include MCP-Session-Id",
+                    Some(MCP_MODERN_PROTOCOL_VERSION),
+                ));
+            }
+            let mut state = self.session_state("http:modern-stateless", principal_key);
+            return Ok(mcp_http_handler_reply(
+                handle_mcp_request(db, request, &mut state),
+                None,
+                Some(MCP_MODERN_PROTOCOL_VERSION.to_string()),
+            ));
+        }
+
+        if method == "initialize" {
+            if session_id.is_some() {
+                return Ok(mcp_http_error(
+                    400,
+                    id,
+                    -32600,
+                    "initialize must not include MCP-Session-Id",
+                    protocol_header,
+                ));
+            }
+            let mut state = self.session_state("http:pending", principal_key);
+            let response = handle_mcp_request(db, request, &mut state);
+            let protocol_version = state.protocol_version.clone();
+            if response
+                .as_ref()
+                .is_some_and(|response| response.get("result").is_some())
+            {
+                let session_id = Uuid::new_v4().to_string();
+                state.client_key = format!("http:{session_id}:{}", state.client_key);
+                self.insert_session(session_id.clone(), state)?;
+                return Ok(mcp_http_handler_reply(
+                    response,
+                    Some(session_id),
+                    protocol_version,
+                ));
+            }
+            return Ok(mcp_http_handler_reply(response, None, protocol_version));
+        }
+
+        if method.is_empty() {
+            let mut state = self.session_state("http:invalid", principal_key);
+            return Ok(mcp_http_handler_reply(
+                handle_mcp_request(db, request, &mut state),
+                None,
+                protocol_header.map(str::to_string),
+            ));
+        }
+
+        let Some(session_id) = session_id else {
+            return Ok(mcp_http_error(
+                400,
+                id,
+                -32600,
+                "MCP-Session-Id is required after initialize",
+                protocol_header,
+            ));
+        };
+        let state = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| anyhow::anyhow!("MCP HTTP session registry lock was poisoned"))?;
+            self.cleanup_sessions(&mut sessions);
+            let Some(session) = sessions.get_mut(session_id) else {
+                return Ok(mcp_http_error(
+                    404,
+                    id,
+                    -32001,
+                    "unknown or expired MCP session",
+                    protocol_header,
+                ));
+            };
+            if session.principal_key != principal_key {
+                return Ok(mcp_http_error(
+                    404,
+                    id,
+                    -32001,
+                    "unknown or expired MCP session",
+                    protocol_header,
+                ));
+            }
+            session.last_used_at = now_ms();
+            std::sync::Arc::clone(&session.state)
+        };
+        let mut state = state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("MCP HTTP session lock was poisoned"))?;
+        if let Some(protocol_header) = protocol_header
+            && state.protocol_version.as_deref() != Some(protocol_header)
+        {
+            return Ok(mcp_http_error(
+                400,
+                id,
+                -32004,
+                "MCP-Protocol-Version does not match the initialized session",
+                Some(protocol_header),
+            ));
+        }
+        let protocol_version = state.protocol_version.clone();
+        Ok(mcp_http_handler_reply(
+            handle_mcp_request(db, request, &mut state),
+            Some(session_id.to_string()),
+            protocol_version,
+        ))
+    }
+
+    pub(crate) fn delete_session(
+        &self,
+        session_id: Option<&str>,
+        principal_key: &str,
+    ) -> Result<McpHttpReply> {
+        let Some(session_id) = session_id else {
+            return Ok(mcp_http_error(
+                400,
+                Value::Null,
+                -32600,
+                "MCP-Session-Id is required for DELETE",
+                None,
+            ));
+        };
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| anyhow::anyhow!("MCP HTTP session registry lock was poisoned"))?;
+        let removed = sessions
+            .get(session_id)
+            .is_some_and(|session| session.principal_key == principal_key)
+            && sessions.remove(session_id).is_some();
+        Ok(if removed {
+            McpHttpReply {
+                status: 204,
+                body: None,
+                session_id: None,
+                protocol_version: None,
+            }
+        } else {
+            mcp_http_error(
+                404,
+                Value::Null,
+                -32001,
+                "unknown or expired MCP session",
+                None,
+            )
+        })
+    }
+
+    fn insert_session(&self, session_id: String, state: McpSessionState) -> Result<()> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| anyhow::anyhow!("MCP HTTP session registry lock was poisoned"))?;
+        self.cleanup_sessions(&mut sessions);
+        if sessions.len() >= MCP_HTTP_MAX_SESSIONS
+            && let Some(oldest) = sessions
+                .iter()
+                .min_by_key(|(_, session)| session.last_used_at)
+                .map(|(id, _)| id.clone())
+        {
+            sessions.remove(&oldest);
+        }
+        let principal_key = state.principal_key.clone();
+        sessions.insert(
+            session_id,
+            McpHttpSession {
+                state: std::sync::Arc::new(std::sync::Mutex::new(state)),
+                principal_key,
+                last_used_at: now_ms(),
+            },
+        );
+        Ok(())
+    }
+
+    fn cleanup_sessions(&self, sessions: &mut HashMap<String, McpHttpSession>) {
+        let cutoff = now_ms().saturating_sub(MCP_HTTP_SESSION_TTL_MS);
+        sessions.retain(|_, session| session.last_used_at >= cutoff);
+    }
+}
+
+fn mcp_http_handler_reply(
+    response: Option<Value>,
+    session_id: Option<String>,
+    protocol_version: Option<String>,
+) -> McpHttpReply {
+    McpHttpReply {
+        status: if response.is_some() { 200 } else { 202 },
+        body: response,
+        session_id,
+        protocol_version,
+    }
+}
+
+fn mcp_http_error(
+    status: u16,
+    id: Value,
+    code: i64,
+    message: &str,
+    protocol_version: Option<&str>,
+) -> McpHttpReply {
+    McpHttpReply {
+        status,
+        body: Some(mcp_rpc_error(id, code, message, None)),
+        session_id: None,
+        protocol_version: protocol_version.map(str::to_string),
+    }
 }
 
 pub(crate) fn serve_mcp(
@@ -56,14 +333,8 @@ pub(crate) fn serve_mcp(
     profile: &str,
     page_size: usize,
 ) -> Result<()> {
-    let mut state = McpSessionState {
-        protocol_version: None,
-        initialized: false,
-        profile: McpProfile::parse(profile)?,
-        page_size,
-        client_key: "stdio:legacy-local".to_string(),
-        tasks: std::sync::Arc::new(McpTaskStore::default()),
-    };
+    let service = McpHttpService::new(profile, page_size)?;
+    let mut state = service.session_state("stdio:legacy-local", "stdio:local");
     super::mcp_transport::serve_json_rpc(content_length, |request| {
         handle_mcp_request(db, request, &mut state)
     })
@@ -149,11 +420,7 @@ fn handle_mcp_request(db: &Path, request: Value, state: &mut McpSessionState) ->
             })),
         ));
     }
-    let owner_key = if modern {
-        mcp_client_key(modern_client_info, "modern-local")
-    } else {
-        state.client_key.clone()
-    };
+    let owner_key = mcp_owner_key(state, modern, modern_client_info);
     let result = match method {
         "server/discover" if modern => Ok(mcp_server_discover(state)),
         "initialize" if !modern => initialize_mcp_session(request.get("params"), state),
@@ -243,6 +510,8 @@ fn handle_mcp_request(db: &Path, request: Value, state: &mut McpSessionState) ->
                 -32600
             } else if message.starts_with("unsupported method") {
                 -32601
+            } else if message.starts_with("MCP task concurrency limit exceeded") {
+                -32000
             } else if method.starts_with("tasks/")
                 || method == "tools/call"
                 || method == "resources/read"
@@ -279,6 +548,22 @@ fn mcp_client_key(client_info: Option<&Value>, fallback: &str) -> String {
     );
     let digest = Sha256::digest(identity.as_bytes());
     format!("stdio:{:x}", digest)
+}
+
+fn mcp_owner_key(
+    state: &McpSessionState,
+    modern: bool,
+    modern_client_info: Option<&Value>,
+) -> String {
+    if modern {
+        format!(
+            "{}:{}",
+            state.principal_key,
+            mcp_client_key(modern_client_info, "modern-local")
+        )
+    } else {
+        format!("{}:{}", state.principal_key, state.client_key)
+    }
 }
 
 fn mcp_server_capabilities(modern: bool) -> Value {
@@ -430,7 +715,7 @@ fn build_mcp_tools() -> Value {
         items.extend([
             json!({"name":"memory_recall","description":"Return compressed recall, including recent/as-of/changed-since temporal modes","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"scope":{"type":"string"},"recent":{"type":"boolean"},"as_of":{"type":"string"},"as_of_days_ago":{"type":"number"},"changed_since":{"type":"string"},"changed_since_days":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["query"]}}),
             json!({"name":"memory_upload","description":"Review a local text/markdown/json/csv file as inbox-first memory candidates","inputSchema":{"type":"object","properties":{"input":{"type":"string"},"scope":{"type":"string"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["input"]}}),
-            json!({"name":"memory_rag_ingest","description":"Index text/code files as chunked local RAG sources; dry-run unless apply=true; set embed=true to refresh semantic chunk embeddings after apply","inputSchema":{"type":"object","properties":{"input":{"type":"string"},"scope":{"type":"string"},"apply":{"type":"boolean"},"embed":{"type":"boolean"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"chunk_chars":{"type":"number"},"overlap_chars":{"type":"number"},"max_file_bytes":{"type":"number"},"max_files":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["input"]}}),
+            json!({"name":"memory_rag_ingest","description":"Index text/code files as chunked local RAG sources; dry-run unless apply=true; reviewed=true explicitly promotes the exact content hash; set embed=true to refresh semantic chunk embeddings after apply","inputSchema":{"type":"object","properties":{"input":{"type":"string"},"scope":{"type":"string"},"apply":{"type":"boolean"},"reviewed":{"type":"boolean"},"embed":{"type":"boolean"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"chunk_chars":{"type":"number"},"overlap_chars":{"type":"number"},"max_file_bytes":{"type":"number"},"max_files":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["input"]}}),
             json!({"name":"memory_rag_sources","description":"Inspect indexed RAG source freshness, stale files, chunk counts, and semantic chunk embedding freshness","inputSchema":{"type":"object","properties":{"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_rag_eval","description":"Run RAG eval with matrix, grounded-answer, retrieval tuning, and optional baseline write","inputSchema":{"type":"object","properties":{"scope":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"write_baseline":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_graph_rag_eval","description":"Run deterministic graph-RAG eval for connected memory relationships and grounded graph answers","inputSchema":{"type":"object","properties":{"scope":{"type":"string"},"limit":{"type":"number"},"budget":{"type":"number"},"provider":{"type":"string"},"endpoint":{"type":"string"},"model":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
@@ -438,9 +723,9 @@ fn build_mcp_tools() -> Value {
             json!({"name":"memory_auto_ranking_tune","description":"Explain or apply the selected memory retrieval ranking profile from live QA and RAG eval signals","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_memanto_gap","description":"Report Memanto-style capability coverage for dukememory","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_timeline","description":"Show one memory card timeline with audit events and real agent reads","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}}),
-            json!({"name":"memory_observe","description":"Record an evidence-backed bitemporal observation","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"target_memory_id":{"type":"string"},"kind":{"type":"string","enum":["asserted","verified","contradicted","superseded","file_changed","retrieved","outcome"]},"statement":{"type":"string"},"evidence_kind":{"type":"string"},"evidence_ref":{"type":"string"},"confidence":{"type":"number","minimum":0.0,"maximum":1.0},"valid_from":{"type":"number"},"valid_to":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","kind","statement","evidence_kind","evidence_ref"]}}),
+            json!({"name":"memory_observe","description":"Record an evidence-backed bitemporal observation; evidence_kind=file captures a project-contained file with exact SHA-256 for later freshness checks","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"target_memory_id":{"type":"string"},"kind":{"type":"string","enum":["asserted","verified","contradicted","superseded","file_changed","retrieved","outcome"]},"statement":{"type":"string"},"evidence_kind":{"type":"string"},"evidence_ref":{"type":"string"},"confidence":{"type":"number","minimum":0.0,"maximum":1.0},"valid_from":{"type":"number"},"valid_to":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id","kind","statement","evidence_kind","evidence_ref"]}}),
             json!({"name":"memory_observations","description":"List evidence observations as-of valid and knowledge time","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"valid_at":{"type":"number"},"known_at":{"type":"number"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}},"required":["id"]}}),
-            json!({"name":"memory_temporal_graph","description":"Read the memory graph as-of valid and knowledge time","inputSchema":{"type":"object","properties":{"valid_at":{"type":"number"},"known_at":{"type":"number"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_temporal_graph","description":"Read the memory graph as-of valid and knowledge time, or reconstruct the latest evidence state for an exact commit hash","inputSchema":{"type":"object","properties":{"valid_at":{"type":"number"},"known_at":{"type":"number"},"commit":{"type":"string"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_evidence_autopilot","description":"Dry-run, apply, or roll back bitemporal evidence for explicit durable-id references","inputSchema":{"type":"object","properties":{"limit":{"type":"number"},"apply":{"type":"boolean"},"rollback_observation_ids":{"type":"array","items":{"type":"string"}},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_conflict_review","description":"Review duplicate, stale, superseded, and contradiction-prone memory groups","inputSchema":{"type":"object","properties":{"stale_days":{"type":"number"},"limit":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_effectiveness_v2","description":"Measure memory usefulness with influence, waste, and semantic-read signals","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
@@ -449,7 +734,7 @@ fn build_mcp_tools() -> Value {
             json!({"name":"memory_mcp_surface_v3","description":"Inspect the MCP V3 memory tool surface","inputSchema":{"type":"object","properties":{"max_chars":{"type":"number"}}}}),
             json!({"name":"memory_mcp_discipline_v3","description":"Verify or record MCP V3 memory discipline","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"apply":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_fleet_quality","description":"Inspect V3 quality across discovered project memories","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"max_chars":{"type":"number"},"db":{"type":"string"}}}}),
-            json!({"name":"memory_release_gate_v3","description":"Gate releases with effectiveness, baselines, conflicts, MCP V3, fleet visibility, and an explicit RAG runtime profile","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"rag_profile":{"type":"string","enum":["deployment","canonical","offline"]},"strict":{"type":"boolean"},"run":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
+            json!({"name":"memory_release_gate_v3","description":"Gate releases with an independently selectable code, project, deployment, or all profile","inputSchema":{"type":"object","properties":{"since_days":{"type":"number"},"profile":{"type":"string","enum":["all","code","project","deployment"]},"rag_profile":{"type":"string","enum":["deployment","canonical","offline"]},"strict":{"type":"boolean"},"run":{"type":"boolean"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
             json!({"name":"memory_deployment_profile","description":"Validate local or reverse-proxy deployment security, observability, and encryption prerequisites","inputSchema":{"type":"object","properties":{"mode":{"type":"string","enum":["local","reverse_proxy"]},"host":{"type":"string"},"token_file":{"type":"string"},"public_origin":{"type":"string"},"sync_target":{"type":"string"},"max_chars":{"type":"number"},"root":{"type":"string"},"project_root":{"type":"string"},"db":{"type":"string"}}}}),
         ]);
         for tool in items {
@@ -490,45 +775,43 @@ fn mcp_list_tools(
 
 fn mcp_profile_includes(profile: McpProfile, name: &str) -> bool {
     const CORE: &[&str] = &[
-        "memory_add",
         "memory_after_task",
-        "memory_agent_context",
         "memory_brief",
         "memory_budget_plan",
-        "memory_context_pack",
         "memory_doctrine",
-        "memory_doctor",
         "memory_drift",
         "memory_evidence",
-        "memory_feedback",
-        "memory_get",
         "memory_impact",
-        "memory_update",
-        "memory_set_status",
-        "memory_delete",
-        "memory_operations",
         "memory_project_health",
-        "memory_recall",
         "memory_remember",
         "memory_search",
         "memory_should_write",
         "memory_status",
     ];
     const STANDARD_EXTRA: &[&str] = &[
+        "memory_add",
         "memory_advanced_eval",
+        "memory_agent_context",
         "memory_auto_ingest",
+        "memory_context_pack",
+        "memory_delete",
+        "memory_doctor",
         "memory_effectiveness_v2",
         "memory_evidence_autopilot",
         "memory_deployment_profile",
+        "memory_feedback",
+        "memory_get",
         "memory_graph_rag_answer",
         "memory_graph_rag_eval",
         "memory_health_score",
         "memory_inbox_list",
         "memory_observations",
+        "memory_operations",
         "memory_rag_answer",
         "memory_rag_eval",
         "memory_rag_ingest",
         "memory_rag_sources",
+        "memory_recall",
         "memory_release_gate_v2",
         "memory_review",
         "memory_session_claim",
@@ -546,6 +829,8 @@ fn mcp_profile_includes(profile: McpProfile, name: &str) -> bool {
         "memory_timeline",
         "memory_temporal_graph",
         "memory_observe",
+        "memory_set_status",
+        "memory_update",
         "memory_upload",
     ];
     match profile {
@@ -2171,6 +2456,10 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let scope = json_string(&args, "scope").unwrap_or_else(|| "project".to_string());
             let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
             let embed = args.get("embed").and_then(Value::as_bool).unwrap_or(false);
+            let reviewed = args
+                .get("reviewed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let provider = json_string(&args, "provider")
                 .unwrap_or_else(|| DEFAULT_EMBED_PROVIDER.to_string());
             let endpoint = json_string(&args, "endpoint")
@@ -2185,6 +2474,7 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                     input: &input,
                     scope: &scope,
                     apply,
+                    reviewed,
                     embed,
                     provider: &provider,
                     endpoint: &endpoint,
@@ -2372,12 +2662,27 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
         }
         "memory_temporal_graph" => {
             let max_chars = json_usize(&args, "max_chars").unwrap_or(4_000);
-            let report = temporal_memory_graph_report(
-                &conn,
-                json_i64(&args, "valid_at"),
-                json_i64(&args, "known_at"),
-                json_usize(&args, "limit").unwrap_or(500),
-            )
+            let valid_at = json_i64(&args, "valid_at");
+            let known_at = json_i64(&args, "known_at");
+            let commit = json_string(&args, "commit");
+            if commit.is_some() && known_at.is_some() {
+                return Err("commit and known_at are mutually exclusive".to_string());
+            }
+            let report = if let Some(commit) = commit {
+                temporal_memory_graph_at_commit_report(
+                    &conn,
+                    valid_at,
+                    &commit,
+                    json_usize(&args, "limit").unwrap_or(500),
+                )
+            } else {
+                temporal_memory_graph_report(
+                    &conn,
+                    valid_at,
+                    known_at,
+                    json_usize(&args, "limit").unwrap_or(500),
+                )
+            }
             .map_err(|err| err.to_string())?;
             budgeted_mcp_json_response(&report, max_chars, &["edges", "nodes"])
                 .map_err(|err| err.to_string())?
@@ -2485,6 +2790,8 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
             let rag_profile =
                 ReleaseRagProfile::parse(args.get("rag_profile").and_then(Value::as_str))
                     .map_err(|err| err.to_string())?;
+            let profile = ReleaseGateProfile::parse(args.get("profile").and_then(Value::as_str))
+                .map_err(|err| err.to_string())?;
             let strict = args.get("strict").and_then(Value::as_bool).unwrap_or(false);
             let run = args.get("run").and_then(Value::as_bool).unwrap_or(false);
             let max_chars = json_usize(&args, "max_chars").unwrap_or(2200);
@@ -2492,10 +2799,13 @@ fn handle_mcp_tool_call(db: &Path, params: Value) -> std::result::Result<Value, 
                 &conn,
                 &selected_db,
                 &selected_root,
-                since_days,
-                strict,
-                run,
-                rag_profile,
+                ReleaseGateV3Options {
+                    since_days,
+                    strict,
+                    run,
+                    rag_profile,
+                    profile,
+                },
             )
             .map_err(|err| err.to_string())?;
             budgeted_mcp_json_response(
@@ -3371,8 +3681,76 @@ mod tests {
             profile,
             page_size,
             client_key: "stdio:test-client".to_string(),
+            principal_key: "stdio:test-principal".to_string(),
             tasks: std::sync::Arc::new(McpTaskStore::default()),
         }
+    }
+
+    #[test]
+    fn mcp_task_owner_is_bound_to_authenticated_principal() {
+        let mut first = test_state(McpProfile::Core, 20);
+        first.principal_key = "token:read:first".to_string();
+        let mut second = test_state(McpProfile::Core, 20);
+        second.principal_key = "token:read:second".to_string();
+        let info = json!({"name":"same-client","version":"1.0"});
+        assert_ne!(
+            mcp_owner_key(&first, true, Some(&info)),
+            mcp_owner_key(&second, true, Some(&info))
+        );
+        assert_ne!(
+            mcp_owner_key(&first, false, None),
+            mcp_owner_key(&second, false, None)
+        );
+    }
+
+    #[test]
+    fn http_mcp_session_cannot_be_reused_or_deleted_by_another_principal() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join(".agent/memory.db");
+        let service = McpHttpService::new("core", 20).unwrap();
+        let initialized = service
+            .handle_post(
+                &db,
+                json!({
+                    "jsonrpc":"2.0",
+                    "id":1,
+                    "method":"initialize",
+                    "params":{
+                        "protocolVersion":"2025-11-25",
+                        "clientInfo":{"name":"fixture","version":"1.0"},
+                        "capabilities":{}
+                    }
+                }),
+                None,
+                None,
+                "token:full:first",
+            )
+            .unwrap();
+        let session_id = initialized.session_id.unwrap();
+        let denied = service
+            .handle_post(
+                &db,
+                json!({"jsonrpc":"2.0","id":2,"method":"ping"}),
+                Some(&session_id),
+                Some("2025-11-25"),
+                "token:full:second",
+            )
+            .unwrap();
+        assert_eq!(denied.status, 404);
+        assert_eq!(
+            service
+                .delete_session(Some(&session_id), "token:full:second")
+                .unwrap()
+                .status,
+            404
+        );
+        assert_eq!(
+            service
+                .delete_session(Some(&session_id), "token:full:first")
+                .unwrap()
+                .status,
+            204
+        );
     }
 
     #[test]
@@ -3391,11 +3769,19 @@ mod tests {
     #[test]
     fn mcp_profiles_and_tool_pagination_bound_discovery() {
         let core = test_state(McpProfile::Core, 5);
-        for tool in mcp_tools().as_array().unwrap().iter().filter(|tool| {
-            tool.get("name")
-                .and_then(Value::as_str)
-                .is_some_and(|name| mcp_profile_includes(McpProfile::Core, name))
-        }) {
+        let all_tools = mcp_tools();
+        let core_tools = all_tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|tool| {
+                tool.get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| mcp_profile_includes(McpProfile::Core, name))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(core_tools.len(), 12);
+        for tool in core_tools {
             let name = tool["name"].as_str().unwrap();
             assert!(
                 operation_for_mcp(name).is_some(),
@@ -3523,7 +3909,7 @@ mod tests {
     fn mcp_resources_and_tasks_follow_latest_protocol_contract() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join(".agent/memory.db");
-        let mut state = test_state(McpProfile::Core, 0);
+        let mut state = test_state(McpProfile::Standard, 0);
         let initialized = handle_mcp_request(
             &db,
             json!({
@@ -3622,7 +4008,7 @@ mod tests {
     fn mcp_modern_discovery_and_tasks_are_stateless_and_durable() {
         let directory = tempfile::tempdir().unwrap();
         let db = directory.path().join(".agent/memory.db");
-        let mut state = test_state(McpProfile::Core, 0);
+        let mut state = test_state(McpProfile::Standard, 0);
         let discovered = handle_mcp_request(
             &db,
             json!({

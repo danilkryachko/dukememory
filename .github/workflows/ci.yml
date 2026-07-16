@@ -61,6 +61,10 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
       - name: Format
         run: cargo fmt --all -- --check
+      - name: Enforce architecture growth budgets
+        run: scripts/architecture-budget.sh
+      - name: Enforce dependency growth budgets
+        run: scripts/dependency-budget.sh
       - name: Check minimal feature build
         run: cargo check --locked --all-targets --no-default-features
       - name: Check all targets
@@ -106,6 +110,26 @@ jobs:
         run: >-
           cargo test --locked --test cli
           v14_6_local_memory_ui_and_http_actions -- --exact
+
+  mcp-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Cache Cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+      - name: Build minimal MCP server
+        run: cargo build --locked --no-default-features
+      - name: Run official MCP Streamable HTTP conformance scenarios
+        run: scripts/mcp-conformance.sh target/debug/dukememory
 
   extended-autonomy:
     runs-on: ubuntu-latest

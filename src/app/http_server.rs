@@ -3,6 +3,8 @@ use dukememory::protocol::http_content_length as content_length;
 
 #[path = "http_ingest_routes.rs"]
 mod ingest_routes;
+#[path = "http_authorization.rs"]
+mod route_auth;
 #[path = "http_routes.rs"]
 mod routes;
 #[path = "http_security.rs"]
@@ -18,13 +20,19 @@ const HTTP_IO_SLICE: std::time::Duration = std::time::Duration::from_secs(2);
 
 struct HttpAppState {
     default_db: PathBuf,
-    auth_token: Option<String>,
+    auth_policy: security::HttpAuthPolicy,
+    security_policy: security::HttpSecurityPolicy,
+    rate_limiter: security::HttpRateLimiter,
+    concurrency_limiter: security::HttpConcurrencyLimiter,
+    mcp_http: mcp_server::McpHttpService,
+    otlp_logs: Option<otlp::OtlpLogExporter>,
 }
 
 #[derive(Default)]
 struct HttpRequestMeta {
     method: String,
     path: String,
+    client: String,
 }
 
 pub(crate) fn serve_http(
@@ -33,20 +41,33 @@ pub(crate) fn serve_http(
     port: u16,
     once: bool,
     auth_token: Option<&str>,
+    mcp_profile: &str,
+    mcp_page_size: usize,
 ) -> Result<()> {
     let auth_token = auth_token.map(str::trim).filter(|token| !token.is_empty());
-    if !is_loopback_host(host) && auth_token.is_none() {
+    let auth_policy = security::HttpAuthPolicy::from_environment(auth_token)?;
+    if !is_loopback_host(host) && !auth_policy.configured() {
         bail!(
-            "external HTTP binds require --auth-token or DUKEMEMORY_HTTP_TOKEN; use 127.0.0.1 for local-only access"
+            "external HTTP binds require a full or read-only HTTP token; use 127.0.0.1 for local-only access"
         );
     }
     let listener = TcpListener::bind((host, port))
         .with_context(|| format!("failed to bind http server on {host}:{port}"))?;
     let addr = listener.local_addr()?;
+    let security_policy = security::HttpSecurityPolicy::from_environment(host, addr)?;
+    let rate_limiter = security::HttpRateLimiter::from_environment()?;
+    let concurrency_limiter = security::HttpConcurrencyLimiter::from_environment()?;
+    let mcp_http = mcp_server::McpHttpService::new(mcp_profile, mcp_page_size)?;
+    let otlp_logs = otlp::OtlpLogExporter::from_environment()?;
     println!("http://{addr}");
     let state = std::sync::Arc::new(HttpAppState {
         default_db: db.to_path_buf(),
-        auth_token: auth_token.map(ToOwned::to_owned),
+        auth_policy,
+        security_policy,
+        rate_limiter,
+        concurrency_limiter,
+        mcp_http,
+        otlp_logs,
     });
 
     if once {
@@ -131,16 +152,11 @@ fn handle_http_stream(state: &HttpAppState, mut stream: TcpStream) -> Result<()>
     let started = std::time::Instant::now();
     let request_id = Uuid::new_v4().simple().to_string()[..16].to_string();
     let mut request_meta = HttpRequestMeta::default();
-    let peer = stream
-        .peer_addr()
+    let peer_address = stream.peer_addr().ok();
+    let peer = peer_address
         .map(|address| address.to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-    let mut response = match routes::handle_http_request(
-        &state.default_db,
-        &mut stream,
-        state.auth_token.as_deref(),
-        &mut request_meta,
-    ) {
+        .unwrap_or_else(|| "unknown".to_string());
+    let mut response = match routes::handle_http_request(state, &mut stream, &mut request_meta) {
         Ok(response) => response,
         Err(err) => HttpResponse::from_error(&err),
     };
@@ -148,18 +164,20 @@ fn handle_http_stream(state: &HttpAppState, mut stream: TcpStream) -> Result<()>
     response.request_id = Some(request_id.clone());
     stream.set_write_timeout(Some(HTTP_REQUEST_DEADLINE))?;
     crate::http_api::write_response(&mut stream, response)?;
-    eprintln!(
-        "{}",
-        json!({
-            "event": "http_access",
-            "peer": peer,
-            "request_id": request_id,
-            "method": request_meta.method,
-            "path": request_meta.path,
-            "status": status,
-            "elapsed_ms": started.elapsed().as_millis(),
-        })
-    );
+    let access_event = json!({
+        "event": "http_access",
+        "peer": peer,
+        "client": if request_meta.client.is_empty() { "unknown" } else { &request_meta.client },
+        "request_id": request_id,
+        "method": request_meta.method,
+        "path": request_meta.path,
+        "status": status,
+        "elapsed_ms": started.elapsed().as_millis(),
+    });
+    eprintln!("{access_event}");
+    if let Some(exporter) = &state.otlp_logs {
+        exporter.emit_http_access(&access_event);
+    }
     Ok(())
 }
 
@@ -730,8 +748,15 @@ mod http_framing_tests {
                 Just("Host"),
                 Just("Content-Length"),
                 Just("Authorization"),
+                Just("Accept"),
+                Just("Content-Type"),
+                Just("Mcp-Method"),
+                Just("Mcp-Name"),
+                Just("MCP-Protocol-Version"),
+                Just("MCP-Session-Id"),
                 Just("Proxy-Authorization"),
                 Just("Origin"),
+                Just("Sec-Fetch-Site"),
                 Just("X-DukeMemory-Token"),
             ],
             first in "[A-Za-z0-9._-]{1,32}",

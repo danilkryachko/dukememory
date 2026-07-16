@@ -56,6 +56,8 @@ fn mcp_call(db: &std::path::Path, name: &str) -> Value {
         .arg("--db")
         .arg(db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

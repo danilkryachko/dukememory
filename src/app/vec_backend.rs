@@ -608,7 +608,7 @@ pub(crate) fn sqlite_vec_memory_search(
 ) -> Result<Vec<(String, f64)>> {
     let dimensions = options.query_embedding.len();
     let table_name = ensure_vec_index(conn, VecIndexKind::Memory, dimensions, false, false)?;
-    let total: usize = conn.query_row(
+    let total: i64 = conn.query_row(
         r#"
         SELECT COUNT(*) FROM memory_embeddings
         WHERE endpoint = ?1 AND model = ?2 AND dimensions = ?3
@@ -616,6 +616,7 @@ pub(crate) fn sqlite_vec_memory_search(
         params![options.endpoint, options.model, dimensions as i64],
         |row| row.get(0),
     )?;
+    let total = usize::try_from(total).context("memory embedding count must be non-negative")?;
     if total == 0 {
         return Ok(Vec::new());
     }
@@ -715,7 +716,7 @@ pub(crate) fn sqlite_vec_rag_search(
 
     let dimensions = query_embedding.len();
     let table_name = ensure_vec_index(conn, VecIndexKind::Rag, dimensions, false, false)?;
-    let total: usize = conn.query_row(
+    let total: i64 = conn.query_row(
         r#"
         SELECT COUNT(*) FROM rag_chunk_embeddings
         WHERE endpoint = ?1 AND model = ?2 AND dimensions = ?3
@@ -723,6 +724,7 @@ pub(crate) fn sqlite_vec_rag_search(
         params![endpoint, model, dimensions as i64],
         |row| row.get(0),
     )?;
+    let total = usize::try_from(total).context("RAG embedding count must be non-negative")?;
     if total == 0 {
         return Ok(Vec::new());
     }

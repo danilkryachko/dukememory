@@ -6,7 +6,6 @@ static INITIALIZED_DATABASES: std::sync::OnceLock<std::sync::Mutex<HashSet<PathB
 const SCHEMA: &str = r#"
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
 PRAGMA temp_store = MEMORY;
 PRAGMA cache_size = -20000;
 PRAGMA mmap_size = 268435456;
@@ -197,11 +196,24 @@ CREATE TABLE IF NOT EXISTS memory_events (
     event_type TEXT NOT NULL,
     memory_id TEXT,
     detail TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    previous_hash TEXT NOT NULL DEFAULT '',
+    event_hash TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_memory_events_created_at ON memory_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_events_memory_id ON memory_events(memory_id);
 CREATE INDEX IF NOT EXISTS idx_memory_events_created_id ON memory_events(created_at, id);
+
+CREATE TABLE IF NOT EXISTS audit_checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at INTEGER NOT NULL,
+    deleted_through_id INTEGER NOT NULL,
+    deleted_count INTEGER NOT NULL,
+    first_retained_id INTEGER,
+    anchor_hash TEXT NOT NULL,
+    previous_checkpoint_hash TEXT NOT NULL,
+    checkpoint_hash TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS memory_read_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -305,6 +317,7 @@ CREATE TABLE IF NOT EXISTS memory_sources (
     path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     status TEXT NOT NULL,
+    trust_status TEXT NOT NULL DEFAULT 'unreviewed' CHECK (trust_status IN ('unreviewed', 'reviewed')),
     suggestions INTEGER NOT NULL DEFAULT 0,
     ingested_at INTEGER NOT NULL,
     UNIQUE(path, content_hash)
@@ -366,6 +379,58 @@ CREATE INDEX IF NOT EXISTS idx_memory_observations_target ON memory_observations
 CREATE INDEX IF NOT EXISTS idx_eval_cases_split_created ON eval_cases(split, created_at);
 "#;
 
+const SQLITE_DURABILITY_ENV: &str = "DUKEMEMORY_SQLITE_DURABILITY";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SqliteDurabilityProfile {
+    Balanced,
+    Strict,
+}
+
+impl SqliteDurabilityProfile {
+    pub(crate) fn from_environment() -> Result<Self> {
+        match std::env::var(SQLITE_DURABILITY_ENV)
+            .unwrap_or_else(|_| "balanced".to_string())
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "balanced" | "normal" => Ok(Self::Balanced),
+            "strict" | "full" => Ok(Self::Strict),
+            other => bail!(
+                "unsupported {SQLITE_DURABILITY_ENV} value `{other}`; expected balanced or strict"
+            ),
+        }
+    }
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Balanced => "balanced",
+            Self::Strict => "strict",
+        }
+    }
+
+    fn configure(self, conn: &Connection) -> Result<()> {
+        match self {
+            Self::Balanced => conn.execute_batch(
+                r#"
+                PRAGMA synchronous = NORMAL;
+                PRAGMA fullfsync = OFF;
+                PRAGMA checkpoint_fullfsync = OFF;
+                "#,
+            )?,
+            Self::Strict => conn.execute_batch(
+                r#"
+                PRAGMA synchronous = FULL;
+                PRAGMA fullfsync = ON;
+                PRAGMA checkpoint_fullfsync = ON;
+                "#,
+            )?,
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn open_db(path: &Path) -> Result<Connection> {
     register_sqlite_vec()?;
     if let Some(parent) = path.parent() {
@@ -378,16 +443,18 @@ pub(crate) fn open_db(path: &Path) -> Result<Connection> {
         Connection::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     harden_database_file_permissions(path)?;
     conn.busy_timeout(std::time::Duration::from_secs(15))?;
+    let durability = SqliteDurabilityProfile::from_environment()?;
     conn.execute_batch(
         r#"
         PRAGMA foreign_keys = ON;
         PRAGMA secure_delete = FAST;
-        PRAGMA synchronous = NORMAL;
         PRAGMA temp_store = MEMORY;
         PRAGMA cache_size = -20000;
         PRAGMA mmap_size = 268435456;
+        PRAGMA wal_autocheckpoint = 1000;
         "#,
     )?;
+    durability.configure(&conn)?;
     let key = database_registry_key(path);
     let initialized = INITIALIZED_DATABASES.get_or_init(|| std::sync::Mutex::new(HashSet::new()));
     let mut initialized = initialized
@@ -587,6 +654,13 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
              CREATE INDEX IF NOT EXISTS idx_mcp_tasks_expires \
                  ON mcp_tasks(expires_at_ms);",
         )?,
+        26 => ensure_column(
+            conn,
+            "memory_sources",
+            "trust_status",
+            "TEXT NOT NULL DEFAULT 'unreviewed' CHECK (trust_status IN ('unreviewed', 'reviewed'))",
+        )?,
+        27 => migrate_audit_integrity_ledger(conn)?,
         _ => {}
     }
     Ok(())
@@ -643,6 +717,65 @@ fn migrate_agent_session_leases(conn: &Connection) -> Result<()> {
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_session_events_sequence ON agent_session_events(session_id, sequence)",
         [],
     )?;
+    Ok(())
+}
+
+fn migrate_audit_integrity_ledger(conn: &Connection) -> Result<()> {
+    ensure_column(
+        conn,
+        "memory_events",
+        "previous_hash",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        conn,
+        "memory_events",
+        "event_hash",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS audit_checkpoints (\
+             id INTEGER PRIMARY KEY AUTOINCREMENT,\
+             created_at INTEGER NOT NULL,\
+             deleted_through_id INTEGER NOT NULL,\
+             deleted_count INTEGER NOT NULL,\
+             first_retained_id INTEGER,\
+             anchor_hash TEXT NOT NULL,\
+             previous_checkpoint_hash TEXT NOT NULL,\
+             checkpoint_hash TEXT NOT NULL\
+         );",
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT id, event_type, memory_id, detail, created_at FROM memory_events ORDER BY id ASC",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    let mut previous_hash = "genesis".to_string();
+    for (id, event_type, memory_id, detail, created_at) in rows {
+        let event_hash = audit_event_hash(
+            id,
+            &event_type,
+            memory_id.as_deref(),
+            &detail,
+            created_at,
+            &previous_hash,
+        );
+        conn.execute(
+            "UPDATE memory_events SET previous_hash = ?1, event_hash = ?2 WHERE id = ?3",
+            params![previous_hash, event_hash, id],
+        )?;
+        previous_hash = event_hash;
+    }
     Ok(())
 }
 
@@ -761,6 +894,14 @@ fn migrations() -> &'static [Migration] {
         Migration {
             version: 25,
             name: "Production v25 durable MCP task lifecycle",
+        },
+        Migration {
+            version: 26,
+            name: "Production v26 explicit RAG source trust promotion",
+        },
+        Migration {
+            version: 27,
+            name: "Production v27 tamper-evident audit integrity ledger",
         },
     ]
 }
@@ -1128,6 +1269,102 @@ mod tests {
             .unwrap();
         let error = verify_schema(&conn).unwrap_err().to_string();
         assert!(error.contains("idx_memory_edges_target"));
+    }
+
+    #[test]
+    fn sqlite_durability_profiles_select_reviewed_sync_modes() {
+        let conn = Connection::open_in_memory().unwrap();
+        SqliteDurabilityProfile::Balanced.configure(&conn).unwrap();
+        let balanced: i64 = conn
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(balanced, 1, "balanced profile must use NORMAL sync");
+
+        SqliteDurabilityProfile::Strict.configure(&conn).unwrap();
+        let strict: i64 = conn
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(strict, 2, "strict profile must use FULL sync");
+    }
+
+    #[test]
+    fn concurrent_writers_and_checkpoints_preserve_wal_integrity() {
+        const WRITERS: usize = 4;
+        const ROWS_PER_WRITER: usize = 64;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("wal-concurrency.db");
+        let conn = open_db(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE wal_concurrency_fixture (\
+                 id INTEGER PRIMARY KEY,\
+                 writer INTEGER NOT NULL,\
+                 payload TEXT NOT NULL\
+             );",
+        )
+        .unwrap();
+        drop(conn);
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(WRITERS + 1));
+        let mut workers = Vec::new();
+        for writer in 0..WRITERS {
+            let path = path.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || -> Result<()> {
+                let conn = open_db(&path)?;
+                barrier.wait();
+                for row in 0..ROWS_PER_WRITER {
+                    let id = writer * ROWS_PER_WRITER + row;
+                    conn.execute(
+                        "INSERT INTO wal_concurrency_fixture (id, writer, payload) \
+                         VALUES (?1, ?2, ?3)",
+                        params![
+                            id as i64,
+                            writer as i64,
+                            format!("writer-{writer}-row-{row}")
+                        ],
+                    )?;
+                }
+                Ok(())
+            }));
+        }
+
+        let checkpoint_path = path.clone();
+        let checkpoint_barrier = std::sync::Arc::clone(&barrier);
+        let checkpoint = std::thread::spawn(move || -> Result<()> {
+            let conn = open_db(&checkpoint_path)?;
+            checkpoint_barrier.wait();
+            for _ in 0..64 {
+                let _: (i64, i64, i64) =
+                    conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })?;
+                std::thread::yield_now();
+            }
+            Ok(())
+        });
+
+        for worker in workers {
+            worker.join().expect("WAL writer thread panicked").unwrap();
+        }
+        checkpoint
+            .join()
+            .expect("WAL checkpoint thread panicked")
+            .unwrap();
+
+        let conn = open_db(&path).unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wal_concurrency_fixture", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, (WRITERS * ROWS_PER_WRITER) as i64);
+        assert_eq!(integrity, "ok");
     }
 
     #[cfg(unix)]

@@ -33,6 +33,7 @@ pub(crate) struct DeploymentProfileReport {
     pub(crate) root: String,
     pub(crate) mode: String,
     pub(crate) http: DeploymentHttpProfile,
+    pub(crate) mcp: DeploymentMcpProfile,
     pub(crate) observability: DeploymentObservabilityProfile,
     pub(crate) encryption: DeploymentEncryptionProfile,
     pub(crate) blockers: Vec<String>,
@@ -44,10 +45,25 @@ pub(crate) struct DeploymentHttpProfile {
     pub(crate) host: String,
     pub(crate) loopback_bind: bool,
     pub(crate) bearer_token_configured: bool,
+    pub(crate) read_only_bearer_token_configured: bool,
+    pub(crate) trusted_proxy_auth: bool,
+    pub(crate) trusted_proxy_cidrs_configured: bool,
+    pub(crate) oauth_authorization_servers_configured: bool,
+    pub(crate) rate_limit_per_minute: u32,
+    pub(crate) rate_limit_max_clients: usize,
+    pub(crate) max_concurrent_requests: usize,
+    pub(crate) max_concurrent_per_client: usize,
     pub(crate) allowed_origins_configured: bool,
     pub(crate) public_origin: Option<String>,
     pub(crate) public_origin_https: bool,
     pub(crate) tls_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DeploymentMcpProfile {
+    pub(crate) max_concurrent_tasks: usize,
+    pub(crate) max_concurrent_tasks_per_owner: usize,
+    pub(crate) authenticated_task_ownership: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -107,15 +123,49 @@ pub(crate) fn deployment_profile_report(
         .filter(|value| !value.trim().is_empty());
     let token_file_status = request.token_file.map(deployment_secret_file_ready);
     let bearer_token_configured = inline_token.is_some() || token_file_status == Some(true);
+    let read_token_file_status = std::env::var_os("DUKEMEMORY_HTTP_READ_TOKEN_FILE")
+        .map(PathBuf::from)
+        .map(|path| deployment_secret_file_ready(&path));
+    let trusted_proxy_auth = deployment_env_flag("DUKEMEMORY_HTTP_TRUSTED_PROXY_AUTH");
+    let trusted_proxy_cidrs_configured = std::env::var("DUKEMEMORY_HTTP_TRUSTED_PROXY_CIDRS")
+        .ok()
+        .is_some_and(|value| value.split(',').any(|entry| !entry.trim().is_empty()));
+    let authorization_servers =
+        std::env::var("DUKEMEMORY_OAUTH_AUTHORIZATION_SERVERS").unwrap_or_default();
+    let oauth_authorization_servers_configured = {
+        let servers = authorization_servers
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        !servers.is_empty() && servers.iter().all(|value| deployment_https_url(value))
+    };
+    let rate_limit = std::env::var("DUKEMEMORY_HTTP_RATE_LIMIT_PER_MINUTE")
+        .ok()
+        .map(|value| value.parse::<u32>())
+        .transpose();
+    let rate_limit_per_minute = rate_limit
+        .as_ref()
+        .ok()
+        .and_then(|value| *value)
+        .unwrap_or(600);
+    let (rate_limit_max_clients, rate_limit_max_clients_valid) =
+        deployment_positive_usize("DUKEMEMORY_HTTP_RATE_LIMIT_MAX_CLIENTS", 2_048);
+    let (max_concurrent_requests, max_concurrent_requests_valid) =
+        deployment_positive_usize("DUKEMEMORY_HTTP_MAX_CONCURRENT_REQUESTS", 4);
+    let (max_concurrent_per_client, max_concurrent_per_client_valid) =
+        deployment_positive_usize("DUKEMEMORY_HTTP_MAX_CONCURRENT_PER_CLIENT", 4);
+    let (max_concurrent_tasks, max_concurrent_tasks_valid) =
+        deployment_positive_usize("DUKEMEMORY_MCP_MAX_CONCURRENT_TASKS", 32);
+    let (max_concurrent_tasks_per_owner, max_concurrent_tasks_per_owner_valid) =
+        deployment_positive_usize("DUKEMEMORY_MCP_MAX_CONCURRENT_TASKS_PER_OWNER", 4);
     let allowed_origins = std::env::var("DUKEMEMORY_HTTP_ALLOWED_ORIGINS").unwrap_or_default();
     let public_origin = request
         .public_origin
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
-    let public_origin_https = public_origin
-        .as_deref()
-        .is_some_and(|origin| origin.starts_with("https://"));
+    let public_origin_https = public_origin.as_deref().is_some_and(deployment_https_url);
     let allowed_origins_configured = public_origin.as_deref().is_some_and(|origin| {
         allowed_origins
             .split(',')
@@ -142,8 +192,23 @@ pub(crate) fn deployment_profile_report(
                         .to_string(),
                 );
             }
-            if !bearer_token_configured {
-                blockers.push("reverse-proxy mode requires a bearer token".to_string());
+            if !bearer_token_configured && !trusted_proxy_auth {
+                blockers.push(
+                    "reverse-proxy mode requires a bearer token or trusted proxy authentication"
+                        .to_string(),
+                );
+            }
+            if trusted_proxy_auth && !trusted_proxy_cidrs_configured {
+                blockers.push(
+                    "trusted proxy authentication requires DUKEMEMORY_HTTP_TRUSTED_PROXY_CIDRS"
+                        .to_string(),
+                );
+            }
+            if trusted_proxy_auth && !oauth_authorization_servers_configured {
+                blockers.push(
+                    "trusted proxy authentication requires valid HTTPS authorization servers"
+                        .to_string(),
+                );
             }
             if !public_origin_https {
                 blockers.push("reverse-proxy mode requires an https public origin".to_string());
@@ -158,6 +223,53 @@ pub(crate) fn deployment_profile_report(
     if token_file_status == Some(false) {
         blockers.push("HTTP token file is missing, empty, or has unsafe permissions".to_string());
     }
+    if read_token_file_status == Some(false) {
+        blockers.push(
+            "read-only HTTP token file is missing, empty, or has unsafe permissions".to_string(),
+        );
+    }
+    if rate_limit.is_err() || rate_limit_per_minute == 0 {
+        blockers
+            .push("DUKEMEMORY_HTTP_RATE_LIMIT_PER_MINUTE must be a positive integer".to_string());
+    }
+    for (valid, name) in [
+        (
+            rate_limit_max_clients_valid,
+            "DUKEMEMORY_HTTP_RATE_LIMIT_MAX_CLIENTS",
+        ),
+        (
+            max_concurrent_requests_valid,
+            "DUKEMEMORY_HTTP_MAX_CONCURRENT_REQUESTS",
+        ),
+        (
+            max_concurrent_per_client_valid,
+            "DUKEMEMORY_HTTP_MAX_CONCURRENT_PER_CLIENT",
+        ),
+        (
+            max_concurrent_tasks_valid,
+            "DUKEMEMORY_MCP_MAX_CONCURRENT_TASKS",
+        ),
+        (
+            max_concurrent_tasks_per_owner_valid,
+            "DUKEMEMORY_MCP_MAX_CONCURRENT_TASKS_PER_OWNER",
+        ),
+    ] {
+        if !valid {
+            blockers.push(format!("{name} must be a positive integer"));
+        }
+    }
+    if max_concurrent_per_client > max_concurrent_requests {
+        blockers.push(
+            "DUKEMEMORY_HTTP_MAX_CONCURRENT_PER_CLIENT must not exceed the global HTTP limit"
+                .to_string(),
+        );
+    }
+    if max_concurrent_tasks_per_owner > max_concurrent_tasks {
+        blockers.push(
+            "DUKEMEMORY_MCP_MAX_CONCURRENT_TASKS_PER_OWNER must not exceed the global MCP task limit"
+                .to_string(),
+        );
+    }
     if request.sync_target.is_some() && !sync_passphrase_ready {
         blockers.push(
             "remote sync target requires a valid passphrase or mode-600 passphrase file"
@@ -171,15 +283,15 @@ pub(crate) fn deployment_profile_report(
         "use encrypted host storage for the SQLite database; application-level database encryption is not implemented"
             .to_string(),
     ];
-    if std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_some() {
+    if otlp::environment_status() == "disabled" {
         recommendations.push(
-            "OTEL_EXPORTER_OTLP_ENDPOINT is set, but DukeMemory currently emits local JSON logs and metrics only; configure journal/collector ingestion explicitly"
+            "set OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_PROTOCOL=http/json to export batched access logs"
                 .to_string(),
         );
     }
     let ok = blockers.is_empty();
     DeploymentProfileReport {
-        version: 1,
+        version: 2,
         ok,
         status: if ok { "ready" } else { "blocked" }.to_string(),
         root: root.display().to_string(),
@@ -188,16 +300,29 @@ pub(crate) fn deployment_profile_report(
             host: request.host.to_string(),
             loopback_bind,
             bearer_token_configured,
+            read_only_bearer_token_configured: read_token_file_status == Some(true),
+            trusted_proxy_auth,
+            trusted_proxy_cidrs_configured,
+            oauth_authorization_servers_configured,
+            rate_limit_per_minute,
+            rate_limit_max_clients,
+            max_concurrent_requests,
+            max_concurrent_per_client,
             allowed_origins_configured,
             public_origin,
             public_origin_https,
             tls_mode: "reverse_proxy_required_for_public_access".to_string(),
         },
+        mcp: DeploymentMcpProfile {
+            max_concurrent_tasks,
+            max_concurrent_tasks_per_owner,
+            authenticated_task_ownership: true,
+        },
         observability: DeploymentObservabilityProfile {
             json_access_logs: true,
             request_ids: true,
             metrics_endpoint: "/metrics".to_string(),
-            otlp_exporter: "not_implemented".to_string(),
+            otlp_exporter: otlp::environment_status().to_string(),
         },
         encryption: DeploymentEncryptionProfile {
             database_at_rest: "host_managed".to_string(),
@@ -209,6 +334,33 @@ pub(crate) fn deployment_profile_report(
         blockers,
         recommendations,
     }
+}
+
+fn deployment_env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+}
+
+fn deployment_positive_usize(name: &str, default: usize) -> (usize, bool) {
+    match std::env::var(name) {
+        Ok(value) => match value.trim().parse::<usize>() {
+            Ok(value) if value > 0 => (value, true),
+            _ => (default, false),
+        },
+        Err(_) => (default, true),
+    }
+}
+
+fn deployment_https_url(value: &str) -> bool {
+    reqwest::Url::parse(value.trim()).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+    })
 }
 
 fn deployment_secret_file_ready(path: &Path) -> bool {
@@ -245,7 +397,7 @@ mod tests {
             sync_target: None,
         });
         assert!(local.ok);
-        assert_eq!(local.observability.otlp_exporter, "not_implemented");
+        assert_eq!(local.observability.otlp_exporter, "disabled");
         assert_eq!(local.encryption.database_at_rest, "host_managed");
 
         let public = deployment_profile_report(DeploymentProfileRequest {

@@ -5,6 +5,7 @@ pub(crate) struct ReleaseGateV3Report {
     pub(crate) version: u32,
     pub(crate) ok: bool,
     pub(crate) status: String,
+    pub(crate) selected_profile: String,
     pub(crate) root: String,
     pub(crate) strict: bool,
     pub(crate) run: bool,
@@ -38,11 +39,51 @@ pub(crate) struct ReleaseGateReadinessProfile {
     pub(crate) failed_required_checks: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ReleaseGateProfile {
+    All,
+    Code,
+    Project,
+    Deployment,
+}
+
+impl ReleaseGateProfile {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Code => "code",
+            Self::Project => "project",
+            Self::Deployment => "deployment",
+        }
+    }
+
+    pub(crate) fn parse(value: Option<&str>) -> Result<Self> {
+        match value.unwrap_or("all") {
+            "all" => Ok(Self::All),
+            "code" => Ok(Self::Code),
+            "project" => Ok(Self::Project),
+            "deployment" => Ok(Self::Deployment),
+            other => bail!(
+                "unsupported release gate profile `{other}`; expected all, code, project, or deployment"
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub(crate) enum ReleaseRagProfile {
     Deployment,
     Canonical,
     Offline,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ReleaseGateV3Options {
+    pub(crate) since_days: i64,
+    pub(crate) strict: bool,
+    pub(crate) run: bool,
+    pub(crate) rag_profile: ReleaseRagProfile,
+    pub(crate) profile: ReleaseGateProfile,
 }
 
 impl ReleaseRagProfile {
@@ -86,16 +127,27 @@ pub(crate) fn print_release_gate_v3(
     strict: bool,
     run: bool,
     rag_profile: ReleaseRagProfile,
+    profile: ReleaseGateProfile,
     json_out: bool,
 ) -> Result<()> {
-    let report =
-        release_gate_v3_report_with_profile(conn, db, root, since_days, strict, run, rag_profile)?;
+    let report = release_gate_v3_report_with_profile(
+        conn,
+        db,
+        root,
+        ReleaseGateV3Options {
+            since_days,
+            strict,
+            run,
+            rag_profile,
+            profile,
+        },
+    )?;
     if json_out {
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
     println!("Release Gate v3");
-    println!("status: {}", report.status);
+    println!("status: {} ({})", report.status, report.selected_profile);
     for profile in &report.profiles {
         println!(
             "{} profile:{}",
@@ -116,11 +168,15 @@ pub(crate) fn release_gate_v3_report_with_profile(
     conn: &Connection,
     db: &Path,
     root: &Path,
-    since_days: i64,
-    strict: bool,
-    run: bool,
-    rag_profile: ReleaseRagProfile,
+    options: ReleaseGateV3Options,
 ) -> Result<ReleaseGateV3Report> {
+    let ReleaseGateV3Options {
+        since_days,
+        strict,
+        run,
+        rag_profile,
+        profile,
+    } = options;
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let rag_profile = release_gate_rag_profile(&root, rag_profile);
     let release_gate_v2 = release_gate_v2_report(conn, db, &root, since_days, strict, run)?;
@@ -182,12 +238,46 @@ pub(crate) fn release_gate_v3_report_with_profile(
     });
     let mut checks = release_gate_v2.checks.clone();
     checks.push(ReleaseGateCheck {
-        name: "memory_effectiveness_v2".to_string(),
-        ok: effectiveness_v2.ok && effectiveness_v2.score >= 75.0,
+        name: "sqlite_runtime_version".to_string(),
+        ok: crate::build_info::sqlite_runtime_is_safe(),
         required: true,
         detail: format!(
-            "score={:.1} confidence={}",
-            effectiveness_v2.score, effectiveness_v2.confidence
+            "runtime={} minimum_safe={}",
+            rusqlite::version(),
+            crate::build_info::MIN_SAFE_SQLITE_VERSION
+        ),
+    });
+    let audit_integrity = audit_integrity_report(conn)?;
+    checks.push(ReleaseGateCheck {
+        name: "audit_integrity_chain".to_string(),
+        ok: audit_integrity.ok,
+        required: true,
+        detail: format!(
+            "events={} checkpoints={} head={} errors={}",
+            audit_integrity.events,
+            audit_integrity.checkpoints,
+            audit_integrity.head_hash,
+            audit_integrity.errors.len()
+        ),
+    });
+    checks.push(ReleaseGateCheck {
+        name: "memory_effectiveness_v2".to_string(),
+        ok: effectiveness_v2.score >= 75.0 && effectiveness_v2.confidence != "low",
+        required: true,
+        detail: format!(
+            "score={:.1} confidence={} hygiene_status={}",
+            effectiveness_v2.score, effectiveness_v2.confidence, effectiveness_v2.status
+        ),
+    });
+    checks.push(ReleaseGateCheck {
+        name: "memory_effectiveness_hygiene".to_string(),
+        ok: effectiveness_v2.ok,
+        required: false,
+        detail: format!(
+            "status={} ignored_cards={}/{}",
+            effectiveness_v2.status,
+            effectiveness_v2.ignored_cards.len(),
+            effectiveness_v2.active_card_count
         ),
     });
     checks.push(ReleaseGateCheck {
@@ -362,14 +452,18 @@ pub(crate) fn release_gate_v3_report_with_profile(
         ),
         required: false,
         detail: format!(
-            "status={} risk={:.1} candidates={} duplicate_groups={} provenance={:.1}% detector={}/{} attack_resistance={}",
+            "status={} risk={:.1} candidates={} duplicate_groups={} provenance={:.1}% (memory={:.1}% chunks={:.1}%) detector={}/{} attack_filter={}/{} attack_resistance={}",
             advanced_eval.poisoning.status,
             advanced_eval.poisoning.risk_score,
             advanced_eval.poisoning.prompt_injection_candidates,
             advanced_eval.poisoning.duplicate_cross_source_groups,
             advanced_eval.poisoning.provenance_coverage,
+            advanced_eval.poisoning.memory_provenance_coverage,
+            advanced_eval.poisoning.chunk_provenance_coverage,
             advanced_eval.poisoning.detector_benchmark_passed,
             advanced_eval.poisoning.detector_benchmark_total,
+            advanced_eval.poisoning.attack_filter_passed,
+            advanced_eval.poisoning.attack_filter_total,
             advanced_eval.poisoning.attack_resistance_status
         ),
     });
@@ -388,9 +482,13 @@ pub(crate) fn release_gate_v3_report_with_profile(
         ),
     });
     let profiles = release_gate_readiness_profiles(&checks);
-    let mut issues = release_gate_v2.issues.clone();
+    let mut issues = Vec::new();
     for check in &checks {
-        if check.required && !check.ok {
+        if check.required
+            && !check.ok
+            && (profile == ReleaseGateProfile::All
+                || release_gate_check_profile(&check.name) == profile.as_str())
+        {
             issues.push(format!("release gate v3 failed: {}", check.name));
         }
     }
@@ -418,11 +516,12 @@ pub(crate) fn release_gate_v3_report_with_profile(
     );
     recommendations.sort();
     recommendations.dedup();
-    let ok = issues.is_empty();
+    let ok = selected_release_gate_profile_ok(&profiles, profile);
     Ok(ReleaseGateV3Report {
         version: 3,
         ok,
         status: if ok { "ready" } else { "blocked" }.to_string(),
+        selected_profile: profile.as_str().to_string(),
         root: root.display().to_string(),
         strict,
         run,
@@ -444,6 +543,19 @@ pub(crate) fn release_gate_v3_report_with_profile(
         issues,
         recommendations,
     })
+}
+
+fn selected_release_gate_profile_ok(
+    profiles: &[ReleaseGateReadinessProfile],
+    profile: ReleaseGateProfile,
+) -> bool {
+    match profile {
+        ReleaseGateProfile::All => profiles.iter().all(|item| item.ok),
+        _ => profiles
+            .iter()
+            .find(|item| item.name == profile.as_str())
+            .is_some_and(|item| item.ok),
+    }
 }
 
 fn release_gate_readiness_profiles(
@@ -491,7 +603,12 @@ fn release_gate_readiness_profiles(
 
 fn release_gate_check_profile(name: &str) -> &'static str {
     match name {
-        "cargo_version" | "git_clean" | "required_commands" | "mcp_tool_surface_v3" => "code",
+        "cargo_version"
+        | "git_clean"
+        | "required_commands"
+        | "mcp_tool_surface_v3"
+        | "sqlite_runtime_version"
+        | "audit_integrity_chain" => "code",
         "sync_latency"
         | "sync_profile"
         | "fleet_quality_observed"
@@ -631,5 +748,17 @@ mod tests {
                 .unwrap()
                 .ok
         );
+        assert!(!selected_release_gate_profile_ok(
+            &profiles,
+            ReleaseGateProfile::All
+        ));
+        assert!(selected_release_gate_profile_ok(
+            &profiles,
+            ReleaseGateProfile::Code
+        ));
+        assert!(!selected_release_gate_profile_ok(
+            &profiles,
+            ReleaseGateProfile::Project
+        ));
     }
 }

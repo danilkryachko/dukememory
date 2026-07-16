@@ -691,7 +691,10 @@ pub(crate) fn list_inbox(conn: &Connection, status: &str, limit: usize) -> Resul
         LIMIT ?2
         "#,
     )?;
-    let rows = stmt.query_map(params![status, limit.min(i64::MAX as usize)], row_to_inbox)?;
+    let rows = stmt.query_map(
+        params![status, limit.min(i64::MAX as usize) as i64],
+        row_to_inbox,
+    )?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }

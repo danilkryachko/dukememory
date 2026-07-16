@@ -4,6 +4,11 @@ const MCP_DEFAULT_TASK_TTL_MS: u64 = 3_600_000;
 const MCP_MAX_TASK_TTL_MS: u64 = 86_400_000;
 const MCP_TASK_PAGE_SIZE: usize = 50;
 const MCP_LEGACY_TASK_RESULT_WAIT_MS: u64 = 30_000;
+const MCP_MAX_CONCURRENT_TASKS_ENV: &str = "DUKEMEMORY_MCP_MAX_CONCURRENT_TASKS";
+const MCP_MAX_CONCURRENT_TASKS_PER_OWNER_ENV: &str =
+    "DUKEMEMORY_MCP_MAX_CONCURRENT_TASKS_PER_OWNER";
+const MCP_DEFAULT_MAX_CONCURRENT_TASKS: usize = 32;
+const MCP_DEFAULT_MAX_CONCURRENT_TASKS_PER_OWNER: usize = 4;
 
 #[derive(Debug, Clone)]
 pub(super) struct McpTaskRecord {
@@ -27,10 +32,118 @@ pub(super) struct McpTaskRecord {
 }
 
 #[derive(Debug, Default)]
+struct McpTaskAdmissionState {
+    total: usize,
+    owners: HashMap<String, usize>,
+}
+
+#[derive(Debug)]
 pub(super) struct McpTaskStore {
     cancellations: std::sync::Mutex<HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     wake_generation: std::sync::Mutex<u64>,
     changed: std::sync::Condvar,
+    maximum_tasks: usize,
+    maximum_tasks_per_owner: usize,
+    admission: std::sync::Mutex<McpTaskAdmissionState>,
+}
+
+struct McpTaskPermit {
+    store: std::sync::Arc<McpTaskStore>,
+    owner_key: String,
+}
+
+impl Default for McpTaskStore {
+    fn default() -> Self {
+        Self::new(
+            MCP_DEFAULT_MAX_CONCURRENT_TASKS,
+            MCP_DEFAULT_MAX_CONCURRENT_TASKS_PER_OWNER,
+        )
+    }
+}
+
+impl McpTaskStore {
+    pub(super) fn from_environment() -> Result<Self> {
+        let maximum_tasks = mcp_positive_usize_env(
+            MCP_MAX_CONCURRENT_TASKS_ENV,
+            MCP_DEFAULT_MAX_CONCURRENT_TASKS,
+        )?;
+        let maximum_tasks_per_owner = mcp_positive_usize_env(
+            MCP_MAX_CONCURRENT_TASKS_PER_OWNER_ENV,
+            MCP_DEFAULT_MAX_CONCURRENT_TASKS_PER_OWNER,
+        )?;
+        if maximum_tasks_per_owner > maximum_tasks {
+            bail!(
+                "{MCP_MAX_CONCURRENT_TASKS_PER_OWNER_ENV} must not exceed {MCP_MAX_CONCURRENT_TASKS_ENV}"
+            );
+        }
+        Ok(Self::new(maximum_tasks, maximum_tasks_per_owner))
+    }
+
+    fn new(maximum_tasks: usize, maximum_tasks_per_owner: usize) -> Self {
+        Self {
+            cancellations: std::sync::Mutex::new(HashMap::new()),
+            wake_generation: std::sync::Mutex::new(0),
+            changed: std::sync::Condvar::new(),
+            maximum_tasks: maximum_tasks.max(1),
+            maximum_tasks_per_owner: maximum_tasks_per_owner.max(1).min(maximum_tasks.max(1)),
+            admission: std::sync::Mutex::new(McpTaskAdmissionState::default()),
+        }
+    }
+
+    fn try_acquire(
+        self: &std::sync::Arc<Self>,
+        owner_key: &str,
+    ) -> std::result::Result<Option<McpTaskPermit>, String> {
+        let mut admission = self
+            .admission
+            .lock()
+            .map_err(|_| "MCP task admission lock was poisoned".to_string())?;
+        let owner_count = admission.owners.get(owner_key).copied().unwrap_or(0);
+        if admission.total >= self.maximum_tasks || owner_count >= self.maximum_tasks_per_owner {
+            return Ok(None);
+        }
+        admission.total += 1;
+        *admission.owners.entry(owner_key.to_string()).or_default() += 1;
+        Ok(Some(McpTaskPermit {
+            store: std::sync::Arc::clone(self),
+            owner_key: owner_key.to_string(),
+        }))
+    }
+
+    fn release(&self, owner_key: &str) {
+        let Ok(mut admission) = self.admission.lock() else {
+            return;
+        };
+        admission.total = admission.total.saturating_sub(1);
+        if let Some(count) = admission.owners.get_mut(owner_key) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                admission.owners.remove(owner_key);
+            }
+        }
+    }
+}
+
+impl Drop for McpTaskPermit {
+    fn drop(&mut self) {
+        self.store.release(&self.owner_key);
+    }
+}
+
+fn mcp_positive_usize_env(name: &str, default: usize) -> Result<usize> {
+    let value = std::env::var(name)
+        .ok()
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .with_context(|| format!("{name} must be an integer"))
+        })
+        .transpose()?
+        .unwrap_or(default);
+    if value == 0 {
+        bail!("{name} must be greater than zero");
+    }
+    Ok(value)
 }
 
 pub(super) fn mcp_tool_supports_tasks(name: &str) -> bool {
@@ -85,6 +198,12 @@ pub(super) fn mcp_start_task(
     owner_key: &str,
     lifecycle: &str,
 ) -> std::result::Result<Value, String> {
+    let permit = state.tasks.try_acquire(owner_key)?.ok_or_else(|| {
+        format!(
+            "MCP task concurrency limit exceeded (global={}, per_owner={})",
+            state.tasks.maximum_tasks, state.tasks.maximum_tasks_per_owner
+        )
+    })?;
     let ttl = params
         .get("task")
         .and_then(|value| value.get("ttl"))
@@ -146,6 +265,7 @@ pub(super) fn mcp_start_task(
     let worker = std::thread::Builder::new()
         .name(format!("dukememory-mcp-task-{}", &task_id[..8]))
         .spawn(move || {
+            let _permit = permit;
             let cancellation_requested = cancellation.load(std::sync::atomic::Ordering::Acquire)
                 || mcp_task_cancellation_requested(&task_registry_db, &task_id_for_worker)
                     .unwrap_or(false);
@@ -580,4 +700,23 @@ pub(super) fn mcp_task_timestamp() -> String {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[test]
+    fn task_admission_enforces_global_and_owner_limits_until_permit_drop() {
+        let store = std::sync::Arc::new(McpTaskStore::new(2, 1));
+        let first = store.try_acquire("owner-a").unwrap().unwrap();
+        assert!(store.try_acquire("owner-a").unwrap().is_none());
+        let second = store.try_acquire("owner-b").unwrap().unwrap();
+        assert!(store.try_acquire("owner-c").unwrap().is_none());
+        drop(first);
+        let third = store.try_acquire("owner-c").unwrap().unwrap();
+        drop(second);
+        drop(third);
+        assert!(store.try_acquire("owner-a").unwrap().is_some());
+    }
 }

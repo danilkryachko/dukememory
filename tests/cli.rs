@@ -100,7 +100,13 @@ fn insert_read_event_with_ids(db: &std::path::Path, command: &str, query: &str, 
         "INSERT INTO memory_read_events \
          (command, query, memory_ids, semantic_used, result_count, budget, elapsed_ms, created_at) \
          VALUES (?1, ?2, ?3, 1, ?4, 1200, 1, ?5)",
-        params![command, query, ids.join(","), ids.len(), now_ms()],
+        params![
+            command,
+            query,
+            ids.join(","),
+            ids.len().min(i64::MAX as usize) as i64,
+            now_ms()
+        ],
     )
     .unwrap();
 }
@@ -1869,7 +1875,84 @@ fn sqlite_vec_persists_rag_chunk_index() {
         .assert()
         .success()
         .stdout(contains("\"source_kind\": \"chunk\""))
-        .stdout(contains("\"semantic_score\":"));
+        .stdout(contains("\"semantic_score\":"))
+        .stdout(contains("\"trust_lane\": \"unreviewed_project_source\""));
+
+    cmd(&db)
+        .arg("rag-shadow")
+        .arg("persistent vector documentation")
+        .arg("--scope")
+        .arg("project")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .arg("--json")
+        .assert()
+        .success()
+        .stdout(contains("\"primary\""))
+        .stdout(contains("\"challenger\""))
+        .stdout(contains("\"unreviewed_project_source\""));
+
+    cmd(&db)
+        .arg("decision-capsule")
+        .arg("persistent vector documentation")
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--scope")
+        .arg("project")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .arg("--json")
+        .assert()
+        .success()
+        .stdout(contains("\"evidence_ref\""))
+        .stdout(contains("\"freshness\""));
+
+    fs::write(
+        &source,
+        "Updated persistent RAG vector documentation remains searchable.\n",
+    )
+    .unwrap();
+    cmd(&db)
+        .arg("rag-refresh")
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--embed")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .arg("--json")
+        .assert()
+        .success()
+        .stdout(contains("\"status\": \"dry_run\""))
+        .stdout(contains("content_changed"));
+    cmd(&db)
+        .arg("rag-refresh")
+        .arg("--root")
+        .arg(dir.path())
+        .arg("--apply")
+        .arg("--embed")
+        .arg("--provider")
+        .arg("mock")
+        .arg("--endpoint")
+        .arg("local")
+        .arg("--model")
+        .arg("mock-small")
+        .arg("--json")
+        .assert()
+        .success()
+        .stdout(contains("\"status\": \"ready\""))
+        .stdout(contains("\"refreshed_sources\": 1"));
 }
 
 #[test]
@@ -1934,6 +2017,8 @@ fn serve_mcp_handles_tools_list_and_context_pack() {
         .arg("--db")
         .arg(&db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -2400,6 +2485,8 @@ fn mcp_negotiates_lifecycle_ignores_notifications_and_returns_typed_tools() {
         .arg("--db")
         .arg(&db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("standard")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -2481,6 +2568,8 @@ fn mcp_rejects_unlisted_projects_and_file_inputs_outside_the_selected_root() {
         .arg("--db")
         .arg(&db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -2603,6 +2692,8 @@ fn mcp_memory_search_filters_query_useless_feedback() {
         .arg("--db")
         .arg(&db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -2667,6 +2758,8 @@ fn mcp_snapshot_filters_query_useless_feedback() {
         .arg("--db")
         .arg(&db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -2738,6 +2831,8 @@ fn mcp_snapshot_filters_noisy_top_candidates() {
         .arg("--db")
         .arg(&db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -2846,6 +2941,8 @@ fn mcp_tool_calls_can_select_project_db_by_root_or_path_scope() {
         .arg("--db")
         .arg(&default_db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -4334,6 +4431,8 @@ fn v6_content_length_mcp_and_rhai_policy_hooks() {
         .arg("--db")
         .arg(&db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .arg("--content-length")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -4597,7 +4696,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .arg("status")
         .assert()
         .success()
-        .stdout(contains("expected: 25"));
+        .stdout(contains("expected: 27"));
     cmd(&db)
         .arg("schema")
         .arg("verify")
@@ -4670,7 +4769,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .assert()
         .success()
         .stdout(contains("version:"))
-        .stdout(contains("schema: 25"));
+        .stdout(contains("schema: 27"));
 
     let install_dir = dir.path().join("install");
     let target = install_dir.join("dukememory");
@@ -5193,6 +5292,8 @@ fn v11_auto_ingest_and_decision_doctrine() {
         .arg("--db")
         .arg(&db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -5241,7 +5342,7 @@ fn v11_release_bundle_bench_and_self_host() {
 
     let bench = stdout(cmd(&db).arg("bench").arg("--json"));
     let bench_json: Value = serde_json::from_str(&bench).unwrap();
-    assert_eq!(bench_json["schema"], 25);
+    assert_eq!(bench_json["schema"], 27);
     assert_eq!(bench_json["memory_count"], 4);
     assert!(bench_json["db_bytes"].as_u64().unwrap() > 0);
 
@@ -5257,7 +5358,7 @@ fn v11_release_bundle_bench_and_self_host() {
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(bundle.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(manifest["schema"], 25);
+    assert_eq!(manifest["schema"], 27);
     assert_eq!(manifest["memory_stats"]["total"], 4);
     assert_eq!(manifest["binary_sha256"].as_str().unwrap().len(), 64);
 }
@@ -5291,7 +5392,7 @@ fn v12_always_on_operations() {
     );
     let health_json: Value = serde_json::from_str(&health).unwrap();
     assert_eq!(health_json["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(health_json["schema"], 25);
+    assert_eq!(health_json["schema"], 27);
     assert_eq!(health_json["endpoint_ok"], true);
 
     for _ in 0..3 {
@@ -5365,7 +5466,7 @@ fn v13_stabilization_integrity_optimize_and_large_http_request() {
     let integrity = stdout(cmd(&db).arg("integrity").arg("--json"));
     let integrity_json: Value = serde_json::from_str(&integrity).unwrap();
     assert_eq!(integrity_json["ok"], true);
-    assert_eq!(integrity_json["schema"], 25);
+    assert_eq!(integrity_json["schema"], 27);
     assert_eq!(integrity_json["integrity_check"], "ok");
 
     let optimized = stdout(cmd(&db).arg("optimize").arg("--vacuum").arg("--json"));
@@ -9052,6 +9153,8 @@ fn search_and_mcp_search_use_semantic_fallback_for_underfilled_queries() {
         .arg("--db")
         .arg(&db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -9103,6 +9206,8 @@ fn mcp_context_surfaces_use_semantic_supplement() {
         .arg("--db")
         .arg(&db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -9169,6 +9274,8 @@ fn mcp_context_surfaces_log_only_rendered_memories() {
         .arg("--db")
         .arg(&db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -9241,6 +9348,8 @@ fn mcp_memory_search_logs_only_rendered_items() {
         .arg("--db")
         .arg(&db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -9297,6 +9406,8 @@ fn mcp_brief_and_impact_log_only_budgeted_json_items() {
         .arg("--db")
         .arg(&db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -9411,6 +9522,8 @@ fn mcp_snapshot_query_uses_semantic_supplement() {
         .arg("--db")
         .arg(&db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -10159,6 +10272,8 @@ fn v14_5_brief_and_evidence_surfaces_are_budgeted_and_structured() {
         .arg("--db")
         .arg(&db)
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -11438,6 +11553,8 @@ fn v14_14_onboard_codex_mcp_and_autonomous_e2e() {
         .arg("--db")
         .arg(dir.path().join("other/.agent/memory.db"))
         .arg("serve-mcp")
+        .arg("--profile")
+        .arg("full")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -15723,6 +15840,7 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     let release_gate_v3_json: Value = serde_json::from_str(&release_gate_v3).unwrap();
     assert_eq!(release_gate_v3_json["version"], 3);
+    assert_eq!(release_gate_v3_json["selected_profile"], "all");
     assert!(release_gate_v3_json["mcp_discipline_v3"].is_object());
     assert!(release_gate_v3_json["graph_rag_eval"].is_object());
     assert!(release_gate_v3_json["advanced_eval"].is_object());
@@ -15922,8 +16040,14 @@ fn v14_9_autonomous_memory_runs_and_rolls_back() {
     );
     let sync_latency_json: Value = serde_json::from_str(&sync_latency).unwrap();
     assert_eq!(sync_latency_json["version"], 1);
+    assert_eq!(sync_latency_json["ok"], true);
+    assert_eq!(sync_latency_json["status"], "ready");
     assert_eq!(sync_latency_json["local_first"], true);
-    assert!(sync_latency_json["recommended_mode"].as_str().is_some());
+    assert_eq!(
+        sync_latency_json["recommended_mode"],
+        "local_first_with_optional_sync"
+    );
+    assert!(sync_latency_json["issues"].as_array().unwrap().is_empty());
 
     let sync_target = dir.path().join("sync-target");
     let sync_profile = stdout(

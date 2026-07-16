@@ -1,0 +1,14 @@
+# Default ownership
+* @danilkryachko
+
+# Security and release boundaries
+/.github/ @danilkryachko
+/Cargo.toml @danilkryachko
+/Cargo.lock @danilkryachko
+/deny.toml @danilkryachko
+/src/app/http_security.rs @danilkryachko
+/src/app/egress.rs @danilkryachko
+/src/app/mcp_server.rs @danilkryachko
+/src/app/mcp_server/ @danilkryachko
+/src/rag_security.rs @danilkryachko
+/SECURITY.md @danilkryachko

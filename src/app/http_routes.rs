@@ -1,11 +1,20 @@
+use super::route_auth::{
+    http_read_only_request_allowed, mcp_read_only_request_allowed,
+    with_insufficient_scope_challenge,
+};
 use super::*;
 
 pub(super) fn handle_http_request(
-    db: &Path,
+    state: &HttpAppState,
     stream: &mut TcpStream,
-    auth_token: Option<&str>,
     request_meta: &mut HttpRequestMeta,
 ) -> Result<HttpResponse> {
+    let db = &state.default_db;
+    let auth_policy = &state.auth_policy;
+    let security_policy = &state.security_policy;
+    let rate_limiter = &state.rate_limiter;
+    let concurrency_limiter = &state.concurrency_limiter;
+    let mcp_http = &state.mcp_http;
     let buffer = read_http_request(stream)?;
     let raw = String::from_utf8_lossy(&buffer);
     let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((raw.as_ref(), ""));
@@ -23,31 +32,110 @@ pub(super) fn handle_http_request(
             Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
         })
         .collect::<HashMap<_, _>>();
-    if let Some(expected) = auth_token
-        && !matches!(
-            (method, path),
-            ("GET", "/")
-                | ("GET", "/ui")
-                | ("GET", "/ui.css")
-                | ("GET", "/ui.js")
-                | ("GET", "/health")
-        )
-    {
+    let _concurrency_permit = if let Ok(peer) = stream.peer_addr() {
+        let client = match security_policy.client_ip(peer.ip(), &headers) {
+            Ok(client) => client,
+            Err(_) => {
+                return Ok(HttpResponse::bad_request(
+                    "invalid forwarded client address from trusted proxy",
+                ));
+            }
+        };
+        request_meta.client = client.to_string();
+        if let Some(retry_after) = rate_limiter.retry_after_seconds(client)? {
+            return Ok(HttpResponse::too_many_requests(retry_after));
+        }
+        match concurrency_limiter.try_acquire(client)? {
+            Some(permit) => Some(permit),
+            None => {
+                return Ok(HttpResponse::service_unavailable(
+                    "HTTP concurrency limit exceeded; retry the request later",
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    if !security_policy.host_allowed(headers.get("host").map(String::as_str)) {
+        return Ok(HttpResponse::forbidden(
+            "request Host is not allowed for this listener",
+        ));
+    }
+    let public_endpoint = matches!(
+        (method, path),
+        ("GET", "/")
+            | ("GET", "/ui")
+            | ("GET", "/ui.css")
+            | ("GET", "/ui.js")
+            | ("GET", "/health")
+            | ("GET", "/.well-known/oauth-protected-resource")
+    );
+    let authorization = if public_endpoint {
+        security::HttpAuthContext::public()
+    } else {
         let provided = headers
             .get("authorization")
             .and_then(|value| value.strip_prefix("Bearer ").map(str::trim))
             .or_else(|| headers.get("x-dukememory-token").map(String::as_str));
-        if !provided.is_some_and(|provided| security::token_matches(expected, provided)) {
-            return Ok(HttpResponse::unauthorized());
+        let authorization = auth_policy.authorize_request(
+            provided,
+            stream.peer_addr().ok().map(|address| address.ip()),
+            &headers,
+            security_policy,
+        );
+        let Some(authorization) = authorization? else {
+            let response = auth_policy.resource_metadata_url().map_or_else(
+                HttpResponse::unauthorized,
+                |resource_metadata| {
+                    HttpResponse::unauthorized().with_header(
+                        "WWW-Authenticate",
+                        format!(
+                            "Bearer resource_metadata=\"{resource_metadata}\", scope=\"memory:read\""
+                        ),
+                    )
+                },
+            );
+            return Ok(response);
+        };
+        authorization
+    };
+    if path != "/mcp"
+        && authorization.capability == security::HttpAuthorization::ReadOnly
+        && !http_read_only_request_allowed(method, path)
+    {
+        return Ok(with_insufficient_scope_challenge(
+            HttpResponse::forbidden("read-only token cannot invoke this operation"),
+            auth_policy,
+            "memory:write",
+        ));
+    }
+    if matches!(method, "POST" | "PUT" | "PATCH" | "DELETE") {
+        if headers
+            .get("sec-fetch-site")
+            .is_some_and(|value| value.eq_ignore_ascii_case("cross-site"))
+        {
+            return Ok(HttpResponse::forbidden(
+                "cross-site state-changing requests are not allowed",
+            ));
+        }
+        if let Some(origin) = headers.get("origin")
+            && !security_policy.origin_allowed(origin)
+        {
+            return Ok(HttpResponse::forbidden(
+                "cross-origin state-changing requests are not allowed",
+            ));
         }
     }
-    if matches!(method, "POST" | "PUT" | "PATCH" | "DELETE")
-        && let Some(origin) = headers.get("origin")
-        && !security::origin_allowed(origin, headers.get("host").map(String::as_str))
-    {
-        return Ok(HttpResponse::forbidden(
-            "cross-origin state-changing requests are not allowed",
-        ));
+    if path == "/mcp" {
+        return route_mcp_http(
+            db,
+            mcp_http,
+            method,
+            &headers,
+            body,
+            &authorization,
+            auth_policy,
+        );
     }
     match (method, path) {
         ("GET", "/") | ("GET", "/ui") => {
@@ -69,6 +157,12 @@ pub(super) fn handle_http_request(
             return Ok(HttpResponse::ok(
                 json!({"ok": true, "version": env!("CARGO_PKG_VERSION")}),
             ));
+        }
+        ("GET", "/.well-known/oauth-protected-resource") => {
+            return Ok(auth_policy
+                .protected_resource_metadata()
+                .map(HttpResponse::ok)
+                .unwrap_or_else(HttpResponse::not_found));
         }
         _ => {}
     }
@@ -386,7 +480,10 @@ pub(super) fn handle_http_request(
             HttpResponse::ok(json!({"profiles": runner_profiles_status(&ctx.root)?}))
         }
         ("GET", "/metrics") => HttpResponse::ok(http_metrics(&conn)?),
-        ("GET", "/audit") => HttpResponse::ok(json!({"events": audit_events(&conn, 50)?})),
+        ("GET", "/audit") => HttpResponse::ok(json!({
+            "integrity": audit_integrity_report(&conn)?,
+            "events": audit_events(&conn, 50)?
+        })),
         ("GET", "/snapshot") => HttpResponse::ok(http_snapshot(&conn)?),
         ("GET", "/doctrine") => {
             HttpResponse::ok(json!({"doctrine": doctrine_report(&conn, None)?}))
@@ -2051,15 +2148,19 @@ pub(super) fn handle_http_request(
                 .is_some_and(|value| value == "true" || value == "1");
             let rag_profile =
                 ReleaseRagProfile::parse(params.get("rag_profile").map(String::as_str))?;
+            let profile = ReleaseGateProfile::parse(params.get("profile").map(String::as_str))?;
             HttpResponse::ok(
                 json!({"release_gate_v3": release_gate_v3_report_with_profile(
                 &conn,
                 &ctx.db,
                 &ctx.root,
-                since_days,
-                strict,
-                false,
-                rag_profile,
+                ReleaseGateV3Options {
+                    since_days,
+                    strict,
+                    run: false,
+                    rag_profile,
+                    profile,
+                },
             )?}),
             )
         }
@@ -2073,15 +2174,19 @@ pub(super) fn handle_http_request(
                 .unwrap_or(false);
             let rag_profile =
                 ReleaseRagProfile::parse(value.get("rag_profile").and_then(Value::as_str))?;
+            let profile = ReleaseGateProfile::parse(value.get("profile").and_then(Value::as_str))?;
             HttpResponse::ok(
                 json!({"release_gate_v3": release_gate_v3_report_with_profile(
                 &conn,
                 &ctx.db,
                 &ctx.root,
-                since_days,
-                strict,
-                true,
-                rag_profile,
+                ReleaseGateV3Options {
+                    since_days,
+                    strict,
+                    run: true,
+                    rag_profile,
+                    profile,
+                },
             )?}),
             )
         }
@@ -3356,4 +3461,150 @@ pub(super) fn handle_http_request(
         _ => HttpResponse::not_found(),
     };
     Ok(response)
+}
+
+fn route_mcp_http(
+    db: &Path,
+    service: &mcp_server::McpHttpService,
+    method: &str,
+    headers: &HashMap<String, String>,
+    body: &str,
+    authorization: &security::HttpAuthContext,
+    auth_policy: &security::HttpAuthPolicy,
+) -> Result<HttpResponse> {
+    if method == "GET" {
+        return Ok(HttpResponse::method_not_allowed().with_header("Allow", "POST, DELETE"));
+    }
+    let session_id = headers.get("mcp-session-id").map(String::as_str);
+    if session_id.is_some_and(|value| {
+        value.is_empty()
+            || value.len() > 128
+            || !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+    }) {
+        return Ok(mcp_http_transport_error(
+            400,
+            "invalid MCP-Session-Id header",
+        ));
+    }
+    if method == "DELETE" {
+        return Ok(mcp_http_response(
+            service.delete_session(session_id, &authorization.principal)?,
+        ));
+    }
+    if method != "POST" {
+        return Ok(HttpResponse::method_not_allowed().with_header("Allow", "POST, DELETE"));
+    }
+    let content_type = headers
+        .get("content-type")
+        .and_then(|value| value.split(';').next())
+        .map(str::trim);
+    if !content_type.is_some_and(|value| value.eq_ignore_ascii_case("application/json")) {
+        return Ok(mcp_http_transport_error(
+            415,
+            "MCP POST requests require Content-Type: application/json",
+        ));
+    }
+    let request = match serde_json::from_str::<Value>(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return Ok(HttpResponse::json_rpc(
+                400,
+                "Bad Request",
+                json!({
+                    "jsonrpc":"2.0",
+                    "id":Value::Null,
+                    "error":{"code":-32700,"message":error.to_string()}
+                }),
+            ));
+        }
+    };
+    if authorization.capability == security::HttpAuthorization::ReadOnly
+        && !mcp_read_only_request_allowed(&request)
+    {
+        return Ok(with_insufficient_scope_challenge(
+            mcp_http_transport_error(403, "read-only token cannot invoke this MCP operation"),
+            auth_policy,
+            "memory:write",
+        ));
+    }
+    let request_method = request.get("method").and_then(Value::as_str);
+    let modern = request
+        .get("params")
+        .and_then(|params| params.get("_meta"))
+        .and_then(|meta| meta.get("io.modelcontextprotocol/protocolVersion"))
+        .and_then(Value::as_str)
+        == Some("2026-07-28");
+    let method_header = headers.get("mcp-method").map(String::as_str);
+    if method_header.is_some_and(|header| Some(header) != request_method)
+        || (modern && method_header.is_none())
+    {
+        return Ok(mcp_http_transport_error(
+            400,
+            "Mcp-Method must match the JSON-RPC method",
+        ));
+    }
+    let expected_name = match request_method {
+        Some("tools/call") | Some("prompts/get") => request
+            .get("params")
+            .and_then(|params| params.get("name"))
+            .and_then(Value::as_str),
+        Some("resources/read") => request
+            .get("params")
+            .and_then(|params| params.get("uri"))
+            .and_then(Value::as_str),
+        _ => None,
+    };
+    let name_header = headers.get("mcp-name").map(String::as_str);
+    if name_header.is_some_and(|header| Some(header) != expected_name)
+        || (modern && expected_name.is_some() && name_header.is_none())
+    {
+        return Ok(mcp_http_transport_error(
+            400,
+            "Mcp-Name must match the JSON-RPC tool, prompt, or resource name",
+        ));
+    }
+    Ok(mcp_http_response(service.handle_post(
+        db,
+        request,
+        session_id,
+        headers.get("mcp-protocol-version").map(String::as_str),
+        &authorization.principal,
+    )?))
+}
+
+fn mcp_http_response(reply: mcp_server::McpHttpReply) -> HttpResponse {
+    let mut response = match (reply.status, reply.body) {
+        (200, Some(body)) => HttpResponse::json_rpc(200, "OK", body),
+        (202, _) => HttpResponse::accepted(),
+        (204, _) => HttpResponse::no_content(),
+        (400, Some(body)) => HttpResponse::json_rpc(400, "Bad Request", body),
+        (404, Some(body)) => HttpResponse::json_rpc(404, "Not Found", body),
+        (status, Some(body)) => HttpResponse::json_rpc(status, "Bad Request", body),
+        (_, None) => HttpResponse::service_unavailable("invalid MCP HTTP response state"),
+    };
+    if let Some(session_id) = reply.session_id {
+        response = response.with_header("MCP-Session-Id", session_id);
+    }
+    if let Some(protocol_version) = reply.protocol_version {
+        response = response.with_header("MCP-Protocol-Version", protocol_version);
+    }
+    response
+}
+
+fn mcp_http_transport_error(status: u16, message: &str) -> HttpResponse {
+    let reason = match status {
+        400 => "Bad Request",
+        403 => "Forbidden",
+        415 => "Unsupported Media Type",
+        _ => "Bad Request",
+    };
+    HttpResponse::json_rpc(
+        status,
+        reason,
+        json!({
+            "jsonrpc":"2.0",
+            "id":Value::Null,
+            "error":{"code":-32600,"message":message}
+        }),
+    )
 }

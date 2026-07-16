@@ -1296,7 +1296,8 @@ pub(crate) fn drift_report(
 
     let conflicts = merge_candidates(conn, 10)?;
     let empty_terms = HashSet::new();
-    let stale_active = stale_active_memories(conn, 10)?
+    let stale_evidence = stale_file_evidence(conn, 20)?;
+    let mut stale_active = stale_active_memories(conn, 10)?
         .into_iter()
         .enumerate()
         .map(|(index, memory)| {
@@ -1309,7 +1310,34 @@ pub(crate) fn drift_report(
             )
         })
         .collect::<Vec<_>>();
-    let ok = missing_links.is_empty() && conflicts.is_empty() && stale_active.is_empty();
+    let mut stale_ids = stale_active
+        .iter()
+        .map(|item| item.id.clone())
+        .collect::<HashSet<_>>();
+    for evidence in &stale_evidence {
+        if !matches!(evidence.memory_status.as_str(), "active" | "uncertain")
+            || !stale_ids.insert(evidence.memory_id.clone())
+        {
+            continue;
+        }
+        if let Ok(memory) = get_memory(conn, &evidence.memory_id) {
+            stale_active.push(brief_item_from_memory(
+                &memory,
+                95.0,
+                vec![format!(
+                    "{} file evidence: {}",
+                    evidence.status, evidence.path
+                )],
+                &empty_terms,
+                8_000,
+            ));
+        }
+    }
+    stale_active.truncate(20);
+    let ok = missing_links.is_empty()
+        && conflicts.is_empty()
+        && stale_active.is_empty()
+        && stale_evidence.is_empty();
 
     Ok(DriftReport {
         version: 1,
@@ -1320,6 +1348,7 @@ pub(crate) fn drift_report(
         missing_links,
         conflicts,
         stale_active,
+        stale_evidence,
         warnings,
     })
 }
@@ -4152,7 +4181,7 @@ pub(crate) fn review_stale(conn: &Connection, days: i64) -> Result<Vec<ReviewIss
         None,
         usize::MAX,
     )?;
-    Ok(rows
+    let mut issues = rows
         .into_iter()
         .filter(|m| m.updated_at < cutoff)
         .map(|m| ReviewIssue {
@@ -4161,7 +4190,25 @@ pub(crate) fn review_stale(conn: &Connection, days: i64) -> Result<Vec<ReviewIss
             title: m.title,
             detail: format!("not updated for at least {days} day(s)"),
         })
-        .collect())
+        .collect::<Vec<_>>();
+    let mut seen = issues
+        .iter()
+        .map(|issue| issue.id.clone())
+        .collect::<HashSet<_>>();
+    for evidence in stale_file_evidence(conn, 10_000)? {
+        if seen.insert(evidence.memory_id.clone()) {
+            issues.push(ReviewIssue {
+                kind: "stale_evidence".to_string(),
+                id: evidence.memory_id,
+                title: evidence.memory_title,
+                detail: format!(
+                    "{} file evidence `{}`: {}",
+                    evidence.status, evidence.path, evidence.detail
+                ),
+            });
+        }
+    }
+    Ok(issues)
 }
 
 pub(crate) fn review_uncertain(conn: &Connection) -> Result<Vec<ReviewIssue>> {
@@ -4486,6 +4533,7 @@ mod tests {
             links: Vec::new(),
             provenance: RagSourceProvenance {
                 origin: "memory_store".to_string(),
+                trust_lane: "durable_memory".to_string(),
                 evidence_ref: format!("dukememory:memory:{id}"),
                 content_hash: "test-hash".to_string(),
                 source: Some("test".to_string()),

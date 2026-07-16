@@ -1,6 +1,146 @@
 use super::*;
 
 #[test]
+fn default_help_hides_compatibility_only_commands_but_keeps_them_callable() {
+    let help = String::from_utf8(
+        Command::cargo_bin("dukememory")
+            .unwrap()
+            .arg("--help")
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    for legacy in [
+        "release-gate-v2",
+        "autonomous-loop-v2",
+        "mcp-tool-surface-v2",
+        "mcp-discipline-v2",
+        "memory-control-center-v2",
+        "memory-contract-v2",
+        "fleet-dashboard-v2",
+        "upgrade-all-projects-v2",
+    ] {
+        assert!(!help.contains(&format!("  {legacy}")), "{legacy}");
+        Command::cargo_bin("dukememory")
+            .unwrap()
+            .arg(legacy)
+            .arg("--help")
+            .assert()
+            .success();
+    }
+    let visible_commands = help
+        .lines()
+        .filter(|line| line.starts_with("  ") && !line.starts_with("      "))
+        .count();
+    assert!(visible_commands <= 225, "visible commands={visible_commands}");
+}
+
+fn http_once_with_read_token(
+    db: &std::path::Path,
+    token_file: &std::path::Path,
+    request: &str,
+) -> String {
+    let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin("dukememory"))
+        .arg("--db")
+        .arg(db)
+        .arg("serve-http")
+        .arg("--host")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg("0")
+        .arg("--once")
+        .env("DUKEMEMORY_HTTP_READ_TOKEN_FILE", token_file)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut url = String::new();
+    reader.read_line(&mut url).unwrap();
+    let port: u16 = url.trim().rsplit(':').next().unwrap().parse().unwrap();
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(stream, "{request}").unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(child.wait().unwrap().success());
+    response
+}
+
+#[test]
+fn read_only_http_token_enforces_http_and_mcp_operation_scopes() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let token_file = dir.path().join("read-token");
+    fs::write(&token_file, "read-only-secret\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&token_file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let read = http_once_with_read_token(
+        &db,
+        &token_file,
+        "GET /memory HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer read-only-secret\r\nConnection: close\r\n\r\n",
+    );
+    assert!(read.contains("200 OK"));
+
+    let write_body = r#"{"type":"decision","title":"denied","body":"denied"}"#;
+    let write_request = format!(
+        "POST /remember HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer read-only-secret\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{write_body}",
+        write_body.len()
+    );
+    let denied = http_once_with_read_token(&db, &token_file, &write_request);
+    assert!(denied.contains("403 Forbidden"));
+
+    let read_mcp = serde_json::json!({
+        "jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":"memory_status","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}
+    })
+    .to_string();
+    let read_mcp_request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer read-only-secret\r\nContent-Type: application/json\r\nMcp-Method: tools/call\r\nMcp-Name: memory_status\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{read_mcp}",
+        read_mcp.len()
+    );
+    assert!(http_once_with_read_token(&db, &token_file, &read_mcp_request).contains("200 OK"));
+
+    let write_mcp = serde_json::json!({
+        "jsonrpc":"2.0","id":2,"method":"tools/call",
+        "params":{"name":"memory_remember","arguments":{"text":"denied"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}
+    })
+    .to_string();
+    let write_mcp_request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer read-only-secret\r\nContent-Type: application/json\r\nMcp-Method: tools/call\r\nMcp-Name: memory_remember\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{write_mcp}",
+        write_mcp.len()
+    );
+    assert!(
+        http_once_with_read_token(&db, &token_file, &write_mcp_request)
+            .contains("403 Forbidden")
+    );
+}
+
+fn http_response_header<'a>(response: &'a str, name: &str) -> Option<&'a str> {
+    response
+        .split_once("\r\n\r\n")?
+        .0
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_once(':'))
+        .find_map(|(header_name, value)| {
+            header_name
+                .eq_ignore_ascii_case(name)
+                .then(|| value.trim())
+        })
+}
+
+fn mcp_http_post(body: &str, extra_headers: &str) -> String {
+    format!(
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+#[test]
 fn v14_7_memory_ui_selects_sibling_project_memory() {
     let dir = tempdir().unwrap();
     let alpha = dir.path().join("alpha_project");
@@ -213,6 +353,25 @@ fn external_http_bind_requires_token_and_enforces_bearer_auth() {
         ),
     );
     assert!(cross_origin.contains("403 Forbidden"));
+    let rebound_origin = http_once(
+        &db,
+        &format!(
+            "POST /search HTTP/1.1\r\nHost: attacker.example\r\nOrigin: http://attacker.example\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        ),
+    );
+    assert!(rebound_origin.contains("403 Forbidden"));
+    assert!(rebound_origin.contains("request Host is not allowed"));
+    let fetch_metadata_cross_site = http_once(
+        &db,
+        &format!(
+            "POST /search HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Site: cross-site\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        ),
+    );
+    assert!(fetch_metadata_cross_site.contains("403 Forbidden"));
     let same_origin = http_once(
         &db,
         &format!(
@@ -222,6 +381,106 @@ fn external_http_bind_requires_token_and_enforces_bearer_auth() {
         ),
     );
     assert!(same_origin.contains("200 OK"));
+}
+
+#[test]
+fn mcp_streamable_http_supports_stable_sessions_and_modern_stateless_discovery() {
+    let dir = tempdir().unwrap();
+    let db = dir.path().join("memory.db");
+    let server = PersistentHttpServer::start(&db);
+
+    let initialize = serde_json::json!({
+        "jsonrpc":"2.0",
+        "id":1,
+        "method":"initialize",
+        "params":{
+            "protocolVersion":"2025-11-25",
+            "capabilities":{},
+            "clientInfo":{"name":"http-test","version":"1"}
+        }
+    })
+    .to_string();
+    let initialized = server.request(&mcp_http_post(&initialize, ""));
+    assert!(initialized.starts_with("HTTP/1.1 200 OK"), "{initialized}");
+    let session_id = http_response_header(&initialized, "MCP-Session-Id")
+        .expect("initialize must create an HTTP session")
+        .to_string();
+    assert_eq!(
+        http_response_header(&initialized, "MCP-Protocol-Version"),
+        Some("2025-11-25")
+    );
+
+    let notification = serde_json::json!({
+        "jsonrpc":"2.0",
+        "method":"notifications/initialized"
+    })
+    .to_string();
+    let stable_headers = format!(
+        "MCP-Session-Id: {session_id}\r\nMCP-Protocol-Version: 2025-11-25\r\n"
+    );
+    let accepted = server.request(&mcp_http_post(&notification, &stable_headers));
+    assert!(accepted.starts_with("HTTP/1.1 202 Accepted"), "{accepted}");
+
+    let list = serde_json::json!({
+        "jsonrpc":"2.0",
+        "id":2,
+        "method":"tools/list",
+        "params":{}
+    })
+    .to_string();
+    let listed = server.request(&mcp_http_post(&list, &stable_headers));
+    assert!(listed.starts_with("HTTP/1.1 200 OK"), "{listed}");
+    let listed_json: Value = serde_json::from_str(listed.split_once("\r\n\r\n").unwrap().1)
+        .unwrap();
+    let tools = listed_json["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 12);
+    assert!(tools.iter().any(|tool| tool["name"] == "memory_brief"));
+    assert!(!tools.iter().any(|tool| tool["name"] == "memory_add"));
+
+    let deleted = server.request(&format!(
+        "DELETE /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nMCP-Session-Id: {session_id}\r\nConnection: close\r\n\r\n"
+    ));
+    assert!(deleted.starts_with("HTTP/1.1 204 No Content"), "{deleted}");
+    let expired = server.request(&mcp_http_post(&list, &stable_headers));
+    assert!(expired.starts_with("HTTP/1.1 404 Not Found"), "{expired}");
+
+    let get = server.request(
+        "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(get.starts_with("HTTP/1.1 405 Method Not Allowed"), "{get}");
+    assert_eq!(http_response_header(&get, "Allow"), Some("POST, DELETE"));
+
+    let discover = serde_json::json!({
+        "jsonrpc":"2.0",
+        "id":3,
+        "method":"server/discover",
+        "params":{"_meta":{
+            "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+            "io.modelcontextprotocol/clientInfo":{"name":"http-test","version":"1"},
+            "io.modelcontextprotocol/clientCapabilities":{}
+        }}
+    })
+    .to_string();
+    let modern_headers =
+        "MCP-Protocol-Version: 2026-07-28\r\nMcp-Method: server/discover\r\n";
+    let discovered = server.request(&mcp_http_post(&discover, modern_headers));
+    assert!(discovered.starts_with("HTTP/1.1 200 OK"), "{discovered}");
+    assert!(http_response_header(&discovered, "MCP-Session-Id").is_none());
+    let discovered_json: Value =
+        serde_json::from_str(discovered.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(
+        discovered_json["result"]["supportedVersions"][0],
+        "2026-07-28"
+    );
+
+    let missing_method = server.request(&mcp_http_post(
+        &discover,
+        "MCP-Protocol-Version: 2026-07-28\r\n",
+    ));
+    assert!(
+        missing_method.starts_with("HTTP/1.1 400 Bad Request"),
+        "{missing_method}"
+    );
 }
 
 #[test]

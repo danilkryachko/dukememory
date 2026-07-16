@@ -42,9 +42,9 @@ HTTP maps bad input to `400`, missing resources to `404`, conflicts to `409`, an
 
 ## SQLite lifecycle
 
-The current schema version is stored in `schema_versions`. Migrations are version-gated and transactional; startup verifies critical tables, columns, indexes, triggers, and the final schema version. HTTP resolves the selected project once per request and opens one connection for that request. Process-local initialization caching avoids rerunning schema setup for an already verified database. Unix database files and sidecars are mode `600`, newly created database directories are mode `700`, and SQLite uses `secure_delete=FAST`.
+The current schema version is stored in `schema_versions`. Migrations are version-gated and transactional; startup verifies critical tables, columns, indexes, triggers, and the final schema version. HTTP resolves the selected project once per request and opens one connection for that request. Process-local initialization caching avoids rerunning schema setup for an already verified database. Unix database files and sidecars are mode `600`, newly created database directories are mode `700`, and SQLite uses `secure_delete=FAST`. The bundled runtime is gated at SQLite 3.51.3 or newer, and `DUKEMEMORY_SQLITE_DURABILITY` selects the explicit `balanced` or `strict` fsync profile.
 
-Graph edges live in `memory_edges` with foreign keys, uniqueness, confidence bounds, provenance, and atomic audit writes. Symmetric `relates_to` edges are canonicalized for storage and traversed in both directions. Schema v24 adds valid time (`valid_from`/`valid_to`), knowledge time (`observed_at`), and an optional source observation. `memory_observations` keeps evidence kind/reference plus Git branch, commit, and worktree context, allowing an as-of graph to answer both “what was valid then?” and “what did the agent know then?”. Schema v25 adds durable, lifecycle-scoped MCP task records.
+Graph edges live in `memory_edges` with foreign keys, uniqueness, confidence bounds, provenance, and atomic audit writes. Symmetric `relates_to` edges are canonicalized for storage and traversed in both directions. Schema v24 adds valid time (`valid_from`/`valid_to`), knowledge time (`observed_at`), and an optional source observation. `memory_observations` keeps evidence kind/reference plus Git branch, commit, and worktree context, allowing an as-of graph to answer both “what was valid then?” and “what did the agent know then?”. File-backed observations encode a project-contained path, SHA-256, and size in the evidence reference; drift/review revalidate the latest observation and RAG generation excludes cards whose file evidence changed or disappeared without mutating their durable status. Schema v25 adds durable, lifecycle-scoped MCP task records; v26 adds exact-hash RAG trust promotion; v27 hash-chains audit events and retention checkpoints. `temporal-graph --commit` resolves the knowledge cutoff from recorded evidence for an exact Git commit.
 
 ## Retrieval policy
 
@@ -52,13 +52,31 @@ Retrieval loads a `RetrievalPolicy` once into `RetrievalQualitySignals`. The env
 
 RAG ingest prefers language-aware structural boundaries for supported text/code formats while retaining bounded line chunking as a fallback. Every selected RAG source carries a stable evidence reference and content hash; eval v6 reports expected rank, Hit@1/3/5, MRR, development/holdout metrics, packing, grounding, and matrix coverage. Baseline v3 binds results to both the canonical case corpus and retrieval configuration.
 
+Prompt-injection triage is a pure library boundary in `src/rag_security.rs`.
+Ingest keeps suspicious chunks for inspection, source health counts them as
+quarantined, and both lexical and semantic retrieval exclude them before
+ranking. The advanced eval reports memory-card provenance separately from
+file-chunk provenance and runs a deterministic pre-retrieval attack-filter
+fixture set; it does not claim protection from novel attacks or prove generated
+answer safety.
+The fixture is checked in and versioned independently from detector code. Text
+is normalized for Unicode compatibility/format characters and common
+homoglyphs, while bounded Base64 candidates are inspected before retrieval.
+Clean source hashes remain explicitly unreviewed until operator promotion.
+
 Advanced eval is deterministic and evidence-first. It audits only explicitly typed causal edges, treats poisoning matches as review candidates, measures global graph representation through connected components, and checks both valid-time and knowledge-time consistency. It does not infer causality, claim that heuristic matches prove compromise, or advertise hierarchical GraphRAG community summarization that the implementation does not provide.
 
 ## Transport and egress boundaries
 
 MCP profiles bound the advertised tool surface; list cursors, Resources, and Tasks avoid forcing one large synchronous context exchange. The stable 2025 family keeps its initialize lifecycle. The locked `2026-07-28` release candidate uses per-request metadata and `server/discover`; its Tasks Extension is negotiated per request and is not wire-compatible with 2025 Tasks. Schema v25 stores tasks durably in SQLite, isolates them by client identity and lifecycle, and retains terminal results across MCP process restarts. Tool input is validated against closed, bounded Draft 2020-12 schemas before dispatch.
 
-HTTP rejects ambiguous framing before reading the body and attaches a correlation id to every response/access event. The local UI loads same-origin CSS and JavaScript assets under a strict CSP with inline script/style execution disabled. Admission, stored-card scanning, and export redaction share structured secret signatures so one transport cannot bypass another's policy. HTTP and MCP framing parsers have property-based arbitrary-input and ambiguity coverage. Provider egress centrally validates HTTP(S) URLs, disables redirects, checks and pins DNS results, and blocks private, link-local, metadata, and special-use destinations unless explicitly allowed.
+HTTP rejects ambiguous framing before reading the body and attaches a correlation id to every response/access event. Full and read-only bearer capabilities are resolved before routing; an optional OAuth/OIDC gateway boundary accepts validated principals and scopes only from explicit proxy CIDRs and publishes RFC 9728 protected-resource metadata. HTTP and MCP tool calls reuse the operation catalog. Bounded rate-limit identity storage plus global/per-client HTTP concurrency return `429` or `503` under pressure. MCP task workers have global and per-principal admission limits, and both sessions and durable tasks are principal-bound. The local UI loads same-origin CSS and JavaScript assets under a strict CSP with inline script/style execution disabled. Admission, stored-card scanning, and export redaction share structured secret signatures so one transport cannot bypass another's policy. HTTP and MCP framing parsers have property-based arbitrary-input and ambiguity coverage. Provider egress centrally validates HTTP(S) URLs, disables redirects, checks and pins DNS results, and blocks private, link-local, metadata, and special-use destinations unless explicitly allowed.
+
+`scripts/architecture-budget.sh` caps growth in the remaining legacy
+aggregation files (`app`, CLI parsing/dispatch, observability, MCP, HTTP routes,
+and the large CLI integration suite). New work should continue extracting
+cohesive modules (as the HTTP authorization, release-gate, and RAG-security
+boundaries do) instead of raising those budgets.
 
 ## Local model safety
 
@@ -74,6 +92,12 @@ Custom `hf://` generation models support `hf://owner/repo@revision:file.gguf`. U
 | `--no-default-features` | minimal FTS build without ONNX, tokenizer, or Hugging Face dependencies |
 | `--features vec` | default capabilities plus sqlite-vec |
 | `--all-features` | embeddings, sqlite-vec, and local llama.cpp generation |
+
+Release builds use stripped symbols, thin LTO, a single codegen unit, and no
+incremental state. `release-minimal` switches to size optimization and fat LTO
+for FTS/external-embedding servers; `scripts/reproducible-build-check.sh`
+compares two isolated builds byte-for-byte with fixed timestamps and remapped
+source paths.
 
 ## Extension rules
 

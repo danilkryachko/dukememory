@@ -59,11 +59,100 @@ pub(crate) fn log_event(
     memory_id: Option<&str>,
     detail: &str,
 ) -> Result<()> {
-    conn.execute(
-        "INSERT INTO memory_events (event_type, memory_id, detail, created_at) VALUES (?1, ?2, ?3, ?4)",
-        params![event_type, memory_id, detail, now_ms()],
-    )?;
-    Ok(())
+    transactional(conn, "append_audit_event", || {
+        let previous_event_hash = conn
+            .query_row(
+                "SELECT event_hash FROM memory_events ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .filter(|hash| !hash.is_empty());
+        let previous_hash = if let Some(previous_hash) = previous_event_hash {
+            previous_hash
+        } else {
+            conn.query_row(
+                "SELECT anchor_hash FROM audit_checkpoints ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .filter(|hash| !hash.is_empty())
+            .unwrap_or_else(|| "genesis".to_string())
+        };
+        let created_at = now_ms();
+        conn.execute(
+            "INSERT INTO memory_events (event_type, memory_id, detail, created_at, previous_hash, event_hash) VALUES (?1, ?2, ?3, ?4, ?5, '')",
+            params![event_type, memory_id, detail, created_at, previous_hash],
+        )?;
+        let id = conn.last_insert_rowid();
+        let event_hash = audit_event_hash(
+            id,
+            event_type,
+            memory_id,
+            detail,
+            created_at,
+            &previous_hash,
+        );
+        conn.execute(
+            "UPDATE memory_events SET event_hash = ?1 WHERE id = ?2",
+            params![event_hash, id],
+        )?;
+        Ok(())
+    })
+}
+
+pub(crate) fn audit_event_hash(
+    id: i64,
+    event_type: &str,
+    memory_id: Option<&str>,
+    detail: &str,
+    created_at: i64,
+    previous_hash: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    audit_hash_field(&mut hasher, b"dukememory-audit-event-v1");
+    audit_hash_field(&mut hasher, id.to_string().as_bytes());
+    audit_hash_field(&mut hasher, event_type.as_bytes());
+    audit_hash_field(&mut hasher, if memory_id.is_some() { b"1" } else { b"0" });
+    audit_hash_field(&mut hasher, memory_id.unwrap_or_default().as_bytes());
+    audit_hash_field(&mut hasher, detail.as_bytes());
+    audit_hash_field(&mut hasher, created_at.to_string().as_bytes());
+    audit_hash_field(&mut hasher, previous_hash.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+pub(crate) fn audit_hash_field(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn audit_checkpoint_hash(
+    id: i64,
+    created_at: i64,
+    deleted_through_id: i64,
+    deleted_count: i64,
+    first_retained_id: Option<i64>,
+    anchor_hash: &str,
+    previous_checkpoint_hash: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    audit_hash_field(&mut hasher, b"dukememory-audit-checkpoint-v1");
+    audit_hash_field(&mut hasher, id.to_string().as_bytes());
+    audit_hash_field(&mut hasher, created_at.to_string().as_bytes());
+    audit_hash_field(&mut hasher, deleted_through_id.to_string().as_bytes());
+    audit_hash_field(&mut hasher, deleted_count.to_string().as_bytes());
+    audit_hash_field(
+        &mut hasher,
+        first_retained_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string())
+            .as_bytes(),
+    );
+    audit_hash_field(&mut hasher, anchor_hash.as_bytes());
+    audit_hash_field(&mut hasher, previous_checkpoint_hash.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 pub(crate) fn validate_scope(scope: &str) -> Result<()> {
@@ -207,6 +296,23 @@ pub(crate) fn reject_sensitive(title: &str, body: &str, allow_sensitive: bool) -
     Ok(())
 }
 
+pub(crate) fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("failed to open {} for hashing", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -243,5 +349,15 @@ mod secret_tests {
         assert!(!redacted.contains("correct-horse"));
         assert!(!redacted.contains("ghp_"));
         assert!(!redacted.contains("abcdefghijklmnopqrstuvwxyz"));
+    }
+
+    #[test]
+    fn shared_file_hash_is_binary_safe_and_deterministic() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(file.path(), b"abc").unwrap();
+        assert_eq!(
+            sha256_file(file.path()).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }

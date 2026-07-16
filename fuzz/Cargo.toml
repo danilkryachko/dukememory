@@ -25,5 +25,26 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "rag_prompt_injection"
+path = "fuzz_targets/rag_prompt_injection.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sync_payload"
+path = "fuzz_targets/sync_payload.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "egress_url"
+path = "fuzz_targets/egress_url.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

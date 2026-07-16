@@ -60,6 +60,10 @@ pub(super) fn route_ingest_operation(
                 .unwrap_or("project");
             let apply = value.get("apply").and_then(Value::as_bool).unwrap_or(false);
             let embed = value.get("embed").and_then(Value::as_bool).unwrap_or(false);
+            let reviewed = value
+                .get("reviewed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let provider = value
                 .get("provider")
                 .and_then(Value::as_str)
@@ -79,6 +83,7 @@ pub(super) fn route_ingest_operation(
                     input: &input,
                     scope,
                     apply,
+                    reviewed,
                     embed,
                     provider,
                     endpoint,
