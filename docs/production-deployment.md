@@ -18,6 +18,9 @@ openssl rand -hex 32 | sudo tee /etc/dukememory/http-token >/dev/null
 sudo install -o dukememory -g dukememory -m 600 /dev/null \
   /etc/dukememory/http-read-token
 openssl rand -hex 32 | sudo tee /etc/dukememory/http-read-token >/dev/null
+sudo install -o dukememory -g dukememory -m 600 /dev/null \
+  /etc/dukememory/telemetry-hash-key
+openssl rand -hex 32 | sudo tee /etc/dukememory/telemetry-hash-key >/dev/null
 ```
 
 Download the release archive and its entry in `SHA256SUMS`, verify SHA-256, then
@@ -48,6 +51,7 @@ DUKEMEMORY_HTTP_MAX_CONCURRENT_PER_CLIENT=4
 DUKEMEMORY_MCP_MAX_CONCURRENT_TASKS=32
 DUKEMEMORY_MCP_MAX_CONCURRENT_TASKS_PER_OWNER=4
 DUKEMEMORY_TELEMETRY_IDENTIFIERS=hash
+DUKEMEMORY_TELEMETRY_HASH_KEY_FILE=/etc/dukememory/telemetry-hash-key
 DUKEMEMORY_SQLITE_DURABILITY=strict
 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 OTEL_EXPORTER_OTLP_PROTOCOL=http/json
@@ -55,7 +59,9 @@ OTEL_EXPORTER_OTLP_TIMEOUT=10000
 ```
 
 The service also accepts `DUKEMEMORY_SYNC_PASSPHRASE_FILE` here when encrypted
-sync is automated. Keep that file outside the repository with mode `600`.
+sync is automated. Keep that and the telemetry hash key outside the repository
+with mode `600`; the telemetry key must contain at least 16 characters of
+cryptographically random, text-encoded material.
 The read-only bearer is optional and must differ from the full token. It can
 read dashboards and MCP read tools but cannot invoke cataloged writes. The
 listener rejects invalid/zero limits at startup. The rate-limit identity table,

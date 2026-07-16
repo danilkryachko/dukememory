@@ -308,7 +308,7 @@ fn web_rag_eval_baseline_quick_summary(root: &Path) -> Result<RagEvalBaselineSum
         .unwrap_or("")
         .to_string();
     Ok(RagEvalBaselineSummary {
-        status: "present".to_string(),
+        status: "unverified".to_string(),
         path: path.display().to_string(),
         present: true,
         written: false,
@@ -322,7 +322,8 @@ fn web_rag_eval_baseline_quick_summary(root: &Path) -> Result<RagEvalBaselineSum
         baseline_selection_recall: value.get("selection_recall").and_then(Value::as_f64),
         baseline_hit_at_3_rate: value.get("hit_at_3_rate").and_then(Value::as_f64),
         baseline_mean_reciprocal_rank: value.get("mean_reciprocal_rank").and_then(Value::as_f64),
-        detail: "baseline present; run GET /rag-eval for full signature comparison".to_string(),
+        detail: "baseline present but not compared with the live corpus/configuration; run GET /rag-eval for verified readiness"
+            .to_string(),
     })
 }
 
@@ -354,5 +355,32 @@ mod tests {
         assert!(dimensions.contains(&"http_api"));
         assert!(dimensions.contains(&"graph_memory"));
         assert!(dimensions.contains(&"packing_near_miss"));
+    }
+
+    #[test]
+    fn quick_rag_summary_never_promotes_an_unverified_baseline_to_ready() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".agent")).unwrap();
+        fs::write(
+            temp.path().join(".agent/rag-eval-baseline.json"),
+            serde_json::to_vec(&json!({
+                "signature": "stale",
+                "total": 12,
+                "passed": 12,
+                "grounded_coverage": 100.0,
+                "candidate_recall": 100.0,
+                "selection_recall": 100.0,
+                "holdout_total": 5,
+                "holdout_recall": 100.0,
+                "holdout_grounded_coverage": 100.0
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let conn = open_db(&temp.path().join("memory.db")).unwrap();
+        let report = web_rag_eval_quick_summary(&conn, temp.path()).unwrap();
+        assert!(!report.ok);
+        assert_eq!(report.status, "attention");
+        assert_eq!(report.baseline.status, "unverified");
     }
 }

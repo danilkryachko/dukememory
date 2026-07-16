@@ -494,11 +494,9 @@ fn otlp_span_record(event: &Value) -> Value {
 fn otlp_metric_record(event: &Value) -> Value {
     let now = unix_nanos().to_string();
     let method = event["method"].as_str().unwrap_or("UNKNOWN");
-    let path = event["path"].as_str().unwrap_or("/");
     let status = event["status"].as_u64().unwrap_or_default();
     let attributes = json!([
         {"key": "http.request.method", "value": {"stringValue": method}},
-        {"key": "url.path", "value": {"stringValue": path}},
         {"key": "http.response.status_code", "value": {"intValue": status.to_string()}}
     ]);
     json!({
@@ -736,6 +734,16 @@ mod tests {
             metrics["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][1]["gauge"]["dataPoints"]
                 [0]["asDouble"],
             12.0
+        );
+        let metric_attributes =
+            metrics["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]["sum"]["dataPoints"][0]
+                ["attributes"]
+                .as_array()
+                .unwrap();
+        assert!(
+            metric_attributes
+                .iter()
+                .all(|attribute| attribute["key"] != "url.path")
         );
     }
 }

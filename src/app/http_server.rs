@@ -36,10 +36,11 @@ struct HttpRequestMeta {
     client: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+const TELEMETRY_HASH_KEY_FILE_ENV: &str = "DUKEMEMORY_TELEMETRY_HASH_KEY_FILE";
+
 enum TelemetryIdentifierPolicy {
     Plain,
-    Hash,
+    Hash(Vec<u8>),
     Omit,
 }
 
@@ -50,22 +51,61 @@ impl TelemetryIdentifierPolicy {
             .trim()
         {
             "plain" => Ok(Self::Plain),
-            "hash" => Ok(Self::Hash),
+            "hash" => {
+                let path = std::env::var_os(TELEMETRY_HASH_KEY_FILE_ENV)
+                    .map(PathBuf::from)
+                    .with_context(|| {
+                        format!(
+                            "DUKEMEMORY_TELEMETRY_IDENTIFIERS=hash requires {TELEMETRY_HASH_KEY_FILE_ENV}"
+                        )
+                    })?;
+                let key = security::read_private_token_file(&path)?;
+                if key.len() < 16 {
+                    bail!("{TELEMETRY_HASH_KEY_FILE_ENV} must contain at least 16 bytes");
+                }
+                Ok(Self::Hash(key.into_bytes()))
+            }
             "omit" => Ok(Self::Omit),
             _ => bail!("DUKEMEMORY_TELEMETRY_IDENTIFIERS must be plain, hash, or omit"),
         }
     }
 
-    fn protect(self, value: &str) -> String {
+    fn protect(&self, value: &str) -> String {
         match self {
             Self::Plain => value.to_string(),
-            Self::Hash => {
-                let digest = format!("{:x}", Sha256::digest(value.as_bytes()));
-                format!("sha256:{}", &digest[..24])
+            Self::Hash(key) => {
+                let digest = keyed_identifier_digest(key, value.as_bytes());
+                format!("hmac-sha256:{}", &digest[..24])
             }
             Self::Omit => "redacted".to_string(),
         }
     }
+}
+
+fn keyed_identifier_digest(key: &[u8], value: &[u8]) -> String {
+    let mut normalized = [0_u8; 64];
+    if key.len() > normalized.len() {
+        normalized[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        normalized[..key.len()].copy_from_slice(key);
+    }
+    let mut inner_pad = [0x36_u8; 64];
+    let mut outer_pad = [0x5c_u8; 64];
+    for ((inner, outer), key) in inner_pad
+        .iter_mut()
+        .zip(outer_pad.iter_mut())
+        .zip(normalized)
+    {
+        *inner ^= key;
+        *outer ^= key;
+    }
+    let mut inner = Sha256::new();
+    inner.update(inner_pad);
+    inner.update(value);
+    let mut outer = Sha256::new();
+    outer.update(outer_pad);
+    outer.update(inner.finalize());
+    format!("{:x}", outer.finalize())
 }
 
 pub(crate) fn serve_http(
@@ -706,7 +746,10 @@ fn http_metrics(conn: &Connection) -> Result<Value> {
 
 #[cfg(test)]
 mod http_framing_tests {
-    use super::{TelemetryIdentifierPolicy, content_length, read_http_request_with_deadline};
+    use super::{
+        TelemetryIdentifierPolicy, content_length, keyed_identifier_digest,
+        read_http_request_with_deadline,
+    };
     use proptest::prelude::*;
     use std::io::Write;
 
@@ -763,9 +806,10 @@ mod http_framing_tests {
 
     #[test]
     fn telemetry_identifier_policy_can_hash_or_omit_client_addresses() {
-        let hashed = TelemetryIdentifierPolicy::Hash.protect("203.0.113.7:443");
-        assert!(hashed.starts_with("sha256:"));
-        assert_eq!(hashed.len(), 31);
+        let hashed = TelemetryIdentifierPolicy::Hash(b"0123456789abcdef".to_vec())
+            .protect("203.0.113.7:443");
+        assert!(hashed.starts_with("hmac-sha256:"));
+        assert_eq!(hashed.len(), 36);
         assert_ne!(hashed, "203.0.113.7:443");
         assert_eq!(
             TelemetryIdentifierPolicy::Omit.protect("203.0.113.7:443"),
@@ -774,6 +818,10 @@ mod http_framing_tests {
         assert_eq!(
             TelemetryIdentifierPolicy::Plain.protect("203.0.113.7:443"),
             "203.0.113.7:443"
+        );
+        assert_eq!(
+            keyed_identifier_digest(b"key", b"The quick brown fox jumps over the lazy dog"),
+            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
         );
     }
 

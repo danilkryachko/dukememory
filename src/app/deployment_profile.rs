@@ -183,6 +183,14 @@ pub(crate) fn deployment_profile_report(
         .unwrap_or_else(|_| "plain".to_string())
         .trim()
         .to_string();
+    let telemetry_hash_key_status = std::env::var_os("DUKEMEMORY_TELEMETRY_HASH_KEY_FILE")
+        .map(PathBuf::from)
+        .map(|path| {
+            deployment_secret_file_ready(&path)
+                && fs::read_to_string(path)
+                    .ok()
+                    .is_some_and(|key| key.trim().len() >= 16)
+        });
     let mut blockers = Vec::new();
     match request.mode {
         DeploymentMode::Local => {
@@ -233,6 +241,12 @@ pub(crate) fn deployment_profile_report(
         "plain" | "hash" | "omit"
     ) {
         blockers.push("DUKEMEMORY_TELEMETRY_IDENTIFIERS must be plain, hash, or omit".to_string());
+    }
+    if telemetry_identifier_protection == "hash" && telemetry_hash_key_status != Some(true) {
+        blockers.push(
+            "DUKEMEMORY_TELEMETRY_IDENTIFIERS=hash requires a valid mode-600 DUKEMEMORY_TELEMETRY_HASH_KEY_FILE"
+                .to_string(),
+        );
     }
     if read_token_file_status == Some(false) {
         blockers.push(

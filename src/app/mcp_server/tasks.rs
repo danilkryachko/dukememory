@@ -9,6 +9,8 @@ const MCP_MAX_CONCURRENT_TASKS_PER_OWNER_ENV: &str =
     "DUKEMEMORY_MCP_MAX_CONCURRENT_TASKS_PER_OWNER";
 const MCP_DEFAULT_MAX_CONCURRENT_TASKS: usize = 32;
 const MCP_DEFAULT_MAX_CONCURRENT_TASKS_PER_OWNER: usize = 4;
+const MCP_TASK_COMPLETION_WRITE_ATTEMPTS: usize = 3;
+const MCP_TASK_COMPLETION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
 #[derive(Debug, Clone)]
 pub(super) struct McpTaskRecord {
@@ -289,7 +291,21 @@ pub(super) fn mcp_start_task(
                 return;
             }
             attach_related_task_metadata(&mut result, &task_id_for_worker);
-            let _ = complete_mcp_task(&task_registry_db, &task_id_for_worker, &result);
+            if let Err(error) = complete_mcp_task_with_retry(
+                &task_registry_db,
+                &task_id_for_worker,
+                &result,
+            ) {
+                let message = format!("failed to persist completed MCP task result: {error:#}");
+                if let Err(fail_error) =
+                    fail_mcp_task(&task_registry_db, &task_id_for_worker, -32603, &message)
+                {
+                    eprintln!(
+                        "MCP task {} persistence failed and failure state could not be recorded: {}; {}",
+                        task_id_for_worker, message, fail_error
+                    );
+                }
+            }
             notify_mcp_task_store(&store);
             remove_mcp_task_cancellation(&store, &task_id_for_worker);
         });
@@ -661,6 +677,22 @@ pub(super) fn complete_mcp_task(db: &Path, task_id: &str, result: &Value) -> Res
         params![result.to_string(), mcp_task_timestamp(), now_ms(), task_id],
     )?;
     Ok(())
+}
+
+fn complete_mcp_task_with_retry(db: &Path, task_id: &str, result: &Value) -> Result<()> {
+    let mut last_error = None;
+    for attempt in 0..MCP_TASK_COMPLETION_WRITE_ATTEMPTS {
+        match complete_mcp_task(db, task_id, result) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt + 1 < MCP_TASK_COMPLETION_WRITE_ATTEMPTS {
+                    std::thread::sleep(MCP_TASK_COMPLETION_RETRY_DELAY);
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("MCP task completion write failed")))
 }
 
 pub(super) fn fail_mcp_task(

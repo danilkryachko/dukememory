@@ -709,7 +709,10 @@ Set a generic `OTEL_EXPORTER_OTLP_ENDPOINT` with `http/json` to export bounded
 OTLP logs, server traces, and HTTP request count/duration metrics. Public
 deployments can set `DUKEMEMORY_TELEMETRY_IDENTIFIERS=hash` or `omit` to protect
 peer and derived client addresses in stderr and OTLP without losing request-id
-correlation.
+correlation. `hash` requires a private mode-`600`
+`DUKEMEMORY_TELEMETRY_HASH_KEY_FILE` with at least 16 characters of random,
+text-encoded key material and uses keyed HMAC-SHA-256 identifiers; use `omit`
+when correlation is unnecessary.
 
 Outbound model/provider requests use a central egress policy: only HTTP(S), no
 URL credentials, redirects disabled, DNS checked and pinned, and private,

@@ -22,6 +22,7 @@ struct GenerationLimiter {
     changed: Condvar,
 }
 
+#[derive(Debug)]
 struct GenerationPermit {
     limiter: &'static GenerationLimiter,
 }
@@ -47,13 +48,13 @@ impl GenerationLimiter {
             .map_err(|_| anyhow::anyhow!("generation concurrency limiter lock was poisoned"))?;
         loop {
             ensure_generation_not_cancelled(cancellation)?;
-            if *active < self.maximum {
-                *active += 1;
-                return Ok(GenerationPermit { limiter: self });
-            }
             let now = Instant::now();
             if now >= deadline {
                 bail!("generation concurrency queue timed out");
+            }
+            if *active < self.maximum {
+                *active += 1;
+                return Ok(GenerationPermit { limiter: self });
             }
             let wait = deadline
                 .saturating_duration_since(now)
@@ -159,6 +160,7 @@ pub(crate) fn generate_answer(
     if provider == "mock" {
         return Ok(format!("Mock response for: {}", truncate_chars(prompt, 50)));
     }
+    validate_generation_provider(&provider)?;
 
     let cancellation = current_generation_cancellation();
     ensure_generation_not_cancelled(cancellation.as_ref())?;
@@ -175,6 +177,10 @@ pub(crate) fn generate_answer(
         changed: Condvar::new(),
     });
     let permit = limiter.acquire(cancellation.as_ref(), deadline)?;
+    let request_timeout = deadline.saturating_duration_since(Instant::now());
+    if request_timeout.is_zero() {
+        bail!("generation request timed out before worker start");
+    }
     let endpoint = endpoint.to_string();
     let model = model.to_string();
     let prompt = prompt.to_string();
@@ -183,14 +189,14 @@ pub(crate) fn generate_answer(
         .spawn(move || {
             let _permit = permit;
             match provider.as_str() {
-                "ollama" => fetch_ollama_completion(&endpoint, &model, &prompt),
+                "ollama" => fetch_ollama_completion(&endpoint, &model, &prompt, request_timeout),
                 "openai" | "openai-compatible" | "openai_compatible" => {
-                    fetch_openai_completion(&endpoint, &model, &prompt)
+                    fetch_openai_completion(&endpoint, &model, &prompt, request_timeout)
                 }
                 "local" | "local-llama" | "local_llama" | "llama-cpp" | "llama_cpp" => {
                     generate_local_completion(&endpoint, &model, &prompt)
                 }
-                other => bail!("unsupported generation provider: {other}"),
+                other => unreachable!("validated generation provider: {other}"),
             }
         })
         .context("failed to start bounded generation worker")?;
@@ -204,7 +210,31 @@ pub(crate) fn generate_answer(
         }
         std::thread::sleep(GENERATION_POLL_INTERVAL);
     }
+    if worker.is_finished() {
+        return worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("generation worker panicked"))?;
+    }
     bail!("generation request timed out")
+}
+
+fn validate_generation_provider(provider: &str) -> Result<()> {
+    if matches!(
+        provider,
+        "ollama"
+            | "openai"
+            | "openai-compatible"
+            | "openai_compatible"
+            | "local"
+            | "local-llama"
+            | "local_llama"
+            | "llama-cpp"
+            | "llama_cpp"
+    ) {
+        Ok(())
+    } else {
+        bail!("unsupported generation provider: {provider}")
+    }
 }
 
 #[cfg(feature = "local-generation")]
@@ -217,12 +247,14 @@ fn generate_local_completion(_endpoint: &str, _model: &str, _prompt: &str) -> Re
     bail!("local generation provider requires building dukememory with --features local-generation")
 }
 
-fn fetch_ollama_completion(endpoint: &str, model: &str, prompt: &str) -> Result<String> {
+fn fetch_ollama_completion(
+    endpoint: &str,
+    model: &str,
+    prompt: &str,
+    timeout: Duration,
+) -> Result<String> {
     let url = format!("{}/api/chat", endpoint.trim_end_matches('/'));
-    let (client, url) = egress::blocking_http_client(
-        &url,
-        std::time::Duration::from_secs(model_request_timeout_secs()),
-    )?;
+    let (client, url) = egress::blocking_http_client(&url, timeout)?;
     let messages = vec![OllamaChatMessage {
         role: "user",
         content: prompt,
@@ -243,12 +275,14 @@ fn fetch_ollama_completion(endpoint: &str, model: &str, prompt: &str) -> Result<
     Ok(response.message.content)
 }
 
-fn fetch_openai_completion(endpoint: &str, model: &str, prompt: &str) -> Result<String> {
+fn fetch_openai_completion(
+    endpoint: &str,
+    model: &str,
+    prompt: &str,
+    timeout: Duration,
+) -> Result<String> {
     let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
-    let (client, url) = egress::blocking_http_client(
-        &url,
-        std::time::Duration::from_secs(model_request_timeout_secs()),
-    )?;
+    let (client, url) = egress::blocking_http_client(&url, timeout)?;
     let messages = vec![OpenAiChatMessage {
         role: "user",
         content: prompt,
@@ -445,6 +479,29 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("cancelled"));
+    }
+
+    #[test]
+    fn expired_generation_queue_deadline_never_grants_available_capacity() {
+        let limiter = Box::leak(Box::new(GenerationLimiter {
+            maximum: 1,
+            active: Mutex::new(0),
+            changed: Condvar::new(),
+        }));
+        let error = limiter
+            .acquire(None, Instant::now() - Duration::from_millis(1))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("queue timed out"));
+        assert_eq!(*limiter.active.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn unsupported_generation_provider_fails_before_queue_or_network() {
+        let error = generate_answer("unsupported", "http://localhost:9", "fixture", "prompt")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "unsupported generation provider: unsupported");
     }
 
     #[test]

@@ -221,14 +221,15 @@ pub(crate) fn release_gate_v3_report_with_profile(
         &rag_profile.model,
     )?;
     let advanced_eval = advanced_eval_report(conn)?;
-    let deployment_mode =
-        DeploymentMode::parse(std::env::var("DUKEMEMORY_DEPLOYMENT_MODE").ok().as_deref())?;
+    let deployment_mode_value = std::env::var("DUKEMEMORY_DEPLOYMENT_MODE").ok();
+    let (deployment_mode, deployment_mode_error) =
+        release_deployment_mode(deployment_mode_value.as_deref());
     let deployment_host =
         std::env::var("DUKEMEMORY_HTTP_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let deployment_token_file = std::env::var_os("DUKEMEMORY_HTTP_TOKEN_FILE").map(PathBuf::from);
     let deployment_public_origin = std::env::var("DUKEMEMORY_PUBLIC_ORIGIN").ok();
     let deployment_sync_target = std::env::var_os("DUKEMEMORY_SYNC_TARGET").map(PathBuf::from);
-    let deployment_profile = deployment_profile_report(DeploymentProfileRequest {
+    let mut deployment_profile = deployment_profile_report(DeploymentProfileRequest {
         root: &root,
         mode: deployment_mode,
         host: &deployment_host,
@@ -236,6 +237,13 @@ pub(crate) fn release_gate_v3_report_with_profile(
         public_origin: deployment_public_origin.as_deref(),
         sync_target: deployment_sync_target.as_deref(),
     });
+    if let Some(error) = deployment_mode_error {
+        deployment_profile.ok = false;
+        deployment_profile.status = "blocked".to_string();
+        deployment_profile.blockers.push(error);
+        deployment_profile.blockers.sort();
+        deployment_profile.blockers.dedup();
+    }
     let mut checks = release_gate_v2.checks.clone();
     checks.push(ReleaseGateCheck {
         name: "sqlite_runtime_version".to_string(),
@@ -629,9 +637,17 @@ fn release_gate_check_profile(name: &str) -> &'static str {
         | "rag_sources_freshness"
         | "rag_source_pack_eval"
         | "rag_eval_baseline"
-        | "graph_rag_eval" => "deployment",
+        | "graph_rag_eval"
+        | "advanced_eval_poisoning_review" => "deployment",
         "deployment_profile" => "deployment",
         _ => "project",
+    }
+}
+
+fn release_deployment_mode(value: Option<&str>) -> (DeploymentMode, Option<String>) {
+    match DeploymentMode::parse(value) {
+        Ok(mode) => (mode, None),
+        Err(error) => (DeploymentMode::Local, Some(error.to_string())),
     }
 }
 
@@ -774,5 +790,16 @@ mod tests {
             &profiles,
             ReleaseGateProfile::Project
         ));
+    }
+
+    #[test]
+    fn poisoning_review_is_a_deployment_check_and_invalid_mode_is_reportable() {
+        assert_eq!(
+            release_gate_check_profile("advanced_eval_poisoning_review"),
+            "deployment"
+        );
+        let (mode, error) = release_deployment_mode(Some("unsupported"));
+        assert!(matches!(mode, DeploymentMode::Local));
+        assert!(error.is_some_and(|error| error.contains("unsupported deployment mode")));
     }
 }

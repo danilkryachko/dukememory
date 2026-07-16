@@ -67,6 +67,9 @@ impl HttpAuthPolicy {
             .transpose()?;
         let mut policy = Self::new(full_token.map(ToOwned::to_owned), read_token)?;
         policy.trusted_proxy_auth = env_flag(TRUSTED_PROXY_AUTH_ENV)?;
+        let trusted_proxy_cidrs_configured = std::env::var(TRUSTED_PROXY_CIDRS_ENV)
+            .ok()
+            .is_some_and(|values| values.split(',').any(|value| !value.trim().is_empty()));
         policy.protected_resource = std::env::var("DUKEMEMORY_PUBLIC_ORIGIN")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -85,13 +88,12 @@ impl HttpAuthPolicy {
             .filter(|value| !value.is_empty())
             .map(|value| validate_oauth_uri(&value, OAUTH_AUTHORIZATION_SERVERS_ENV))
             .collect::<Result<Vec<_>>>()?;
-        if policy.trusted_proxy_auth
-            && (policy.protected_resource.is_none() || policy.authorization_servers.is_empty())
-        {
-            bail!(
-                "{TRUSTED_PROXY_AUTH_ENV} requires DUKEMEMORY_PUBLIC_ORIGIN and {OAUTH_AUTHORIZATION_SERVERS_ENV}"
-            );
-        }
+        validate_trusted_proxy_configuration(
+            policy.trusted_proxy_auth,
+            trusted_proxy_cidrs_configured,
+            policy.protected_resource.is_some(),
+            !policy.authorization_servers.is_empty(),
+        )?;
         Ok(policy)
     }
 
@@ -210,10 +212,21 @@ impl HttpAuthPolicy {
 
     pub(super) fn resource_metadata_url(&self) -> Option<String> {
         self.protected_resource_metadata()?;
-        Some(format!(
-            "{}/.well-known/oauth-protected-resource",
-            self.protected_resource.as_deref()?.trim_end_matches('/')
-        ))
+        let mut resource = reqwest::Url::parse(self.protected_resource.as_deref()?).ok()?;
+        let resource_path = resource.path().trim_matches('/');
+        let metadata_path = if resource_path.is_empty() {
+            "/.well-known/oauth-protected-resource".to_string()
+        } else {
+            format!("/.well-known/oauth-protected-resource/{resource_path}")
+        };
+        resource.set_path(&metadata_path);
+        Some(resource.to_string().trim_end_matches('/').to_string())
+    }
+
+    pub(super) fn resource_metadata_path_matches(&self, path: &str) -> bool {
+        self.resource_metadata_url()
+            .and_then(|url| reqwest::Url::parse(&url).ok())
+            .is_some_and(|url| url.path() == path)
     }
 
     #[cfg(test)]
@@ -226,6 +239,20 @@ impl HttpAuthPolicy {
             authorization_servers: vec!["https://issuer.example.com".to_string()],
         }
     }
+}
+
+fn validate_trusted_proxy_configuration(
+    enabled: bool,
+    cidrs_configured: bool,
+    resource_configured: bool,
+    authorization_servers_configured: bool,
+) -> Result<()> {
+    if enabled && (!cidrs_configured || !resource_configured || !authorization_servers_configured) {
+        bail!(
+            "{TRUSTED_PROXY_AUTH_ENV} requires {TRUSTED_PROXY_CIDRS_ENV}, DUKEMEMORY_PUBLIC_ORIGIN, and {OAUTH_AUTHORIZATION_SERVERS_ENV}"
+        );
+    }
+    Ok(())
 }
 
 fn validate_oauth_uri(value: &str, name: &str) -> Result<String> {
@@ -753,7 +780,7 @@ pub(super) fn resolve_auth_token(
         .map(ToOwned::to_owned))
 }
 
-fn read_private_token_file(path: &Path) -> Result<String> {
+pub(super) fn read_private_token_file(path: &Path) -> Result<String> {
     validate_token_file_permissions(path)?;
     let token = fs::read_to_string(path)
         .with_context(|| format!("failed to read HTTP token file {}", path.display()))?;
@@ -950,10 +977,10 @@ mod tests {
     #[test]
     fn oauth_protected_resource_metadata_is_https_and_scope_explicit() {
         let mut auth = HttpAuthPolicy::new(None, None).unwrap();
-        auth.protected_resource = Some("https://memory.example.com".to_string());
+        auth.protected_resource = Some("https://memory.example.com/api/v1".to_string());
         auth.authorization_servers = vec!["https://issuer.example.com/tenant".to_string()];
         let metadata = auth.protected_resource_metadata().unwrap();
-        assert_eq!(metadata["resource"], "https://memory.example.com");
+        assert_eq!(metadata["resource"], "https://memory.example.com/api/v1");
         assert_eq!(
             metadata["authorization_servers"][0],
             "https://issuer.example.com/tenant"
@@ -978,10 +1005,22 @@ mod tests {
         );
         assert_eq!(
             auth.resource_metadata_url().as_deref(),
-            Some("https://memory.example.com/.well-known/oauth-protected-resource")
+            Some("https://memory.example.com/.well-known/oauth-protected-resource/api/v1")
+        );
+        assert!(
+            auth.resource_metadata_path_matches("/.well-known/oauth-protected-resource/api/v1")
         );
         assert!(validate_oauth_uri("http://issuer.example.com", "issuer").is_err());
         assert!(validate_oauth_uri("https://issuer.example.com?bad=1", "issuer").is_err());
+    }
+
+    #[test]
+    fn trusted_proxy_auth_requires_an_explicit_proxy_allowlist() {
+        let error = validate_trusted_proxy_configuration(true, false, true, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(TRUSTED_PROXY_CIDRS_ENV));
+        assert!(validate_trusted_proxy_configuration(true, true, true, true).is_ok());
     }
 
     #[test]

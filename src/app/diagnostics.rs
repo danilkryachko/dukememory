@@ -2732,7 +2732,7 @@ fn short_eval_signature(payload: &impl Serialize) -> Result<String> {
 pub(crate) fn rag_eval_baseline_blocks_release(status: &str) -> bool {
     matches!(
         status,
-        "invalid" | "regressed" | "changed" | "corpus_changed" | "config_changed"
+        "invalid" | "unverified" | "regressed" | "changed" | "corpus_changed" | "config_changed"
     )
 }
 

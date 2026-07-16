@@ -60,15 +60,17 @@ pub(super) fn handle_http_request(
             "request Host is not allowed for this listener",
         ));
     }
-    let public_endpoint = matches!(
-        (method, path),
-        ("GET", "/")
-            | ("GET", "/ui")
-            | ("GET", "/ui.css")
-            | ("GET", "/ui.js")
-            | ("GET", "/health")
-            | ("GET", "/.well-known/oauth-protected-resource")
-    );
+    let oauth_metadata_endpoint =
+        method == "GET" && auth_policy.resource_metadata_path_matches(path);
+    let public_endpoint = oauth_metadata_endpoint
+        || matches!(
+            (method, path),
+            ("GET", "/")
+                | ("GET", "/ui")
+                | ("GET", "/ui.css")
+                | ("GET", "/ui.js")
+                | ("GET", "/health")
+        );
     let authorization = if public_endpoint {
         security::HttpAuthContext::public()
     } else {
@@ -134,6 +136,12 @@ pub(super) fn handle_http_request(
             auth_policy,
         );
     }
+    if oauth_metadata_endpoint {
+        return Ok(auth_policy
+            .protected_resource_metadata()
+            .map(HttpResponse::ok)
+            .unwrap_or_else(HttpResponse::not_found));
+    }
     match (method, path) {
         ("GET", "/") | ("GET", "/ui") => {
             return Ok(HttpResponse::html(memory_ui_html()));
@@ -154,12 +162,6 @@ pub(super) fn handle_http_request(
             return Ok(HttpResponse::ok(
                 json!({"ok": true, "version": env!("CARGO_PKG_VERSION")}),
             ));
-        }
-        ("GET", "/.well-known/oauth-protected-resource") => {
-            return Ok(auth_policy
-                .protected_resource_metadata()
-                .map(HttpResponse::ok)
-                .unwrap_or_else(HttpResponse::not_found));
         }
         _ => {}
     }
@@ -3524,12 +3526,23 @@ fn route_mcp_http(
         ));
     }
     let request_method = request.get("method").and_then(Value::as_str);
-    let modern = request
+    let body_protocol_version = request
         .get("params")
         .and_then(|params| params.get("_meta"))
         .and_then(|meta| meta.get("io.modelcontextprotocol/protocolVersion"))
-        .and_then(Value::as_str)
-        == Some("2026-07-28");
+        .and_then(Value::as_str);
+    let header_protocol_version = headers.get("mcp-protocol-version").map(String::as_str);
+    if header_protocol_version
+        .zip(body_protocol_version)
+        .is_some_and(|(header, body)| header != body)
+    {
+        return Ok(mcp_http_transport_error(
+            400,
+            "MCP protocol version header and JSON-RPC metadata must match",
+        ));
+    }
+    let modern = header_protocol_version == Some("2026-07-28")
+        || body_protocol_version == Some("2026-07-28");
     let method_header = headers.get("mcp-method").map(String::as_str);
     if method_header.is_some_and(|header| Some(header) != request_method)
         || (modern && method_header.is_none())

@@ -481,6 +481,14 @@ fn mcp_streamable_http_supports_stable_sessions_and_modern_stateless_discovery()
         missing_method.starts_with("HTTP/1.1 400 Bad Request"),
         "{missing_method}"
     );
+    let mismatched_version = server.request(&mcp_http_post(
+        &discover,
+        "MCP-Protocol-Version: 2025-11-25\r\nMcp-Method: server/discover\r\n",
+    ));
+    assert!(
+        mismatched_version.starts_with("HTTP/1.1 400 Bad Request"),
+        "{mismatched_version}"
+    );
 }
 
 #[test]
