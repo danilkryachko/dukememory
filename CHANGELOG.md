@@ -122,6 +122,9 @@
 - Block redirect/DNS-rebinding SSRF paths for model/provider egress and reject
   transfer-encoding ambiguity, duplicate content lengths, folded headers, and
   oversized HTTP bodies before allocation.
+- Preserve the highest-scoring endpoint/command literals in tight RAG chunk
+  summaries instead of dropping the entire literal suffix when all candidates
+  cannot fit.
 
 ## 0.42.0 — 2026-07-14 (local development)
 

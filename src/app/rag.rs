@@ -1138,22 +1138,37 @@ fn rag_chunk_summary(content: &str, query_terms: &HashSet<String>, max_chars: us
     if literals.is_empty() {
         return summary;
     }
-    let suffix = format!(
-        " Literals: {}",
-        literals
-            .into_iter()
-            .map(|literal| format!("`{literal}`"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
     let hard_limit = max_chars.saturating_add(180);
-    if summary
-        .chars()
-        .count()
-        .saturating_add(suffix.chars().count())
-        <= hard_limit
-    {
-        summary.push_str(&suffix);
+    let mut selected = Vec::new();
+    for literal in literals {
+        let mut candidate = selected.clone();
+        candidate.push(literal);
+        let suffix = format!(
+            " Literals: {}",
+            candidate
+                .iter()
+                .map(|literal| format!("`{literal}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        if summary
+            .chars()
+            .count()
+            .saturating_add(suffix.chars().count())
+            <= hard_limit
+        {
+            selected = candidate;
+        }
+    }
+    if !selected.is_empty() {
+        summary.push_str(&format!(
+            " Literals: {}",
+            selected
+                .into_iter()
+                .map(|literal| format!("`{literal}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     summary
 }
@@ -2400,6 +2415,23 @@ mod rag_tests {
         let terms = relevance_terms("Which HTTP endpoint indexes RAG source chunks?");
         let summary = rag_chunk_summary(&content, &terms, 120);
         assert!(summary.contains("POST /rag-ingest"), "{summary}");
+    }
+
+    #[test]
+    fn chunk_summary_keeps_top_endpoint_when_all_literal_suffixes_do_not_fit() {
+        let content = format!(
+            "{}\nThe endpoint is `POST /rag-ingest`.",
+            (0..40)
+                .map(|index| format!(
+                    "unrelated prose and `long-compatibility-literal-{index}-with-extra-noise`"
+                ))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let terms = relevance_terms("Which HTTP endpoint indexes RAG source chunks?");
+        let summary = rag_chunk_summary(&content, &terms, 220);
+        assert!(summary.contains("POST /rag-ingest"), "{summary}");
+        assert!(summary.chars().count() <= 400, "{summary}");
     }
 
     #[test]
