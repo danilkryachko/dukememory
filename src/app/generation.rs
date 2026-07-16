@@ -184,6 +184,8 @@ pub(crate) fn generate_answer(
     let endpoint = endpoint.to_string();
     let model = model.to_string();
     let prompt = prompt.to_string();
+    let worker_cancellation = Arc::new(AtomicBool::new(false));
+    let worker_cancellation_flag = Arc::clone(&worker_cancellation);
     let worker = std::thread::Builder::new()
         .name("dukememory-generation".to_string())
         .spawn(move || {
@@ -194,7 +196,20 @@ pub(crate) fn generate_answer(
                     fetch_openai_completion(&endpoint, &model, &prompt, request_timeout)
                 }
                 "local" | "local-llama" | "local_llama" | "llama-cpp" | "llama_cpp" => {
-                    generate_local_completion(&endpoint, &model, &prompt)
+                    generate_local_completion(
+                        &endpoint,
+                        &model,
+                        &prompt,
+                        &worker_cancellation_flag,
+                        deadline,
+                    )
+                }
+                #[cfg(test)]
+                "blocking-test" => {
+                    while !worker_cancellation_flag.load(Ordering::Acquire) {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    bail!("blocking test generation was cancelled")
                 }
                 other => unreachable!("validated generation provider: {other}"),
             }
@@ -202,7 +217,10 @@ pub(crate) fn generate_answer(
         .context("failed to start bounded generation worker")?;
 
     while Instant::now() < deadline {
-        ensure_generation_not_cancelled(cancellation.as_ref())?;
+        if generation_cancellation_requested(cancellation.as_ref()) {
+            worker_cancellation.store(true, Ordering::Release);
+            bail!("generation request was cancelled");
+        }
         if worker.is_finished() {
             return worker
                 .join()
@@ -215,6 +233,7 @@ pub(crate) fn generate_answer(
             .join()
             .map_err(|_| anyhow::anyhow!("generation worker panicked"))?;
     }
+    worker_cancellation.store(true, Ordering::Release);
     bail!("generation request timed out")
 }
 
@@ -230,7 +249,8 @@ fn validate_generation_provider(provider: &str) -> Result<()> {
             | "local_llama"
             | "llama-cpp"
             | "llama_cpp"
-    ) {
+    ) || cfg!(test) && provider == "blocking-test"
+    {
         Ok(())
     } else {
         bail!("unsupported generation provider: {provider}")
@@ -238,12 +258,24 @@ fn validate_generation_provider(provider: &str) -> Result<()> {
 }
 
 #[cfg(feature = "local-generation")]
-fn generate_local_completion(endpoint: &str, model: &str, prompt: &str) -> Result<String> {
-    crate::app::local_generation::generate_local(endpoint, model, prompt)
+fn generate_local_completion(
+    endpoint: &str,
+    model: &str,
+    prompt: &str,
+    cancellation: &AtomicBool,
+    deadline: Instant,
+) -> Result<String> {
+    crate::app::local_generation::generate_local(endpoint, model, prompt, cancellation, deadline)
 }
 
 #[cfg(not(feature = "local-generation"))]
-fn generate_local_completion(_endpoint: &str, _model: &str, _prompt: &str) -> Result<String> {
+fn generate_local_completion(
+    _endpoint: &str,
+    _model: &str,
+    _prompt: &str,
+    _cancellation: &AtomicBool,
+    _deadline: Instant,
+) -> Result<String> {
     bail!("local generation provider requires building dukememory with --features local-generation")
 }
 
@@ -385,10 +417,14 @@ fn current_generation_cancellation() -> Option<Arc<AtomicBool>> {
 }
 
 fn ensure_generation_not_cancelled(cancellation: Option<&Arc<AtomicBool>>) -> Result<()> {
-    if cancellation.is_some_and(|value| value.load(Ordering::Acquire)) {
+    if generation_cancellation_requested(cancellation) {
         bail!("generation request was cancelled");
     }
     Ok(())
+}
+
+fn generation_cancellation_requested(cancellation: Option<&Arc<AtomicBool>>) -> bool {
+    cancellation.is_some_and(|value| value.load(Ordering::Acquire))
 }
 
 pub(crate) fn generate_tour_narrative(
@@ -502,6 +538,49 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert_eq!(error, "unsupported generation provider: unsupported");
+    }
+
+    #[test]
+    fn cancellation_reaches_worker_and_releases_generation_permit() {
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let request_cancellation = Arc::clone(&cancellation);
+        let request = std::thread::spawn(move || {
+            with_generation_cancellation(request_cancellation, || {
+                generate_answer("blocking-test", "local", "fixture", "prompt")
+            })
+        });
+        for _ in 0..100 {
+            if GENERATION_LIMITER
+                .get()
+                .is_some_and(|limiter| *limiter.active.lock().unwrap() > 0)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            GENERATION_LIMITER
+                .get()
+                .is_some_and(|limiter| *limiter.active.lock().unwrap() > 0),
+            "blocking generation worker did not acquire a permit"
+        );
+        cancellation.store(true, Ordering::Release);
+        assert!(
+            request
+                .join()
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+        let limiter = GENERATION_LIMITER.get().unwrap();
+        for _ in 0..20 {
+            if *limiter.active.lock().unwrap() == 0 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("cancelled generation worker retained its permit");
     }
 
     #[test]

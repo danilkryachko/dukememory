@@ -964,6 +964,7 @@ dependencies = [
  "ctrlc",
  "encoding_rs",
  "hf-hub",
+ "libc",
  "llama-cpp-2",
  "predicates",
  "proptest",

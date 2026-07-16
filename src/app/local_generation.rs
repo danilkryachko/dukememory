@@ -12,7 +12,9 @@ use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::{LogOptions, send_logs_to_tracing};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock, TryLockError};
+use std::time::{Duration, Instant};
 
 const DEFAULT_REPO_ID: &str = "HuggingFaceTB/SmolLM2-360M-Instruct-GGUF";
 const DEFAULT_FILE_NAME: &str = "smollm2-360m-instruct-q8_0.gguf";
@@ -35,12 +37,25 @@ struct LocalGenerationEngine {
     _backend: LlamaBackend,
 }
 
-pub(crate) fn generate_local(endpoint: &str, model: &str, prompt: &str) -> Result<String> {
-    let spec = resolve_model_spec(endpoint, model)?;
+pub(crate) fn generate_local(
+    endpoint: &str,
+    model: &str,
+    prompt: &str,
+    cancellation: &AtomicBool,
+    deadline: Instant,
+) -> Result<String> {
+    ensure_local_generation_active(cancellation, deadline)?;
     let engine_lock = GENERATION_ENGINE.get_or_init(|| Mutex::new(None));
-    let mut guard = engine_lock
-        .lock()
-        .map_err(|_| anyhow::anyhow!("local generation engine lock poisoned"))?;
+    let mut guard = loop {
+        ensure_local_generation_active(cancellation, deadline)?;
+        match engine_lock.try_lock() {
+            Ok(guard) => break guard,
+            Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(10)),
+            Err(TryLockError::Poisoned(_)) => bail!("local generation engine lock poisoned"),
+        }
+    };
+    let spec = resolve_model_spec(endpoint, model)?;
+    ensure_local_generation_active(cancellation, deadline)?;
 
     let reload = guard
         .as_ref()
@@ -53,12 +68,23 @@ pub(crate) fn generate_local(endpoint: &str, model: &str, prompt: &str) -> Resul
     if reload {
         guard.take();
         *guard = Some(init_engine(&spec)?);
+        ensure_local_generation_active(cancellation, deadline)?;
     }
 
     let engine = guard
         .as_ref()
         .context("local generation engine was not initialized")?;
-    generate_with_engine(engine, prompt)
+    generate_with_engine(engine, prompt, cancellation, deadline)
+}
+
+fn ensure_local_generation_active(cancellation: &AtomicBool, deadline: Instant) -> Result<()> {
+    if cancellation.load(Ordering::Acquire) {
+        bail!("local generation was cancelled");
+    }
+    if Instant::now() >= deadline {
+        bail!("local generation timed out");
+    }
+    Ok(())
 }
 
 struct LocalModelSpec {
@@ -179,7 +205,13 @@ fn init_engine(spec: &LocalModelSpec) -> Result<LocalGenerationEngine> {
     })
 }
 
-fn generate_with_engine(engine: &LocalGenerationEngine, prompt: &str) -> Result<String> {
+fn generate_with_engine(
+    engine: &LocalGenerationEngine,
+    prompt: &str,
+    cancellation: &AtomicBool,
+    deadline: Instant,
+) -> Result<String> {
+    ensure_local_generation_active(cancellation, deadline)?;
     let prompt = render_chat_prompt(&engine.model, prompt);
     let context_tokens = local_context_tokens();
     let mut max_new_tokens = local_max_new_tokens();
@@ -225,6 +257,7 @@ fn generate_with_engine(engine: &LocalGenerationEngine, prompt: &str) -> Result<
     }
     ctx.decode(&mut batch)
         .context("llama.cpp failed to decode prompt")?;
+    ensure_local_generation_active(cancellation, deadline)?;
 
     let target_len = batch.n_tokens() + max_new_tokens as i32;
     let mut n_cur = batch.n_tokens();
@@ -238,6 +271,7 @@ fn generate_with_engine(engine: &LocalGenerationEngine, prompt: &str) -> Result<
     ]);
 
     while n_cur <= target_len {
+        ensure_local_generation_active(cancellation, deadline)?;
         let token = sampler.sample(&ctx, batch.n_tokens() - 1);
         sampler.accept(token);
         if engine.model.is_eog_token(token) {

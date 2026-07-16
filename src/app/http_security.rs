@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Read;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -781,8 +782,19 @@ pub(super) fn resolve_auth_token(
 }
 
 pub(super) fn read_private_token_file(path: &Path) -> Result<String> {
-    validate_token_file_permissions(path)?;
-    let token = fs::read_to_string(path)
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("failed to open private HTTP token file {}", path.display()))?;
+    validate_token_file_permissions(&file, path)?;
+    let mut token = String::new();
+    file.read_to_string(&mut token)
         .with_context(|| format!("failed to read HTTP token file {}", path.display()))?;
     let token = token.trim();
     if token.is_empty() {
@@ -792,10 +804,11 @@ pub(super) fn read_private_token_file(path: &Path) -> Result<String> {
 }
 
 #[cfg(unix)]
-fn validate_token_file_permissions(path: &Path) -> Result<()> {
+fn validate_token_file_permissions(file: &fs::File, path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    let mode = fs::metadata(path)
+    let mode = file
+        .metadata()
         .with_context(|| format!("failed to inspect HTTP token file {}", path.display()))?
         .permissions()
         .mode();
@@ -809,8 +822,8 @@ fn validate_token_file_permissions(path: &Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn validate_token_file_permissions(path: &Path) -> Result<()> {
-    fs::metadata(path)
+fn validate_token_file_permissions(file: &fs::File, path: &Path) -> Result<()> {
+    file.metadata()
         .with_context(|| format!("failed to inspect HTTP token file {}", path.display()))?;
     Ok(())
 }
@@ -911,6 +924,24 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_token_reader_uses_one_inode_and_rejects_symlinks() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("token-target");
+        let link = directory.path().join("token-link");
+        fs::write(&target, "private-secret-token\n").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&target, &link).unwrap();
+        assert_eq!(
+            read_private_token_file(&target).unwrap(),
+            "private-secret-token"
+        );
+        assert!(read_private_token_file(&link).is_err());
     }
 
     #[test]

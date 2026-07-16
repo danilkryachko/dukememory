@@ -4171,7 +4171,7 @@ mod tests {
         assert_eq!(requested.status, "working");
         assert!(requested.cancellation_requested);
 
-        complete_cancelled_mcp_task(&db, "cancel-me").unwrap();
+        complete_mcp_task(&db, "cancel-me", &json!({"result":"too late"})).unwrap();
         let observed = mcp_task_get(
             &db,
             Some(&json!({"taskId":"cancel-me"})),

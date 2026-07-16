@@ -437,7 +437,7 @@ pub(super) fn mcp_task_cancel(
         };
     }
     conn.execute(
-        "UPDATE mcp_tasks SET cancellation_requested = 1, status_message = ?1, last_updated_at = ?2, last_updated_at_ms = ?3 WHERE task_id = ?4 AND owner_key = ?5 AND lifecycle = ?6",
+        "UPDATE mcp_tasks SET cancellation_requested = 1, status_message = ?1, last_updated_at = ?2, last_updated_at_ms = ?3 WHERE task_id = ?4 AND owner_key = ?5 AND lifecycle = ?6 AND status = 'working'",
         params![
             "Cancellation was requested; the worker will stop if it has not started.",
             mcp_task_timestamp(),
@@ -664,7 +664,7 @@ pub(super) fn complete_cancelled_mcp_task(db: &Path, task_id: &str) -> Result<()
             value.to_string()
         });
     conn.execute(
-        "UPDATE mcp_tasks SET status = 'cancelled', status_message = 'The task was cancelled before execution.', result_json = ?1, last_updated_at = ?2, last_updated_at_ms = ?3 WHERE task_id = ?4 AND status = 'working' AND cancellation_requested = 1",
+        "UPDATE mcp_tasks SET status = 'cancelled', status_message = 'The task was cancelled before completion.', result_json = ?1, last_updated_at = ?2, last_updated_at_ms = ?3 WHERE task_id = ?4 AND status = 'working' AND cancellation_requested = 1",
         params![result, mcp_task_timestamp(), now_ms(), task_id],
     )?;
     Ok(())
@@ -672,10 +672,13 @@ pub(super) fn complete_cancelled_mcp_task(db: &Path, task_id: &str) -> Result<()
 
 pub(super) fn complete_mcp_task(db: &Path, task_id: &str, result: &Value) -> Result<()> {
     let conn = open_db(db)?;
-    conn.execute(
-        "UPDATE mcp_tasks SET status = 'completed', status_message = 'The tool call completed.', result_json = ?1, error_json = NULL, last_updated_at = ?2, last_updated_at_ms = ?3 WHERE task_id = ?4 AND status = 'working'",
+    let completed = conn.execute(
+        "UPDATE mcp_tasks SET status = 'completed', status_message = 'The tool call completed.', result_json = ?1, error_json = NULL, last_updated_at = ?2, last_updated_at_ms = ?3 WHERE task_id = ?4 AND status = 'working' AND cancellation_requested = 0",
         params![result.to_string(), mcp_task_timestamp(), now_ms(), task_id],
     )?;
+    if completed == 0 {
+        complete_cancelled_mcp_task(db, task_id)?;
+    }
     Ok(())
 }
 

@@ -51,6 +51,9 @@ predicates = "3.1"
 proptest = "1.11"
 tempfile = "3.13"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Install/update dry-runs hash large binaries. Optimizing SHA-256 keeps the
 # extended CLI compatibility matrix fast without changing application code.
 [profile.dev.package.sha2]

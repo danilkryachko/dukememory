@@ -13,6 +13,15 @@ fn direct_dependency_surface_cannot_expand_without_review() {
         .get("dependencies")
         .and_then(toml::Value::as_table)
         .expect("[dependencies] table");
+    let target_dependencies = value
+        .get("target")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(|targets| targets.values())
+        .filter_map(|target| target.get("dependencies"))
+        .filter_map(toml::Value::as_table)
+        .map(toml::map::Map::len)
+        .sum::<usize>();
     let optional = dependencies
         .values()
         .filter(|dependency| {
@@ -25,8 +34,8 @@ fn direct_dependency_surface_cannot_expand_without_review() {
         .count();
 
     assert!(
-        dependencies.len() <= 22,
-        "direct runtime dependencies grew from the reviewed budget of 22"
+        dependencies.len() + target_dependencies <= 23,
+        "direct runtime dependencies grew from the reviewed budget of 23"
     );
     assert!(
         optional <= 5,
