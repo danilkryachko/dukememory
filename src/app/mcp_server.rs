@@ -1198,6 +1198,10 @@ fn enrich_mcp_tool_definition(tool: &mut Value) {
             Value::String(spec.authorization.as_str().to_string()),
         );
         object.insert(
+            "x-requiredOAuthScope".to_string(),
+            Value::String(spec.required_oauth_scope.to_string()),
+        );
+        object.insert(
             "x-supportsDryRun".to_string(),
             Value::Bool(spec.supports_dry_run),
         );

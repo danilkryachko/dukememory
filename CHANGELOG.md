@@ -62,6 +62,9 @@
 - The stable operation catalog now declares stability, authorization,
   idempotency, destructive/open-world effects, and schema identifiers; MCP
   annotations for catalogued tools are derived from it.
+- Trusted OAuth gateways now enforce catalog-derived `memory:read`,
+  `memory:write`, `memory:maintenance`, and `memory:filesystem` scopes across
+  HTTP and MCP, and operation discovery exposes the exact required scope.
 - MCP framing and HTTP file-ingest routing now live in focused modules with
   independent boundary tests.
 - Legacy `tasks/result` waits are bounded; 2026 task creation is server-directed

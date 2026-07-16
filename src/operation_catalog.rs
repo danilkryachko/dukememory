@@ -65,6 +65,15 @@ impl OperationAuthorization {
             Self::Filesystem => "project_filesystem",
         }
     }
+
+    pub(crate) const fn oauth_scope(self) -> &'static str {
+        match self {
+            Self::Read => "memory:read",
+            Self::Write => "memory:write",
+            Self::Maintenance => "memory:maintenance",
+            Self::Filesystem => "memory:filesystem",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -77,6 +86,7 @@ pub(crate) struct OperationSpec {
     pub(crate) http: &'static [&'static str],
     pub(crate) stability: OperationStability,
     pub(crate) authorization: OperationAuthorization,
+    pub(crate) required_oauth_scope: &'static str,
     pub(crate) mutation: bool,
     pub(crate) supports_dry_run: bool,
     pub(crate) idempotent: bool,
@@ -101,6 +111,11 @@ macro_rules! operation {
             } else {
                 OperationAuthorization::Read
             },
+            required_oauth_scope: if $mutation {
+                "memory:write"
+            } else {
+                "memory:read"
+            },
             mutation: $mutation,
             supports_dry_run: $dry_run,
             idempotent: !$mutation,
@@ -121,6 +136,7 @@ macro_rules! operation {
             http: $http,
             stability: OperationStability::$stability,
             authorization: OperationAuthorization::$authorization,
+            required_oauth_scope: OperationAuthorization::$authorization.oauth_scope(),
             mutation: $mutation,
             supports_dry_run: $dry_run,
             idempotent: $idempotent,

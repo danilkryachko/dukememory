@@ -16,7 +16,7 @@
 Run `dukememory operations --json` to inspect the same stable contract exposed
 by MCP `memory_operations` and HTTP `GET /operations`. Each operation declares
 stability, authorization scope, mutation/dry-run behavior, idempotency,
-destructiveness, open-world access, and stable input/output schema identifiers;
+destructiveness, open-world access, required OAuth scope, and stable input/output schema identifiers;
 catalogued MCP tools derive their annotations from this contract.
 
 Supply-chain policy, SBOM generation, and the two reviewed upstream exceptions
@@ -689,8 +689,11 @@ OAuth/OIDC deployments can use a validating authentication gateway with
 `DUKEMEMORY_HTTP_TRUSTED_PROXY_AUTH=true`, an explicit
 `DUKEMEMORY_HTTP_TRUSTED_PROXY_CIDRS` allowlist, and HTTPS
 `DUKEMEMORY_OAUTH_AUTHORIZATION_SERVERS`. DukeMemory accepts the gateway's
-hashed principal identity and validated `memory:read`/`memory:write` scopes only
-from those peers, publishes RFC 9728 protected-resource metadata, and binds MCP
+hashed principal identity and validated `memory:read`, `memory:write`,
+`memory:maintenance`, and `memory:filesystem` scopes only from those peers.
+Cataloged HTTP and MCP operations require their exact scope; write does not
+implicitly authorize destructive maintenance or project filesystem access.
+DukeMemory publishes RFC 9728 protected-resource metadata and binds MCP
 sessions/tasks to that principal. The gateway must strip client-supplied auth,
 identity, scope, and forwarding headers and validate issuer, audience/resource,
 expiry, and signature. See the production guide for the complete trust boundary.

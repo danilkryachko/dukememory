@@ -19,25 +19,35 @@ const MAX_RATE_LIMIT_CLIENTS: usize = 2048;
 const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 4;
 const DEFAULT_MAX_CONCURRENT_PER_CLIENT: usize = 4;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum HttpAuthorization {
-    Full,
-    ReadOnly,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct HttpAuthContext {
-    pub(super) capability: HttpAuthorization,
     pub(super) principal: String,
+    scopes: HashSet<String>,
 }
 
 impl HttpAuthContext {
     pub(super) fn public() -> Self {
         Self {
-            capability: HttpAuthorization::ReadOnly,
             principal: "public".to_string(),
+            scopes: HashSet::from(["memory:read".to_string()]),
         }
     }
+
+    pub(super) fn allows(&self, scope: &str) -> bool {
+        self.scopes.contains(scope)
+    }
+}
+
+fn full_scopes() -> HashSet<String> {
+    [
+        "memory:read",
+        "memory:write",
+        "memory:maintenance",
+        "memory:filesystem",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -109,8 +119,8 @@ impl HttpAuthPolicy {
     pub(super) fn authorize(&self, provided: Option<&str>) -> Option<HttpAuthContext> {
         if !self.configured() {
             return Some(HttpAuthContext {
-                capability: HttpAuthorization::Full,
                 principal: "local-unauthenticated".to_string(),
+                scopes: full_scopes(),
             });
         }
         let provided = provided?;
@@ -120,8 +130,8 @@ impl HttpAuthPolicy {
             .is_some_and(|expected| token_matches(expected, provided))
         {
             Some(HttpAuthContext {
-                capability: HttpAuthorization::Full,
                 principal: token_principal("full", provided),
+                scopes: full_scopes(),
             })
         } else if self
             .read_token
@@ -129,8 +139,8 @@ impl HttpAuthPolicy {
             .is_some_and(|expected| token_matches(expected, provided))
         {
             Some(HttpAuthContext {
-                capability: HttpAuthorization::ReadOnly,
                 principal: token_principal("read", provided),
+                scopes: HashSet::from(["memory:read".to_string()]),
             })
         } else {
             None
@@ -160,20 +170,23 @@ impl HttpAuthPolicy {
             .map(String::as_str)
             .unwrap_or_default()
             .split_ascii_whitespace()
+            .filter(|scope| {
+                matches!(
+                    *scope,
+                    "memory:read" | "memory:write" | "memory:maintenance" | "memory:filesystem"
+                )
+            })
+            .map(str::to_string)
             .collect::<HashSet<_>>();
         let Some(principal) = principal else {
             return Ok(None);
         };
-        let capability = if scopes.contains("memory:write") {
-            HttpAuthorization::Full
-        } else if scopes.contains("memory:read") {
-            HttpAuthorization::ReadOnly
-        } else {
+        if scopes.is_empty() {
             return Ok(None);
-        };
+        }
         Ok(Some(HttpAuthContext {
-            capability,
             principal: token_principal("proxy", &format!("{peer}:{principal}")),
+            scopes,
         }))
     }
 
@@ -188,7 +201,9 @@ impl HttpAuthPolicy {
             "bearer_methods_supported": ["header"],
             "scopes_supported": [
                 "memory:read",
-                "memory:write"
+                "memory:write",
+                "memory:maintenance",
+                "memory:filesystem"
             ]
         }))
     }
@@ -851,8 +866,12 @@ mod tests {
         .unwrap();
         let full = policy.authorize(Some("full-secret-token")).unwrap();
         let read = policy.authorize(Some("read-secret-token")).unwrap();
-        assert_eq!(full.capability, HttpAuthorization::Full);
-        assert_eq!(read.capability, HttpAuthorization::ReadOnly);
+        assert!(full.allows("memory:read"));
+        assert!(full.allows("memory:write"));
+        assert!(full.allows("memory:maintenance"));
+        assert!(full.allows("memory:filesystem"));
+        assert!(read.allows("memory:read"));
+        assert!(!read.allows("memory:write"));
         assert_ne!(full.principal, read.principal);
         assert!(full.principal.starts_with("token:full:"));
         assert!(read.principal.starts_with("token:read:"));
@@ -895,7 +914,8 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        assert_eq!(read.capability, HttpAuthorization::ReadOnly);
+        assert!(read.allows("memory:read"));
+        assert!(!read.allows("memory:write"));
         assert!(read.principal.starts_with("token:proxy:"));
         assert!(
             auth.authorize_request(
@@ -913,18 +933,18 @@ mod tests {
             "x-dukememory-scopes".to_string(),
             "memory:read memory:write".to_string(),
         );
-        assert_eq!(
-            auth.authorize_request(
+        let write = auth
+            .authorize_request(
                 None,
                 Some("10.0.0.8".parse().unwrap()),
                 &write_headers,
                 &security,
             )
             .unwrap()
-            .unwrap()
-            .capability,
-            HttpAuthorization::Full
-        );
+            .unwrap();
+        assert!(write.allows("memory:read"));
+        assert!(write.allows("memory:write"));
+        assert!(!write.allows("memory:maintenance"));
     }
 
     #[test]
@@ -943,6 +963,18 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .contains(&serde_json::json!("memory:read"))
+        );
+        assert!(
+            metadata["scopes_supported"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("memory:maintenance"))
+        );
+        assert!(
+            metadata["scopes_supported"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("memory:filesystem"))
         );
         assert_eq!(
             auth.resource_metadata_url().as_deref(),

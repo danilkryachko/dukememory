@@ -2535,6 +2535,7 @@ fn mcp_negotiates_lifecycle_ignores_notifications_and_returns_typed_tools() {
     assert_eq!(brief["x-operationId"], "retrieval.brief");
     assert_eq!(brief["x-stability"], "stable");
     assert_eq!(brief["x-authorizationScope"], "project_read");
+    assert_eq!(brief["x-requiredOAuthScope"], "memory:read");
     assert_eq!(
         brief["inputSchema"]["$id"],
         "https://dukememory.local/schemas/retrieval.brief/input"
@@ -2550,6 +2551,7 @@ fn mcp_negotiates_lifecycle_ignores_notifications_and_returns_typed_tools() {
     assert_eq!(ingest["annotations"]["idempotentHint"], true);
     assert_eq!(ingest["annotations"]["openWorldHint"], true);
     assert_eq!(ingest["x-supportsDryRun"], true);
+    assert_eq!(ingest["x-requiredOAuthScope"], "memory:filesystem");
 }
 
 #[test]

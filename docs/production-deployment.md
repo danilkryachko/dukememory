@@ -70,7 +70,11 @@ DukeMemory deliberately does not parse or pass through the external access
 token. The gateway must remove every client-supplied `Authorization`,
 `X-DukeMemory-Principal`, `X-DukeMemory-Scopes`, and `X-Forwarded-For` header,
 then inject a stable principal and the validated `memory:read` and/or
-`memory:write` scopes. Enable this mode only with an explicit gateway CIDR:
+`memory:write`, `memory:maintenance`, and `memory:filesystem` scopes. Request
+only the scopes each client needs: maintenance covers destructive/repair
+operations, while filesystem covers local source ingestion and drift checks.
+No write scope implies either stronger scope. Enable this mode only with an
+explicit gateway CIDR:
 
 ```ini
 DUKEMEMORY_HTTP_TRUSTED_PROXY_AUTH=true

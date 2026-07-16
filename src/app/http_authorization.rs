@@ -1,10 +1,14 @@
 use super::*;
 
-pub(super) fn http_read_only_request_allowed(method: &str, path: &str) -> bool {
+pub(super) fn http_required_scope(method: &str, path: &str) -> &'static str {
     if let Some(operation) = operation_for_http(path) {
-        return operation.authorization == OperationAuthorization::Read;
+        return operation.authorization.oauth_scope();
     }
-    matches!(method, "GET" | "HEAD")
+    if matches!(method, "GET" | "HEAD") {
+        "memory:read"
+    } else {
+        "memory:write"
+    }
 }
 
 pub(super) fn with_insufficient_scope_challenge(
@@ -24,14 +28,14 @@ pub(super) fn with_insufficient_scope_challenge(
     }
 }
 
-pub(super) fn mcp_read_only_request_allowed(request: &Value) -> bool {
+pub(super) fn mcp_required_scope(request: &Value) -> Option<&'static str> {
     match request.get("method").and_then(Value::as_str) {
         Some("tools/call") => request
             .get("params")
             .and_then(|params| params.get("name"))
             .and_then(Value::as_str)
             .and_then(operation_for_mcp)
-            .is_some_and(|operation| operation.authorization == OperationAuthorization::Read),
+            .map(|operation| operation.authorization.oauth_scope()),
         Some(
             "initialize"
             | "notifications/initialized"
@@ -47,8 +51,8 @@ pub(super) fn mcp_read_only_request_allowed(request: &Value) -> bool {
             | "tasks/get"
             | "tasks/result"
             | "server/discover",
-        ) => true,
-        _ => false,
+        ) => Some("memory:read"),
+        _ => None,
     }
 }
 
@@ -58,36 +62,68 @@ mod tests {
 
     #[test]
     fn state_changing_http_methods_fail_closed_without_a_read_catalog_entry() {
-        assert!(http_read_only_request_allowed("GET", "/memory"));
-        assert!(http_read_only_request_allowed("POST", "/search"));
-        assert!(!http_read_only_request_allowed("POST", "/remember"));
-        assert!(!http_read_only_request_allowed(
-            "POST",
-            "/unknown-future-route"
-        ));
-        assert!(!http_read_only_request_allowed(
-            "DELETE",
-            "/unknown-future-route"
-        ));
+        assert_eq!(http_required_scope("GET", "/memory"), "memory:read");
+        assert_eq!(http_required_scope("POST", "/search"), "memory:read");
+        assert_eq!(http_required_scope("POST", "/remember"), "memory:write");
+        assert_eq!(
+            http_required_scope("POST", "/memory/delete"),
+            "memory:maintenance"
+        );
+        assert_eq!(
+            http_required_scope("POST", "/rag-ingest"),
+            "memory:filesystem"
+        );
+        assert_eq!(
+            http_required_scope("POST", "/unknown-future-route"),
+            "memory:write"
+        );
+        assert_eq!(
+            http_required_scope("DELETE", "/unknown-future-route"),
+            "memory:write"
+        );
     }
 
     #[test]
     fn mcp_read_only_authorization_fails_closed_for_unknown_or_write_tools() {
-        assert!(mcp_read_only_request_allowed(
-            &json!({"method": "tools/list"})
-        ));
-        assert!(mcp_read_only_request_allowed(&json!({
-            "method": "tools/call",
-            "params": {"name": "memory_status"}
-        })));
-        assert!(!mcp_read_only_request_allowed(&json!({
-            "method": "tools/call",
-            "params": {"name": "memory_remember"}
-        })));
-        assert!(!mcp_read_only_request_allowed(&json!({
-            "method": "tools/call",
-            "params": {"name": "unknown_future_tool"}
-        })));
+        assert_eq!(
+            mcp_required_scope(&json!({"method": "tools/list"})),
+            Some("memory:read")
+        );
+        assert_eq!(
+            mcp_required_scope(&json!({
+                "method": "tools/call",
+                "params": {"name": "memory_status"}
+            })),
+            Some("memory:read")
+        );
+        assert_eq!(
+            mcp_required_scope(&json!({
+                "method": "tools/call",
+                "params": {"name": "memory_remember"}
+            })),
+            Some("memory:write")
+        );
+        assert_eq!(
+            mcp_required_scope(&json!({
+                "method": "tools/call",
+                "params": {"name": "memory_delete"}
+            })),
+            Some("memory:maintenance")
+        );
+        assert_eq!(
+            mcp_required_scope(&json!({
+                "method": "tools/call",
+                "params": {"name": "memory_rag_ingest"}
+            })),
+            Some("memory:filesystem")
+        );
+        assert_eq!(
+            mcp_required_scope(&json!({
+                "method": "tools/call",
+                "params": {"name": "unknown_future_tool"}
+            })),
+            None
+        );
     }
 
     #[test]

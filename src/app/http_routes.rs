@@ -1,6 +1,5 @@
 use super::route_auth::{
-    http_read_only_request_allowed, mcp_read_only_request_allowed,
-    with_insufficient_scope_challenge,
+    http_required_scope, mcp_required_scope, with_insufficient_scope_challenge,
 };
 use super::*;
 
@@ -99,14 +98,12 @@ pub(super) fn handle_http_request(
         };
         authorization
     };
-    if path != "/mcp"
-        && authorization.capability == security::HttpAuthorization::ReadOnly
-        && !http_read_only_request_allowed(method, path)
-    {
+    if path != "/mcp" && !authorization.allows(http_required_scope(method, path)) {
+        let required_scope = http_required_scope(method, path);
         return Ok(with_insufficient_scope_challenge(
-            HttpResponse::forbidden("read-only token cannot invoke this operation"),
+            HttpResponse::forbidden("bearer token lacks the operation-specific scope"),
             auth_policy,
-            "memory:write",
+            required_scope,
         ));
     }
     if matches!(method, "POST" | "PUT" | "PATCH" | "DELETE") {
@@ -3518,13 +3515,12 @@ fn route_mcp_http(
             ));
         }
     };
-    if authorization.capability == security::HttpAuthorization::ReadOnly
-        && !mcp_read_only_request_allowed(&request)
-    {
+    let required_scope = mcp_required_scope(&request).unwrap_or("memory:write");
+    if !authorization.allows(required_scope) {
         return Ok(with_insufficient_scope_challenge(
-            mcp_http_transport_error(403, "read-only token cannot invoke this MCP operation"),
+            mcp_http_transport_error(403, "bearer token lacks the MCP operation-specific scope"),
             auth_policy,
-            "memory:write",
+            required_scope,
         ));
     }
     let request_method = request.get("method").and_then(Value::as_str);
