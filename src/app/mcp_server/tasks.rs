@@ -275,8 +275,19 @@ pub(super) fn mcp_start_task(
                 remove_mcp_task_cancellation(&store, &task_id_for_worker);
                 return;
             }
-            let mut result =
-                handle_mcp_tool_call(&worker_db, params).unwrap_or_else(mcp_tool_error_result);
+            let mut result = crate::app::generation::with_generation_cancellation(
+                std::sync::Arc::clone(&cancellation),
+                || handle_mcp_tool_call(&worker_db, params).unwrap_or_else(mcp_tool_error_result),
+            );
+            let cancellation_requested = cancellation.load(std::sync::atomic::Ordering::Acquire)
+                || mcp_task_cancellation_requested(&task_registry_db, &task_id_for_worker)
+                    .unwrap_or(false);
+            if cancellation_requested {
+                let _ = complete_cancelled_mcp_task(&task_registry_db, &task_id_for_worker);
+                notify_mcp_task_store(&store);
+                remove_mcp_task_cancellation(&store, &task_id_for_worker);
+                return;
+            }
             attach_related_task_metadata(&mut result, &task_id_for_worker);
             let _ = complete_mcp_task(&task_registry_db, &task_id_for_worker, &result);
             notify_mcp_task_store(&store);

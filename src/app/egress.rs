@@ -28,7 +28,13 @@ fn validate_http_target(raw_url: &str) -> Result<(reqwest::Url, String, Vec<Sock
     let port = url
         .port_or_known_default()
         .context("egress endpoint must include a valid port")?;
-    let explicitly_allowed = configured_allowed_hosts().contains(&host);
+    let origin = canonical_origin(&url);
+    let allowed_origins = configured_allowed_origins()?;
+    let explicitly_allowed = if allowed_origins.is_empty() {
+        configured_allowed_hosts().contains(&host)
+    } else {
+        allowed_origins.contains(&origin)
+    };
     let localhost_name = host == "localhost";
     let literal_ip = host.parse::<IpAddr>().ok();
     let mut addresses = if let Some(ip) = literal_ip {
@@ -48,6 +54,11 @@ fn validate_http_target(raw_url: &str) -> Result<(reqwest::Url, String, Vec<Sock
     let all_loopback = addresses.iter().all(|address| address.ip().is_loopback());
     if localhost_name && !all_loopback {
         bail!("localhost egress endpoint resolved outside the loopback network");
+    }
+    if url.scheme() == "http" && !all_loopback && !explicitly_allowed {
+        bail!(
+            "plaintext non-loopback egress is blocked; use https or allow the exact origin in DUKEMEMORY_EGRESS_ALLOW_ORIGINS"
+        );
     }
     if !explicitly_allowed && !localhost_name {
         for address in &addresses {
@@ -76,6 +87,29 @@ fn configured_allowed_hosts() -> BTreeSet<String> {
         .filter(|value| !value.is_empty())
         .map(|value| value.trim_end_matches('.').to_ascii_lowercase())
         .collect()
+}
+
+fn configured_allowed_origins() -> Result<BTreeSet<String>> {
+    std::env::var("DUKEMEMORY_EGRESS_ALLOW_ORIGINS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            dukememory::protocol::validate_egress_url_shape(value)?;
+            let url = reqwest::Url::parse(value).context("invalid allowed egress origin")?;
+            if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+                bail!(
+                    "DUKEMEMORY_EGRESS_ALLOW_ORIGINS entries must be exact origins without path, query, or fragment"
+                );
+            }
+            Ok(canonical_origin(&url))
+        })
+        .collect()
+}
+
+fn canonical_origin(url: &reqwest::Url) -> String {
+    url.origin().ascii_serialization()
 }
 
 fn is_public_ip(address: IpAddr) -> bool {
@@ -159,5 +193,21 @@ mod tests {
         assert!(validate_http_target("file:///etc/passwd").is_err());
         assert!(validate_http_target("http://user:secret@localhost:11434").is_err());
         assert!(validate_http_target("http://localhost:11434/#fragment").is_err());
+    }
+
+    #[test]
+    fn exact_egress_origins_include_scheme_and_effective_port() {
+        assert_eq!(
+            canonical_origin(&reqwest::Url::parse("https://example.com/v1/chat").unwrap()),
+            "https://example.com"
+        );
+        assert_eq!(
+            canonical_origin(&reqwest::Url::parse("https://example.com:8443/v1/chat").unwrap()),
+            "https://example.com:8443"
+        );
+        assert_ne!(
+            canonical_origin(&reqwest::Url::parse("http://example.com/v1/chat").unwrap()),
+            canonical_origin(&reqwest::Url::parse("https://example.com/v1/chat").unwrap())
+        );
     }
 }

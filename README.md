@@ -689,9 +689,12 @@ path, status, peer, and elapsed time are emitted in the JSON access event.
 Outbound model/provider requests use a central egress policy: only HTTP(S), no
 URL credentials, redirects disabled, DNS checked and pinned, and private,
 link-local, metadata, or special-use destinations blocked except explicit
-loopback development endpoints. Additional exact hosts can be allowed with
-`DUKEMEMORY_EGRESS_ALLOW_HOSTS`; request timeout defaults to 60 seconds and can
-be changed with `DUKEMEMORY_MODEL_TIMEOUT_SECS`.
+loopback development endpoints. Prefer exact scheme/host/port entries in
+`DUKEMEMORY_EGRESS_ALLOW_ORIGINS`; the older `DUKEMEMORY_EGRESS_ALLOW_HOSTS`
+remains a compatibility fallback only when no exact origins are configured.
+External generation runs through a bounded worker with configurable concurrency,
+prompt bytes, response bytes, output tokens, and timeout; see the production
+deployment guide for the environment variables.
 
 The built-in server is plain HTTP. Terminate TLS at a trusted reverse proxy
 (for example Caddy or nginx) whenever traffic leaves the host, preserve the

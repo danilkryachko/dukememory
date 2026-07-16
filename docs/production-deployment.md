@@ -119,8 +119,13 @@ batched OTLP/HTTP JSON logs exporter. A signal-specific
 `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` is used as-is; the generic endpoint gets the
 standard `/v1/logs` suffix. Global and logs-specific OTLP headers/timeouts are
 supported. Outbound collector connections use the same pinned-DNS egress
-policy as model providers, and private non-loopback collectors require their
-exact hostname in `DUKEMEMORY_EGRESS_ALLOW_HOSTS`.
+policy as model providers. Prefer exact scheme/host/port entries in
+`DUKEMEMORY_EGRESS_ALLOW_ORIGINS`; when that variable is configured, the older
+host-only `DUKEMEMORY_EGRESS_ALLOW_HOSTS` fallback is ignored. Plaintext
+non-loopback HTTP also requires an explicitly allowed origin. External model
+generation is bounded by `DUKEMEMORY_MODEL_MAX_CONCURRENT`,
+`DUKEMEMORY_MODEL_MAX_PROMPT_BYTES`, `DUKEMEMORY_MODEL_MAX_RESPONSE_BYTES`,
+`DUKEMEMORY_MODEL_MAX_OUTPUT_TOKENS`, and `DUKEMEMORY_MODEL_TIMEOUT_SECS`.
 
 ## 3. Start the systemd service
 

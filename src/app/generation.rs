@@ -1,10 +1,107 @@
 use super::*;
+use std::cell::RefCell;
+use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+const DEFAULT_MODEL_MAX_CONCURRENT: usize = 2;
+const DEFAULT_MODEL_MAX_PROMPT_BYTES: usize = 262_144;
+const DEFAULT_MODEL_MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const DEFAULT_MODEL_MAX_OUTPUT_TOKENS: usize = 2_048;
+const GENERATION_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+thread_local! {
+    static GENERATION_CANCELLATION: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+#[derive(Debug)]
+struct GenerationLimiter {
+    maximum: usize,
+    active: Mutex<usize>,
+    changed: Condvar,
+}
+
+struct GenerationPermit {
+    limiter: &'static GenerationLimiter,
+}
+
+impl Drop for GenerationPermit {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.limiter.active.lock() {
+            *active = active.saturating_sub(1);
+            self.limiter.changed.notify_one();
+        }
+    }
+}
+
+impl GenerationLimiter {
+    fn acquire(
+        &'static self,
+        cancellation: Option<&Arc<AtomicBool>>,
+        deadline: Instant,
+    ) -> Result<GenerationPermit> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| anyhow::anyhow!("generation concurrency limiter lock was poisoned"))?;
+        loop {
+            ensure_generation_not_cancelled(cancellation)?;
+            if *active < self.maximum {
+                *active += 1;
+                return Ok(GenerationPermit { limiter: self });
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                bail!("generation concurrency queue timed out");
+            }
+            let wait = deadline
+                .saturating_duration_since(now)
+                .min(GENERATION_POLL_INTERVAL);
+            let (next, _) = self
+                .changed
+                .wait_timeout(active, wait)
+                .map_err(|_| anyhow::anyhow!("generation concurrency limiter lock was poisoned"))?;
+            active = next;
+        }
+    }
+}
+
+static GENERATION_LIMITER: OnceLock<GenerationLimiter> = OnceLock::new();
+
+struct GenerationCancellationScope {
+    previous: Option<Arc<AtomicBool>>,
+}
+
+impl Drop for GenerationCancellationScope {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        GENERATION_CANCELLATION.with(|slot| {
+            slot.replace(previous);
+        });
+    }
+}
+
+pub(crate) fn with_generation_cancellation<T>(
+    cancellation: Arc<AtomicBool>,
+    operation: impl FnOnce() -> T,
+) -> T {
+    let previous = GENERATION_CANCELLATION.with(|slot| slot.replace(Some(cancellation)));
+    let _scope = GenerationCancellationScope { previous };
+    operation()
+}
 
 #[derive(Debug, Serialize)]
 struct OllamaChatRequest<'a> {
     model: &'a str,
     messages: Vec<OllamaChatMessage<'a>>,
     stream: bool,
+    options: OllamaChatOptions,
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaChatOptions {
+    num_predict: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -27,6 +124,7 @@ struct OllamaChatResponseMessage {
 struct OpenAiChatRequest<'a> {
     model: &'a str,
     messages: Vec<OpenAiChatMessage<'a>>,
+    max_tokens: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,17 +154,57 @@ pub(crate) fn generate_answer(
     model: &str,
     prompt: &str,
 ) -> Result<String> {
-    match provider.trim().to_lowercase().as_str() {
-        "ollama" => fetch_ollama_completion(endpoint, model, prompt),
-        "openai" | "openai-compatible" | "openai_compatible" => {
-            fetch_openai_completion(endpoint, model, prompt)
-        }
-        "local" | "local-llama" | "local_llama" | "llama-cpp" | "llama_cpp" => {
-            generate_local_completion(endpoint, model, prompt)
-        }
-        "mock" => Ok(format!("Mock response for: {}", truncate_chars(prompt, 50))),
-        other => bail!("unsupported generation provider: {other}"),
+    ensure_prompt_within_limit(prompt, model_max_prompt_bytes())?;
+    let provider = provider.trim().to_lowercase();
+    if provider == "mock" {
+        return Ok(format!("Mock response for: {}", truncate_chars(prompt, 50)));
     }
+
+    let cancellation = current_generation_cancellation();
+    ensure_generation_not_cancelled(cancellation.as_ref())?;
+    let timeout = Duration::from_secs(model_request_timeout_secs());
+    let deadline = Instant::now() + timeout;
+    let limiter = GENERATION_LIMITER.get_or_init(|| GenerationLimiter {
+        maximum: bounded_env_usize(
+            "DUKEMEMORY_MODEL_MAX_CONCURRENT",
+            DEFAULT_MODEL_MAX_CONCURRENT,
+            1,
+            64,
+        ),
+        active: Mutex::new(0),
+        changed: Condvar::new(),
+    });
+    let permit = limiter.acquire(cancellation.as_ref(), deadline)?;
+    let endpoint = endpoint.to_string();
+    let model = model.to_string();
+    let prompt = prompt.to_string();
+    let worker = std::thread::Builder::new()
+        .name("dukememory-generation".to_string())
+        .spawn(move || {
+            let _permit = permit;
+            match provider.as_str() {
+                "ollama" => fetch_ollama_completion(&endpoint, &model, &prompt),
+                "openai" | "openai-compatible" | "openai_compatible" => {
+                    fetch_openai_completion(&endpoint, &model, &prompt)
+                }
+                "local" | "local-llama" | "local_llama" | "llama-cpp" | "llama_cpp" => {
+                    generate_local_completion(&endpoint, &model, &prompt)
+                }
+                other => bail!("unsupported generation provider: {other}"),
+            }
+        })
+        .context("failed to start bounded generation worker")?;
+
+    while Instant::now() < deadline {
+        ensure_generation_not_cancelled(cancellation.as_ref())?;
+        if worker.is_finished() {
+            return worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("generation worker panicked"))?;
+        }
+        std::thread::sleep(GENERATION_POLL_INTERVAL);
+    }
+    bail!("generation request timed out")
 }
 
 #[cfg(feature = "local-generation")]
@@ -95,10 +233,13 @@ fn fetch_ollama_completion(endpoint: &str, model: &str, prompt: &str) -> Result<
             model,
             messages,
             stream: false,
+            options: OllamaChatOptions {
+                num_predict: model_max_output_tokens(),
+            },
         })
         .send()?
-        .error_for_status()?
-        .json::<OllamaChatResponse>()?;
+        .error_for_status()?;
+    let response: OllamaChatResponse = read_bounded_json(response)?;
     Ok(response.message.content)
 }
 
@@ -112,18 +253,18 @@ fn fetch_openai_completion(endpoint: &str, model: &str, prompt: &str) -> Result<
         role: "user",
         content: prompt,
     }];
-    let mut request = client
-        .post(url)
-        .json(&OpenAiChatRequest { model, messages });
+    let mut request = client.post(url).json(&OpenAiChatRequest {
+        model,
+        messages,
+        max_tokens: model_max_output_tokens(),
+    });
     if let Ok(key) = std::env::var("DUKEMEMORY_OPENAI_API_KEY")
         && !key.trim().is_empty()
     {
         request = request.bearer_auth(key);
     }
-    let response = request
-        .send()?
-        .error_for_status()?
-        .json::<OpenAiChatResponse>()?;
+    let response = request.send()?.error_for_status()?;
+    let response: OpenAiChatResponse = read_bounded_json(response)?;
     let content = response
         .choices
         .into_iter()
@@ -139,6 +280,81 @@ fn model_request_timeout_secs() -> u64 {
         .and_then(|value| value.parse::<u64>().ok())
         .map(|value| value.clamp(1, 300))
         .unwrap_or(60)
+}
+
+fn model_max_prompt_bytes() -> usize {
+    bounded_env_usize(
+        "DUKEMEMORY_MODEL_MAX_PROMPT_BYTES",
+        DEFAULT_MODEL_MAX_PROMPT_BYTES,
+        4_096,
+        16 * 1024 * 1024,
+    )
+}
+
+fn model_max_response_bytes() -> usize {
+    bounded_env_usize(
+        "DUKEMEMORY_MODEL_MAX_RESPONSE_BYTES",
+        DEFAULT_MODEL_MAX_RESPONSE_BYTES,
+        16_384,
+        32 * 1024 * 1024,
+    )
+}
+
+fn model_max_output_tokens() -> usize {
+    bounded_env_usize(
+        "DUKEMEMORY_MODEL_MAX_OUTPUT_TOKENS",
+        DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
+        1,
+        32_768,
+    )
+}
+
+fn bounded_env_usize(name: &str, default: usize, minimum: usize, maximum: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .map(|value| value.clamp(minimum, maximum))
+        .unwrap_or(default)
+}
+
+fn ensure_prompt_within_limit(prompt: &str, maximum: usize) -> Result<()> {
+    if prompt.len() > maximum {
+        bail!(
+            "generation prompt exceeds {maximum} bytes; reduce the RAG budget or DUKEMEMORY_MODEL_MAX_PROMPT_BYTES"
+        );
+    }
+    Ok(())
+}
+
+fn read_bounded_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::blocking::Response,
+) -> Result<T> {
+    let maximum = model_max_response_bytes();
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum as u64)
+    {
+        bail!("generation response exceeds {maximum} bytes");
+    }
+    let mut body = Vec::with_capacity(maximum.min(64 * 1024));
+    response
+        .take(maximum.saturating_add(1) as u64)
+        .read_to_end(&mut body)?;
+    if body.len() > maximum {
+        bail!("generation response exceeds {maximum} bytes");
+    }
+    serde_json::from_slice(&body).context("invalid bounded generation response JSON")
+}
+
+fn current_generation_cancellation() -> Option<Arc<AtomicBool>> {
+    GENERATION_CANCELLATION.with(|slot| slot.borrow().clone())
+}
+
+fn ensure_generation_not_cancelled(cancellation: Option<&Arc<AtomicBool>>) -> Result<()> {
+    if cancellation.is_some_and(|value| value.load(Ordering::Acquire)) {
+        bail!("generation request was cancelled");
+    }
+    Ok(())
 }
 
 pub(crate) fn generate_tour_narrative(
@@ -201,4 +417,52 @@ pub(crate) fn generate_tour_narrative(
     prompt.push_str("\nTask: Create a 5-10 step Guided Tour. Each step should explain what the node/concept is and why it's important. Provide the result in clear Markdown format, ordered by Step 1, Step 2, etc. Use the provided topological ordering.");
 
     generate_answer(&config.provider, &config.endpoint, &config.model, &prompt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generation_prompt_budget_fails_closed() {
+        let error = ensure_prompt_within_limit("oversized", 4)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("generation prompt exceeds 4 bytes"));
+    }
+
+    #[test]
+    fn generation_cancellation_prevents_network_start() {
+        let cancellation = Arc::new(AtomicBool::new(true));
+        let error = with_generation_cancellation(cancellation, || {
+            generate_answer(
+                "ollama",
+                "http://localhost:9",
+                "fixture",
+                "cancel before network",
+            )
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("cancelled"));
+    }
+
+    #[test]
+    fn provider_payloads_include_output_token_limits() {
+        let ollama = serde_json::to_value(OllamaChatRequest {
+            model: "fixture",
+            messages: vec![],
+            stream: false,
+            options: OllamaChatOptions { num_predict: 42 },
+        })
+        .unwrap();
+        let openai = serde_json::to_value(OpenAiChatRequest {
+            model: "fixture",
+            messages: vec![],
+            max_tokens: 42,
+        })
+        .unwrap();
+        assert_eq!(ollama["options"]["num_predict"], 42);
+        assert_eq!(openai["max_tokens"], 42);
+    }
 }
