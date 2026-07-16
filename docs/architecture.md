@@ -23,7 +23,7 @@ flowchart LR
 - `src/operation_catalog.rs` maps stable memory, retrieval, RAG, release, and agent-session operations across CLI, MCP, and HTTP. The checked-in table is in [operations.md](operations.md).
 - `src/http_api.rs` owns transport-neutral HTTP responses, status mapping, and response security headers.
 - `src/app/mcp_transport.rs` owns bounded newline and Content-Length framing; `mcp_server.rs` owns JSON-RPC lifecycle, tool schemas, and dispatch, while `mcp_server/tasks.rs` owns durable task state and protocol-specific task results.
-- `src/app/observability/release_gate.rs` owns release-gate v3 composition and effective RAG profiles; the broader observability module supplies the individual read-only reports.
+- `src/app/observability/release_gate.rs` owns release-gate v3 composition and effective RAG profiles; `rag_eval_summary.rs` isolates the lightweight web RAG snapshot from the broader observability module.
 - `src/app/http_ingest_routes.rs` isolates project-contained file ingest routes from the broader HTTP diagnostic surface.
 
 Legacy maintenance and observability commands remain grouped under `src/app/`. New cross-surface behavior should enter through the application layer instead of adding independent mutation logic to each adapter.
@@ -50,7 +50,7 @@ Graph edges live in `memory_edges` with foreign keys, uniqueness, confidence bou
 
 Retrieval loads a `RetrievalPolicy` once into `RetrievalQualitySignals`. The environment override `DUKEMEMORY_RANKING_PROFILE` wins; otherwise the policy comes from the selected database project's `.agent/ranking-profile.json`. Ranking never reads policy from the process working directory per result.
 
-RAG ingest prefers language-aware structural boundaries for supported text/code formats while retaining bounded line chunking as a fallback. Every selected RAG source carries a stable evidence reference and content hash; eval v6 reports expected rank, Hit@1/3/5, MRR, development/holdout metrics, packing, grounding, and matrix coverage. Baseline v3 binds results to both the canonical case corpus and retrieval configuration.
+RAG ingest prefers language-aware structural boundaries for supported text/code formats while retaining bounded line chunking as a fallback. Every selected RAG source carries a stable evidence reference and content hash; eval v7 separates retrieval ranking, deterministic extractive grounding, and generated-output guard fixtures while reporting development/holdout metrics and separate partition signatures. Baseline v3 binds results to both the canonical case corpus and retrieval configuration.
 
 Prompt-injection triage is a pure library boundary in `src/rag_security.rs`.
 Ingest keeps suspicious chunks for inspection, source health counts them as
@@ -70,11 +70,12 @@ Advanced eval is deterministic and evidence-first. It audits only explicitly typ
 
 MCP profiles bound the advertised tool surface; list cursors, Resources, and Tasks avoid forcing one large synchronous context exchange. The stable 2025 family keeps its initialize lifecycle. The locked `2026-07-28` release candidate uses per-request metadata and `server/discover`; its Tasks Extension is negotiated per request and is not wire-compatible with 2025 Tasks. Schema v25 stores tasks durably in SQLite, isolates them by client identity and lifecycle, and retains terminal results across MCP process restarts. Tool input is validated against closed, bounded Draft 2020-12 schemas before dispatch.
 
-HTTP rejects ambiguous framing before reading the body and attaches a correlation id to every response/access event. Full and read-only bearer capabilities are resolved before routing; an optional OAuth/OIDC gateway boundary accepts validated principals and scopes only from explicit proxy CIDRs and publishes RFC 9728 protected-resource metadata. HTTP and MCP tool calls reuse the operation catalog. Bounded rate-limit identity storage plus global/per-client HTTP concurrency return `429` or `503` under pressure. MCP task workers have global and per-principal admission limits, and both sessions and durable tasks are principal-bound. The local UI loads same-origin CSS and JavaScript assets under a strict CSP with inline script/style execution disabled. Admission, stored-card scanning, and export redaction share structured secret signatures so one transport cannot bypass another's policy. HTTP and MCP framing parsers have property-based arbitrary-input and ambiguity coverage. Provider egress centrally validates HTTP(S) URLs, disables redirects, checks and pins DNS results, and blocks private, link-local, metadata, and special-use destinations unless explicitly allowed.
+HTTP rejects ambiguous framing before reading the body and attaches a correlation id to every response/access event. Static tokens retain full/read compatibility, while a trusted OAuth/OIDC gateway supplies independently enforced read, write, maintenance, and filesystem scopes from explicit proxy CIDRs and publishes RFC 9728 protected-resource metadata. HTTP and MCP tool calls derive their required OAuth scope from the operation catalog. Bounded rate-limit identity storage plus global/per-client HTTP concurrency return `429` or `503` under pressure. MCP task workers have global and per-principal admission limits, and both sessions and durable tasks are principal-bound. The local UI loads same-origin CSS and JavaScript assets under a strict CSP with inline script/style execution disabled. Admission, stored-card scanning, and export redaction share structured secret signatures so one transport cannot bypass another's policy. HTTP and MCP framing parsers have property-based arbitrary-input and ambiguity coverage. Provider egress centrally validates HTTP(S) URLs, disables redirects, checks and pins DNS results, and blocks private, link-local, metadata, and special-use destinations unless explicitly allowed.
 
 `scripts/architecture-budget.sh` caps growth in the remaining legacy
 aggregation files (`app`, CLI parsing/dispatch, observability, MCP, HTTP routes,
-and the large CLI integration suite). New work should continue extracting
+diagnostics, and the large CLI integration suite). `tests/architecture_budget.rs`
+also freezes the reviewed direct and optional runtime dependency counts. New work should continue extracting
 cohesive modules (as the HTTP authorization, release-gate, and RAG-security
 boundaries do) instead of raising those budgets.
 

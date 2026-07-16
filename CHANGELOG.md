@@ -91,6 +91,9 @@
 - Durable MCP task handling and release-gate v3 composition now live in focused
   submodules, and the late CLI compatibility surfaces have been split out of
   the historical monolithic integration test source.
+- Lightweight web RAG evaluation summaries now live outside the 19k-line
+  observability aggregate; CI lowers that file's growth ceiling and freezes the
+  reviewed 22 direct/5 optional runtime dependency budget.
 
 ### Fixed
 

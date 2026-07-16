@@ -14,7 +14,9 @@ check_lines() {
   printf '%s: %s/%s lines\n' "${path}" "${lines}" "${maximum}"
 }
 
-check_lines src/app/observability.rs 19500
+check_lines src/app/observability.rs 19200
+check_lines src/app/observability/rag_eval_summary.rs 400
+check_lines src/app/diagnostics.rs 5400
 check_lines tests/cli.rs 17500
 check_lines src/app/mcp_server.rs 4200
 check_lines src/app/http_routes.rs 3700
