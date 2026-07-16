@@ -35,6 +35,10 @@ jobs:
           cargo clippy --locked --all-targets --all-features -- -D warnings
           cargo test --locked --features vec
           cargo test --locked --test performance -- --ignored --nocapture
+      - name: Build offline release evidence binary
+        run: cargo build --locked --no-default-features
+      - name: Run reproducible deployment evidence gate
+        run: scripts/release-evidence-gate.sh target/debug/dukememory
       - name: Verify byte-reproducible minimal profile
         run: scripts/reproducible-build-check.sh
       - name: Release supply-chain gate

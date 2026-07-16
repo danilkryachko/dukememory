@@ -24,6 +24,7 @@ GitHub release job receives `contents: write`; the crates.io job receives only
    dukememory release-gate-v3 --profile project --json
    # Run this profile only for the runtime configuration being deployed.
    dukememory release-gate-v3 --profile deployment --json
+   scripts/release-evidence-gate.sh target/debug/dukememory
    cargo fmt --all -- --check
    scripts/dependency-budget.sh
    cargo clippy --locked --all-targets --all-features -- -D warnings

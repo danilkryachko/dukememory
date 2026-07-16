@@ -2,13 +2,15 @@ name: Supply chain
 
 on:
   push:
+    branches: [main]
   pull_request:
+  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
-  group: security-${{ github.workflow }}-${{ github.ref }}
+  group: security-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -46,3 +48,23 @@ jobs:
           name: dukememory-sbom
           path: dukememory.cdx.json
           if-no-files-found: error
+
+  supply-chain-gate:
+    if: always()
+    needs: [cargo-deny, dependency-review, sbom]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require supply-chain jobs
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CARGO_DENY_RESULT: ${{ needs.cargo-deny.result }}
+          DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency-review.result }}
+          SBOM_RESULT: ${{ needs.sbom.result }}
+        run: |
+          test "${CARGO_DENY_RESULT}" = success
+          test "${SBOM_RESULT}" = success
+          if [[ "${EVENT_NAME}" = pull_request ]]; then
+            test "${DEPENDENCY_REVIEW_RESULT}" = success
+          else
+            test "${DEPENDENCY_REVIEW_RESULT}" = skipped
+          fi
