@@ -13695,6 +13695,12 @@ fn web_rag_eval_quick_summary(conn: &Connection, root: &Path) -> Result<WebRagEv
             holdout_grounded_coverage,
             recommended_min_holdout_cases: 5,
             holdout_ready,
+            tuning_isolation_enforced: true,
+            holdout_policy: "labelled holdout is evaluated after retrieval configuration is fixed; evaluation never mutates ranking"
+                .to_string(),
+            origin_independence_verified: false,
+            development_signature: String::new(),
+            holdout_signature: String::new(),
         },
         baseline,
         detail: "quick summary; full RAG eval is available through /rag-eval".to_string(),

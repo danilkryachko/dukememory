@@ -360,10 +360,13 @@ pub(crate) fn release_gate_v3_report_with_profile(
         ok: rag_eval.ok
             && rag_eval.recall >= 80.0
             && rag_eval.ranking.hit_at_3_rate >= 50.0
-            && rag_eval.split.holdout_ready,
+            && rag_eval.split.holdout_ready
+            && rag_eval.split.tuning_isolation_enforced
+            && rag_eval.evaluation_layers.generated_output_guard.passed
+                == rag_eval.evaluation_layers.generated_output_guard.total,
         required: true,
         detail: format!(
-            "recall={:.1}% passed={}/{} source={} semantic_fallbacks={} grounded={:.1}% grounded_passed={}/{} hit_at_3={:.1}% mrr={:.1}% packing_selected={}/{} packing_chunks={}/{} suppressed_overlap={} suppressed_file_cap={} suppressed_limit={} expected_selected={} expected_suppressed={} expected_missing={} evidence_selection={:.1}% evidence_candidate={:.1}% near_misses={} matrix={} matrix_coverage={:.1}% matrix_missing={} retrieval_profile={} retrieval_tuning={} holdout={}/{} holdout_recall={:.1}% holdout_grounded={:.1}% holdout_ready={}",
+            "retrieval_recall={:.1}% passed={}/{} source={} semantic_fallbacks={} extractive={:.1}% extractive_passed={}/{} generated_guard={}/{} generated_false_accepts={} hit_at_3={:.1}% mrr={:.1}% packing_selected={}/{} packing_chunks={}/{} suppressed_overlap={} suppressed_file_cap={} suppressed_limit={} expected_selected={} expected_suppressed={} expected_missing={} evidence_selection={:.1}% evidence_candidate={:.1}% near_misses={} matrix={} matrix_coverage={:.1}% matrix_missing={} retrieval_profile={} retrieval_tuning={} holdout={}/{} holdout_recall={:.1}% holdout_extractive={:.1}% holdout_ready={} tuning_isolated={} origin_independence_verified={}",
             rag_eval.recall,
             rag_eval.passed,
             rag_eval.total,
@@ -372,6 +375,9 @@ pub(crate) fn release_gate_v3_report_with_profile(
             rag_eval.grounded_answers.coverage,
             rag_eval.grounded_answers.passed,
             rag_eval.total,
+            rag_eval.evaluation_layers.generated_output_guard.passed,
+            rag_eval.evaluation_layers.generated_output_guard.total,
+            rag_eval.evaluation_layers.generated_output_guard.false_accepts,
             rag_eval.ranking.hit_at_3_rate,
             rag_eval.ranking.mean_reciprocal_rank,
             rag_eval.packing.selected_count,
@@ -396,7 +402,9 @@ pub(crate) fn release_gate_v3_report_with_profile(
             rag_eval.split.holdout_total,
             rag_eval.split.holdout_recall,
             rag_eval.split.holdout_grounded_coverage,
-            rag_eval.split.holdout_ready
+            rag_eval.split.holdout_ready,
+            rag_eval.split.tuning_isolation_enforced,
+            rag_eval.split.origin_independence_verified
         ),
     });
     checks.push(ReleaseGateCheck {

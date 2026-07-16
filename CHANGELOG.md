@@ -81,6 +81,10 @@
 - RAG Eval v6 now separates development and holdout results, requires a minimum
   reviewed holdout set for release readiness, and fingerprints the eval corpus
   and retrieval configuration in baseline v3.
+- RAG Eval v7 explicitly separates retrieval ranking, deterministic extractive
+  grounding, and synthetic generated-output guard evaluation, and fingerprints
+  development and holdout partitions independently without claiming that
+  holdout source origin or live-model quality was automatically verified.
 - Durable MCP task handling and release-gate v3 composition now live in focused
   submodules, and the late CLI compatibility surfaces have been split out of
   the historical monolithic integration test source.

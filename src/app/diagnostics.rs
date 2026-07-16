@@ -1550,6 +1550,7 @@ pub(crate) struct RagEvalReport {
     pub(crate) semantic_fallbacks: usize,
     pub(crate) packing: RagEvalPackingSummary,
     pub(crate) evidence_placement: RagEvalEvidencePlacementSummary,
+    pub(crate) evaluation_layers: RagEvalLayersSummary,
     pub(crate) grounded_answers: RagEvalGroundedSummary,
     pub(crate) ranking: RagEvalRankingSummary,
     pub(crate) eval_matrix: RagEvalMatrixSummary,
@@ -1558,6 +1559,46 @@ pub(crate) struct RagEvalReport {
     pub(crate) baseline: RagEvalBaselineSummary,
     pub(crate) cases: Vec<RagEvalCaseResult>,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RagEvalLayersSummary {
+    pub(crate) protocol_version: u32,
+    pub(crate) retrieval: RagEvalRetrievalLayer,
+    pub(crate) extractive_grounding: RagEvalExtractiveLayer,
+    pub(crate) generated_output_guard: RagEvalGeneratedOutputLayer,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RagEvalRetrievalLayer {
+    pub(crate) evaluation_kind: String,
+    pub(crate) cases: usize,
+    pub(crate) passed: usize,
+    pub(crate) recall: f64,
+    pub(crate) hit_at_3_rate: f64,
+    pub(crate) mean_reciprocal_rank: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RagEvalExtractiveLayer {
+    pub(crate) evaluation_kind: String,
+    pub(crate) live_model_executed: bool,
+    pub(crate) cases: usize,
+    pub(crate) passed: usize,
+    pub(crate) coverage: f64,
+    pub(crate) unknown_citation_cases: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RagEvalGeneratedOutputLayer {
+    pub(crate) evaluation_kind: String,
+    pub(crate) live_model_executed: bool,
+    pub(crate) fixture_version: u32,
+    pub(crate) attack_vectors: usize,
+    pub(crate) passed: usize,
+    pub(crate) total: usize,
+    pub(crate) false_accepts: usize,
+    pub(crate) false_rejects: usize,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -1615,7 +1656,7 @@ pub(crate) struct RagEvalRankingSummary {
 
 const RAG_EVAL_RECOMMENDED_STORED_CASES: usize = 12;
 const RAG_EVAL_RECOMMENDED_HOLDOUT_CASES: usize = 5;
-const RAG_EVAL_PROTOCOL_VERSION: u32 = 1;
+const RAG_EVAL_PROTOCOL_VERSION: u32 = 2;
 const RAG_EVAL_MATRIX_DIMENSIONS: [&str; 9] = [
     "source_chunk",
     "memory_card",
@@ -1665,6 +1706,11 @@ pub(crate) struct RagEvalSplitSummary {
     pub(crate) holdout_grounded_coverage: f64,
     pub(crate) recommended_min_holdout_cases: usize,
     pub(crate) holdout_ready: bool,
+    pub(crate) tuning_isolation_enforced: bool,
+    pub(crate) holdout_policy: String,
+    pub(crate) origin_independence_verified: bool,
+    pub(crate) development_signature: String,
+    pub(crate) holdout_signature: String,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -1870,13 +1916,34 @@ fn run_rag_eval(
             report.evidence_placement.suppression_reasons
         );
         println!(
-            "grounded_answers: coverage={:.1}% passed={}/{} expected_in_answer={} cited_answers={} unknown_citation_cases={}",
+            "extractive_grounding: coverage={:.1}% passed={}/{} live_model=false expected_in_answer={} cited_answers={} unknown_citation_cases={}",
             report.grounded_answers.coverage,
             report.grounded_answers.passed,
             report.total,
             report.grounded_answers.expected_in_answer,
             report.grounded_answers.cited_answers,
             report.grounded_answers.unknown_citation_cases
+        );
+        println!(
+            "generated_output_guard: fixture_v{} passed={}/{} attacks={} false_accepts={} false_rejects={} live_model=false",
+            report
+                .evaluation_layers
+                .generated_output_guard
+                .fixture_version,
+            report.evaluation_layers.generated_output_guard.passed,
+            report.evaluation_layers.generated_output_guard.total,
+            report
+                .evaluation_layers
+                .generated_output_guard
+                .attack_vectors,
+            report
+                .evaluation_layers
+                .generated_output_guard
+                .false_accepts,
+            report
+                .evaluation_layers
+                .generated_output_guard
+                .false_rejects
         );
         println!(
             "ranking: hit@1={:.1}% hit@3={:.1}% hit@5={:.1}% mrr={:.1}%",
@@ -1906,7 +1973,7 @@ fn run_rag_eval(
             report.retrieval_tuning.semantic_fallback_rate
         );
         println!(
-            "split: development={}/{} ({:.1}%) holdout={}/{} ({:.1}%) grounded={:.1}% ready={}",
+            "split: development={}/{} ({:.1}%) holdout={}/{} ({:.1}%) extractive={:.1}% ready={} tuning_isolated={} origin_independence_verified={}",
             report.split.development_passed,
             report.split.development_total,
             report.split.development_recall,
@@ -1914,7 +1981,9 @@ fn run_rag_eval(
             report.split.holdout_total,
             report.split.holdout_recall,
             report.split.holdout_grounded_coverage,
-            report.split.holdout_ready
+            report.split.holdout_ready,
+            report.split.tuning_isolation_enforced,
+            report.split.origin_independence_verified
         );
         println!(
             "baseline: status={} present={} written={} regression={} path={} detail={}",
@@ -1950,7 +2019,7 @@ fn run_rag_eval(
                 case.expected_evidence_status
             );
             println!(
-                "  grounded_answer: {}  {}",
+                "  extractive_answer: {}  {}",
                 if case.grounded_answer.passed {
                     "pass"
                 } else {
@@ -2047,6 +2116,8 @@ pub(crate) fn rag_eval_report_with_baseline(
 ) -> Result<RagEvalReport> {
     let cases = load_rag_eval_cases(conn, budget)?;
     let corpus_signature = rag_eval_corpus_signature(&cases)?;
+    let development_signature = rag_eval_split_corpus_signature(&cases, "development")?;
+    let holdout_signature = rag_eval_split_corpus_signature(&cases, "holdout")?;
     let config_signature =
         rag_eval_config_signature(scope, limit, budget, provider, endpoint, model)?;
     let case_source = if cases.iter().any(|case| case.source == "stored") {
@@ -2169,6 +2240,36 @@ pub(crate) fn rag_eval_report_with_baseline(
     let evidence_placement = rag_eval_evidence_placement_summary(&results);
     let grounded_answers = rag_eval_grounded_summary(&results);
     let ranking = rag_eval_ranking_summary(&results);
+    let generated_output_guard = rag_generated_answer_guard_benchmark();
+    let evaluation_layers = RagEvalLayersSummary {
+        protocol_version: RAG_EVAL_PROTOCOL_VERSION,
+        retrieval: RagEvalRetrievalLayer {
+            evaluation_kind: "retrieval_ranking".to_string(),
+            cases: total,
+            passed,
+            recall,
+            hit_at_3_rate: ranking.hit_at_3_rate,
+            mean_reciprocal_rank: ranking.mean_reciprocal_rank,
+        },
+        extractive_grounding: RagEvalExtractiveLayer {
+            evaluation_kind: "deterministic_extractive_grounding".to_string(),
+            live_model_executed: false,
+            cases: total,
+            passed: grounded_answers.passed,
+            coverage: grounded_answers.coverage,
+            unknown_citation_cases: grounded_answers.unknown_citation_cases,
+        },
+        generated_output_guard: RagEvalGeneratedOutputLayer {
+            evaluation_kind: "versioned_synthetic_output_fixture".to_string(),
+            live_model_executed: false,
+            fixture_version: generated_output_guard.fixture_version,
+            attack_vectors: generated_output_guard.attack_vectors,
+            passed: generated_output_guard.passed,
+            total: generated_output_guard.total,
+            false_accepts: generated_output_guard.false_accepts,
+            false_rejects: generated_output_guard.false_rejects,
+        },
+    };
     let eval_matrix = rag_eval_matrix_summary(&results);
     let retrieval_tuning = rag_eval_retrieval_tuning_summary(
         &results,
@@ -2176,7 +2277,9 @@ pub(crate) fn rag_eval_report_with_baseline(
         &packing,
         semantic_fallbacks,
     );
-    let split = rag_eval_split_summary(&results);
+    let mut split = rag_eval_split_summary(&results);
+    split.development_signature = development_signature;
+    split.holdout_signature = holdout_signature;
     let baseline = rag_eval_baseline_summary(
         baseline_root,
         write_baseline,
@@ -2215,7 +2318,13 @@ pub(crate) fn rag_eval_report_with_baseline(
     }
     if grounded_answers.failed > 0 {
         recommendations.push(
-            "inspect grounded_answer fields: retrieval found evidence that did not make it into the final grounded answer".to_string(),
+            "inspect grounded_answer fields: retrieval found evidence that did not make it into the deterministic extractive answer".to_string(),
+        );
+    }
+    if generated_output_guard.passed < generated_output_guard.total {
+        recommendations.push(
+            "fix generated-output guard fixture regressions before running or accepting live model generation"
+                .to_string(),
         );
     }
     if ranking.hit_at_3_rate < 80.0 {
@@ -2279,9 +2388,12 @@ pub(crate) fn rag_eval_report_with_baseline(
             recommendations.push(format!("retrieval tuning: {reason}"));
         }
     }
-    let ok = total > 0 && failed == 0 && grounded_answers.failed == 0;
+    let ok = total > 0
+        && failed == 0
+        && grounded_answers.failed == 0
+        && generated_output_guard.passed == generated_output_guard.total;
     Ok(RagEvalReport {
-        version: 6,
+        version: 7,
         ok,
         status: if ok {
             "ready"
@@ -2301,6 +2413,7 @@ pub(crate) fn rag_eval_report_with_baseline(
         semantic_fallbacks,
         packing,
         evidence_placement,
+        evaluation_layers,
         grounded_answers,
         ranking,
         eval_matrix,
@@ -2555,6 +2668,26 @@ fn rag_eval_baseline_file(input: &RagEvalBaselineInput<'_>) -> Result<RagEvalBas
 fn rag_eval_corpus_signature(cases: &[RagEvalCase]) -> Result<String> {
     let mut canonical_cases = cases
         .iter()
+        .map(|case| {
+            json!({
+                "id": case.id,
+                "name": case.name,
+                "query": case.query,
+                "expected": case.expected,
+                "budget": case.budget,
+                "source": case.source,
+                "split": case.split,
+            })
+        })
+        .collect::<Vec<_>>();
+    canonical_cases.sort_by_key(|case| serde_json::to_string(case).unwrap_or_default());
+    short_eval_signature(&canonical_cases)
+}
+
+fn rag_eval_split_corpus_signature(cases: &[RagEvalCase], split: &str) -> Result<String> {
+    let mut canonical_cases = cases
+        .iter()
+        .filter(|case| case.split == split)
         .map(|case| {
             json!({
                 "id": case.id,
@@ -2957,6 +3090,12 @@ fn rag_eval_split_summary(cases: &[RagEvalCaseResult]) -> RagEvalSplitSummary {
         holdout_ready: holdout_total >= RAG_EVAL_RECOMMENDED_HOLDOUT_CASES
             && holdout_passed == holdout_total
             && holdout_grounded == holdout_total,
+        tuning_isolation_enforced: true,
+        holdout_policy: "labelled holdout is evaluated after retrieval configuration is fixed; evaluation never mutates ranking"
+            .to_string(),
+        origin_independence_verified: false,
+        development_signature: String::new(),
+        holdout_signature: String::new(),
     }
 }
 
@@ -4484,6 +4623,65 @@ mod tests {
 
         assert_eq!(forward, reversed);
         assert_ne!(forward, changed);
+    }
+
+    #[test]
+    fn rag_eval_split_signatures_keep_holdout_changes_separate() {
+        let development = rag_eval_case("development", "memory-a", 1_000);
+        let mut holdout = rag_eval_case("holdout", "memory-b", 1_000);
+        holdout.split = "holdout".to_string();
+        let cases = [development, holdout];
+        let development_signature = rag_eval_split_corpus_signature(&cases, "development").unwrap();
+        let holdout_signature = rag_eval_split_corpus_signature(&cases, "holdout").unwrap();
+
+        let development_changed = rag_eval_split_corpus_signature(
+            &[rag_eval_case("development", "changed", 1_000), {
+                let mut case = rag_eval_case("holdout", "memory-b", 1_000);
+                case.split = "holdout".to_string();
+                case
+            }],
+            "holdout",
+        )
+        .unwrap();
+
+        assert_ne!(development_signature, holdout_signature);
+        assert_eq!(holdout_signature, development_changed);
+    }
+
+    #[test]
+    fn rag_eval_labels_retrieval_extractive_and_generated_layers_honestly() {
+        let temp = tempfile::tempdir().unwrap();
+        let conn = open_db(&temp.path().join("memory.db")).unwrap();
+        let report = rag_eval_report(&conn, None, 8, 3_000, "mock", "local", "mock").unwrap();
+
+        assert_eq!(report.version, 7);
+        assert_eq!(
+            report.evaluation_layers.retrieval.evaluation_kind,
+            "retrieval_ranking"
+        );
+        assert_eq!(
+            report
+                .evaluation_layers
+                .extractive_grounding
+                .evaluation_kind,
+            "deterministic_extractive_grounding"
+        );
+        assert!(
+            !report
+                .evaluation_layers
+                .extractive_grounding
+                .live_model_executed
+        );
+        assert_eq!(
+            report.evaluation_layers.generated_output_guard.passed,
+            report.evaluation_layers.generated_output_guard.total
+        );
+        assert!(
+            !report
+                .evaluation_layers
+                .generated_output_guard
+                .live_model_executed
+        );
     }
 
     #[test]

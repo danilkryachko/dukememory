@@ -520,23 +520,27 @@ regressions before explicit benchmark cases are written. Each case reports the
 same packed source selection diagnostics as `rag-debug`, including selected
 chunk counts and overlap/file-cap suppression. Failing cases also distinguish
 expected evidence that was selected, suppressed by packing, or missing from the
-retrieved candidates. The v6 report includes `evidence_placement` with
+retrieved candidates. The v7 report includes `evidence_placement` with
 selection recall, candidate recall, near-miss count, and suppression reasons so
 file-cap or limit pressure is visible without reading every case. It also adds
 `eval_matrix` coverage across source chunks, memory cards, CLI/MCP/HTTP
 workflows, graph memory, multilingual cases, negative/missing cases, and
 packing near-misses, plus `retrieval_tuning` with the recommended ranking
-profile from actual eval failures or near-misses. It also builds a deterministic
-grounded answer from the selected source pack and checks that expected evidence
-reaches the answer with a valid selected citation. The top-level `packing`,
-`evidence_placement`, `grounded_answers`, `ranking`, `eval_matrix`, and
+profile from actual eval failures or near-misses. `evaluation_layers` keeps
+retrieval ranking, deterministic extractive grounding, and the versioned
+generated-output security fixture separate. The extractive layer never claims
+that a live model ran; the generated-output layer explicitly reports that it
+tests synthetic outputs through the production guard. The top-level `packing`,
+`evidence_placement`, `evaluation_layers`, `grounded_answers`, `ranking`, `eval_matrix`, and
 `retrieval_tuning` summaries aggregate those counts across the whole eval run
 for release-gate inspection. `ranking` reports the expected evidence rank,
 Hit@1/3/5, and mean reciprocal rank so ordering regressions remain visible even
 when recall stays at 100%. Cases are explicitly split into `development` and
 `holdout`; auto-generated probes never count as holdout. Release readiness
 requires at least five holdout cases with 100% retrieval and grounded-answer
-success. Baseline v3 fingerprints the canonical case corpus and retrieval
+success from deterministic extraction. Development and holdout partitions receive separate signatures, and
+the report states that tuning isolation is enforced while source-origin
+independence is not automatically verifiable. Baseline v3 fingerprints the canonical case corpus and retrieval
 configuration, so changed cases or model/provider settings block comparison
 instead of producing a misleading pass. The release gate also requires Hit@3
 of at least 50% and records Hit@3/MRR for regression comparison.
