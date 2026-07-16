@@ -1296,7 +1296,8 @@ pub(crate) fn drift_report(
 
     let conflicts = merge_candidates(conn, 10)?;
     let empty_terms = HashSet::new();
-    let stale_active = stale_active_memories(conn, 10)?
+    let stale_evidence = stale_file_evidence(conn, 20)?;
+    let mut stale_active = stale_active_memories(conn, 10)?
         .into_iter()
         .enumerate()
         .map(|(index, memory)| {
@@ -1309,7 +1310,34 @@ pub(crate) fn drift_report(
             )
         })
         .collect::<Vec<_>>();
-    let ok = missing_links.is_empty() && conflicts.is_empty() && stale_active.is_empty();
+    let mut stale_ids = stale_active
+        .iter()
+        .map(|item| item.id.clone())
+        .collect::<HashSet<_>>();
+    for evidence in &stale_evidence {
+        if !matches!(evidence.memory_status.as_str(), "active" | "uncertain")
+            || !stale_ids.insert(evidence.memory_id.clone())
+        {
+            continue;
+        }
+        if let Ok(memory) = get_memory(conn, &evidence.memory_id) {
+            stale_active.push(brief_item_from_memory(
+                &memory,
+                95.0,
+                vec![format!(
+                    "{} file evidence: {}",
+                    evidence.status, evidence.path
+                )],
+                &empty_terms,
+                8_000,
+            ));
+        }
+    }
+    stale_active.truncate(20);
+    let ok = missing_links.is_empty()
+        && conflicts.is_empty()
+        && stale_active.is_empty()
+        && stale_evidence.is_empty();
 
     Ok(DriftReport {
         version: 1,
@@ -1320,6 +1348,7 @@ pub(crate) fn drift_report(
         missing_links,
         conflicts,
         stale_active,
+        stale_evidence,
         warnings,
     })
 }
@@ -1372,18 +1401,24 @@ fn stale_active_memories(conn: &Connection, limit: usize) -> Result<Vec<Memory>>
         .map_err(Into::into)
 }
 
-pub(crate) fn handle_eval(conn: &Connection, command: EvalCommand) -> Result<()> {
+pub(crate) fn handle_eval(
+    conn: &Connection,
+    command: EvalCommand,
+    gen_config: &crate::runtime_config::GenerationConfig,
+    root: &Path,
+) -> Result<()> {
     match command {
         EvalCommand::AddCase {
             name,
             query,
             expected,
             budget,
+            split,
         } => {
             let id = Uuid::new_v4().simple().to_string()[..12].to_string();
             conn.execute(
-                "INSERT INTO eval_cases (id, name, query, expected, budget, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id, name, query, expected, budget as i64, now_ms()],
+                "INSERT INTO eval_cases (id, name, query, expected, budget, split, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![id, name, query, expected, budget as i64, split, now_ms()],
             )?;
             println!("{id}");
         }
@@ -1396,9 +1431,11 @@ pub(crate) fn handle_eval(conn: &Connection, command: EvalCommand) -> Result<()>
             provider,
             endpoint,
             model,
+            write_baseline,
             json,
         } => run_rag_eval(
             conn,
+            root,
             scope.as_deref(),
             limit,
             budget
@@ -1407,8 +1444,32 @@ pub(crate) fn handle_eval(conn: &Connection, command: EvalCommand) -> Result<()>
             &provider,
             &endpoint,
             &model,
+            write_baseline,
             json,
         )?,
+        EvalCommand::GraphRag {
+            scope,
+            limit,
+            budget,
+            budget_profile,
+            provider,
+            endpoint,
+            model,
+            json,
+        } => run_graph_rag_eval(
+            conn,
+            scope.as_deref(),
+            limit,
+            budget
+                .or_else(|| budget_profile_chars(budget_profile))
+                .unwrap_or(3000),
+            gen_config,
+            &provider,
+            &endpoint,
+            &model,
+            json,
+        )?,
+        EvalCommand::Advanced { json } => print_advanced_eval(conn, json)?,
         EvalCommand::Live { since_days, json } => print_live_eval(conn, since_days, json)?,
     }
     Ok(())
@@ -1488,9 +1549,56 @@ pub(crate) struct RagEvalReport {
     pub(crate) semantic_used: usize,
     pub(crate) semantic_fallbacks: usize,
     pub(crate) packing: RagEvalPackingSummary,
+    pub(crate) evidence_placement: RagEvalEvidencePlacementSummary,
+    pub(crate) evaluation_layers: RagEvalLayersSummary,
     pub(crate) grounded_answers: RagEvalGroundedSummary,
+    pub(crate) ranking: RagEvalRankingSummary,
+    pub(crate) eval_matrix: RagEvalMatrixSummary,
+    pub(crate) retrieval_tuning: RagEvalRetrievalTuningSummary,
+    pub(crate) split: RagEvalSplitSummary,
+    pub(crate) baseline: RagEvalBaselineSummary,
     pub(crate) cases: Vec<RagEvalCaseResult>,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RagEvalLayersSummary {
+    pub(crate) protocol_version: u32,
+    pub(crate) retrieval: RagEvalRetrievalLayer,
+    pub(crate) extractive_grounding: RagEvalExtractiveLayer,
+    pub(crate) generated_output_guard: RagEvalGeneratedOutputLayer,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RagEvalRetrievalLayer {
+    pub(crate) evaluation_kind: String,
+    pub(crate) cases: usize,
+    pub(crate) passed: usize,
+    pub(crate) recall: f64,
+    pub(crate) hit_at_3_rate: f64,
+    pub(crate) mean_reciprocal_rank: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RagEvalExtractiveLayer {
+    pub(crate) evaluation_kind: String,
+    pub(crate) live_model_executed: bool,
+    pub(crate) cases: usize,
+    pub(crate) passed: usize,
+    pub(crate) coverage: f64,
+    pub(crate) unknown_citation_cases: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RagEvalGeneratedOutputLayer {
+    pub(crate) evaluation_kind: String,
+    pub(crate) live_model_executed: bool,
+    pub(crate) fixture_version: u32,
+    pub(crate) attack_vectors: usize,
+    pub(crate) passed: usize,
+    pub(crate) total: usize,
+    pub(crate) false_accepts: usize,
+    pub(crate) false_rejects: usize,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -1512,6 +1620,19 @@ pub(crate) struct RagEvalPackingSummary {
 }
 
 #[derive(Debug, Serialize, Default)]
+pub(crate) struct RagEvalEvidencePlacementSummary {
+    pub(crate) expected_total: usize,
+    pub(crate) selected: usize,
+    pub(crate) suppressed_by_packing: usize,
+    pub(crate) missing_from_candidates: usize,
+    pub(crate) empty_expected: usize,
+    pub(crate) selection_recall: f64,
+    pub(crate) candidate_recall: f64,
+    pub(crate) near_miss_count: usize,
+    pub(crate) suppression_reasons: std::collections::BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Serialize, Default)]
 pub(crate) struct RagEvalGroundedSummary {
     pub(crate) passed: usize,
     pub(crate) failed: usize,
@@ -1519,6 +1640,126 @@ pub(crate) struct RagEvalGroundedSummary {
     pub(crate) expected_in_answer: usize,
     pub(crate) cited_answers: usize,
     pub(crate) unknown_citation_cases: usize,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub(crate) struct RagEvalRankingSummary {
+    pub(crate) total: usize,
+    pub(crate) hit_at_1: usize,
+    pub(crate) hit_at_3: usize,
+    pub(crate) hit_at_5: usize,
+    pub(crate) hit_at_1_rate: f64,
+    pub(crate) hit_at_3_rate: f64,
+    pub(crate) hit_at_5_rate: f64,
+    pub(crate) mean_reciprocal_rank: f64,
+}
+
+const RAG_EVAL_RECOMMENDED_STORED_CASES: usize = 12;
+const RAG_EVAL_RECOMMENDED_HOLDOUT_CASES: usize = 5;
+const RAG_EVAL_PROTOCOL_VERSION: u32 = 2;
+const RAG_EVAL_MATRIX_DIMENSIONS: [&str; 9] = [
+    "source_chunk",
+    "memory_card",
+    "cli_workflow",
+    "mcp_tooling",
+    "http_api",
+    "graph_memory",
+    "multilingual",
+    "negative_or_missing",
+    "packing_near_miss",
+];
+
+#[derive(Debug, Serialize, Default)]
+pub(crate) struct RagEvalMatrixSummary {
+    pub(crate) status: String,
+    pub(crate) stored_cases: usize,
+    pub(crate) auto_cases: usize,
+    pub(crate) recommended_min_stored_cases: usize,
+    pub(crate) total_dimensions: usize,
+    pub(crate) covered_dimensions: usize,
+    pub(crate) coverage: f64,
+    pub(crate) dimensions: std::collections::BTreeMap<String, usize>,
+    pub(crate) missing_dimensions: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub(crate) struct RagEvalRetrievalTuningSummary {
+    pub(crate) status: String,
+    pub(crate) selected_profile: String,
+    pub(crate) candidate_recall: f64,
+    pub(crate) selection_recall: f64,
+    pub(crate) chunk_selection_rate: f64,
+    pub(crate) memory_selection_rate: f64,
+    pub(crate) semantic_fallback_rate: f64,
+    pub(crate) near_miss_count: usize,
+    pub(crate) reasons: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub(crate) struct RagEvalSplitSummary {
+    pub(crate) development_total: usize,
+    pub(crate) development_passed: usize,
+    pub(crate) development_recall: f64,
+    pub(crate) holdout_total: usize,
+    pub(crate) holdout_passed: usize,
+    pub(crate) holdout_recall: f64,
+    pub(crate) holdout_grounded_coverage: f64,
+    pub(crate) recommended_min_holdout_cases: usize,
+    pub(crate) holdout_ready: bool,
+    pub(crate) tuning_isolation_enforced: bool,
+    pub(crate) holdout_policy: String,
+    pub(crate) origin_independence_verified: bool,
+    pub(crate) development_signature: String,
+    pub(crate) holdout_signature: String,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub(crate) struct RagEvalBaselineSummary {
+    pub(crate) status: String,
+    pub(crate) path: String,
+    pub(crate) present: bool,
+    pub(crate) written: bool,
+    pub(crate) regression: bool,
+    pub(crate) current_signature: String,
+    pub(crate) baseline_signature: Option<String>,
+    pub(crate) baseline_recall: Option<f64>,
+    pub(crate) baseline_grounded_coverage: Option<f64>,
+    pub(crate) baseline_matrix_coverage: Option<f64>,
+    pub(crate) baseline_candidate_recall: Option<f64>,
+    pub(crate) baseline_selection_recall: Option<f64>,
+    pub(crate) baseline_hit_at_3_rate: Option<f64>,
+    pub(crate) baseline_mean_reciprocal_rank: Option<f64>,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RagEvalBaselineFile {
+    version: u32,
+    signature: String,
+    #[serde(default)]
+    corpus_signature: String,
+    #[serde(default)]
+    config_signature: String,
+    total: usize,
+    passed: usize,
+    recall: f64,
+    grounded_coverage: f64,
+    matrix_coverage: f64,
+    candidate_recall: f64,
+    selection_recall: f64,
+    #[serde(default)]
+    hit_at_3_rate: f64,
+    #[serde(default)]
+    mean_reciprocal_rank: f64,
+    #[serde(default)]
+    holdout_total: usize,
+    #[serde(default)]
+    holdout_recall: f64,
+    #[serde(default)]
+    holdout_grounded_coverage: f64,
+    covered_dimensions: usize,
+    dimensions: std::collections::BTreeMap<String, usize>,
+    written_at: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1537,8 +1778,10 @@ pub(crate) struct RagEvalCaseResult {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) case_source: String,
+    pub(crate) split: String,
     pub(crate) query: String,
     pub(crate) expected: String,
+    pub(crate) expected_rank: Option<usize>,
     pub(crate) passed: bool,
     pub(crate) detail: String,
     pub(crate) confidence: String,
@@ -1550,6 +1793,7 @@ pub(crate) struct RagEvalCaseResult {
     pub(crate) expected_evidence_status: String,
     pub(crate) expected_in_candidates: bool,
     pub(crate) expected_suppressed_titles: Vec<String>,
+    pub(crate) expected_suppressed_reasons: Vec<String>,
     pub(crate) semantic_used: bool,
     pub(crate) semantic_error: Option<String>,
     pub(crate) missing_evidence: Vec<String>,
@@ -1563,20 +1807,86 @@ struct RagEvalCase {
     expected: String,
     budget: usize,
     source: String,
+    split: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct GraphRagEvalReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) case_source: String,
+    pub(crate) total: usize,
+    pub(crate) passed: usize,
+    pub(crate) failed: usize,
+    pub(crate) recall: f64,
+    pub(crate) grounded_coverage: f64,
+    pub(crate) graph: GraphRagEvalGraphSummary,
+    pub(crate) cases: Vec<GraphRagEvalCaseResult>,
+    pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub(crate) struct GraphRagEvalGraphSummary {
+    pub(crate) total_nodes: usize,
+    pub(crate) total_edges: usize,
+    pub(crate) connected_cases: usize,
+    pub(crate) isolated_cases: usize,
+    pub(crate) missing_graph_cases: usize,
+    pub(crate) average_relationship_coverage: f64,
+    pub(crate) average_edge_density: f64,
+    pub(crate) relationship_kinds: std::collections::BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct GraphRagEvalCaseResult {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) case_source: String,
+    pub(crate) query: String,
+    pub(crate) expected: String,
+    pub(crate) passed: bool,
+    pub(crate) detail: String,
+    pub(crate) graph_status: String,
+    pub(crate) confidence: String,
+    pub(crate) confidence_score: f64,
+    pub(crate) node_count: usize,
+    pub(crate) edge_count: usize,
+    pub(crate) relationship_coverage: f64,
+    pub(crate) relationship_kinds: std::collections::BTreeMap<String, usize>,
+    pub(crate) expected_in_graph: bool,
+    pub(crate) expected_in_answer: bool,
+    pub(crate) citation_count: usize,
+    pub(crate) citations: Vec<String>,
+    pub(crate) answer: String,
+    pub(crate) ranked_node_titles: Vec<String>,
+    pub(crate) missing_evidence: Vec<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
 fn run_rag_eval(
     conn: &Connection,
+    root: &Path,
     scope: Option<&str>,
     limit: usize,
     budget: usize,
     provider: &str,
     endpoint: &str,
     model: &str,
+    write_baseline: bool,
     json_out: bool,
 ) -> Result<()> {
-    let report = rag_eval_report(conn, scope, limit, budget, provider, endpoint, model)?;
+    let report = rag_eval_report_with_baseline(
+        conn,
+        scope,
+        limit,
+        budget,
+        provider,
+        endpoint,
+        model,
+        Some(root),
+        write_baseline,
+    )?;
     if json_out {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -1599,7 +1909,14 @@ fn run_rag_eval(
             report.packing.expected_missing_from_candidates
         );
         println!(
-            "grounded_answers: coverage={:.1}% passed={}/{} expected_in_answer={} cited_answers={} unknown_citation_cases={}",
+            "evidence_placement: selection_recall={:.1}% candidate_recall={:.1}% near_misses={} suppression_reasons={:?}",
+            report.evidence_placement.selection_recall,
+            report.evidence_placement.candidate_recall,
+            report.evidence_placement.near_miss_count,
+            report.evidence_placement.suppression_reasons
+        );
+        println!(
+            "extractive_grounding: coverage={:.1}% passed={}/{} live_model=false expected_in_answer={} cited_answers={} unknown_citation_cases={}",
             report.grounded_answers.coverage,
             report.grounded_answers.passed,
             report.total,
@@ -1607,12 +1924,85 @@ fn run_rag_eval(
             report.grounded_answers.cited_answers,
             report.grounded_answers.unknown_citation_cases
         );
+        println!(
+            "generated_output_guard: fixture_v{} passed={}/{} attacks={} false_accepts={} false_rejects={} live_model=false",
+            report
+                .evaluation_layers
+                .generated_output_guard
+                .fixture_version,
+            report.evaluation_layers.generated_output_guard.passed,
+            report.evaluation_layers.generated_output_guard.total,
+            report
+                .evaluation_layers
+                .generated_output_guard
+                .attack_vectors,
+            report
+                .evaluation_layers
+                .generated_output_guard
+                .false_accepts,
+            report
+                .evaluation_layers
+                .generated_output_guard
+                .false_rejects
+        );
+        println!(
+            "ranking: hit@1={:.1}% hit@3={:.1}% hit@5={:.1}% mrr={:.1}%",
+            report.ranking.hit_at_1_rate,
+            report.ranking.hit_at_3_rate,
+            report.ranking.hit_at_5_rate,
+            report.ranking.mean_reciprocal_rank
+        );
+        println!(
+            "eval_matrix: status={} coverage={:.1}% stored={} auto={} covered={}/{} missing={:?}",
+            report.eval_matrix.status,
+            report.eval_matrix.coverage,
+            report.eval_matrix.stored_cases,
+            report.eval_matrix.auto_cases,
+            report.eval_matrix.covered_dimensions,
+            report.eval_matrix.total_dimensions,
+            report.eval_matrix.missing_dimensions
+        );
+        println!(
+            "retrieval_tuning: status={} profile={} selection_recall={:.1}% candidate_recall={:.1}% chunk_selection={:.1}% memory_selection={:.1}% semantic_fallbacks={:.1}%",
+            report.retrieval_tuning.status,
+            report.retrieval_tuning.selected_profile,
+            report.retrieval_tuning.selection_recall,
+            report.retrieval_tuning.candidate_recall,
+            report.retrieval_tuning.chunk_selection_rate,
+            report.retrieval_tuning.memory_selection_rate,
+            report.retrieval_tuning.semantic_fallback_rate
+        );
+        println!(
+            "split: development={}/{} ({:.1}%) holdout={}/{} ({:.1}%) extractive={:.1}% ready={} tuning_isolated={} origin_independence_verified={}",
+            report.split.development_passed,
+            report.split.development_total,
+            report.split.development_recall,
+            report.split.holdout_passed,
+            report.split.holdout_total,
+            report.split.holdout_recall,
+            report.split.holdout_grounded_coverage,
+            report.split.holdout_ready,
+            report.split.tuning_isolation_enforced,
+            report.split.origin_independence_verified
+        );
+        println!(
+            "baseline: status={} present={} written={} regression={} path={} detail={}",
+            report.baseline.status,
+            report.baseline.present,
+            report.baseline.written,
+            report.baseline.regression,
+            report.baseline.path,
+            report.baseline.detail
+        );
         for case in &report.cases {
             println!(
-                "{}  {}  {}  confidence={} citations={}",
+                "{}  {}  {}  rank={} confidence={} citations={}",
                 if case.passed { "pass" } else { "fail" },
                 case.id,
                 case.name,
+                case.expected_rank
+                    .map(|rank| rank.to_string())
+                    .unwrap_or_else(|| "missing".to_string()),
                 case.confidence,
                 case.citation_count
             );
@@ -1629,7 +2019,7 @@ fn run_rag_eval(
                 case.expected_evidence_status
             );
             println!(
-                "  grounded_answer: {}  {}",
+                "  extractive_answer: {}  {}",
                 if case.grounded_answer.passed {
                     "pass"
                 } else {
@@ -1637,6 +2027,59 @@ fn run_rag_eval(
                 },
                 case.grounded_answer.detail
             );
+        }
+        for item in &report.recommendations {
+            println!("recommendation: {item}");
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_graph_rag_eval(
+    conn: &Connection,
+    scope: Option<&str>,
+    limit: usize,
+    budget: usize,
+    gen_config: &crate::runtime_config::GenerationConfig,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+    json_out: bool,
+) -> Result<()> {
+    let report = graph_rag_eval_report(
+        conn, scope, limit, budget, gen_config, provider, endpoint, model,
+    )?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("Graph RAG Eval");
+        println!(
+            "status: {} recall: {:.1}% grounded: {:.1}% passed: {}/{}",
+            report.status, report.recall, report.grounded_coverage, report.passed, report.total
+        );
+        println!(
+            "graph: nodes={} edges={} connected_cases={} isolated_cases={} avg_relationship_coverage={:.1}% kinds={:?}",
+            report.graph.total_nodes,
+            report.graph.total_edges,
+            report.graph.connected_cases,
+            report.graph.isolated_cases,
+            report.graph.average_relationship_coverage,
+            report.graph.relationship_kinds
+        );
+        for case in &report.cases {
+            println!(
+                "{}  {}  {}  graph={} confidence={} nodes={} edges={} coverage={:.1}%",
+                if case.passed { "pass" } else { "fail" },
+                case.id,
+                case.name,
+                case.graph_status,
+                case.confidence,
+                case.node_count,
+                case.edge_count,
+                case.relationship_coverage
+            );
+            println!("  {}", case.detail);
         }
         for item in &report.recommendations {
             println!("recommendation: {item}");
@@ -1654,7 +2097,29 @@ pub(crate) fn rag_eval_report(
     endpoint: &str,
     model: &str,
 ) -> Result<RagEvalReport> {
+    rag_eval_report_with_baseline(
+        conn, scope, limit, budget, provider, endpoint, model, None, false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rag_eval_report_with_baseline(
+    conn: &Connection,
+    scope: Option<&str>,
+    limit: usize,
+    budget: usize,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+    baseline_root: Option<&Path>,
+    write_baseline: bool,
+) -> Result<RagEvalReport> {
     let cases = load_rag_eval_cases(conn, budget)?;
+    let corpus_signature = rag_eval_corpus_signature(&cases)?;
+    let development_signature = rag_eval_split_corpus_signature(&cases, "development")?;
+    let holdout_signature = rag_eval_split_corpus_signature(&cases, "holdout")?;
+    let config_signature =
+        rag_eval_config_signature(scope, limit, budget, provider, endpoint, model)?;
     let case_source = if cases.iter().any(|case| case.source == "stored") {
         "stored"
     } else if cases.is_empty() {
@@ -1675,25 +2140,35 @@ pub(crate) fn rag_eval_report(
             endpoint,
             model,
         )?;
-        let haystack = debug
-            .source_pack
-            .iter()
-            .map(|source| {
-                format!(
-                    "{} {} {} {}",
-                    source.id,
-                    source.title,
-                    source.summary,
-                    source.reasons.join(" ")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-            .to_lowercase();
         let expected_lower = case.expected.to_lowercase();
-        let passed = !expected_lower.trim().is_empty() && haystack.contains(&expected_lower);
-        let expected_suppressed_titles =
-            rag_eval_expected_suppressed_titles(&case.expected, &debug.packing);
+        let expected_rank = (!expected_lower.trim().is_empty())
+            .then(|| {
+                debug.source_pack.iter().position(|source| {
+                    format!(
+                        "{} {} {} {}",
+                        source.id,
+                        source.title,
+                        source.summary,
+                        source.reasons.join(" ")
+                    )
+                    .to_lowercase()
+                    .contains(&expected_lower)
+                })
+            })
+            .flatten()
+            .map(|index| index + 1);
+        let passed = expected_rank.is_some();
+        let expected_suppressed_sources =
+            rag_eval_expected_suppressed_sources(&case.expected, &debug.packing);
+        let expected_suppressed_titles = expected_suppressed_sources
+            .iter()
+            .map(|source| source.title.clone())
+            .collect::<Vec<_>>();
+        let expected_suppressed_reasons = rag_eval_unique_suppressed_reasons(
+            expected_suppressed_sources
+                .iter()
+                .map(|source| source.reason.as_str()),
+        );
         let expected_evidence_status =
             rag_eval_expected_evidence_status(&case.expected, passed, &expected_suppressed_titles);
         let expected_in_candidates = passed || !expected_suppressed_titles.is_empty();
@@ -1708,8 +2183,10 @@ pub(crate) fn rag_eval_report(
             id: case.id,
             name: case.name,
             case_source: case.source,
+            split: case.split,
             query: case.query,
             expected: case.expected,
+            expected_rank,
             passed,
             detail: if passed {
                 "expected text found in RAG source pack".to_string()
@@ -1731,6 +2208,7 @@ pub(crate) fn rag_eval_report(
             expected_evidence_status,
             expected_in_candidates,
             expected_suppressed_titles,
+            expected_suppressed_reasons,
             semantic_used: debug.semantic_used,
             semantic_error: debug.semantic_error,
             missing_evidence: debug.missing_evidence,
@@ -1759,7 +2237,65 @@ pub(crate) fn rag_eval_report(
         .filter(|case| case.semantic_error.is_some())
         .count();
     let packing = rag_eval_packing_summary(&results);
+    let evidence_placement = rag_eval_evidence_placement_summary(&results);
     let grounded_answers = rag_eval_grounded_summary(&results);
+    let ranking = rag_eval_ranking_summary(&results);
+    let generated_output_guard = rag_generated_answer_guard_benchmark();
+    let evaluation_layers = RagEvalLayersSummary {
+        protocol_version: RAG_EVAL_PROTOCOL_VERSION,
+        retrieval: RagEvalRetrievalLayer {
+            evaluation_kind: "retrieval_ranking".to_string(),
+            cases: total,
+            passed,
+            recall,
+            hit_at_3_rate: ranking.hit_at_3_rate,
+            mean_reciprocal_rank: ranking.mean_reciprocal_rank,
+        },
+        extractive_grounding: RagEvalExtractiveLayer {
+            evaluation_kind: "deterministic_extractive_grounding".to_string(),
+            live_model_executed: false,
+            cases: total,
+            passed: grounded_answers.passed,
+            coverage: grounded_answers.coverage,
+            unknown_citation_cases: grounded_answers.unknown_citation_cases,
+        },
+        generated_output_guard: RagEvalGeneratedOutputLayer {
+            evaluation_kind: "versioned_synthetic_output_fixture".to_string(),
+            live_model_executed: false,
+            fixture_version: generated_output_guard.fixture_version,
+            attack_vectors: generated_output_guard.attack_vectors,
+            passed: generated_output_guard.passed,
+            total: generated_output_guard.total,
+            false_accepts: generated_output_guard.false_accepts,
+            false_rejects: generated_output_guard.false_rejects,
+        },
+    };
+    let eval_matrix = rag_eval_matrix_summary(&results);
+    let retrieval_tuning = rag_eval_retrieval_tuning_summary(
+        &results,
+        &evidence_placement,
+        &packing,
+        semantic_fallbacks,
+    );
+    let mut split = rag_eval_split_summary(&results);
+    split.development_signature = development_signature;
+    split.holdout_signature = holdout_signature;
+    let baseline = rag_eval_baseline_summary(
+        baseline_root,
+        write_baseline,
+        &RagEvalBaselineInput {
+            total,
+            passed,
+            recall,
+            grounded_coverage: grounded_answers.coverage,
+            eval_matrix: &eval_matrix,
+            retrieval_tuning: &retrieval_tuning,
+            ranking: &ranking,
+            split: &split,
+            corpus_signature: &corpus_signature,
+            config_signature: &config_signature,
+        },
+    )?;
     let mut recommendations = Vec::new();
     if total == 0 {
         recommendations
@@ -1782,12 +2318,82 @@ pub(crate) fn rag_eval_report(
     }
     if grounded_answers.failed > 0 {
         recommendations.push(
-            "inspect grounded_answer fields: retrieval found evidence that did not make it into the final grounded answer".to_string(),
+            "inspect grounded_answer fields: retrieval found evidence that did not make it into the deterministic extractive answer".to_string(),
         );
     }
-    let ok = total > 0 && failed == 0 && grounded_answers.failed == 0;
+    if generated_output_guard.passed < generated_output_guard.total {
+        recommendations.push(
+            "fix generated-output guard fixture regressions before running or accepting live model generation"
+                .to_string(),
+        );
+    }
+    if ranking.hit_at_3_rate < 80.0 {
+        recommendations.push(format!(
+            "expected evidence reaches the top 3 in only {:.1}% of cases; tune ranking before expanding context budgets",
+            ranking.hit_at_3_rate
+        ));
+    }
+    if evidence_placement.near_miss_count > 0 {
+        recommendations.push(
+            "inspect expected_suppressed_reasons: expected evidence was retrievable but suppressed by source packing".to_string(),
+        );
+    }
+    if evidence_placement.missing_from_candidates > 0 {
+        recommendations.push(
+            "ingest or relink source chunks for cases where expected evidence is missing from candidates".to_string(),
+        );
+    }
+    if eval_matrix.status == "auto_only" {
+        recommendations.push(
+            "promote representative auto eval cases into stored project-critical RAG eval cases"
+                .to_string(),
+        );
+    }
+    if eval_matrix.stored_cases > 0
+        && eval_matrix.stored_cases < eval_matrix.recommended_min_stored_cases
+    {
+        recommendations.push(format!(
+            "expand RAG eval matrix to at least {} stored cases before release confidence claims",
+            eval_matrix.recommended_min_stored_cases
+        ));
+    }
+    if split.holdout_total < split.recommended_min_holdout_cases {
+        recommendations.push(format!(
+            "add at least {} independent holdout RAG cases with `eval add-case --split holdout`; current holdout has {}",
+            split.recommended_min_holdout_cases, split.holdout_total
+        ));
+    } else if !split.holdout_ready {
+        recommendations.push(
+            "holdout RAG cases are failing; tune only on development cases, then rerun the untouched holdout"
+                .to_string(),
+        );
+    }
+    if !eval_matrix.missing_dimensions.is_empty() {
+        recommendations.push(format!(
+            "add RAG eval cases for missing matrix dimensions: {}",
+            eval_matrix.missing_dimensions.join(", ")
+        ));
+    }
+    if baseline.status == "missing" {
+        recommendations.push(
+            "write a RAG eval matrix baseline with `dukememory eval rag --write-baseline --json` after reviewing cases"
+                .to_string(),
+        );
+    }
+    if baseline.regression {
+        recommendations.push("RAG eval regressed against baseline; inspect failed cases, grounded answers, and matrix coverage before release".to_string());
+    }
+    for reason in &retrieval_tuning.reasons {
+        if retrieval_tuning.status != "ready" {
+            recommendations.push(format!("retrieval tuning: {reason}"));
+        }
+    }
+    let ok = total > 0
+        && failed == 0
+        && grounded_answers.failed == 0
+        && generated_output_guard.passed == generated_output_guard.total;
     Ok(RagEvalReport {
-        version: 1,
+        version: 7,
         ok,
         status: if ok {
             "ready"
@@ -1806,10 +2412,535 @@ pub(crate) fn rag_eval_report(
         semantic_used,
         semantic_fallbacks,
         packing,
+        evidence_placement,
+        evaluation_layers,
         grounded_answers,
+        ranking,
+        eval_matrix,
+        retrieval_tuning,
+        split,
+        baseline,
         cases: results,
         recommendations,
     })
+}
+
+struct RagEvalBaselineInput<'a> {
+    total: usize,
+    passed: usize,
+    recall: f64,
+    grounded_coverage: f64,
+    eval_matrix: &'a RagEvalMatrixSummary,
+    retrieval_tuning: &'a RagEvalRetrievalTuningSummary,
+    ranking: &'a RagEvalRankingSummary,
+    split: &'a RagEvalSplitSummary,
+    corpus_signature: &'a str,
+    config_signature: &'a str,
+}
+
+fn rag_eval_baseline_summary(
+    baseline_root: Option<&Path>,
+    write_baseline: bool,
+    input: &RagEvalBaselineInput<'_>,
+) -> Result<RagEvalBaselineSummary> {
+    let current = rag_eval_baseline_file(input)?;
+    let Some(root) = baseline_root else {
+        return Ok(RagEvalBaselineSummary {
+            status: "unconfigured".to_string(),
+            path: String::new(),
+            present: false,
+            written: false,
+            regression: false,
+            current_signature: current.signature,
+            baseline_signature: None,
+            baseline_recall: None,
+            baseline_grounded_coverage: None,
+            baseline_matrix_coverage: None,
+            baseline_candidate_recall: None,
+            baseline_selection_recall: None,
+            baseline_hit_at_3_rate: None,
+            baseline_mean_reciprocal_rank: None,
+            detail: "no project root was supplied for RAG eval baseline comparison".to_string(),
+        });
+    };
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let path = root.join(".agent/rag-eval-baseline.json");
+    if write_baseline {
+        write_file(&path, serde_json::to_string_pretty(&current)?.as_bytes())?;
+        return Ok(RagEvalBaselineSummary {
+            status: "written".to_string(),
+            path: path.display().to_string(),
+            present: true,
+            written: true,
+            regression: false,
+            current_signature: current.signature.clone(),
+            baseline_signature: Some(current.signature),
+            baseline_recall: Some(current.recall),
+            baseline_grounded_coverage: Some(current.grounded_coverage),
+            baseline_matrix_coverage: Some(current.matrix_coverage),
+            baseline_candidate_recall: Some(current.candidate_recall),
+            baseline_selection_recall: Some(current.selection_recall),
+            baseline_hit_at_3_rate: Some(current.hit_at_3_rate),
+            baseline_mean_reciprocal_rank: Some(current.mean_reciprocal_rank),
+            detail: "wrote current RAG eval matrix baseline".to_string(),
+        });
+    }
+
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return Ok(RagEvalBaselineSummary {
+            status: "missing".to_string(),
+            path: path.display().to_string(),
+            present: false,
+            written: false,
+            regression: false,
+            current_signature: current.signature,
+            baseline_signature: None,
+            baseline_recall: None,
+            baseline_grounded_coverage: None,
+            baseline_matrix_coverage: None,
+            baseline_candidate_recall: None,
+            baseline_selection_recall: None,
+            baseline_hit_at_3_rate: None,
+            baseline_mean_reciprocal_rank: None,
+            detail: "no RAG eval baseline has been written for this project".to_string(),
+        });
+    };
+    let Ok(baseline) = serde_json::from_str::<RagEvalBaselineFile>(&raw) else {
+        return Ok(RagEvalBaselineSummary {
+            status: "invalid".to_string(),
+            path: path.display().to_string(),
+            present: true,
+            written: false,
+            regression: false,
+            current_signature: current.signature,
+            baseline_signature: None,
+            baseline_recall: None,
+            baseline_grounded_coverage: None,
+            baseline_matrix_coverage: None,
+            baseline_candidate_recall: None,
+            baseline_selection_recall: None,
+            baseline_hit_at_3_rate: None,
+            baseline_mean_reciprocal_rank: None,
+            detail: "RAG eval baseline file exists but could not be parsed".to_string(),
+        });
+    };
+
+    let corpus_changed = baseline.corpus_signature.is_empty()
+        || current.corpus_signature != baseline.corpus_signature;
+    let config_changed = baseline.config_signature.is_empty()
+        || current.config_signature != baseline.config_signature;
+    let comparable = !corpus_changed && !config_changed;
+    let regression = comparable
+        && (current.recall + 0.1 < baseline.recall
+            || current.grounded_coverage + 0.1 < baseline.grounded_coverage
+            || current.matrix_coverage + 0.1 < baseline.matrix_coverage
+            || current.candidate_recall + 0.1 < baseline.candidate_recall
+            || current.selection_recall + 0.1 < baseline.selection_recall
+            || current.hit_at_3_rate + 5.0 < baseline.hit_at_3_rate
+            || current.mean_reciprocal_rank + 5.0 < baseline.mean_reciprocal_rank
+            || current.holdout_recall + 0.1 < baseline.holdout_recall
+            || current.holdout_grounded_coverage + 0.1 < baseline.holdout_grounded_coverage
+            || current.holdout_total < baseline.holdout_total
+            || current.passed < baseline.passed
+            || current.covered_dimensions < baseline.covered_dimensions);
+    let status = if corpus_changed {
+        "corpus_changed"
+    } else if config_changed {
+        "config_changed"
+    } else if regression {
+        "regressed"
+    } else if current.signature == baseline.signature {
+        "matched"
+    } else {
+        "changed"
+    }
+    .to_string();
+    let detail = if corpus_changed {
+        format!(
+            "RAG eval corpus changed (current {}, baseline {}); review cases and write a new baseline",
+            current.corpus_signature,
+            if baseline.corpus_signature.is_empty() {
+                "legacy"
+            } else {
+                &baseline.corpus_signature
+            }
+        )
+    } else if config_changed {
+        format!(
+            "RAG eval configuration changed (current {}, baseline {}); rerun and accept a new baseline",
+            current.config_signature,
+            if baseline.config_signature.is_empty() {
+                "legacy"
+            } else {
+                &baseline.config_signature
+            }
+        )
+    } else if regression {
+        format!(
+            "current recall {:.1}% / hit@3 {:.1}% / MRR {:.1}% is below baseline recall {:.1}% / hit@3 {:.1}% / MRR {:.1}%",
+            current.recall,
+            current.hit_at_3_rate,
+            current.mean_reciprocal_rank,
+            baseline.recall,
+            baseline.hit_at_3_rate,
+            baseline.mean_reciprocal_rank
+        )
+    } else if current.signature == baseline.signature {
+        "current RAG eval matrix matches baseline".to_string()
+    } else {
+        "current RAG eval matrix differs from baseline without metric regression".to_string()
+    };
+    Ok(RagEvalBaselineSummary {
+        status,
+        path: path.display().to_string(),
+        present: true,
+        written: false,
+        regression,
+        current_signature: current.signature,
+        baseline_signature: Some(baseline.signature),
+        baseline_recall: Some(baseline.recall),
+        baseline_grounded_coverage: Some(baseline.grounded_coverage),
+        baseline_matrix_coverage: Some(baseline.matrix_coverage),
+        baseline_candidate_recall: Some(baseline.candidate_recall),
+        baseline_selection_recall: Some(baseline.selection_recall),
+        baseline_hit_at_3_rate: Some(baseline.hit_at_3_rate),
+        baseline_mean_reciprocal_rank: Some(baseline.mean_reciprocal_rank),
+        detail,
+    })
+}
+
+fn rag_eval_baseline_file(input: &RagEvalBaselineInput<'_>) -> Result<RagEvalBaselineFile> {
+    let RagEvalBaselineInput {
+        total,
+        passed,
+        recall,
+        grounded_coverage,
+        eval_matrix,
+        retrieval_tuning,
+        ranking,
+        split,
+        corpus_signature,
+        config_signature,
+    } = input;
+    let payload = json!({
+        "total": total,
+        "passed": passed,
+        "recall": recall,
+        "grounded_coverage": grounded_coverage,
+        "matrix_coverage": eval_matrix.coverage,
+        "covered_dimensions": eval_matrix.covered_dimensions,
+        "dimensions": eval_matrix.dimensions,
+        "candidate_recall": retrieval_tuning.candidate_recall,
+        "selection_recall": retrieval_tuning.selection_recall,
+        "hit_at_3_rate": ranking.hit_at_3_rate,
+        "mean_reciprocal_rank": ranking.mean_reciprocal_rank,
+        "holdout_total": split.holdout_total,
+        "holdout_recall": split.holdout_recall,
+        "holdout_grounded_coverage": split.holdout_grounded_coverage,
+        "corpus_signature": corpus_signature,
+        "config_signature": config_signature,
+    });
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(&payload)?);
+    Ok(RagEvalBaselineFile {
+        version: 3,
+        signature: format!("{:x}", hasher.finalize())[..16].to_string(),
+        corpus_signature: corpus_signature.to_string(),
+        config_signature: config_signature.to_string(),
+        total: *total,
+        passed: *passed,
+        recall: *recall,
+        grounded_coverage: *grounded_coverage,
+        matrix_coverage: eval_matrix.coverage,
+        candidate_recall: retrieval_tuning.candidate_recall,
+        selection_recall: retrieval_tuning.selection_recall,
+        hit_at_3_rate: ranking.hit_at_3_rate,
+        mean_reciprocal_rank: ranking.mean_reciprocal_rank,
+        holdout_total: split.holdout_total,
+        holdout_recall: split.holdout_recall,
+        holdout_grounded_coverage: split.holdout_grounded_coverage,
+        covered_dimensions: eval_matrix.covered_dimensions,
+        dimensions: eval_matrix.dimensions.clone(),
+        written_at: now_ms(),
+    })
+}
+
+fn rag_eval_corpus_signature(cases: &[RagEvalCase]) -> Result<String> {
+    let mut canonical_cases = cases
+        .iter()
+        .map(|case| {
+            json!({
+                "id": case.id,
+                "name": case.name,
+                "query": case.query,
+                "expected": case.expected,
+                "budget": case.budget,
+                "source": case.source,
+                "split": case.split,
+            })
+        })
+        .collect::<Vec<_>>();
+    canonical_cases.sort_by_key(|case| serde_json::to_string(case).unwrap_or_default());
+    short_eval_signature(&canonical_cases)
+}
+
+fn rag_eval_split_corpus_signature(cases: &[RagEvalCase], split: &str) -> Result<String> {
+    let mut canonical_cases = cases
+        .iter()
+        .filter(|case| case.split == split)
+        .map(|case| {
+            json!({
+                "id": case.id,
+                "name": case.name,
+                "query": case.query,
+                "expected": case.expected,
+                "budget": case.budget,
+                "source": case.source,
+                "split": case.split,
+            })
+        })
+        .collect::<Vec<_>>();
+    canonical_cases.sort_by_key(|case| serde_json::to_string(case).unwrap_or_default());
+    short_eval_signature(&canonical_cases)
+}
+
+fn rag_eval_config_signature(
+    scope: Option<&str>,
+    limit: usize,
+    budget: usize,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> Result<String> {
+    short_eval_signature(&json!({
+        "protocol_version": RAG_EVAL_PROTOCOL_VERSION,
+        "scope": scope,
+        "limit": limit,
+        "budget": budget,
+        "provider": provider,
+        "endpoint": endpoint,
+        "model": model,
+    }))
+}
+
+fn short_eval_signature(payload: &impl Serialize) -> Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(payload)?);
+    Ok(format!("{:x}", hasher.finalize())[..16].to_string())
+}
+
+pub(crate) fn rag_eval_baseline_blocks_release(status: &str) -> bool {
+    matches!(
+        status,
+        "invalid" | "unverified" | "regressed" | "changed" | "corpus_changed" | "config_changed"
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn graph_rag_eval_report(
+    conn: &Connection,
+    scope: Option<&str>,
+    limit: usize,
+    budget: usize,
+    _gen_config: &crate::runtime_config::GenerationConfig,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+) -> Result<GraphRagEvalReport> {
+    let cases = load_graph_rag_eval_cases(conn, budget)?;
+    let case_source = if cases.iter().any(|case| case.source == "stored_graph") {
+        "stored_graph"
+    } else if cases.is_empty() {
+        "empty"
+    } else {
+        "auto_graph"
+    }
+    .to_string();
+    let mut results = Vec::new();
+    let eval_generation = crate::runtime_config::GenerationConfig {
+        provider: "mock".to_string(),
+        endpoint: "local".to_string(),
+        model: "extractive-fallback".to_string(),
+    };
+
+    for case in cases {
+        let report = crate::app::graph_rag::compute_graph_rag(
+            conn,
+            &case.query,
+            scope,
+            limit,
+            case.budget,
+            &eval_generation,
+            provider,
+            endpoint,
+            model,
+        )?;
+        let expected = case.expected.trim().to_lowercase();
+        let graph_haystack = graph_rag_eval_haystack(&report);
+        let expected_in_graph = !expected.is_empty() && graph_haystack.contains(&expected);
+        let answer_lower = report.answer.to_lowercase();
+        let expected_in_answer = !expected.is_empty() && answer_lower.contains(&expected);
+        let graph_connected =
+            report.graph_summary.edge_count > 0 && report.graph_summary.connected_node_count > 0;
+        let passed =
+            expected_in_graph && expected_in_answer && report.citation_count > 0 && graph_connected;
+        let detail = if passed {
+            "expected evidence is present in connected graph nodes and cited answer"
+        } else if !expected_in_graph {
+            "expected evidence is missing from selected graph nodes and relationships"
+        } else if !graph_connected {
+            "expected evidence was selected but graph relationships are missing"
+        } else if !expected_in_answer {
+            "expected evidence was selected but missing from graph answer"
+        } else if report.citation_count == 0 {
+            "graph answer did not cite selected memory nodes"
+        } else {
+            "graph eval failed an unknown grounding check"
+        }
+        .to_string();
+        results.push(GraphRagEvalCaseResult {
+            id: case.id,
+            name: case.name,
+            case_source: case.source,
+            query: case.query,
+            expected: case.expected,
+            passed,
+            detail,
+            graph_status: report.graph_summary.status,
+            confidence: report.confidence,
+            confidence_score: report.confidence_score,
+            node_count: report.graph_summary.node_count,
+            edge_count: report.graph_summary.edge_count,
+            relationship_coverage: report.graph_summary.relationship_coverage,
+            relationship_kinds: report.graph_summary.relationship_kinds,
+            expected_in_graph,
+            expected_in_answer,
+            citation_count: report.citation_count,
+            citations: report.citations,
+            answer: report.answer,
+            ranked_node_titles: report
+                .ranked_nodes
+                .iter()
+                .map(|node| node.title.clone())
+                .collect(),
+            missing_evidence: report.missing_evidence,
+        });
+    }
+
+    let total = results.len();
+    let passed = results.iter().filter(|case| case.passed).count();
+    let failed = total.saturating_sub(passed);
+    let recall = eval_ratio_percent(passed, total);
+    let grounded_coverage = eval_ratio_percent(
+        results
+            .iter()
+            .filter(|case| case.expected_in_answer && case.citation_count > 0)
+            .count(),
+        total,
+    );
+    let graph = graph_rag_eval_graph_summary(&results);
+    let mut recommendations = Vec::new();
+    if total == 0 {
+        recommendations.push(
+            "add graph-focused eval cases or memory links before relying on graph-rag eval"
+                .to_string(),
+        );
+    } else if case_source == "auto_graph" {
+        recommendations.push(
+            "add stored graph eval cases for project-critical relationship questions".to_string(),
+        );
+    }
+    if failed > 0 {
+        recommendations.push(
+            "inspect failing graph cases with `dukememory graph-rag QUERY --json`".to_string(),
+        );
+    }
+    if graph.missing_graph_cases > 0 || graph.isolated_cases > 0 {
+        recommendations.push(
+            "add or repair memory links for graph cases with isolated selected nodes".to_string(),
+        );
+    }
+    let ok = total > 0 && failed == 0;
+    Ok(GraphRagEvalReport {
+        version: 1,
+        ok,
+        status: if ok {
+            "ready"
+        } else if total == 0 {
+            "empty"
+        } else {
+            "attention"
+        }
+        .to_string(),
+        case_source,
+        total,
+        passed,
+        failed,
+        recall,
+        grounded_coverage,
+        graph,
+        cases: results,
+        recommendations,
+    })
+}
+
+fn graph_rag_eval_haystack(report: &crate::app::graph_rag::GraphRagReport) -> String {
+    let mut parts = Vec::new();
+    parts.push(report.answer.clone());
+    for node in &report.ranked_nodes {
+        parts.push(format!(
+            "{} {} {} {} {}",
+            node.id, node.title, node.memory_type, node.status, node.summary
+        ));
+    }
+    for edge in &report.relevant_edges {
+        parts.push(format!("{} {} {}", edge.source, edge.kind, edge.target));
+    }
+    parts.join("\n").to_lowercase()
+}
+
+fn graph_rag_eval_graph_summary(cases: &[GraphRagEvalCaseResult]) -> GraphRagEvalGraphSummary {
+    let mut summary = GraphRagEvalGraphSummary::default();
+    for case in cases {
+        summary.total_nodes += case.node_count;
+        summary.total_edges += case.edge_count;
+        if case.edge_count > 0 {
+            summary.connected_cases += 1;
+        } else if case.node_count > 0 {
+            summary.isolated_cases += 1;
+        } else {
+            summary.missing_graph_cases += 1;
+        }
+        for (kind, count) in &case.relationship_kinds {
+            *summary.relationship_kinds.entry(kind.clone()).or_insert(0) += count;
+        }
+    }
+    if !cases.is_empty() {
+        summary.average_relationship_coverage = ((cases
+            .iter()
+            .map(|case| case.relationship_coverage)
+            .sum::<f64>()
+            / cases.len() as f64)
+            * 10.0)
+            .round()
+            / 10.0;
+        summary.average_edge_density = ((cases
+            .iter()
+            .map(|case| {
+                if case.node_count <= 1 {
+                    0.0
+                } else {
+                    case.edge_count as f64
+                        / case.node_count.saturating_mul(case.node_count - 1) as f64
+                }
+            })
+            .sum::<f64>()
+            / cases.len() as f64)
+            * 1000.0)
+            .round()
+            / 1000.0;
+    }
+    summary
 }
 
 fn rag_eval_packing_summary(cases: &[RagEvalCaseResult]) -> RagEvalPackingSummary {
@@ -1836,6 +2967,37 @@ fn rag_eval_packing_summary(cases: &[RagEvalCaseResult]) -> RagEvalPackingSummar
     summary
 }
 
+fn rag_eval_evidence_placement_summary(
+    cases: &[RagEvalCaseResult],
+) -> RagEvalEvidencePlacementSummary {
+    let mut summary = RagEvalEvidencePlacementSummary::default();
+    for case in cases {
+        match case.expected_evidence_status.as_str() {
+            "selected" => summary.selected += 1,
+            "suppressed_by_packing" => {
+                summary.suppressed_by_packing += 1;
+                for reason in &case.expected_suppressed_reasons {
+                    *summary
+                        .suppression_reasons
+                        .entry(reason.clone())
+                        .or_insert(0) += 1;
+                }
+            }
+            "missing_from_candidates" => summary.missing_from_candidates += 1,
+            "empty_expected" => summary.empty_expected += 1,
+            _ => {}
+        }
+    }
+    summary.expected_total = cases.len().saturating_sub(summary.empty_expected);
+    summary.selection_recall = eval_ratio_percent(summary.selected, summary.expected_total);
+    summary.candidate_recall = eval_ratio_percent(
+        summary.selected + summary.suppressed_by_packing,
+        summary.expected_total,
+    );
+    summary.near_miss_count = summary.suppressed_by_packing;
+    summary
+}
+
 fn rag_eval_grounded_summary(cases: &[RagEvalCaseResult]) -> RagEvalGroundedSummary {
     let passed = cases
         .iter()
@@ -1858,6 +3020,287 @@ fn rag_eval_grounded_summary(cases: &[RagEvalCaseResult]) -> RagEvalGroundedSumm
             .iter()
             .filter(|case| !case.grounded_answer.unknown_citations.is_empty())
             .count(),
+    }
+}
+
+fn rag_eval_ranking_summary(cases: &[RagEvalCaseResult]) -> RagEvalRankingSummary {
+    let total = cases.len();
+    let hit_at_1 = cases
+        .iter()
+        .filter(|case| case.expected_rank.is_some_and(|rank| rank <= 1))
+        .count();
+    let hit_at_3 = cases
+        .iter()
+        .filter(|case| case.expected_rank.is_some_and(|rank| rank <= 3))
+        .count();
+    let hit_at_5 = cases
+        .iter()
+        .filter(|case| case.expected_rank.is_some_and(|rank| rank <= 5))
+        .count();
+    let mean_reciprocal_rank = if total == 0 {
+        0.0
+    } else {
+        (cases
+            .iter()
+            .filter_map(|case| case.expected_rank)
+            .map(|rank| 1.0 / rank as f64)
+            .sum::<f64>()
+            / total as f64
+            * 1_000.0)
+            .round()
+            / 10.0
+    };
+    RagEvalRankingSummary {
+        total,
+        hit_at_1,
+        hit_at_3,
+        hit_at_5,
+        hit_at_1_rate: eval_ratio_percent(hit_at_1, total),
+        hit_at_3_rate: eval_ratio_percent(hit_at_3, total),
+        hit_at_5_rate: eval_ratio_percent(hit_at_5, total),
+        mean_reciprocal_rank,
+    }
+}
+
+fn rag_eval_split_summary(cases: &[RagEvalCaseResult]) -> RagEvalSplitSummary {
+    let development = cases
+        .iter()
+        .filter(|case| case.split == "development")
+        .collect::<Vec<_>>();
+    let holdout = cases
+        .iter()
+        .filter(|case| case.split == "holdout")
+        .collect::<Vec<_>>();
+    let development_passed = development.iter().filter(|case| case.passed).count();
+    let holdout_passed = holdout.iter().filter(|case| case.passed).count();
+    let holdout_grounded = holdout
+        .iter()
+        .filter(|case| case.grounded_answer.passed)
+        .count();
+    let holdout_total = holdout.len();
+    RagEvalSplitSummary {
+        development_total: development.len(),
+        development_passed,
+        development_recall: eval_ratio_percent(development_passed, development.len()),
+        holdout_total,
+        holdout_passed,
+        holdout_recall: eval_ratio_percent(holdout_passed, holdout_total),
+        holdout_grounded_coverage: eval_ratio_percent(holdout_grounded, holdout_total),
+        recommended_min_holdout_cases: RAG_EVAL_RECOMMENDED_HOLDOUT_CASES,
+        holdout_ready: holdout_total >= RAG_EVAL_RECOMMENDED_HOLDOUT_CASES
+            && holdout_passed == holdout_total
+            && holdout_grounded == holdout_total,
+        tuning_isolation_enforced: true,
+        holdout_policy: "labelled holdout is evaluated after retrieval configuration is fixed; evaluation never mutates ranking"
+            .to_string(),
+        origin_independence_verified: false,
+        development_signature: String::new(),
+        holdout_signature: String::new(),
+    }
+}
+
+fn rag_eval_matrix_summary(cases: &[RagEvalCaseResult]) -> RagEvalMatrixSummary {
+    let mut dimensions = RAG_EVAL_MATRIX_DIMENSIONS
+        .iter()
+        .map(|dimension| (dimension.to_string(), 0usize))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut stored_cases = 0usize;
+    let mut auto_cases = 0usize;
+
+    for case in cases {
+        if case.case_source == "stored" {
+            stored_cases += 1;
+        } else {
+            auto_cases += 1;
+        }
+        for dimension in rag_eval_case_dimensions(case) {
+            *dimensions.entry(dimension.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    let missing_dimensions = RAG_EVAL_MATRIX_DIMENSIONS
+        .iter()
+        .filter(|dimension| dimensions.get(**dimension).copied().unwrap_or_default() == 0)
+        .map(|dimension| dimension.to_string())
+        .collect::<Vec<_>>();
+    let total_dimensions = RAG_EVAL_MATRIX_DIMENSIONS.len();
+    let covered_dimensions = total_dimensions.saturating_sub(missing_dimensions.len());
+    let coverage = eval_ratio_percent(covered_dimensions, total_dimensions);
+    let status = if cases.is_empty() {
+        "empty"
+    } else if stored_cases == 0 {
+        "auto_only"
+    } else if !missing_dimensions.is_empty() {
+        "partial"
+    } else {
+        "ready"
+    }
+    .to_string();
+
+    RagEvalMatrixSummary {
+        status,
+        stored_cases,
+        auto_cases,
+        recommended_min_stored_cases: RAG_EVAL_RECOMMENDED_STORED_CASES,
+        total_dimensions,
+        covered_dimensions,
+        coverage,
+        dimensions,
+        missing_dimensions,
+    }
+}
+
+fn rag_eval_case_dimensions(case: &RagEvalCaseResult) -> Vec<&'static str> {
+    let mut dimensions = Vec::new();
+    let text = format!(
+        "{} {} {} {}",
+        case.query,
+        case.expected,
+        case.source_titles.join(" "),
+        case.citations.join(" ")
+    )
+    .to_lowercase();
+
+    if case.packing.chunk_candidates > 0
+        || case.packing.selected_chunks > 0
+        || case.source_titles.iter().any(|title| {
+            title.contains(".rs")
+                || title.contains(".md")
+                || title.contains(".toml")
+                || title.contains(':')
+        })
+    {
+        dimensions.push("source_chunk");
+    }
+    if case.packing.memory_candidates > 0 || case.packing.selected_memories > 0 {
+        dimensions.push("memory_card");
+    }
+    if text.contains("dukememory")
+        || text.contains("rag-ingest")
+        || text.contains(" --")
+        || text.contains(" cli")
+    {
+        dimensions.push("cli_workflow");
+    }
+    if text.contains("mcp") || text.contains("memory_") || text.contains("agent-session") {
+        dimensions.push("mcp_tooling");
+    }
+    if text.contains("http")
+        || text.contains("endpoint")
+        || text.contains("/web-control")
+        || text.contains(" get ")
+        || text.contains(" post ")
+    {
+        dimensions.push("http_api");
+    }
+    if text.contains("graph")
+        || text.contains("relationship")
+        || text.contains("edge")
+        || text.contains("node")
+    {
+        dimensions.push("graph_memory");
+    }
+    if text
+        .chars()
+        .any(|ch| ('\u{0400}'..='\u{04FF}').contains(&ch))
+    {
+        dimensions.push("multilingual");
+    }
+    if !case.passed
+        || case.expected_evidence_status == "missing_from_candidates"
+        || text.contains("missing")
+        || text.contains("нет ")
+        || text.contains("не ")
+    {
+        dimensions.push("negative_or_missing");
+    }
+    if case.expected_evidence_status == "suppressed_by_packing"
+        || !case.expected_suppressed_reasons.is_empty()
+        || !case.packing.suppressed_sources.is_empty()
+    {
+        dimensions.push("packing_near_miss");
+    }
+
+    dimensions.sort_unstable();
+    dimensions.dedup();
+    dimensions
+}
+
+fn rag_eval_retrieval_tuning_summary(
+    cases: &[RagEvalCaseResult],
+    evidence: &RagEvalEvidencePlacementSummary,
+    packing: &RagEvalPackingSummary,
+    semantic_fallbacks: usize,
+) -> RagEvalRetrievalTuningSummary {
+    let semantic_fallback_rate = eval_ratio_percent(semantic_fallbacks, cases.len());
+    let chunk_selection_rate =
+        eval_ratio_percent(packing.selected_chunks, packing.chunk_candidates);
+    let memory_selection_rate =
+        eval_ratio_percent(packing.selected_memories, packing.memory_candidates);
+    let mut selected_profile = "balanced".to_string();
+    let mut status = "ready".to_string();
+    let mut reasons = Vec::new();
+
+    if cases.is_empty() {
+        return RagEvalRetrievalTuningSummary {
+            status: "unconfigured".to_string(),
+            selected_profile,
+            candidate_recall: evidence.candidate_recall,
+            selection_recall: evidence.selection_recall,
+            chunk_selection_rate,
+            memory_selection_rate,
+            semantic_fallback_rate,
+            near_miss_count: evidence.near_miss_count,
+            reasons: vec!["no eval cases are available for retrieval tuning".to_string()],
+        };
+    }
+
+    if semantic_fallbacks > 0 {
+        status = "attention".to_string();
+        selected_profile = "recall_heavy".to_string();
+        reasons.push(
+            "semantic fallback occurred during eval; refresh embeddings/provider health"
+                .to_string(),
+        );
+    }
+    if evidence.missing_from_candidates > 0 {
+        status = "attention".to_string();
+        selected_profile = "recall_heavy".to_string();
+        reasons.push("expected evidence is missing from candidates; broaden retrieval or ingest missing chunks".to_string());
+    }
+    if evidence.near_miss_count > 0 {
+        status = "attention".to_string();
+        selected_profile = "recall_heavy".to_string();
+        reasons.push(
+            "expected evidence appears in candidates but is suppressed by packing".to_string(),
+        );
+    }
+    if evidence.selection_recall < 90.0 {
+        status = "attention".to_string();
+        selected_profile = "recall_heavy".to_string();
+        reasons.push(format!(
+            "selection recall {:.1}% is below the 90% tuning target",
+            evidence.selection_recall
+        ));
+    }
+    if status == "ready" && chunk_selection_rate < 20.0 && packing.chunk_candidates >= 5 {
+        selected_profile = "precision_heavy".to_string();
+        reasons.push("chunk pool is broad while selected evidence remains complete".to_string());
+    }
+    if reasons.is_empty() {
+        reasons.push("eval retrieval signals are balanced".to_string());
+    }
+
+    RagEvalRetrievalTuningSummary {
+        status,
+        selected_profile,
+        candidate_recall: evidence.candidate_recall,
+        selection_recall: evidence.selection_recall,
+        chunk_selection_rate,
+        memory_selection_rate,
+        semantic_fallback_rate,
+        near_miss_count: evidence.near_miss_count,
+        reasons,
     }
 }
 
@@ -1948,7 +3391,10 @@ fn rag_eval_bracketed_citations(answer: &str) -> Vec<String> {
     citations
 }
 
-fn rag_eval_expected_suppressed_titles(expected: &str, packing: &RagPackingReport) -> Vec<String> {
+fn rag_eval_expected_suppressed_sources<'a>(
+    expected: &str,
+    packing: &'a RagPackingReport,
+) -> Vec<&'a RagPackingSuppressedSource> {
     let expected = expected.trim().to_lowercase();
     if expected.is_empty() {
         return Vec::new();
@@ -1964,8 +3410,26 @@ fn rag_eval_expected_suppressed_titles(expected: &str, packing: &RagPackingRepor
             .to_lowercase()
             .contains(&expected)
         })
+        .collect()
+}
+
+#[cfg(test)]
+fn rag_eval_expected_suppressed_titles(expected: &str, packing: &RagPackingReport) -> Vec<String> {
+    rag_eval_expected_suppressed_sources(expected, packing)
+        .into_iter()
         .map(|source| source.title.clone())
         .collect()
+}
+
+fn rag_eval_unique_suppressed_reasons<'a>(reasons: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut unique = Vec::new();
+    for reason in reasons {
+        if seen.insert(reason) {
+            unique.push(reason.to_string());
+        }
+    }
+    unique
 }
 
 fn rag_eval_expected_evidence_status(
@@ -1986,7 +3450,7 @@ fn rag_eval_expected_evidence_status(
 
 fn load_rag_eval_cases(conn: &Connection, default_budget: usize) -> Result<Vec<RagEvalCase>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, query, expected, budget FROM eval_cases ORDER BY created_at ASC",
+        "SELECT id, name, query, expected, budget, split FROM eval_cases ORDER BY created_at ASC",
     )?;
     let rows = stmt.query_map([], |row| {
         let budget = row.get::<_, i64>(4)?;
@@ -2001,6 +3465,7 @@ fn load_rag_eval_cases(conn: &Connection, default_budget: usize) -> Result<Vec<R
                 default_budget
             },
             source: "stored".to_string(),
+            split: row.get(5)?,
         })
     })?;
     let mut cases = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2022,10 +3487,76 @@ fn load_rag_eval_cases(conn: &Connection, default_budget: usize) -> Result<Vec<R
             expected: id,
             budget: default_budget,
             source: "auto".to_string(),
+            split: "auto".to_string(),
         })
     })?;
     cases = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(cases)
+}
+
+fn load_graph_rag_eval_cases(conn: &Connection, default_budget: usize) -> Result<Vec<RagEvalCase>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, query, expected, budget, split FROM eval_cases \
+         WHERE lower(name || ' ' || query || ' ' || expected) LIKE '%graph%' \
+            OR lower(name || ' ' || query || ' ' || expected) LIKE '%relationship%' \
+            OR lower(name || ' ' || query || ' ' || expected) LIKE '% related%' \
+            OR lower(name || ' ' || query || ' ' || expected) LIKE '% link%' \
+         ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let budget = row.get::<_, i64>(4)?;
+        Ok(RagEvalCase {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            query: row.get(2)?,
+            expected: row.get(3)?,
+            budget: if budget > 0 {
+                budget as usize
+            } else {
+                default_budget
+            },
+            source: "stored_graph".to_string(),
+            split: row.get(5)?,
+        })
+    })?;
+    let cases = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    if !cases.is_empty() {
+        return Ok(cases);
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT l.id, l.memory_id, l.kind, l.target, source.title, target.title \
+         FROM memory_links l \
+         JOIN memories source ON source.id = l.memory_id \
+         JOIN memories target ON target.id = l.target \
+         WHERE source.status IN ('active','uncertain') \
+           AND target.status IN ('active','uncertain') \
+         ORDER BY l.id ASC \
+         LIMIT 12",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let link_id: i64 = row.get(0)?;
+        let source_id: String = row.get(1)?;
+        let kind: String = row.get(2)?;
+        let target_id: String = row.get(3)?;
+        let source_title: String = row.get(4)?;
+        let target_title: String = row.get(5)?;
+        Ok(RagEvalCase {
+            id: format!("auto-graph-{link_id}"),
+            name: truncate_chars(&format!("{source_title} -> {target_title}"), 80),
+            query: format!("Which memory cards are related to {source_title} through {kind}?"),
+            expected: if target_id.is_empty() {
+                source_id
+            } else {
+                target_id
+            },
+            budget: default_budget,
+            source: "auto_graph".to_string(),
+            split: "auto".to_string(),
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 fn eval_ratio_percent(part: usize, total: usize) -> f64 {
@@ -2424,42 +3955,20 @@ fn redact_sensitive_memories(conn: &Connection, findings: &[SecretFinding]) -> R
 }
 
 pub(crate) fn redact_sensitive_text(text: &str) -> Result<String> {
-    let patterns = [
-        Regex::new(r"sk-[A-Za-z0-9_-]{8,}")?,
-        Regex::new(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----")?,
-        Regex::new(r"(?i)(api_key|token|password|secret)\s*[:=]\s*\S+")?,
-    ];
-    let mut out = text.to_string();
-    for pattern in patterns {
-        out = pattern.replace_all(&out, "[REDACTED]").to_string();
-    }
-    Ok(out)
+    Ok(redact_sensitive_patterns(text))
 }
 
 pub(crate) fn scan_secret_findings(conn: &Connection) -> Result<Vec<SecretFinding>> {
     let rows = query_memories(conn, None, &[], &[], None, usize::MAX)?;
-    let patterns = [
-        ("openai_key", Regex::new(r"sk-[A-Za-z0-9_-]{8,}")?),
-        (
-            "private_key",
-            Regex::new(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")?,
-        ),
-        (
-            "assignment_secret",
-            Regex::new(r"(?i)(api_key|token|password|secret)\s*[:=]")?,
-        ),
-    ];
     let mut out = Vec::new();
     for row in rows {
         let text = format!("{}\n{}", row.title, row.body);
-        for (name, regex) in &patterns {
-            if regex.is_match(&text) {
-                out.push(SecretFinding {
-                    id: row.id.clone(),
-                    title: row.title.clone(),
-                    pattern: (*name).to_string(),
-                });
-            }
+        for name in sensitive_text_patterns(&text) {
+            out.push(SecretFinding {
+                id: row.id.clone(),
+                title: row.title.clone(),
+                pattern: name.to_string(),
+            });
         }
     }
     Ok(out)
@@ -2811,7 +4320,7 @@ pub(crate) fn review_stale(conn: &Connection, days: i64) -> Result<Vec<ReviewIss
         None,
         usize::MAX,
     )?;
-    Ok(rows
+    let mut issues = rows
         .into_iter()
         .filter(|m| m.updated_at < cutoff)
         .map(|m| ReviewIssue {
@@ -2820,7 +4329,25 @@ pub(crate) fn review_stale(conn: &Connection, days: i64) -> Result<Vec<ReviewIss
             title: m.title,
             detail: format!("not updated for at least {days} day(s)"),
         })
-        .collect())
+        .collect::<Vec<_>>();
+    let mut seen = issues
+        .iter()
+        .map(|issue| issue.id.clone())
+        .collect::<HashSet<_>>();
+    for evidence in stale_file_evidence(conn, 10_000)? {
+        if seen.insert(evidence.memory_id.clone()) {
+            issues.push(ReviewIssue {
+                kind: "stale_evidence".to_string(),
+                id: evidence.memory_id,
+                title: evidence.memory_title,
+                detail: format!(
+                    "{} file evidence `{}`: {}",
+                    evidence.status, evidence.path, evidence.detail
+                ),
+            });
+        }
+    }
+    Ok(issues)
 }
 
 pub(crate) fn review_uncertain(conn: &Connection) -> Result<Vec<ReviewIssue>> {
@@ -2920,13 +4447,17 @@ pub(crate) fn link_report(
     root: &Path,
     validate_symbols: bool,
 ) -> Result<Vec<LinkReport>> {
-    let mut sql = "SELECT memory_id, kind, target FROM memory_links".to_string();
+    let mut sql = "SELECT l.memory_id, l.kind, l.target FROM memory_links l \
+                   JOIN memories m ON m.id = l.memory_id"
+        .to_string();
     let mut params_vec = Vec::new();
     if let Some(id) = id {
-        sql.push_str(" WHERE memory_id = ?");
+        sql.push_str(" WHERE l.memory_id = ?");
         params_vec.push(id.to_string());
+    } else {
+        sql.push_str(" WHERE m.status IN ('active', 'uncertain')");
     }
-    sql.push_str(" ORDER BY memory_id, id");
+    sql.push_str(" ORDER BY l.memory_id, l.id");
     let mut stmt = conn.prepare(&sql)?;
     let links = stmt.query_map(rusqlite::params_from_iter(params_vec), |row| {
         Ok((
@@ -3061,6 +4592,128 @@ mod tests {
         }
     }
 
+    fn rag_eval_case(id: &str, expected: &str, budget: usize) -> RagEvalCase {
+        RagEvalCase {
+            id: id.to_string(),
+            name: format!("case {id}"),
+            query: format!("query {id}"),
+            expected: expected.to_string(),
+            budget,
+            source: "stored".to_string(),
+            split: "development".to_string(),
+        }
+    }
+
+    #[test]
+    fn rag_eval_corpus_signature_is_order_independent_and_content_aware() {
+        let first = rag_eval_case("a", "memory-a", 1_000);
+        let second = rag_eval_case("b", "memory-b", 2_000);
+        let forward = rag_eval_corpus_signature(&[first, second]).unwrap();
+
+        let reversed = rag_eval_corpus_signature(&[
+            rag_eval_case("b", "memory-b", 2_000),
+            rag_eval_case("a", "memory-a", 1_000),
+        ])
+        .unwrap();
+        let changed = rag_eval_corpus_signature(&[
+            rag_eval_case("a", "memory-a", 1_000),
+            rag_eval_case("b", "different", 2_000),
+        ])
+        .unwrap();
+
+        assert_eq!(forward, reversed);
+        assert_ne!(forward, changed);
+    }
+
+    #[test]
+    fn rag_eval_split_signatures_keep_holdout_changes_separate() {
+        let development = rag_eval_case("development", "memory-a", 1_000);
+        let mut holdout = rag_eval_case("holdout", "memory-b", 1_000);
+        holdout.split = "holdout".to_string();
+        let cases = [development, holdout];
+        let development_signature = rag_eval_split_corpus_signature(&cases, "development").unwrap();
+        let holdout_signature = rag_eval_split_corpus_signature(&cases, "holdout").unwrap();
+
+        let development_changed = rag_eval_split_corpus_signature(
+            &[rag_eval_case("development", "changed", 1_000), {
+                let mut case = rag_eval_case("holdout", "memory-b", 1_000);
+                case.split = "holdout".to_string();
+                case
+            }],
+            "holdout",
+        )
+        .unwrap();
+
+        assert_ne!(development_signature, holdout_signature);
+        assert_eq!(holdout_signature, development_changed);
+    }
+
+    #[test]
+    fn rag_eval_labels_retrieval_extractive_and_generated_layers_honestly() {
+        let temp = tempfile::tempdir().unwrap();
+        let conn = open_db(&temp.path().join("memory.db")).unwrap();
+        let report = rag_eval_report(&conn, None, 8, 3_000, "mock", "local", "mock").unwrap();
+
+        assert_eq!(report.version, 7);
+        assert_eq!(
+            report.evaluation_layers.retrieval.evaluation_kind,
+            "retrieval_ranking"
+        );
+        assert_eq!(
+            report
+                .evaluation_layers
+                .extractive_grounding
+                .evaluation_kind,
+            "deterministic_extractive_grounding"
+        );
+        assert!(
+            !report
+                .evaluation_layers
+                .extractive_grounding
+                .live_model_executed
+        );
+        assert_eq!(
+            report.evaluation_layers.generated_output_guard.passed,
+            report.evaluation_layers.generated_output_guard.total
+        );
+        assert!(
+            !report
+                .evaluation_layers
+                .generated_output_guard
+                .live_model_executed
+        );
+    }
+
+    #[test]
+    fn rag_eval_config_signature_covers_retrieval_inputs() {
+        let baseline =
+            rag_eval_config_signature(None, 6, 3_000, "local", "local", "model").unwrap();
+        let changed_limit =
+            rag_eval_config_signature(None, 8, 3_000, "local", "local", "model").unwrap();
+        let changed_scope =
+            rag_eval_config_signature(Some("project"), 6, 3_000, "local", "local", "model")
+                .unwrap();
+
+        assert_ne!(baseline, changed_limit);
+        assert_ne!(baseline, changed_scope);
+    }
+
+    #[test]
+    fn changed_rag_baselines_block_release_until_reviewed() {
+        for status in [
+            "invalid",
+            "regressed",
+            "changed",
+            "corpus_changed",
+            "config_changed",
+        ] {
+            assert!(rag_eval_baseline_blocks_release(status), "status={status}");
+        }
+        for status in ["matched", "written", "missing", "unconfigured"] {
+            assert!(!rag_eval_baseline_blocks_release(status), "status={status}");
+        }
+    }
+
     fn rag_eval_source(id: &str, summary: &str) -> RagSource {
         RagSource {
             id: id.to_string(),
@@ -3076,6 +4729,14 @@ mod tests {
             reasons: vec!["test".to_string()],
             summary: summary.to_string(),
             links: Vec::new(),
+            provenance: RagSourceProvenance {
+                origin: "memory_store".to_string(),
+                trust_lane: "durable_memory".to_string(),
+                evidence_ref: format!("dukememory:memory:{id}"),
+                content_hash: "test-hash".to_string(),
+                source: Some("test".to_string()),
+                updated_at: Some(1),
+            },
             path: None,
             chunk_index: None,
             start_line: None,
@@ -3087,12 +4748,24 @@ mod tests {
         expected_evidence_status: &str,
         packing: RagPackingReport,
     ) -> RagEvalCaseResult {
+        let expected_suppressed_reasons = if expected_evidence_status == "suppressed_by_packing" {
+            rag_eval_unique_suppressed_reasons(
+                packing
+                    .suppressed_sources
+                    .iter()
+                    .map(|source| source.reason.as_str()),
+            )
+        } else {
+            Vec::new()
+        };
         RagEvalCaseResult {
             id: "case".to_string(),
             name: "case".to_string(),
             case_source: "stored".to_string(),
+            split: "development".to_string(),
             query: "query".to_string(),
             expected: "expected".to_string(),
+            expected_rank: (expected_evidence_status == "selected").then_some(1),
             passed: expected_evidence_status == "selected",
             detail: "detail".to_string(),
             confidence: "medium".to_string(),
@@ -3104,6 +4777,7 @@ mod tests {
             expected_evidence_status: expected_evidence_status.to_string(),
             expected_in_candidates: expected_evidence_status != "missing_from_candidates",
             expected_suppressed_titles: Vec::new(),
+            expected_suppressed_reasons,
             semantic_used: true,
             semantic_error: None,
             missing_evidence: Vec::new(),
@@ -3150,8 +4824,10 @@ mod tests {
             id: "case-1".to_string(),
             name: "packing visible".to_string(),
             case_source: "stored".to_string(),
+            split: "development".to_string(),
             query: "how is RAG packed?".to_string(),
             expected: "packing".to_string(),
+            expected_rank: Some(2),
             passed: true,
             detail: "expected text found in RAG source pack".to_string(),
             confidence: "medium".to_string(),
@@ -3191,6 +4867,7 @@ mod tests {
             expected_evidence_status: "selected".to_string(),
             expected_in_candidates: true,
             expected_suppressed_titles: Vec::new(),
+            expected_suppressed_reasons: Vec::new(),
             semantic_used: true,
             semantic_error: None,
             missing_evidence: Vec::new(),
@@ -3215,6 +4892,13 @@ mod tests {
             "overlap"
         );
         assert_eq!(value["expected_evidence_status"], "selected");
+        assert_eq!(
+            value["expected_suppressed_reasons"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
         assert_eq!(value["grounded_answer"]["passed"], true);
         assert_eq!(value["grounded_answer"]["citation_count"], 1);
     }
@@ -3320,6 +5004,206 @@ mod tests {
         assert_eq!(grounded.coverage, 50.0);
         assert_eq!(grounded.expected_in_answer, 1);
         assert_eq!(grounded.cited_answers, 1);
+
+        let ranking = rag_eval_ranking_summary(&cases);
+        assert_eq!(ranking.total, 2);
+        assert_eq!(ranking.hit_at_1, 1);
+        assert_eq!(ranking.hit_at_3_rate, 50.0);
+        assert_eq!(ranking.mean_reciprocal_rank, 50.0);
+    }
+
+    #[test]
+    fn rag_eval_holdout_requires_enough_untouched_grounded_cases() {
+        let mut cases = (0..RAG_EVAL_RECOMMENDED_HOLDOUT_CASES)
+            .map(|_| {
+                let mut case = rag_eval_case_with_packing("selected", RagPackingReport::default());
+                case.split = "holdout".to_string();
+                case
+            })
+            .collect::<Vec<_>>();
+        let ready = rag_eval_split_summary(&cases);
+        assert!(ready.holdout_ready);
+        assert_eq!(ready.holdout_recall, 100.0);
+
+        cases.pop();
+        let insufficient = rag_eval_split_summary(&cases);
+        assert!(!insufficient.holdout_ready);
+    }
+
+    #[test]
+    fn rag_eval_evidence_placement_summarizes_near_misses() {
+        let cases = vec![
+            rag_eval_case_with_packing("selected", RagPackingReport::default()),
+            rag_eval_case_with_packing(
+                "suppressed_by_packing",
+                RagPackingReport {
+                    suppressed_sources: vec![RagPackingSuppressedSource {
+                        id: "chunk-a".to_string(),
+                        source_kind: "chunk".to_string(),
+                        title: "README.md:1-8".to_string(),
+                        reason: "file_cap".to_string(),
+                        score: 1.0,
+                        semantic_score: None,
+                        location: Some("README.md:1-8".to_string()),
+                        summary: "expected evidence".to_string(),
+                    }],
+                    ..RagPackingReport::default()
+                },
+            ),
+            rag_eval_case_with_packing("missing_from_candidates", RagPackingReport::default()),
+        ];
+
+        let summary = rag_eval_evidence_placement_summary(&cases);
+
+        assert_eq!(summary.expected_total, 3);
+        assert_eq!(summary.selected, 1);
+        assert_eq!(summary.suppressed_by_packing, 1);
+        assert_eq!(summary.missing_from_candidates, 1);
+        assert_eq!(summary.selection_recall, 33.3);
+        assert_eq!(summary.candidate_recall, 66.7);
+        assert_eq!(summary.near_miss_count, 1);
+        assert_eq!(summary.suppression_reasons.get("file_cap"), Some(&1));
+    }
+
+    #[test]
+    fn rag_eval_matrix_reports_dimension_coverage() {
+        let mut case = rag_eval_case_with_packing(
+            "selected",
+            RagPackingReport {
+                selected_chunks: 1,
+                chunk_candidates: 2,
+                selected_memories: 1,
+                memory_candidates: 1,
+                ..RagPackingReport::default()
+            },
+        );
+        case.query =
+            "Как dukememory CLI MCP /web-control проверяет graph relationship?".to_string();
+        case.expected = "graph".to_string();
+        case.source_titles = vec!["README.md:1-10".to_string()];
+
+        let summary = rag_eval_matrix_summary(&[case]);
+
+        assert_eq!(summary.stored_cases, 1);
+        assert_eq!(summary.dimensions.get("source_chunk"), Some(&1));
+        assert_eq!(summary.dimensions.get("memory_card"), Some(&1));
+        assert_eq!(summary.dimensions.get("cli_workflow"), Some(&1));
+        assert_eq!(summary.dimensions.get("mcp_tooling"), Some(&1));
+        assert_eq!(summary.dimensions.get("http_api"), Some(&1));
+        assert_eq!(summary.dimensions.get("graph_memory"), Some(&1));
+        assert_eq!(summary.dimensions.get("multilingual"), Some(&1));
+        assert_eq!(summary.status, "partial");
+        assert!(
+            summary
+                .missing_dimensions
+                .contains(&"negative_or_missing".to_string())
+        );
+    }
+
+    #[test]
+    fn rag_eval_retrieval_tuning_recommends_recall_for_near_misses() {
+        let cases = vec![
+            rag_eval_case_with_packing("selected", RagPackingReport::default()),
+            rag_eval_case_with_packing(
+                "suppressed_by_packing",
+                RagPackingReport {
+                    chunk_candidates: 4,
+                    selected_chunks: 1,
+                    suppressed_sources: vec![RagPackingSuppressedSource {
+                        id: "chunk-a".to_string(),
+                        source_kind: "chunk".to_string(),
+                        title: "README.md:1-8".to_string(),
+                        reason: "file_cap".to_string(),
+                        score: 1.0,
+                        semantic_score: None,
+                        location: Some("README.md:1-8".to_string()),
+                        summary: "expected evidence".to_string(),
+                    }],
+                    ..RagPackingReport::default()
+                },
+            ),
+            rag_eval_case_with_packing("missing_from_candidates", RagPackingReport::default()),
+        ];
+        let evidence = rag_eval_evidence_placement_summary(&cases);
+        let packing = rag_eval_packing_summary(&cases);
+
+        let tuning = rag_eval_retrieval_tuning_summary(&cases, &evidence, &packing, 0);
+
+        assert_eq!(tuning.status, "attention");
+        assert_eq!(tuning.selected_profile, "recall_heavy");
+        assert_eq!(tuning.selection_recall, 33.3);
+        assert_eq!(tuning.candidate_recall, 66.7);
+        assert_eq!(tuning.near_miss_count, 1);
+        assert!(
+            tuning
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("suppressed by packing"))
+        );
+    }
+
+    #[test]
+    fn graph_rag_eval_graph_summary_counts_connected_cases() {
+        let mut kinds = std::collections::BTreeMap::new();
+        kinds.insert("relates_to".to_string(), 2);
+        let cases = vec![
+            GraphRagEvalCaseResult {
+                id: "case-a".to_string(),
+                name: "case a".to_string(),
+                case_source: "auto_graph".to_string(),
+                query: "query".to_string(),
+                expected: "expected".to_string(),
+                passed: true,
+                detail: "detail".to_string(),
+                graph_status: "connected".to_string(),
+                confidence: "high".to_string(),
+                confidence_score: 0.9,
+                node_count: 3,
+                edge_count: 2,
+                relationship_coverage: 100.0,
+                relationship_kinds: kinds,
+                expected_in_graph: true,
+                expected_in_answer: true,
+                citation_count: 2,
+                citations: vec!["a".to_string(), "b".to_string()],
+                answer: "answer".to_string(),
+                ranked_node_titles: vec!["a".to_string()],
+                missing_evidence: Vec::new(),
+            },
+            GraphRagEvalCaseResult {
+                id: "case-b".to_string(),
+                name: "case b".to_string(),
+                case_source: "auto_graph".to_string(),
+                query: "query".to_string(),
+                expected: "expected".to_string(),
+                passed: false,
+                detail: "detail".to_string(),
+                graph_status: "isolated".to_string(),
+                confidence: "low".to_string(),
+                confidence_score: 0.2,
+                node_count: 2,
+                edge_count: 0,
+                relationship_coverage: 0.0,
+                relationship_kinds: std::collections::BTreeMap::new(),
+                expected_in_graph: true,
+                expected_in_answer: false,
+                citation_count: 1,
+                citations: vec!["c".to_string()],
+                answer: "answer".to_string(),
+                ranked_node_titles: vec!["c".to_string()],
+                missing_evidence: vec!["missing edge".to_string()],
+            },
+        ];
+
+        let summary = graph_rag_eval_graph_summary(&cases);
+
+        assert_eq!(summary.total_nodes, 5);
+        assert_eq!(summary.total_edges, 2);
+        assert_eq!(summary.connected_cases, 1);
+        assert_eq!(summary.isolated_cases, 1);
+        assert_eq!(summary.missing_graph_cases, 0);
+        assert_eq!(summary.average_relationship_coverage, 50.0);
+        assert_eq!(summary.relationship_kinds.get("relates_to"), Some(&2));
     }
 
     #[test]

@@ -1,7 +1,13 @@
 use super::*;
 
+mod release_gate;
+pub(crate) use release_gate::*;
+mod rag_eval_summary;
+use rag_eval_summary::*;
+
 const FRESH_MEMORY_GRACE_MS: i64 = 86_400_000;
 const GAP_INBOX_STALE_MS: i64 = 3_600_000;
+const AUTO_SUPERSEDE_SAFE_CONFIDENCE: f64 = 0.90;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct MemoryReadEvent {
@@ -14,6 +20,18 @@ pub(crate) struct MemoryReadEvent {
     pub(crate) budget: usize,
     pub(crate) elapsed_ms: u128,
     pub(crate) created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AuditIntegrityReport {
+    pub(crate) version: u32,
+    pub(crate) ok: bool,
+    pub(crate) events: usize,
+    pub(crate) checkpoints: usize,
+    pub(crate) first_event_id: Option<i64>,
+    pub(crate) last_event_id: Option<i64>,
+    pub(crate) head_hash: String,
+    pub(crate) errors: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -96,28 +114,70 @@ pub(crate) struct MemoryQuality {
     #[serde(rename = "type")]
     pub(crate) memory_type: String,
     pub(crate) title: String,
+    #[serde(default)]
     pub(crate) score: f64,
+    #[serde(default)]
     pub(crate) usefulness_score: f64,
+    #[serde(default)]
     pub(crate) token_saving_score: f64,
+    #[serde(default)]
     pub(crate) risk_score: f64,
+    #[serde(default)]
     pub(crate) request_count: usize,
+    #[serde(default)]
     pub(crate) positive_feedback: usize,
+    #[serde(default)]
     pub(crate) negative_feedback: usize,
+    #[serde(default)]
     pub(crate) body_chars: usize,
+    #[serde(default)]
     pub(crate) links: usize,
+    #[serde(default)]
+    pub(crate) age_days: i64,
+    #[serde(default = "legacy_quality_classification")]
+    pub(crate) classification: String,
+    #[serde(default = "legacy_quality_evidence_state")]
+    pub(crate) evidence_state: String,
+    #[serde(default)]
+    pub(crate) recommended_action: Option<String>,
+    #[serde(default)]
     pub(crate) reasons: Vec<String>,
+}
+
+fn legacy_quality_classification() -> String {
+    "legacy".to_string()
+}
+
+fn legacy_quality_evidence_state() -> String {
+    "unknown".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct QualityReport {
+    #[serde(default = "quality_report_version_default")]
     pub(crate) version: u32,
+    #[serde(default)]
     pub(crate) since_days: i64,
+    #[serde(default)]
     pub(crate) total: usize,
+    #[serde(default)]
     pub(crate) average_score: f64,
+    #[serde(default)]
+    pub(crate) actionable_count: usize,
+    #[serde(default)]
+    pub(crate) classifications: BTreeMap<String, usize>,
+    #[serde(default)]
     pub(crate) strongest: Vec<MemoryQuality>,
+    #[serde(default)]
     pub(crate) weakest: Vec<MemoryQuality>,
+    #[serde(default)]
     pub(crate) items: Vec<MemoryQuality>,
+    #[serde(default)]
     pub(crate) suggestions: Vec<UsefulnessSuggestion>,
+}
+
+fn quality_report_version_default() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -254,12 +314,43 @@ pub(crate) struct ProjectDiffReport {
     pub(crate) root: String,
     pub(crate) changed_only: bool,
     pub(crate) changed_files: Vec<String>,
+    pub(crate) git: GitWorktreeContext,
     pub(crate) missing_links: usize,
     pub(crate) conflicts: usize,
     pub(crate) stale_active: usize,
     pub(crate) new_or_changed_memory_ids: Vec<String>,
+    pub(crate) impact: ProjectDiffImpactSummary,
     pub(crate) drift: DriftReport,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct GitWorktreeContext {
+    pub(crate) available: bool,
+    pub(crate) worktree_root: String,
+    pub(crate) common_git_dir: String,
+    pub(crate) branch: Option<String>,
+    pub(crate) head_commit: Option<String>,
+    pub(crate) head_committed_at: Option<String>,
+    pub(crate) detached: bool,
+    pub(crate) dirty: bool,
+    pub(crate) observed_at: i64,
+    pub(crate) temporal_basis: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ProjectDiffImpactSummary {
+    pub(crate) changed_files: usize,
+    pub(crate) changed_files_with_memory: usize,
+    pub(crate) unlinked_changed_files: Vec<String>,
+    pub(crate) linked_memory_count: usize,
+    pub(crate) affected_memory_ids: Vec<String>,
+    pub(crate) new_or_changed_memory_count: usize,
+    pub(crate) missing_links: usize,
+    pub(crate) conflicts: usize,
+    pub(crate) stale_active: usize,
+    pub(crate) severity: String,
+    pub(crate) suggested_action: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -546,15 +637,42 @@ pub(crate) struct AutoRankingTuneReport {
     pub(crate) ok: bool,
     pub(crate) root: String,
     pub(crate) since_days: i64,
+    pub(crate) current_profile: Option<String>,
     pub(crate) selected_profile: String,
+    pub(crate) profile_change: bool,
+    pub(crate) safe_to_apply: bool,
     pub(crate) applied: bool,
     pub(crate) qa_score: f64,
     pub(crate) useful_rate: f64,
     pub(crate) inferred_missing: usize,
     pub(crate) semantic_empty: usize,
     pub(crate) noisy_cards: usize,
+    pub(crate) rag_retrieval_status: String,
+    pub(crate) rag_retrieval_profile: String,
+    pub(crate) rag_selection_recall: f64,
+    pub(crate) rag_candidate_recall: f64,
+    pub(crate) rag_near_misses: usize,
+    pub(crate) signals: Vec<AutoRankingTuneSignal>,
+    pub(crate) apply_plan: AutoRankingTuneApplyPlan,
     pub(crate) reasons: Vec<String>,
     pub(crate) ranking: RankingProfileReport,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AutoRankingTuneSignal {
+    pub(crate) name: String,
+    pub(crate) status: String,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AutoRankingTuneApplyPlan {
+    pub(crate) current_profile: Option<String>,
+    pub(crate) selected_profile: String,
+    pub(crate) profile_change: bool,
+    pub(crate) safe_to_apply: bool,
+    pub(crate) action: String,
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -657,8 +775,10 @@ pub(crate) struct MemoryTestHarnessReport {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct MemoryTestProbe {
     pub(crate) query: String,
+    pub(crate) original_expected_id: Option<String>,
     pub(crate) expected_type: Option<String>,
     pub(crate) expected_id: Option<String>,
+    pub(crate) supersession_hops: Vec<String>,
     pub(crate) found: bool,
     pub(crate) matched_id: Option<String>,
     pub(crate) matched_title: Option<String>,
@@ -739,12 +859,13 @@ pub(crate) struct MemoryDiffApplyReport {
     pub(crate) actions: Vec<String>,
     pub(crate) recommendations: Vec<String>,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RecallBenchmarkBaseline {
     pub(crate) version: u32,
     pub(crate) score: f64,
     pub(crate) probe_count: usize,
+    #[serde(default)]
+    pub(crate) probe_ids: Vec<String>,
     pub(crate) written_at: i64,
 }
 
@@ -756,6 +877,9 @@ pub(crate) struct RecallBenchmarkSuiteReport {
     pub(crate) since_days: i64,
     pub(crate) score: f64,
     pub(crate) baseline_score: Option<f64>,
+    pub(crate) baseline_compatible: bool,
+    pub(crate) baseline_stale: bool,
+    pub(crate) current_probe_ids: Vec<String>,
     pub(crate) regression: bool,
     pub(crate) baseline_written: bool,
     pub(crate) baseline_path: String,
@@ -776,27 +900,6 @@ pub(crate) struct ReleaseGateV2Report {
     pub(crate) benchmark: RecallBenchmarkSuiteReport,
     pub(crate) audit_v2: AgentAuditV2Report,
     pub(crate) control_center: MemoryControlCenterV2Report,
-    pub(crate) checks: Vec<ReleaseGateCheck>,
-    pub(crate) issues: Vec<String>,
-    pub(crate) recommendations: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct ReleaseGateV3Report {
-    pub(crate) version: u32,
-    pub(crate) ok: bool,
-    pub(crate) status: String,
-    pub(crate) root: String,
-    pub(crate) strict: bool,
-    pub(crate) run: bool,
-    pub(crate) release_gate_v2: ReleaseGateV2Report,
-    pub(crate) effectiveness_v2: MemoryEffectivenessV2Report,
-    pub(crate) baselines: RecallBenchmarkBaselinesReport,
-    pub(crate) conflict_apply: MemoryConflictApplyReport,
-    pub(crate) mcp_surface_v3: McpToolSurfaceV3Report,
-    pub(crate) mcp_discipline_v3: McpDisciplineV3Report,
-    pub(crate) fleet_quality: FleetQualityReport,
-    pub(crate) rag_eval: RagEvalReport,
     pub(crate) checks: Vec<ReleaseGateCheck>,
     pub(crate) issues: Vec<String>,
     pub(crate) recommendations: Vec<String>,
@@ -887,6 +990,12 @@ pub(crate) struct MemoryQualityCiReport {
     pub(crate) health_score: f64,
     pub(crate) benchmark_score: f64,
     pub(crate) audit_score: f64,
+    pub(crate) rag_eval_status: String,
+    pub(crate) rag_eval_recall: f64,
+    pub(crate) rag_eval_grounded_coverage: f64,
+    pub(crate) graph_rag_eval_status: String,
+    pub(crate) graph_rag_eval_recall: f64,
+    pub(crate) graph_rag_eval_edges: usize,
     pub(crate) failed_checks: Vec<String>,
     pub(crate) release_gate_v2: Option<ReleaseGateV2Report>,
     pub(crate) recommendations: Vec<String>,
@@ -1372,6 +1481,8 @@ pub(crate) struct MemoryEffectivenessV2Report {
     pub(crate) confirmed_rate: f64,
     pub(crate) wasted_read_rate: f64,
     pub(crate) semantic_result_rate: f64,
+    pub(crate) active_card_count: usize,
+    pub(crate) ignored_card_count: usize,
     pub(crate) top_useful_cards: Vec<MemoryEffectivenessCard>,
     pub(crate) ignored_cards: Vec<MemoryEffectivenessCard>,
     pub(crate) weak_reads: Vec<MemoryEffectivenessRead>,
@@ -1866,6 +1977,11 @@ pub(crate) struct AutonomousSupervisorReport {
     pub(crate) root: String,
     pub(crate) since_days: i64,
     pub(crate) applied: bool,
+    pub(crate) quality_before: f64,
+    pub(crate) quality_after: f64,
+    pub(crate) quality_delta: f64,
+    pub(crate) readiness: AutonomousSupervisorReadiness,
+    pub(crate) guardrails: Vec<String>,
     pub(crate) doctor_before: ProjectDoctorReport,
     pub(crate) planned_actions: Vec<AutonomousSupervisorAction>,
     pub(crate) executed_actions: Vec<AutonomousSupervisorAction>,
@@ -1875,6 +1991,22 @@ pub(crate) struct AutonomousSupervisorReport {
     pub(crate) contract_v2: MemoryContractV2Report,
     pub(crate) doctor_after: ProjectDoctorReport,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AutonomousSupervisorReadiness {
+    pub(crate) rag_eval_status: String,
+    pub(crate) rag_eval_recall: f64,
+    pub(crate) rag_eval_near_misses: usize,
+    pub(crate) eval_matrix_status: String,
+    pub(crate) eval_matrix_coverage: f64,
+    pub(crate) eval_matrix_missing_dimensions: Vec<String>,
+    pub(crate) retrieval_tuning_status: String,
+    pub(crate) retrieval_profile: String,
+    pub(crate) diff_impact_severity: String,
+    pub(crate) diff_write_ready_count: usize,
+    pub(crate) diff_unlinked_changed_files: usize,
+    pub(crate) safe_to_apply: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1963,15 +2095,47 @@ pub(crate) struct WebControlCenterV12Report {
     pub(crate) status: String,
     pub(crate) root: String,
     pub(crate) target: Option<String>,
-    pub(crate) v11: WebControlCenterV11Report,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) snapshot: Option<ControlSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) v11: Option<WebControlCenterV11Report>,
     pub(crate) effectiveness_v2: MemoryEffectivenessV2Report,
     pub(crate) baselines: RecallBenchmarkBaselinesReport,
     pub(crate) conflict_apply: MemoryConflictApplyReport,
+    pub(crate) inbox_reviewer: InboxAiReviewerReport,
+    pub(crate) diff_apply: MemoryDiffApplyReport,
     pub(crate) mcp_discipline_v3: McpDisciplineV3Report,
     pub(crate) fleet_quality: FleetQualityReport,
+    pub(crate) rag_eval: WebRagEvalQuickSummary,
+    pub(crate) graph_rag_eval: WebGraphRagEvalSummary,
     pub(crate) panels: Vec<WebControlPanel>,
     pub(crate) controls: Vec<WebControlAction>,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WebRagEvalQuickSummary {
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) total: usize,
+    pub(crate) passed: usize,
+    pub(crate) failed: usize,
+    pub(crate) semantic_fallbacks: usize,
+    pub(crate) grounded_answers: RagEvalGroundedSummary,
+    pub(crate) eval_matrix: RagEvalMatrixSummary,
+    pub(crate) retrieval_tuning: RagEvalRetrievalTuningSummary,
+    pub(crate) split: RagEvalSplitSummary,
+    pub(crate) baseline: RagEvalBaselineSummary,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct WebGraphRagEvalSummary {
+    pub(crate) status: String,
+    pub(crate) total_cases: usize,
+    pub(crate) memory_relationship_edges: usize,
+    pub(crate) relationship_kinds: std::collections::BTreeMap<String, usize>,
+    pub(crate) detail: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2004,6 +2168,8 @@ pub(crate) struct MemoryDiffReviewReport {
     pub(crate) root: String,
     pub(crate) applied: bool,
     pub(crate) changed_files: Vec<String>,
+    pub(crate) git: GitWorktreeContext,
+    pub(crate) impact: MemoryDiffImpactSummary,
     pub(crate) suggested_memory: Vec<String>,
     pub(crate) candidate_cards: Vec<MemoryDiffCandidate>,
     pub(crate) write_ready: Vec<MemoryDiffCandidate>,
@@ -2011,6 +2177,19 @@ pub(crate) struct MemoryDiffReviewReport {
     pub(crate) conflict_count: usize,
     pub(crate) actions: Vec<String>,
     pub(crate) recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemoryDiffImpactSummary {
+    pub(crate) changed_files: usize,
+    pub(crate) candidate_count: usize,
+    pub(crate) write_ready_count: usize,
+    pub(crate) stale_memory_count: usize,
+    pub(crate) conflict_count: usize,
+    pub(crate) unlinked_changed_files: Vec<String>,
+    pub(crate) affected_memory_ids: Vec<String>,
+    pub(crate) severity: String,
+    pub(crate) suggested_action: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2022,6 +2201,11 @@ pub(crate) struct MemoryDiffCandidate {
     pub(crate) confidence: f64,
     pub(crate) link: String,
     pub(crate) reason: String,
+    pub(crate) worktree_root: String,
+    pub(crate) branch: Option<String>,
+    pub(crate) base_commit: Option<String>,
+    pub(crate) observed_at: i64,
+    pub(crate) temporal_basis: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -2048,13 +2232,19 @@ pub(crate) struct AutonomyControlCenterReport {
     pub(crate) status: String,
     pub(crate) root: String,
     pub(crate) since_days: i64,
+    pub(crate) local_ready: bool,
+    pub(crate) optional_sync_ready: bool,
+    pub(crate) required_checks: Vec<ReleaseGateCheck>,
+    pub(crate) optional_checks: Vec<ReleaseGateCheck>,
     pub(crate) qa: MemoryQaReport,
     pub(crate) ranking: AutoRankingTuneReport,
     pub(crate) watch: WatchControlReport,
     pub(crate) diff_review: MemoryDiffReviewReport,
     pub(crate) remote_sync: RemoteSyncV2Report,
     pub(crate) issues: Vec<String>,
+    pub(crate) optional_issues: Vec<String>,
     pub(crate) recommendations: Vec<String>,
+    pub(crate) optional_recommendations: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2256,6 +2446,7 @@ pub(crate) struct ProjectDashboardItem {
     pub(crate) db: String,
     pub(crate) memories: i64,
     pub(crate) pending_inbox: i64,
+    pub(crate) actionable_pending_inbox: usize,
     pub(crate) quality_average: Option<f64>,
     pub(crate) autonomous_ok: Option<bool>,
     pub(crate) autonomous_age_secs: Option<i64>,
@@ -2338,6 +2529,7 @@ pub(crate) struct MemoryQaReport {
     pub(crate) stale: usize,
     pub(crate) too_long: usize,
     pub(crate) duplicate_candidates: usize,
+    pub(crate) actionable_duplicate_candidates: usize,
     pub(crate) embedding_missing: usize,
     pub(crate) embedding_stale: usize,
     pub(crate) autonomous_ok: Option<bool>,
@@ -2397,6 +2589,7 @@ pub(crate) struct OpsQualityLoopStatus {
     pub(crate) stale_cards: usize,
     pub(crate) too_long_cards: usize,
     pub(crate) duplicate_candidates: usize,
+    pub(crate) actionable_duplicate_candidates: usize,
     pub(crate) reversible_cleanup_ready: bool,
 }
 
@@ -2475,6 +2668,11 @@ pub(crate) struct OpsStorageStatus {
     pub(crate) rollback_count: usize,
     pub(crate) install_backups_bytes: u64,
     pub(crate) install_backups_count: usize,
+    pub(crate) agent_quota_bytes: u64,
+    pub(crate) backups_quota_bytes: u64,
+    pub(crate) rollback_quota_bytes: u64,
+    pub(crate) install_backups_quota_bytes: u64,
+    pub(crate) over_quota: Vec<String>,
     pub(crate) retention_ready: bool,
     pub(crate) pressure: String,
 }
@@ -2568,22 +2766,200 @@ pub(crate) fn log_read_event(conn: &Connection, input: ReadEventInput<'_>) -> Re
     Ok(())
 }
 
-pub(crate) fn print_audit(conn: &Connection, limit: usize, json_out: bool) -> Result<()> {
+pub(crate) fn audit_integrity_report(conn: &Connection) -> Result<AuditIntegrityReport> {
+    let mut errors = Vec::new();
+    let mut checkpoint_count = 0usize;
+    let mut previous_checkpoint_hash = "genesis".to_string();
+    let mut latest_anchor = None;
+    let mut stmt = conn.prepare(
+        "SELECT id, created_at, deleted_through_id, deleted_count, first_retained_id, anchor_hash, previous_checkpoint_hash, checkpoint_hash FROM audit_checkpoints ORDER BY id ASC",
+    )?;
+    for row in stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+        ))
+    })? {
+        let (
+            id,
+            created_at,
+            deleted_through_id,
+            deleted_count,
+            first_retained_id,
+            anchor_hash,
+            stored_previous,
+            stored_hash,
+        ) = row?;
+        checkpoint_count += 1;
+        if stored_previous != previous_checkpoint_hash {
+            errors.push(format!("checkpoint:{id}:previous_hash_mismatch"));
+        }
+        let expected_hash = audit_checkpoint_hash(
+            id,
+            created_at,
+            deleted_through_id,
+            deleted_count,
+            first_retained_id,
+            &anchor_hash,
+            &stored_previous,
+        );
+        if stored_hash != expected_hash {
+            errors.push(format!("checkpoint:{id}:hash_mismatch"));
+        }
+        previous_checkpoint_hash = stored_hash;
+        latest_anchor = Some(anchor_hash);
+    }
+    drop(stmt);
+
+    let mut expected_previous = latest_anchor.unwrap_or_else(|| "genesis".to_string());
+    let mut event_count = 0usize;
+    let mut first_event_id = None;
+    let mut last_event_id = None;
+    let mut stmt = conn.prepare(
+        "SELECT id, event_type, memory_id, detail, created_at, previous_hash, event_hash FROM memory_events ORDER BY id ASC",
+    )?;
+    for row in stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+        ))
+    })? {
+        let (id, event_type, memory_id, detail, created_at, stored_previous, stored_hash) = row?;
+        event_count += 1;
+        first_event_id.get_or_insert(id);
+        last_event_id = Some(id);
+        if stored_previous != expected_previous {
+            errors.push(format!("event:{id}:previous_hash_mismatch"));
+        }
+        let expected_hash = audit_event_hash(
+            id,
+            &event_type,
+            memory_id.as_deref(),
+            &detail,
+            created_at,
+            &stored_previous,
+        );
+        if stored_hash != expected_hash {
+            errors.push(format!("event:{id}:hash_mismatch"));
+        }
+        expected_previous = stored_hash;
+        if errors.len() >= 50 {
+            break;
+        }
+    }
+    Ok(AuditIntegrityReport {
+        version: 1,
+        ok: errors.is_empty(),
+        events: event_count,
+        checkpoints: checkpoint_count,
+        first_event_id,
+        last_event_id,
+        head_hash: expected_previous,
+        errors,
+    })
+}
+
+pub(crate) fn print_audit(
+    conn: &Connection,
+    limit: usize,
+    verify: bool,
+    json_out: bool,
+) -> Result<()> {
     let events = audit_events(conn, limit)?;
     if json_out {
-        println!("{}", serde_json::to_string_pretty(&events)?);
-    } else if events.is_empty() {
-        println!("audit: none");
-    } else {
-        for event in events {
-            let memory_id = event.memory_id.unwrap_or_else(|| "-".to_string());
+        if verify {
             println!(
-                "{}  {}  {}  {}",
-                event.id, event.event_type, memory_id, event.detail
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "integrity": audit_integrity_report(conn)?,
+                    "events": events,
+                }))?
             );
+        } else {
+            println!("{}", serde_json::to_string_pretty(&events)?);
+        }
+    } else {
+        if events.is_empty() {
+            println!("audit: none");
+        } else {
+            for event in events {
+                let memory_id = event.memory_id.unwrap_or_else(|| "-".to_string());
+                println!(
+                    "{}  {}  {}  {}",
+                    event.id, event.event_type, memory_id, event.detail
+                );
+            }
+        }
+        if verify {
+            let integrity = audit_integrity_report(conn)?;
+            println!(
+                "integrity: {} events={} checkpoints={} head={}",
+                if integrity.ok { "ok" } else { "failed" },
+                integrity.events,
+                integrity.checkpoints,
+                integrity.head_hash
+            );
+            for error in integrity.errors {
+                println!("integrity_error: {error}");
+            }
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod audit_integrity_tests {
+    use super::*;
+    use crate::app::ops::run_cleanup_quiet;
+
+    #[test]
+    fn audit_hash_chain_detects_row_tampering() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let conn = open_db(&temp.path().join("memory.db"))?;
+        log_event(&conn, "one", None, "first")?;
+        log_event(&conn, "two", Some("memory-a"), "second")?;
+        assert!(audit_integrity_report(&conn)?.ok);
+
+        conn.execute(
+            "UPDATE memory_events SET detail = 'tampered' WHERE event_type = 'one'",
+            [],
+        )?;
+        let report = audit_integrity_report(&conn)?;
+        assert!(!report.ok);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("hash_mismatch"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retention_checkpoint_preserves_verifiable_chain() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let conn = open_db(&temp.path().join("memory.db"))?;
+        for index in 0..5 {
+            log_event(&conn, "fixture", None, &format!("event-{index}"))?;
+        }
+        run_cleanup_quiet(&conn, 2, 30)?;
+        let report = audit_integrity_report(&conn)?;
+        assert!(report.ok, "{:?}", report.errors);
+        assert_eq!(report.checkpoints, 1);
+        assert_eq!(report.events, 3); // two retained rows plus the cleanup event
+        Ok(())
+    }
 }
 
 pub(crate) fn print_usage_report(
@@ -3846,14 +4222,17 @@ pub(crate) fn action_journal_report(
         "#,
     )?;
     let rows = stmt
-        .query_map(params![since_ms, limit.min(i64::MAX as usize)], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-            ))
-        })?
+        .query_map(
+            params![since_ms, limit.min(i64::MAX as usize) as i64],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut items = Vec::new();
     for (id, event_type, detail, created_at) in rows {
@@ -4141,81 +4520,6 @@ pub(crate) fn usefulness_engine_report(
     })
 }
 
-pub(crate) fn print_ranking_profile(
-    root: &Path,
-    profile: RankingProfileMode,
-    apply: bool,
-    json_out: bool,
-) -> Result<()> {
-    let report = ranking_profile_report(root, profile, apply)?;
-    if json_out {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
-    }
-    println!("Ranking Profile");
-    println!("profile: {}", report.profile);
-    println!("applied: {}", report.applied);
-    println!("path: {}", report.path);
-    Ok(())
-}
-
-pub(crate) fn ranking_profile_report(
-    root: &Path,
-    profile: RankingProfileMode,
-    apply: bool,
-) -> Result<RankingProfileReport> {
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let mut weights = BTreeMap::new();
-    match profile {
-        RankingProfileMode::Balanced => {
-            weights.insert("recent_read".to_string(), 0.9);
-            weights.insert("useful_feedback".to_string(), 4.0);
-            weights.insert("useless_feedback".to_string(), -7.0);
-        }
-        RankingProfileMode::Strict => {
-            weights.insert("recent_read".to_string(), 0.6);
-            weights.insert("useful_feedback".to_string(), 3.0);
-            weights.insert("useless_feedback".to_string(), -10.0);
-        }
-        RankingProfileMode::RecallHeavy => {
-            weights.insert("recent_read".to_string(), 1.1);
-            weights.insert("useful_feedback".to_string(), 3.5);
-            weights.insert("useless_feedback".to_string(), -4.0);
-        }
-        RankingProfileMode::PrecisionHeavy => {
-            weights.insert("recent_read".to_string(), 0.7);
-            weights.insert("useful_feedback".to_string(), 5.0);
-            weights.insert("useless_feedback".to_string(), -12.0);
-        }
-    }
-    let path = root.join(".agent/ranking-profile.json");
-    if apply {
-        write_file(
-            &path,
-            serde_json::to_string_pretty(&json!({
-                "version": 1,
-                "profile": profile.to_string(),
-                "weights": &weights,
-                "updated_at": now_ms(),
-            }))?
-            .as_bytes(),
-        )?;
-    }
-    Ok(RankingProfileReport {
-        version: 1,
-        ok: true,
-        root: root.display().to_string(),
-        profile: profile.to_string(),
-        applied: apply,
-        path: path.display().to_string(),
-        weights,
-        recommendations: vec![
-            "profile is read from DUKEMEMORY_RANKING_PROFILE or .agent/ranking-profile.json"
-                .to_string(),
-        ],
-    })
-}
-
 pub(crate) fn print_context_governor(
     conn: &Connection,
     root: &Path,
@@ -4420,8 +4724,25 @@ pub(crate) fn print_auto_ranking_tune(
         return Ok(());
     }
     println!("Auto Ranking Tune");
+    println!("current_profile: {:?}", report.current_profile);
     println!("selected_profile: {}", report.selected_profile);
+    println!("profile_change: {}", report.profile_change);
+    println!("safe_to_apply: {}", report.safe_to_apply);
     println!("applied: {}", report.applied);
+    println!(
+        "rag_retrieval: status={} profile={} selection_recall={:.1}% candidate_recall={:.1}% near_misses={}",
+        report.rag_retrieval_status,
+        report.rag_retrieval_profile,
+        report.rag_selection_recall,
+        report.rag_candidate_recall,
+        report.rag_near_misses
+    );
+    for signal in &report.signals {
+        println!(
+            "signal: {} status={} detail={}",
+            signal.name, signal.status, signal.detail
+        );
+    }
     for reason in &report.reasons {
         println!("- {reason}");
     }
@@ -4437,6 +4758,7 @@ pub(crate) fn auto_ranking_tune_report(
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let qa = memory_qa_report(conn, &root, since_days)?;
     let quality = quality_report(conn, since_days, 30)?;
+    let current_profile = current_ranking_profile(&root);
     let noisy_cards = quality
         .weakest
         .iter()
@@ -4464,25 +4786,166 @@ pub(crate) fn auto_ranking_tune_report(
                 vec!["mixed quality signals favor precision over recall".to_string()],
             )
         };
-    if apply {
-        reasons.push("applied durable .agent/ranking-profile.json".to_string());
+    let stored_cases: i64 =
+        conn.query_row("SELECT COUNT(*) FROM eval_cases", [], |row| row.get(0))?;
+    let mut profile = profile;
+    let mut rag_retrieval_status = "unconfigured".to_string();
+    let mut rag_retrieval_profile = profile.to_string();
+    let mut rag_selection_recall = 0.0;
+    let mut rag_candidate_recall = 0.0;
+    let mut rag_near_misses = 0usize;
+    if stored_cases > 0 {
+        let rag_eval = rag_eval_report(
+            conn,
+            None,
+            8,
+            3_000,
+            DEFAULT_EMBED_PROVIDER,
+            DEFAULT_EMBED_ENDPOINT,
+            DEFAULT_EMBED_MODEL,
+        )?;
+        rag_retrieval_status = rag_eval.retrieval_tuning.status.clone();
+        rag_retrieval_profile = rag_eval.retrieval_tuning.selected_profile.clone();
+        rag_selection_recall = rag_eval.retrieval_tuning.selection_recall;
+        rag_candidate_recall = rag_eval.retrieval_tuning.candidate_recall;
+        rag_near_misses = rag_eval.retrieval_tuning.near_miss_count;
+        if rag_eval.retrieval_tuning.status == "attention"
+            && let Some(rag_profile) =
+                ranking_profile_mode_from_name(&rag_eval.retrieval_tuning.selected_profile)
+        {
+            profile = rag_profile;
+            reasons.push(format!(
+                "RAG eval retrieval tuning selected {}",
+                rag_eval.retrieval_tuning.selected_profile
+            ));
+        }
     }
-    let ranking = ranking_profile_report(&root, profile, apply)?;
+    let selected_profile = profile.to_string();
+    let profile_change = current_profile
+        .as_deref()
+        .is_none_or(|existing| existing != selected_profile);
+    let mut signals = vec![
+        AutoRankingTuneSignal {
+            name: "memory_qa".to_string(),
+            status: if qa.ok { "ready" } else { "attention" }.to_string(),
+            detail: format!(
+                "score={:.1} useful_rate={:.2} inferred_missing={} semantic_empty={}",
+                qa.score,
+                qa.useful_rate,
+                qa.inferred_missing,
+                qa.semantic_eligible_empty_read_count
+            ),
+        },
+        AutoRankingTuneSignal {
+            name: "quality".to_string(),
+            status: if quality.total == 0 || quality.average_score >= 65.0 {
+                "ready"
+            } else {
+                "attention"
+            }
+            .to_string(),
+            detail: format!(
+                "average_score={:.1} noisy_cards={} total={}",
+                quality.average_score, noisy_cards, quality.total
+            ),
+        },
+        AutoRankingTuneSignal {
+            name: "rag_retrieval".to_string(),
+            status: rag_retrieval_status.clone(),
+            detail: format!(
+                "profile={} selection_recall={:.1}% candidate_recall={:.1}% near_misses={}",
+                rag_retrieval_profile, rag_selection_recall, rag_candidate_recall, rag_near_misses
+            ),
+        },
+    ];
+    let rag_safe = stored_cases == 0 || rag_candidate_recall >= 80.0;
+    let quality_safe = quality.total == 0 || quality.average_score >= 65.0;
+    let safe_to_apply = qa.ok && quality_safe && rag_safe;
+    let apply_reason = if safe_to_apply {
+        if profile_change {
+            format!("write selected profile {selected_profile}")
+        } else {
+            format!("current profile already matches {selected_profile}")
+        }
+    } else if !qa.ok {
+        format!("memory QA is attention: score {:.1}", qa.score)
+    } else if !quality_safe {
+        format!("average memory quality is {:.1}", quality.average_score)
+    } else {
+        format!("RAG candidate recall is {:.1}%", rag_candidate_recall)
+    };
+    signals.push(AutoRankingTuneSignal {
+        name: "apply_safety".to_string(),
+        status: if safe_to_apply { "ready" } else { "attention" }.to_string(),
+        detail: apply_reason.clone(),
+    });
+    let apply_allowed = apply && safe_to_apply;
+    if apply {
+        if apply_allowed {
+            reasons.push("applied durable .agent/ranking-profile.json".to_string());
+        } else {
+            reasons.push(format!("apply skipped: {apply_reason}"));
+        }
+    }
+    let ranking = ranking_profile_report(&root, profile, apply_allowed)?;
+    let apply_plan = AutoRankingTuneApplyPlan {
+        current_profile: current_profile.clone(),
+        selected_profile: selected_profile.clone(),
+        profile_change,
+        safe_to_apply,
+        action: if apply_allowed {
+            "applied".to_string()
+        } else if apply {
+            "skipped".to_string()
+        } else {
+            "dry_run".to_string()
+        },
+        reason: apply_reason,
+    };
     Ok(AutoRankingTuneReport {
         version: 1,
         ok: true,
         root: root.display().to_string(),
         since_days,
-        selected_profile: profile.to_string(),
-        applied: apply,
+        current_profile,
+        selected_profile,
+        profile_change,
+        safe_to_apply,
+        applied: apply_allowed,
         qa_score: qa.score,
         useful_rate: qa.useful_rate,
         inferred_missing: qa.inferred_missing,
         semantic_empty: qa.semantic_eligible_empty_read_count,
         noisy_cards,
+        rag_retrieval_status,
+        rag_retrieval_profile,
+        rag_selection_recall,
+        rag_candidate_recall,
+        rag_near_misses,
+        signals,
+        apply_plan,
         reasons,
         ranking,
     })
+}
+
+fn current_ranking_profile(root: &Path) -> Option<String> {
+    let raw = fs::read_to_string(root.join(".agent/ranking-profile.json")).ok()?;
+    let value = serde_json::from_str::<Value>(&raw).ok()?;
+    value
+        .get("profile")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn ranking_profile_mode_from_name(name: &str) -> Option<RankingProfileMode> {
+    match name {
+        "balanced" => Some(RankingProfileMode::Balanced),
+        "strict" => Some(RankingProfileMode::Strict),
+        "recall_heavy" | "recall-heavy" => Some(RankingProfileMode::RecallHeavy),
+        "precision_heavy" | "precision-heavy" => Some(RankingProfileMode::PrecisionHeavy),
+        _ => None,
+    }
 }
 
 pub(crate) fn print_memory_health_score(
@@ -4896,11 +5359,15 @@ pub(crate) fn memory_test_harness_report(
     let usage = usage_report(conn, since_days, 10)?;
     let mut seed_queries = Vec::new();
     for item in usage.top_memories.iter().take(4) {
-        seed_queries.push((
-            item.title.clone(),
-            Some(item.memory_type.clone()),
-            Some(item.id.clone()),
-        ));
+        if let Some((memory, supersession_hops)) = resolve_active_probe_memory(conn, &item.id)? {
+            seed_queries.push((
+                memory.title,
+                Some(memory.memory_type),
+                Some(memory.id),
+                Some(item.id.clone()),
+                supersession_hops,
+            ));
+        }
     }
     if seed_queries.len() < limit {
         for item in intent_items(
@@ -4908,7 +5375,13 @@ pub(crate) fn memory_test_harness_report(
             &["decision", "constraint", "command", "task_state"],
             limit,
         )? {
-            seed_queries.push((item.title, Some(item.memory_type), Some(item.id)));
+            seed_queries.push((
+                item.title,
+                Some(item.memory_type),
+                Some(item.id.clone()),
+                Some(item.id),
+                Vec::new(),
+            ));
             if seed_queries.len() >= limit {
                 break;
             }
@@ -4918,7 +5391,9 @@ pub(crate) fn memory_test_harness_report(
     seed_queries.dedup_by(|a, b| a.0 == b.0);
     let mut probes = Vec::new();
     let mut failures = Vec::new();
-    for (query, expected_type, expected_id) in seed_queries.into_iter().take(limit) {
+    for (query, expected_type, expected_id, original_expected_id, supersession_hops) in
+        seed_queries.into_iter().take(limit)
+    {
         let hits = query_memories(
             conn,
             Some(&query),
@@ -4927,11 +5402,11 @@ pub(crate) fn memory_test_harness_report(
             Some("project"),
             5,
         )?;
-        let matched = hits.iter().find(|memory| {
-            expected_id.as_ref().is_some_and(|id| memory.id == *id)
-                || expected_type
-                    .as_ref()
-                    .is_some_and(|kind| memory.memory_type == *kind)
+        let matched = hits.iter().find(|memory| match expected_id.as_ref() {
+            Some(id) => memory.id == *id,
+            None => expected_type
+                .as_ref()
+                .is_some_and(|kind| memory.memory_type == *kind),
         });
         let found = matched.is_some();
         if !found {
@@ -4939,14 +5414,21 @@ pub(crate) fn memory_test_harness_report(
         }
         probes.push(MemoryTestProbe {
             query: query.clone(),
+            original_expected_id,
             expected_type,
             expected_id,
+            supersession_hops: supersession_hops.clone(),
             found,
             matched_id: matched.map(|memory| memory.id.clone()),
             matched_title: matched.map(|memory| memory.title.clone()),
             result_count: hits.len(),
-            explanation: if found {
-                "retrieval recovered the expected card or type".to_string()
+            explanation: if found && !supersession_hops.is_empty() {
+                format!(
+                    "retrieval followed {} supersession hop(s) and recovered the active successor",
+                    supersession_hops.len()
+                )
+            } else if found {
+                "retrieval recovered the exact expected active card".to_string()
             } else if hits.is_empty() {
                 "retrieval returned no active project cards".to_string()
             } else {
@@ -4974,7 +5456,7 @@ pub(crate) fn memory_test_harness_report(
         );
     }
     Ok(MemoryTestHarnessReport {
-        version: 1,
+        version: 2,
         ok: score >= 75.0 && !probes.is_empty(),
         root: root.display().to_string(),
         since_days,
@@ -4983,6 +5465,35 @@ pub(crate) fn memory_test_harness_report(
         failures,
         recommendations,
     })
+}
+
+fn resolve_active_probe_memory(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<(Memory, Vec<String>)>> {
+    let mut current_id = id.to_string();
+    let mut visited = BTreeSet::new();
+    let mut hops = Vec::new();
+    loop {
+        if !visited.insert(current_id.clone()) {
+            return Ok(None);
+        }
+        let memory = match get_memory(conn, &current_id) {
+            Ok(memory) => memory,
+            Err(_) => return Ok(None),
+        };
+        if matches!(memory.status.as_str(), "active" | "uncertain") {
+            return Ok(Some((memory, hops)));
+        }
+        if memory.status != "superseded" {
+            return Ok(None);
+        }
+        let Some(successor) = memory.superseded_by.clone() else {
+            return Ok(None);
+        };
+        hops.push(format!("{}->{successor}", memory.id));
+        current_id = successor;
+    }
 }
 
 pub(crate) fn print_agent_audit_v2(
@@ -5228,7 +5739,7 @@ pub(crate) fn auto_supersede_v2_report(
                 title: candidate.title.clone(),
                 reason: candidate.reason.clone(),
                 confidence,
-                safe_to_apply: confidence >= 0.90,
+                safe_to_apply: confidence >= AUTO_SUPERSEDE_SAFE_CONFIDENCE,
             }
         })
         .collect::<Vec<_>>();
@@ -5238,8 +5749,8 @@ pub(crate) fn auto_supersede_v2_report(
         for candidate in &candidates {
             if !candidate.safe_to_apply {
                 skipped.push(format!(
-                    "{}: confidence {:.2} below 0.90",
-                    candidate.duplicate_id, candidate.confidence
+                    "{}: confidence {:.2} below {:.2}",
+                    candidate.duplicate_id, candidate.confidence, AUTO_SUPERSEDE_SAFE_CONFIDENCE
                 ));
                 continue;
             }
@@ -5337,16 +5848,17 @@ pub(crate) fn memory_diff_apply_report(
                 conn,
                 AddMemory {
                     id: None,
-                    memory_type: candidate.memory_type.clone(),
+                    memory_type: candidate.memory_type.parse()?,
                     title: candidate.title.clone(),
                     body: candidate.body.clone(),
-                    scope: "project".to_string(),
-                    status: "active".to_string(),
+                    scope: MemoryScope::Project,
+                    status: MemoryStatus::Active,
                     source: Some("memory_diff_apply".to_string()),
                     supersedes: None,
                     confidence: candidate.confidence,
                     layer: None,
                     links: vec![candidate.link.clone()],
+                    allow_sensitive: false,
                 },
             )?;
             written_ids.push(id.clone());
@@ -5413,17 +5925,35 @@ pub(crate) fn recall_benchmark_suite_report(
     let baseline = fs::read_to_string(&baseline_path)
         .ok()
         .and_then(|content| serde_json::from_str::<RecallBenchmarkBaseline>(&content).ok());
-    let baseline_score = baseline.as_ref().map(|item| item.score);
-    let regression = baseline_score.is_some_and(|score| harness.score + 5.0 < score);
+    let mut baseline_score = baseline.as_ref().map(|item| item.score);
+    let mut current_probe_ids = harness
+        .probes
+        .iter()
+        .filter_map(|probe| probe.expected_id.clone())
+        .collect::<Vec<_>>();
+    current_probe_ids.sort();
+    current_probe_ids.dedup();
+    let mut baseline_compatible = baseline.as_ref().is_none_or(|item| {
+        let mut probe_ids = item.probe_ids.clone();
+        probe_ids.sort();
+        probe_ids.dedup();
+        item.version >= 2
+            && item.probe_count == harness.probes.len()
+            && probe_ids == current_probe_ids
+    });
+    let mut baseline_stale = baseline.is_some() && !baseline_compatible;
+    let mut regression =
+        baseline_compatible && baseline_score.is_some_and(|score| harness.score + 5.0 < score);
     let mut baseline_written = false;
     if write_baseline {
         if let Some(parent) = baseline_path.parent() {
             fs::create_dir_all(parent)?;
         }
         let value = RecallBenchmarkBaseline {
-            version: 1,
+            version: 2,
             score: harness.score,
             probe_count: harness.probes.len(),
+            probe_ids: current_probe_ids.clone(),
             written_at: now_ms(),
         };
         write_file(
@@ -5431,6 +5961,10 @@ pub(crate) fn recall_benchmark_suite_report(
             serde_json::to_string_pretty(&value)?.as_bytes(),
         )?;
         baseline_written = true;
+        baseline_score = Some(harness.score);
+        baseline_compatible = true;
+        baseline_stale = false;
+        regression = false;
     }
     let mut recommendations = harness.recommendations.clone();
     if baseline_score.is_none() && !write_baseline {
@@ -5440,15 +5974,24 @@ pub(crate) fn recall_benchmark_suite_report(
     if regression {
         recommendations.push("recall benchmark regressed by more than 5 points; inspect failed probes before release".to_string());
     }
+    if baseline_stale {
+        recommendations.push(
+            "recall baseline probe set changed; review active successors before writing a new baseline"
+                .to_string(),
+        );
+    }
     recommendations.sort();
     recommendations.dedup();
     Ok(RecallBenchmarkSuiteReport {
-        version: 1,
+        version: 2,
         ok: harness.ok && !regression,
         root: root.display().to_string(),
         since_days,
         score: harness.score,
         baseline_score,
+        baseline_compatible,
+        baseline_stale,
+        current_probe_ids,
         regression,
         baseline_written,
         baseline_path: baseline_path.display().to_string(),
@@ -5562,199 +6105,6 @@ pub(crate) fn release_gate_v2_report(
         benchmark,
         audit_v2,
         control_center,
-        checks,
-        issues,
-        recommendations,
-    })
-}
-
-pub(crate) fn print_release_gate_v3(
-    conn: &Connection,
-    db: &Path,
-    root: &Path,
-    since_days: i64,
-    strict: bool,
-    run: bool,
-    json_out: bool,
-) -> Result<()> {
-    let report = release_gate_v3_report(conn, db, root, since_days, strict, run)?;
-    if json_out {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
-    }
-    println!("Release Gate v3");
-    println!("status: {}", report.status);
-    for check in &report.checks {
-        println!("{} {}", if check.ok { "ok" } else { "warn" }, check.name);
-    }
-    for issue in &report.issues {
-        println!("issue: {issue}");
-    }
-    Ok(())
-}
-
-pub(crate) fn release_gate_v3_report(
-    conn: &Connection,
-    db: &Path,
-    root: &Path,
-    since_days: i64,
-    strict: bool,
-    run: bool,
-) -> Result<ReleaseGateV3Report> {
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let release_gate_v2 = release_gate_v2_report(conn, db, &root, since_days, strict, run)?;
-    let effectiveness_v2 = memory_effectiveness_v2_report(conn, &root, since_days)?;
-    let baselines = recall_benchmark_baselines_report(conn, &root, since_days, false)?;
-    let conflict_apply = memory_conflict_apply_report(conn, 90, 12, false)?;
-    let mcp_surface_v3 = mcp_tool_surface_v3_report();
-    let mcp_discipline_v3 = mcp_discipline_v3_report(conn, db, &root, since_days, false)?;
-    let fleet_quality = fleet_quality_report(db, since_days)?;
-    let rag_sources = crate::app::rag_ingest::rag_sources_report(
-        conn,
-        &root,
-        DEFAULT_EMBED_PROVIDER,
-        DEFAULT_EMBED_ENDPOINT,
-        DEFAULT_EMBED_MODEL,
-    )?;
-    let rag_eval = rag_eval_report(
-        conn,
-        None,
-        8,
-        3_000,
-        DEFAULT_EMBED_PROVIDER,
-        DEFAULT_EMBED_ENDPOINT,
-        DEFAULT_EMBED_MODEL,
-    )?;
-    let mut checks = release_gate_v2.checks.clone();
-    checks.push(ReleaseGateCheck {
-        name: "memory_effectiveness_v2".to_string(),
-        ok: effectiveness_v2.ok && effectiveness_v2.score >= 75.0,
-        required: true,
-        detail: format!(
-            "score={:.1} confidence={}",
-            effectiveness_v2.score, effectiveness_v2.confidence
-        ),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "recall_benchmark_baselines".to_string(),
-        ok: baselines.ok && !baselines.regression && baselines.current_score >= 80.0,
-        required: true,
-        detail: format!(
-            "current={:.1} baseline_present={} regression={}",
-            baselines.current_score, baselines.baseline_present, baselines.regression
-        ),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "memory_conflict_apply_dry_run".to_string(),
-        ok: conflict_apply.status != "manual_review",
-        required: true,
-        detail: format!(
-            "status={} safe_actions={} skipped={}",
-            conflict_apply.status,
-            conflict_apply.safe_actions.len(),
-            conflict_apply.skipped.len()
-        ),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "mcp_tool_surface_v3".to_string(),
-        ok: mcp_surface_v3.ok,
-        required: true,
-        detail: format!("missing={}", mcp_surface_v3.missing_tools.len()),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "mcp_discipline_v3".to_string(),
-        ok: mcp_discipline_v3.ok,
-        required: true,
-        detail: format!("missing={}", mcp_discipline_v3.missing_commands.len()),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "fleet_quality_observed".to_string(),
-        ok: fleet_quality.ready_projects > 0,
-        required: false,
-        detail: format!(
-            "ready={} attention={} avg_effectiveness={:.1}",
-            fleet_quality.ready_projects,
-            fleet_quality.attention_projects,
-            fleet_quality.average_effectiveness_score
-        ),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "rag_sources_freshness".to_string(),
-        ok: rag_sources.ok,
-        required: true,
-        detail: format!(
-            "ready={}/{} stale={} missing={} orphan={} chunks={} embedding_missing={} embedding_stale={}",
-            rag_sources.ready_sources,
-            rag_sources.total_sources,
-            rag_sources.stale_sources,
-            rag_sources.missing_sources,
-            rag_sources.orphan_sources,
-            rag_sources.total_chunks,
-            rag_sources.chunk_embeddings_missing,
-            rag_sources.chunk_embeddings_stale
-        ),
-    });
-    checks.push(ReleaseGateCheck {
-        name: "rag_source_pack_eval".to_string(),
-        ok: rag_eval.ok && rag_eval.recall >= 80.0,
-        required: true,
-        detail: format!(
-            "recall={:.1}% passed={}/{} source={} semantic_fallbacks={} grounded={:.1}% grounded_passed={}/{} packing_selected={}/{} packing_chunks={}/{} suppressed_overlap={} suppressed_file_cap={} suppressed_limit={} expected_selected={} expected_suppressed={} expected_missing={}",
-            rag_eval.recall,
-            rag_eval.passed,
-            rag_eval.total,
-            rag_eval.case_source,
-            rag_eval.semantic_fallbacks,
-            rag_eval.grounded_answers.coverage,
-            rag_eval.grounded_answers.passed,
-            rag_eval.total,
-            rag_eval.packing.selected_count,
-            rag_eval.packing.candidate_count,
-            rag_eval.packing.selected_chunks,
-            rag_eval.packing.chunk_candidates,
-            rag_eval.packing.suppressed_overlap,
-            rag_eval.packing.suppressed_file_cap,
-            rag_eval.packing.suppressed_limit,
-            rag_eval.packing.expected_selected,
-            rag_eval.packing.expected_suppressed_by_packing,
-            rag_eval.packing.expected_missing_from_candidates
-        ),
-    });
-    let mut issues = release_gate_v2.issues.clone();
-    for check in &checks {
-        if check.required && !check.ok {
-            issues.push(format!("release gate v3 failed: {}", check.name));
-        }
-    }
-    issues.sort();
-    issues.dedup();
-    let mut recommendations = release_gate_v2.recommendations.clone();
-    recommendations.extend(effectiveness_v2.recommendations.clone());
-    recommendations.extend(baselines.recommendations.clone());
-    recommendations.extend(conflict_apply.recommendations.clone());
-    recommendations.extend(mcp_surface_v3.recommendations.clone());
-    recommendations.extend(mcp_discipline_v3.recommendations.clone());
-    recommendations.extend(fleet_quality.recommendations.clone());
-    recommendations.extend(rag_sources.recommendations.clone());
-    recommendations.extend(rag_eval.recommendations.clone());
-    recommendations.sort();
-    recommendations.dedup();
-    let ok = issues.is_empty();
-    Ok(ReleaseGateV3Report {
-        version: 1,
-        ok,
-        status: if ok { "ready" } else { "blocked" }.to_string(),
-        root: root.display().to_string(),
-        strict,
-        run,
-        release_gate_v2,
-        effectiveness_v2,
-        baselines,
-        conflict_apply,
-        mcp_surface_v3,
-        mcp_discipline_v3,
-        fleet_quality,
-        rag_eval,
         checks,
         issues,
         recommendations,
@@ -6167,6 +6517,32 @@ pub(crate) fn memory_quality_ci_report(
 ) -> Result<MemoryQualityCiReport> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let gate = release_gate_v2_report(conn, db, &root, since_days, true, false)?;
+    let rag_eval = rag_eval_report_with_baseline(
+        conn,
+        None,
+        8,
+        3_000,
+        DEFAULT_EMBED_PROVIDER,
+        DEFAULT_EMBED_ENDPOINT,
+        DEFAULT_EMBED_MODEL,
+        Some(&root),
+        false,
+    )?;
+    let graph_generation = crate::runtime_config::GenerationConfig {
+        provider: "mock".to_string(),
+        endpoint: "local".to_string(),
+        model: "extractive-fallback".to_string(),
+    };
+    let graph_rag_eval = graph_rag_eval_report(
+        conn,
+        None,
+        8,
+        3_000,
+        &graph_generation,
+        DEFAULT_EMBED_PROVIDER,
+        DEFAULT_EMBED_ENDPOINT,
+        DEFAULT_EMBED_MODEL,
+    )?;
     let mut failed_checks = gate
         .checks
         .iter()
@@ -6177,12 +6553,25 @@ pub(crate) fn memory_quality_ci_report(
         })
         .map(|check| check.name.clone())
         .collect::<Vec<_>>();
+    if !(rag_eval.ok && rag_eval.recall >= 80.0 && rag_eval.split.holdout_ready) {
+        failed_checks.push("rag_source_pack_eval".to_string());
+    }
+    if rag_eval_baseline_blocks_release(&rag_eval.baseline.status) {
+        failed_checks.push("rag_eval_baseline".to_string());
+    }
+    if graph_rag_eval.total > 0 && !graph_rag_eval.ok {
+        failed_checks.push("graph_rag_eval".to_string());
+    }
     failed_checks.sort();
     failed_checks.dedup();
     let ok = failed_checks.is_empty()
         && gate.health.score >= 85.0
         && gate.benchmark.score >= 80.0
-        && gate.audit_v2.score >= 80.0;
+        && gate.audit_v2.score >= 80.0
+        && rag_eval.ok
+        && rag_eval.split.holdout_ready
+        && !rag_eval_baseline_blocks_release(&rag_eval.baseline.status)
+        && (graph_rag_eval.total == 0 || graph_rag_eval.ok);
     Ok(MemoryQualityCiReport {
         version: 1,
         ok,
@@ -6193,12 +6582,18 @@ pub(crate) fn memory_quality_ci_report(
         health_score: gate.health.score,
         benchmark_score: gate.benchmark.score,
         audit_score: gate.audit_v2.score,
+        rag_eval_status: rag_eval.status.clone(),
+        rag_eval_recall: rag_eval.recall,
+        rag_eval_grounded_coverage: rag_eval.grounded_answers.coverage,
+        graph_rag_eval_status: graph_rag_eval.status.clone(),
+        graph_rag_eval_recall: graph_rag_eval.recall,
+        graph_rag_eval_edges: graph_rag_eval.graph.total_edges,
         failed_checks,
         release_gate_v2: if minimal { None } else { Some(gate) },
         recommendations: if ok {
             vec!["memory quality CI passed".to_string()]
         } else {
-            vec!["inspect release-gate-v2 failed checks before publishing".to_string()]
+            vec!["inspect memory-quality-ci failed checks before publishing".to_string()]
         },
     })
 }
@@ -6515,6 +6910,7 @@ pub(crate) fn mcp_tool_surface_v2_report() -> McpToolSurfaceV2Report {
 
 fn mcp_v2_tool_names() -> Vec<String> {
     [
+        MCP_OPERATIONS,
         "memory_health_score",
         "memory_explain_recall",
         "memory_control_center_v2",
@@ -6582,8 +6978,12 @@ fn mcp_v3_tool_names() -> Vec<String> {
     tools.extend(
         [
             "memory_effectiveness_v2",
+            "memory_advanced_eval",
             "memory_rag_ingest",
             "memory_rag_sources",
+            "memory_rag_eval",
+            "memory_graph_rag_eval",
+            "memory_auto_ranking_tune",
             "memory_recall_baselines",
             "memory_conflict_apply",
             "memory_mcp_surface_v3",
@@ -8481,27 +8881,32 @@ pub(crate) fn memory_effectiveness_lab_report(
     let trace = decision_trace_report(conn, since_days, 30)?;
     let roi = roi_report(conn, since_days)?;
     let read_count = usage.read_count.max(trace.traced_reads);
-    let empty_rate = ratio(trace.empty_reads, read_count.max(1));
+    let influence_sample_count =
+        influence_evidence_sample_count(read_count, trace.traced_reads, trace.influenced_reads);
+    let empty_rate = ratio(trace.empty_reads, influence_sample_count.max(1));
     let questioned_rate = ratio(trace.questioned_reads, trace.influenced_reads.max(1));
-    let confirmed_rate = ratio(trace.confirmed_reads, trace.influenced_reads.max(1));
-    let semantic_penalty = if usage.semantic_eligible_total > 0 {
-        (1.0 - usage.semantic_eligible_result_rate).max(0.0) * 15.0
-    } else {
-        0.0
-    };
-    let score = (70.0 + roi.score * 0.20 + confirmed_rate * 20.0
-        - empty_rate * 25.0
-        - questioned_rate * 20.0
-        - semantic_penalty)
-        .clamp(0.0, 100.0);
+    let influenced_rate = ratio(trace.influenced_reads, influence_sample_count.max(1));
+    let score = memory_effectiveness_score(MemoryEffectivenessScoreInput {
+        read_count: influence_sample_count,
+        influenced_reads: trace.influenced_reads,
+        confirmed_reads: trace.confirmed_reads,
+        empty_reads: trace.empty_reads,
+        questioned_reads: trace.questioned_reads,
+        semantic_eligible_total: usage.semantic_eligible_total,
+        semantic_result_rate: usage.semantic_eligible_result_rate,
+        roi_score: roi.score,
+    });
     let mut issues = trace.issues.clone();
+    if read_count >= 20 && influenced_rate < 0.25 {
+        issues.push("too few memory reads have explicit downstream influence evidence".to_string());
+    }
     if empty_rate > 0.35 && read_count > 3 {
         issues.push("too many memory reads returned no useful cards".to_string());
     }
     if questioned_rate > 0.25 && trace.influenced_reads > 3 {
         issues.push("questioned memory influence is high".to_string());
     }
-    if usage.semantic_eligible_total > 0 && usage.semantic_eligible_result_rate < 0.70 {
+    if usage.semantic_eligible_total >= 3 && usage.semantic_eligible_result_rate < 0.70 {
         issues.push("semantic eligible reads often return empty results".to_string());
     }
     issues.sort();
@@ -8568,16 +8973,22 @@ pub(crate) fn memory_effectiveness_v2_report(
 ) -> Result<MemoryEffectivenessV2Report> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let base = memory_effectiveness_lab_report(conn, &root, since_days)?;
-    let influenced_rate = ratio(base.influenced_reads, base.read_count.max(1));
+    let influence_sample_count = influence_evidence_sample_count(
+        base.read_count,
+        base.trace.traced_reads,
+        base.influenced_reads,
+    );
+    let influenced_rate = ratio(base.influenced_reads, influence_sample_count.max(1));
     let confirmed_rate = ratio(base.confirmed_reads, base.influenced_reads.max(1));
     let wasted_read_rate = ratio(
         base.empty_reads + base.questioned_reads,
-        base.read_count.max(1),
+        influence_sample_count.max(1),
     );
     let top_useful_cards = base
         .usage
         .top_memories
         .iter()
+        .filter(|item| matches!(item.status.as_str(), "active" | "uncertain"))
         .take(8)
         .map(|item| MemoryEffectivenessCard {
             id: item.id.clone(),
@@ -8587,15 +8998,20 @@ pub(crate) fn memory_effectiveness_v2_report(
             reason: "frequently reused by recent memory reads".to_string(),
         })
         .collect::<Vec<_>>();
-    let used_ids = base
-        .usage
-        .top_memories
-        .iter()
-        .map(|item| item.id.clone())
+    let since_ms = now_ms().saturating_sub(since_days.max(0).saturating_mul(86_400_000));
+    let used_ids = read_events(conn, since_ms, usize::MAX)?
+        .into_iter()
+        .flat_map(|event| event.memory_ids)
         .collect::<BTreeSet<_>>();
-    let ignored_cards = query_memories(conn, None, &[], &["active".to_string()], None, 200)?
+    let active_cards = query_memories(conn, None, &[], &["active".to_string()], None, usize::MAX)?;
+    let active_card_count = active_cards.len();
+    let ignored = active_cards
         .into_iter()
         .filter(|memory| !used_ids.contains(&memory.id))
+        .collect::<Vec<_>>();
+    let ignored_card_count = ignored.len();
+    let ignored_cards = ignored
+        .into_iter()
         .take(8)
         .map(|memory| MemoryEffectivenessCard {
             id: memory.id,
@@ -8642,37 +9058,17 @@ pub(crate) fn memory_effectiveness_v2_report(
         "low"
     }
     .to_string();
-    let clean_read_quality = wasted_read_rate <= 0.25
-        && (base.semantic_result_rate >= 0.80 || base.usage.semantic_eligible_total == 0)
-        && base.score >= 75.0;
-    let high_confidence_clean_reads = clean_read_quality && base.score >= 90.0;
+    let ignored_card_limit = ignored_card_limit(active_card_count);
     let checks = vec![
         InstallPolishCheck {
             name: "influenced_reads".to_string(),
-            ok: influenced_rate >= 0.50 || base.read_count < 5 || clean_read_quality,
-            detail: if influenced_rate >= 0.50 || base.read_count < 5 {
-                format!("{:.0}% influenced", influenced_rate * 100.0)
-            } else {
-                format!(
-                    "{:.0}% explicitly influenced; clean reads keep this advisory",
-                    influenced_rate * 100.0
-                )
-            },
+            ok: influenced_rate >= 0.25 || base.read_count < 20,
+            detail: format!("{:.0}% explicitly influenced", influenced_rate * 100.0),
         },
         InstallPolishCheck {
             name: "confirmed_reads".to_string(),
-            ok: confirmed_rate >= 0.60 || base.influenced_reads < 5 || high_confidence_clean_reads,
-            detail: if confirmed_rate >= 0.60
-                || base.influenced_reads < 5
-                || !high_confidence_clean_reads
-            {
-                format!("{:.0}% confirmed", confirmed_rate * 100.0)
-            } else {
-                format!(
-                    "{:.0}% confirmed; high-score clean reads keep this advisory",
-                    confirmed_rate * 100.0
-                )
-            },
+            ok: confirmed_rate >= 0.60 || base.influenced_reads < 5,
+            detail: format!("{:.0}% confirmed", confirmed_rate * 100.0),
         },
         InstallPolishCheck {
             name: "wasted_reads".to_string(),
@@ -8689,10 +9085,10 @@ pub(crate) fn memory_effectiveness_v2_report(
         },
         InstallPolishCheck {
             name: "ignored_cards".to_string(),
-            ok: ignored_cards.len() <= 10,
+            ok: ignored_card_count <= ignored_card_limit,
             detail: format!(
-                "{} active cards without recent reads sampled",
-                ignored_cards.len()
+                "{} of {} active cards had no recent reads (limit {})",
+                ignored_card_count, active_card_count, ignored_card_limit
             ),
         },
     ];
@@ -8723,6 +9119,8 @@ pub(crate) fn memory_effectiveness_v2_report(
         confirmed_rate,
         wasted_read_rate,
         semantic_result_rate: base.semantic_result_rate,
+        active_card_count,
+        ignored_card_count,
         top_useful_cards,
         ignored_cards,
         weak_reads,
@@ -8730,6 +9128,162 @@ pub(crate) fn memory_effectiveness_v2_report(
         base,
         recommendations,
     })
+}
+
+#[derive(Clone, Copy)]
+struct MemoryEffectivenessScoreInput {
+    read_count: usize,
+    influenced_reads: usize,
+    confirmed_reads: usize,
+    empty_reads: usize,
+    questioned_reads: usize,
+    semantic_eligible_total: usize,
+    semantic_result_rate: f64,
+    roi_score: f64,
+}
+
+fn memory_effectiveness_score(input: MemoryEffectivenessScoreInput) -> f64 {
+    let MemoryEffectivenessScoreInput {
+        read_count,
+        influenced_reads,
+        confirmed_reads,
+        empty_reads,
+        questioned_reads,
+        semantic_eligible_total,
+        semantic_result_rate,
+        roi_score,
+    } = input;
+    let influence = if read_count < 5 {
+        1.0
+    } else {
+        ratio(influenced_reads, read_count)
+    };
+    let confirmation = if influenced_reads < 5 {
+        1.0
+    } else {
+        ratio(confirmed_reads, influenced_reads)
+    };
+    let clean_reads = if read_count == 0 {
+        1.0
+    } else {
+        (1.0 - ratio(empty_reads.saturating_add(questioned_reads), read_count)).max(0.0)
+    };
+    let semantic_results = if semantic_eligible_total < 3 {
+        1.0
+    } else {
+        semantic_result_rate.clamp(0.0, 1.0)
+    };
+    (influence * 35.0
+        + confirmation * 20.0
+        + clean_reads * 15.0
+        + semantic_results * 15.0
+        + roi_score.clamp(0.0, 100.0) * 0.15)
+        .clamp(0.0, 100.0)
+}
+
+fn influence_evidence_sample_count(
+    total_read_count: usize,
+    traced_reads: usize,
+    influenced_reads: usize,
+) -> usize {
+    if traced_reads >= 20 || traced_reads >= total_read_count {
+        traced_reads.max(influenced_reads)
+    } else {
+        total_read_count
+    }
+}
+
+fn ignored_card_limit(active_card_count: usize) -> usize {
+    10.max(active_card_count.div_ceil(4))
+}
+
+#[cfg(test)]
+mod memory_effectiveness_tests {
+    use super::{
+        MemoryEffectivenessScoreInput, ignored_card_limit, influence_evidence_sample_count,
+        memory_effectiveness_score,
+    };
+
+    fn score_input(read_count: usize) -> MemoryEffectivenessScoreInput {
+        MemoryEffectivenessScoreInput {
+            read_count,
+            influenced_reads: 0,
+            confirmed_reads: 0,
+            empty_reads: 0,
+            questioned_reads: 0,
+            semantic_eligible_total: 0,
+            semantic_result_rate: 0.0,
+            roi_score: 100.0,
+        }
+    }
+
+    #[test]
+    fn low_sample_sessions_are_not_penalized_for_missing_feedback() {
+        let score = memory_effectiveness_score(score_input(0));
+        assert_eq!(score, 100.0);
+    }
+
+    #[test]
+    fn mature_sessions_need_explicit_influence_evidence() {
+        let score = memory_effectiveness_score(score_input(100));
+        assert!(score < 75.0, "score was {score}");
+
+        let partially_traced = memory_effectiveness_score(MemoryEffectivenessScoreInput {
+            influenced_reads: 15,
+            confirmed_reads: 15,
+            semantic_eligible_total: 10,
+            semantic_result_rate: 1.0,
+            ..score_input(100)
+        });
+        assert!(partially_traced < 75.0, "score was {partially_traced}");
+    }
+
+    #[test]
+    fn effectiveness_uses_representative_trace_window_as_evidence_denominator() {
+        let sample = influence_evidence_sample_count(188, 30, 27);
+        assert_eq!(sample, 30);
+
+        let score = memory_effectiveness_score(MemoryEffectivenessScoreInput {
+            read_count: sample,
+            influenced_reads: 27,
+            confirmed_reads: 21,
+            empty_reads: 3,
+            questioned_reads: 0,
+            semantic_eligible_total: 20,
+            semantic_result_rate: 1.0,
+            roi_score: 100.0,
+        });
+        assert!(score >= 75.0, "score was {score}");
+    }
+
+    #[test]
+    fn effectiveness_keeps_total_read_denominator_for_tiny_trace_samples() {
+        let sample = influence_evidence_sample_count(188, 3, 3);
+        assert_eq!(sample, 188);
+    }
+
+    #[test]
+    fn low_semantic_sample_does_not_penalize_effectiveness_score() {
+        let score = memory_effectiveness_score(MemoryEffectivenessScoreInput {
+            read_count: 2,
+            influenced_reads: 1,
+            confirmed_reads: 1,
+            empty_reads: 1,
+            questioned_reads: 0,
+            semantic_eligible_total: 2,
+            semantic_result_rate: 0.5,
+            roi_score: 100.0,
+        });
+        assert!(score >= 75.0, "score was {score}");
+    }
+
+    #[test]
+    fn ignored_card_limit_uses_the_full_active_population() {
+        assert_eq!(ignored_card_limit(8), 10);
+        assert_eq!(ignored_card_limit(40), 10);
+        assert_eq!(ignored_card_limit(41), 11);
+        assert_eq!(ignored_card_limit(100), 25);
+    }
 }
 
 pub(crate) fn print_recall_benchmark_baselines(
@@ -9996,7 +10550,7 @@ pub(crate) fn memory_eval_story_report(
     let profiles = benchmark_profiles_report(conn, &root, None, since_days, false, false)?;
     let harness = memory_test_harness_report(conn, &root, since_days, 8)?;
     let effectiveness = memory_effectiveness_lab_report(conn, &root, since_days)?;
-    let rag_eval = rag_eval_report(
+    let rag_eval = rag_eval_report_with_baseline(
         conn,
         None,
         8,
@@ -10004,11 +10558,14 @@ pub(crate) fn memory_eval_story_report(
         DEFAULT_EMBED_PROVIDER,
         DEFAULT_EMBED_ENDPOINT,
         DEFAULT_EMBED_MODEL,
+        Some(&root),
+        write_baseline,
     )?;
     let ok = !benchmark.regression
         && harness.score >= 60.0
         && effectiveness.score >= 60.0
-        && rag_eval.ok;
+        && rag_eval.ok
+        && rag_eval.split.holdout_ready;
     let commands = vec![
         "dukememory memory-eval-story --json".to_string(),
         "dukememory recall-benchmark-suite --json".to_string(),
@@ -10025,6 +10582,12 @@ pub(crate) fn memory_eval_story_report(
         format!(
             "RAG source-pack recall {:.1}% ({}/{})",
             rag_eval.recall, rag_eval.passed, rag_eval.total
+        ),
+        format!(
+            "RAG holdout recall {:.1}% ({}/{})",
+            rag_eval.split.holdout_recall,
+            rag_eval.split.holdout_passed,
+            rag_eval.split.holdout_total
         ),
         "benchmarks are local, reproducible, and project-specific; they are not broad public dataset claims".to_string(),
     ];
@@ -10052,7 +10615,12 @@ pub(crate) fn memory_eval_story_report(
         MemoryEvalProofPoint {
             name: "rag_source_pack".to_string(),
             value: format!("{:.1}%", rag_eval.recall),
-            status: if rag_eval.ok { "ready" } else { "attention" }.to_string(),
+            status: if rag_eval.ok && rag_eval.split.holdout_ready {
+                "ready"
+            } else {
+                "attention"
+            }
+            .to_string(),
         },
         MemoryEvalProofPoint {
             name: "baseline_write".to_string(),
@@ -10598,7 +11166,7 @@ pub(crate) fn memory_conflict_apply_report(
 fn timeline_events(conn: &Connection, id: &str, limit: usize) -> Result<Vec<MemoryEvent>> {
     let mut stmt = conn.prepare(
         r#"
-        SELECT id, event_type, memory_id, detail, created_at
+        SELECT id, event_type, memory_id, detail, created_at, previous_hash, event_hash
         FROM memory_events
         WHERE memory_id = ?1
         ORDER BY created_at DESC, id DESC
@@ -10614,6 +11182,8 @@ fn timeline_events(conn: &Connection, id: &str, limit: usize) -> Result<Vec<Memo
                 memory_id: row.get(2)?,
                 detail: row.get(3)?,
                 created_at: row.get(4)?,
+                previous_hash: row.get(5)?,
+                event_hash: row.get(6)?,
             })
         },
     )?
@@ -11561,6 +12131,20 @@ pub(crate) fn print_autonomous_supervisor(
     println!("Autonomous Supervisor");
     println!("status: {}", report.status);
     println!("applied: {}", report.applied);
+    println!("quality_before: {:.1}", report.quality_before);
+    println!("quality_after: {:.1}", report.quality_after);
+    println!("quality_delta: {:+.1}", report.quality_delta);
+    println!(
+        "readiness: rag={} near_misses={} matrix={} tuning={} profile={} diff={} write_ready={} safe_to_apply={}",
+        report.readiness.rag_eval_status,
+        report.readiness.rag_eval_near_misses,
+        report.readiness.eval_matrix_status,
+        report.readiness.retrieval_tuning_status,
+        report.readiness.retrieval_profile,
+        report.readiness.diff_impact_severity,
+        report.readiness.diff_write_ready_count,
+        report.readiness.safe_to_apply
+    );
     for action in &report.planned_actions {
         println!("plan: {} - {}", action.name, action.reason);
     }
@@ -11578,8 +12162,10 @@ pub(crate) fn autonomous_supervisor_report(
     apply: bool,
 ) -> Result<AutonomousSupervisorReport> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let quality_before = quality_report(conn, since_days, 100)?.average_score;
     let doctor_before = project_doctor_report(conn, db, &root, since_days, false)?;
-    let planned_actions = autonomous_supervisor_plan(&doctor_before);
+    let readiness = autonomous_supervisor_readiness(conn, &root)?;
+    let planned_actions = autonomous_supervisor_plan(&doctor_before, &readiness);
     let mut executed_actions = Vec::new();
     let mut embed_index = None;
     if apply {
@@ -11612,8 +12198,14 @@ pub(crate) fn autonomous_supervisor_report(
             }
         }
     }
-    let autonomous_loop =
-        autonomous_loop_report(conn, db, &root, since_days, AutonomousLevel::Normal, apply)?;
+    let autonomous_loop = autonomous_loop_report(
+        conn,
+        db,
+        &root,
+        since_days,
+        AutonomousLevel::Conservative,
+        apply,
+    )?;
     if apply {
         executed_actions.push(AutonomousSupervisorAction {
             name: "autonomous_loop".to_string(),
@@ -11644,6 +12236,8 @@ pub(crate) fn autonomous_supervisor_report(
         });
     }
     let doctor_after = project_doctor_report(conn, db, &root, since_days, apply)?;
+    let quality_after = quality_report(conn, since_days, 100)?.average_score;
+    let quality_delta = quality_after - quality_before;
     if apply {
         executed_actions.push(AutonomousSupervisorAction {
             name: "doctor_project".to_string(),
@@ -11657,19 +12251,31 @@ pub(crate) fn autonomous_supervisor_report(
     recommendations.extend(autonomous_loop.recommendations.clone());
     recommendations.extend(agent_enforce.recommendations.clone());
     recommendations.extend(contract_v2.recommendations.clone());
-    if !apply && !planned_actions.is_empty() {
+    if !readiness.safe_to_apply {
+        recommendations.push(
+            "review RAG eval or diff impact readiness before applying autonomous supervisor"
+                .to_string(),
+        );
+    }
+    if !apply && planned_actions.iter().any(|action| action.safe_auto) {
         recommendations
             .push("rerun autonomous-supervisor --apply --json to execute safe actions".to_string());
     }
     recommendations.sort();
     recommendations.dedup();
+    let guardrails = vec![
+        "conservative autonomous level only".to_string(),
+        "inferred feedback is previewed but never materialized automatically".to_string(),
+        "rollback backup is created before autonomous mutations".to_string(),
+        "inbox candidates remain reviewable; no automatic approval or supersession".to_string(),
+    ];
     let ok = if apply {
         doctor_after.ok && autonomous_loop.ok && agent_enforce.ok && contract_v2.ok
     } else {
-        doctor_before.ok && planned_actions.is_empty()
+        doctor_before.ok && !planned_actions.iter().any(|action| action.safe_auto)
     };
     Ok(AutonomousSupervisorReport {
-        version: 1,
+        version: 2,
         ok,
         status: if ok {
             "ready"
@@ -11682,6 +12288,11 @@ pub(crate) fn autonomous_supervisor_report(
         root: root.display().to_string(),
         since_days,
         applied: apply,
+        quality_before,
+        quality_after,
+        quality_delta,
+        readiness,
+        guardrails,
         doctor_before,
         planned_actions,
         executed_actions,
@@ -11694,8 +12305,106 @@ pub(crate) fn autonomous_supervisor_report(
     })
 }
 
-fn autonomous_supervisor_plan(doctor: &ProjectDoctorReport) -> Vec<AutonomousSupervisorAction> {
+fn autonomous_supervisor_readiness(
+    conn: &Connection,
+    root: &Path,
+) -> Result<AutonomousSupervisorReadiness> {
+    let stored_cases: i64 =
+        conn.query_row("SELECT COUNT(*) FROM eval_cases", [], |row| row.get(0))?;
+    let (
+        rag_eval_status,
+        rag_eval_recall,
+        rag_eval_near_misses,
+        eval_matrix_status,
+        eval_matrix_coverage,
+        eval_matrix_missing_dimensions,
+        retrieval_tuning_status,
+        retrieval_profile,
+    ) = if stored_cases == 0 {
+        (
+            "unconfigured".to_string(),
+            0.0,
+            0,
+            "unconfigured".to_string(),
+            0.0,
+            Vec::new(),
+            "unconfigured".to_string(),
+            "balanced".to_string(),
+        )
+    } else {
+        let report = rag_eval_report(
+            conn,
+            None,
+            8,
+            3_000,
+            DEFAULT_EMBED_PROVIDER,
+            DEFAULT_EMBED_ENDPOINT,
+            DEFAULT_EMBED_MODEL,
+        )?;
+        (
+            report.status,
+            report.recall,
+            report.evidence_placement.near_miss_count,
+            report.eval_matrix.status,
+            report.eval_matrix.coverage,
+            report.eval_matrix.missing_dimensions,
+            report.retrieval_tuning.status,
+            report.retrieval_tuning.selected_profile,
+        )
+    };
+    let diff_review = memory_diff_review_report(conn, root, false)?;
+    let rag_ready = matches!(rag_eval_status.as_str(), "ready" | "unconfigured");
+    let diff_ready = diff_review.impact.severity != "high";
+    Ok(AutonomousSupervisorReadiness {
+        rag_eval_status,
+        rag_eval_recall,
+        rag_eval_near_misses,
+        eval_matrix_status,
+        eval_matrix_coverage,
+        eval_matrix_missing_dimensions,
+        retrieval_tuning_status,
+        retrieval_profile,
+        diff_impact_severity: diff_review.impact.severity,
+        diff_write_ready_count: diff_review.impact.write_ready_count,
+        diff_unlinked_changed_files: diff_review.impact.unlinked_changed_files.len(),
+        safe_to_apply: rag_ready && diff_ready,
+    })
+}
+
+fn autonomous_supervisor_plan(
+    doctor: &ProjectDoctorReport,
+    readiness: &AutonomousSupervisorReadiness,
+) -> Vec<AutonomousSupervisorAction> {
     let mut actions = Vec::new();
+    if !matches!(
+        readiness.eval_matrix_status.as_str(),
+        "ready" | "unconfigured" | "empty"
+    ) {
+        actions.push(AutonomousSupervisorAction {
+            name: "rag_eval_matrix_review".to_string(),
+            reason: format!(
+                "eval matrix is {} with {:.1}% coverage and {} missing dimensions",
+                readiness.eval_matrix_status,
+                readiness.eval_matrix_coverage,
+                readiness.eval_matrix_missing_dimensions.len()
+            ),
+            safe_auto: false,
+            applied: false,
+            status: "manual_review".to_string(),
+        });
+    }
+    if readiness.retrieval_tuning_status == "attention" {
+        actions.push(AutonomousSupervisorAction {
+            name: "retrieval_tuning_review".to_string(),
+            reason: format!(
+                "RAG eval recommends retrieval profile {}",
+                readiness.retrieval_profile
+            ),
+            safe_auto: false,
+            applied: false,
+            status: "manual_review".to_string(),
+        });
+    }
     if doctor
         .embedding
         .as_ref()
@@ -12288,18 +12997,20 @@ pub(crate) fn web_control_center_v12_report(
     db: &Path,
     root: &Path,
     target: Option<&Path>,
-    task: &str,
+    _task: &str,
     since_days: i64,
 ) -> Result<WebControlCenterV12Report> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let v11 = web_control_center_v11_report(conn, db, &root, target, task, since_days)?;
     let effectiveness_v2 = memory_effectiveness_v2_report(conn, &root, since_days)?;
     let baselines = recall_benchmark_baselines_report(conn, &root, since_days, false)?;
     let conflict_apply = memory_conflict_apply_report(conn, 90, 12, false)?;
+    let inbox_reviewer = inbox_ai_reviewer_report(conn, 100, false)?;
+    let diff_apply = memory_diff_apply_report(conn, &root, false)?;
     let mcp_discipline_v3 = mcp_discipline_v3_report(conn, db, &root, since_days, false)?;
     let fleet_quality = fleet_quality_report(db, since_days)?;
-    let release_gate = release_gate_v3_report(conn, db, &root, since_days, false, false)?;
-    let mut panels = v11.panels.clone();
+    let rag_eval = web_rag_eval_quick_summary(conn, &root)?;
+    let graph_rag_eval = web_graph_rag_eval_summary(conn)?;
+    let mut panels = Vec::new();
     panels.extend([
         WebControlPanel {
             name: "effectiveness_v2".to_string(),
@@ -12386,6 +13097,57 @@ pub(crate) fn web_control_center_v12_report(
             ],
         },
         WebControlPanel {
+            name: "import_write_quality".to_string(),
+            status: if inbox_reviewer.ok && diff_apply.ok {
+                "ready"
+            } else {
+                "attention"
+            }
+            .to_string(),
+            headline: format!(
+                "{} pending inbox, {} write-ready diff",
+                inbox_reviewer.pending, diff_apply.reviewed.impact.write_ready_count
+            ),
+            metrics: vec![
+                MemoryEvalProofPoint {
+                    name: "approve_ready".to_string(),
+                    value: inbox_reviewer.approve_ready.to_string(),
+                    status: if inbox_reviewer.approve_ready == 0 {
+                        "ready"
+                    } else {
+                        "planned"
+                    }
+                    .to_string(),
+                },
+                MemoryEvalProofPoint {
+                    name: "merge_ready".to_string(),
+                    value: inbox_reviewer.merge_ready.to_string(),
+                    status: if inbox_reviewer.merge_ready == 0 {
+                        "ready"
+                    } else {
+                        "manual_review"
+                    }
+                    .to_string(),
+                },
+                MemoryEvalProofPoint {
+                    name: "write_ready".to_string(),
+                    value: diff_apply.reviewed.impact.write_ready_count.to_string(),
+                    status: if diff_apply.reviewed.impact.write_ready_count == 0 {
+                        "ready"
+                    } else {
+                        "planned"
+                    }
+                    .to_string(),
+                },
+            ],
+            actions: vec![
+                "dukememory import-review FILE --json".to_string(),
+                "dukememory memory-upload FILE --json".to_string(),
+                "dukememory inbox-ai-reviewer --json".to_string(),
+                "dukememory memory-diff-apply --json".to_string(),
+            ],
+        },
+        WebControlPanel {
             name: "mcp_discipline_v3".to_string(),
             status: mcp_discipline_v3.status.clone(),
             headline: format!("missing {}", mcp_discipline_v3.missing_commands.len()),
@@ -12419,13 +13181,204 @@ pub(crate) fn web_control_center_v12_report(
             actions: vec!["dukememory fleet-quality --json".to_string()],
         },
         WebControlPanel {
+            name: "rag_eval_cases".to_string(),
+            status: rag_eval.status.clone(),
+            headline: format!(
+                "{}/{} cases passed, grounded {:.1}%",
+                rag_eval.passed, rag_eval.total, rag_eval.grounded_answers.coverage
+            ),
+            metrics: vec![
+                MemoryEvalProofPoint {
+                    name: "failed_cases".to_string(),
+                    value: rag_eval.failed.to_string(),
+                    status: if rag_eval.failed == 0 {
+                        "ready"
+                    } else {
+                        "attention"
+                    }
+                    .to_string(),
+                },
+                MemoryEvalProofPoint {
+                    name: "unknown_citation_cases".to_string(),
+                    value: rag_eval.grounded_answers.unknown_citation_cases.to_string(),
+                    status: if rag_eval.grounded_answers.unknown_citation_cases == 0 {
+                        "ready"
+                    } else {
+                        "attention"
+                    }
+                    .to_string(),
+                },
+                MemoryEvalProofPoint {
+                    name: "semantic_fallbacks".to_string(),
+                    value: rag_eval.semantic_fallbacks.to_string(),
+                    status: if rag_eval.semantic_fallbacks == 0 {
+                        "ready"
+                    } else {
+                        "attention"
+                    }
+                    .to_string(),
+                },
+            ],
+            actions: vec![
+                "GET /rag-eval".to_string(),
+                "dukememory eval rag --json".to_string(),
+            ],
+        },
+        WebControlPanel {
+            name: "rag_eval_baseline".to_string(),
+            status: match rag_eval.baseline.status.as_str() {
+                "matched" | "written" | "present" => "ready",
+                "missing" | "unconfigured" => "optional",
+                _ => "attention",
+            }
+            .to_string(),
+            headline: format!(
+                "{} ({})",
+                rag_eval.baseline.status, rag_eval.baseline.current_signature
+            ),
+            metrics: vec![
+                MemoryEvalProofPoint {
+                    name: "present".to_string(),
+                    value: rag_eval.baseline.present.to_string(),
+                    status: if rag_eval.baseline.present {
+                        "ready"
+                    } else {
+                        "optional"
+                    }
+                    .to_string(),
+                },
+                MemoryEvalProofPoint {
+                    name: "regression".to_string(),
+                    value: rag_eval.baseline.regression.to_string(),
+                    status: if rag_eval.baseline.regression {
+                        "blocked"
+                    } else {
+                        "ready"
+                    }
+                    .to_string(),
+                },
+                MemoryEvalProofPoint {
+                    name: "matrix_coverage".to_string(),
+                    value: format!("{:.1}%", rag_eval.eval_matrix.coverage),
+                    status: rag_eval.eval_matrix.status.clone(),
+                },
+            ],
+            actions: vec![
+                "GET /rag-eval".to_string(),
+                "POST /rag-eval/baseline".to_string(),
+                "dukememory eval rag --write-baseline --json".to_string(),
+            ],
+        },
+        WebControlPanel {
+            name: "graph_rag_eval".to_string(),
+            status: graph_rag_eval.status.clone(),
+            headline: format!(
+                "{} graph cases, {} memory relationships",
+                graph_rag_eval.total_cases, graph_rag_eval.memory_relationship_edges
+            ),
+            metrics: vec![
+                MemoryEvalProofPoint {
+                    name: "relationship_edges".to_string(),
+                    value: graph_rag_eval.memory_relationship_edges.to_string(),
+                    status: graph_rag_eval.status.clone(),
+                },
+                MemoryEvalProofPoint {
+                    name: "graph_cases".to_string(),
+                    value: graph_rag_eval.total_cases.to_string(),
+                    status: graph_rag_eval.status.clone(),
+                },
+                MemoryEvalProofPoint {
+                    name: "relationship_kinds".to_string(),
+                    value: graph_rag_eval.relationship_kinds.len().to_string(),
+                    status: "ready".to_string(),
+                },
+            ],
+            actions: vec![
+                "GET /graph-rag-eval".to_string(),
+                "dukememory eval graph-rag --json".to_string(),
+            ],
+        },
+        WebControlPanel {
+            name: "eval_matrix".to_string(),
+            status: match rag_eval.eval_matrix.status.as_str() {
+                "ready" => "ready",
+                "empty" | "auto_only" => "optional",
+                _ => "attention",
+            }
+            .to_string(),
+            headline: format!(
+                "{:.1}% coverage, {} missing",
+                rag_eval.eval_matrix.coverage,
+                rag_eval.eval_matrix.missing_dimensions.len()
+            ),
+            metrics: vec![
+                MemoryEvalProofPoint {
+                    name: "stored_cases".to_string(),
+                    value: rag_eval.eval_matrix.stored_cases.to_string(),
+                    status: if rag_eval.eval_matrix.stored_cases
+                        >= rag_eval.eval_matrix.recommended_min_stored_cases
+                    {
+                        "ready"
+                    } else {
+                        "attention"
+                    }
+                    .to_string(),
+                },
+                MemoryEvalProofPoint {
+                    name: "covered_dimensions".to_string(),
+                    value: format!(
+                        "{}/{}",
+                        rag_eval.eval_matrix.covered_dimensions,
+                        rag_eval.eval_matrix.total_dimensions
+                    ),
+                    status: rag_eval.eval_matrix.status.clone(),
+                },
+            ],
+            actions: vec!["dukememory eval rag --json".to_string()],
+        },
+        WebControlPanel {
+            name: "retrieval_tuning".to_string(),
+            status: match rag_eval.retrieval_tuning.status.as_str() {
+                "ready" => "ready",
+                "unconfigured" => "optional",
+                _ => "attention",
+            }
+            .to_string(),
+            headline: format!(
+                "profile {}, selection {:.1}%",
+                rag_eval.retrieval_tuning.selected_profile,
+                rag_eval.retrieval_tuning.selection_recall
+            ),
+            metrics: vec![
+                MemoryEvalProofPoint {
+                    name: "candidate_recall".to_string(),
+                    value: format!("{:.1}%", rag_eval.retrieval_tuning.candidate_recall),
+                    status: rag_eval.retrieval_tuning.status.clone(),
+                },
+                MemoryEvalProofPoint {
+                    name: "semantic_fallback_rate".to_string(),
+                    value: format!("{:.1}%", rag_eval.retrieval_tuning.semantic_fallback_rate),
+                    status: if rag_eval.retrieval_tuning.semantic_fallback_rate == 0.0 {
+                        "ready"
+                    } else {
+                        "attention"
+                    }
+                    .to_string(),
+                },
+            ],
+            actions: vec![
+                "dukememory eval rag --json".to_string(),
+                "dukememory auto-ranking-tune --json".to_string(),
+            ],
+        },
+        WebControlPanel {
             name: "release_gate_v3".to_string(),
-            status: release_gate.status.clone(),
-            headline: format!("{} issues", release_gate.issues.len()),
+            status: "on_demand".to_string(),
+            headline: "run full gate on demand".to_string(),
             metrics: vec![MemoryEvalProofPoint {
-                name: "checks".to_string(),
-                value: release_gate.checks.len().to_string(),
-                status: release_gate.status.clone(),
+                name: "precomputed".to_string(),
+                value: "false".to_string(),
+                status: "on_demand".to_string(),
             }],
             actions: vec![
                 "dukememory release-gate-v3 --json".to_string(),
@@ -12433,7 +13386,7 @@ pub(crate) fn web_control_center_v12_report(
             ],
         },
     ]);
-    let mut controls = v11.controls.clone();
+    let mut controls = Vec::new();
     controls.extend([
         WebControlAction {
             name: "write_recall_baseline".to_string(),
@@ -12446,6 +13399,16 @@ pub(crate) fn web_control_center_v12_report(
             status: baselines.status.clone(),
         },
         WebControlAction {
+            name: "write_rag_eval_baseline".to_string(),
+            label: "Write RAG baseline".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/rag-eval/baseline".to_string(),
+            cli: "dukememory eval rag --write-baseline --json".to_string(),
+            safe_auto: true,
+            requires_apply: true,
+            status: rag_eval.baseline.status.clone(),
+        },
+        WebControlAction {
             name: "apply_memory_conflicts".to_string(),
             label: "Apply safe conflicts".to_string(),
             method: "POST".to_string(),
@@ -12454,6 +13417,36 @@ pub(crate) fn web_control_center_v12_report(
             safe_auto: false,
             requires_apply: true,
             status: conflict_apply.status.clone(),
+        },
+        WebControlAction {
+            name: "review_inbox_ai".to_string(),
+            label: "Review inbox AI".to_string(),
+            method: "GET".to_string(),
+            endpoint: "/inbox-ai-reviewer".to_string(),
+            cli: "dukememory inbox-ai-reviewer --json".to_string(),
+            safe_auto: true,
+            requires_apply: false,
+            status: if inbox_reviewer.ok {
+                "ready"
+            } else {
+                "attention"
+            }
+            .to_string(),
+        },
+        WebControlAction {
+            name: "apply_memory_diff".to_string(),
+            label: "Apply memory diff".to_string(),
+            method: "POST".to_string(),
+            endpoint: "/memory-diff-apply/apply".to_string(),
+            cli: "dukememory memory-diff-apply --apply --json".to_string(),
+            safe_auto: true,
+            requires_apply: true,
+            status: if diff_apply.reviewed.impact.write_ready_count == 0 {
+                "ready"
+            } else {
+                "planned"
+            }
+            .to_string(),
         },
         WebControlAction {
             name: "verify_mcp_discipline_v3".to_string(),
@@ -12473,39 +13466,101 @@ pub(crate) fn web_control_center_v12_report(
             cli: "dukememory release-gate-v3 --run --json".to_string(),
             safe_auto: true,
             requires_apply: false,
-            status: release_gate.status.clone(),
+            status: "on_demand".to_string(),
         },
     ]);
-    let mut recommendations = v11.recommendations.clone();
+    let mut recommendations = Vec::new();
     recommendations.extend(effectiveness_v2.recommendations.clone());
     recommendations.extend(baselines.recommendations.clone());
     recommendations.extend(conflict_apply.recommendations.clone());
+    recommendations.extend(inbox_reviewer.recommendations.clone());
+    recommendations.extend(diff_apply.recommendations.clone());
     recommendations.extend(mcp_discipline_v3.recommendations.clone());
     recommendations.extend(fleet_quality.recommendations.clone());
-    recommendations.extend(release_gate.recommendations.clone());
     recommendations.sort();
     recommendations.dedup();
-    let ok = v11.ok
-        && effectiveness_v2.ok
+    let graph_rag_ok = graph_rag_eval.status != "attention";
+    let ok = effectiveness_v2.ok
         && baselines.stable
         && conflict_apply.status != "manual_review"
+        && inbox_reviewer.ok
+        && diff_apply.ok
         && mcp_discipline_v3.ok
-        && release_gate.ok;
+        && graph_rag_ok
+        && rag_eval.ok
+        && rag_eval.split.holdout_ready;
     Ok(WebControlCenterV12Report {
         version: 1,
         ok,
         status: if ok { "ready" } else { "attention" }.to_string(),
         root: root.display().to_string(),
         target: target.map(|path| path.display().to_string()),
-        v11,
+        snapshot: None,
+        v11: None,
         effectiveness_v2,
         baselines,
         conflict_apply,
+        inbox_reviewer,
+        diff_apply,
         mcp_discipline_v3,
         fleet_quality,
+        rag_eval,
+        graph_rag_eval,
         panels,
         controls,
         recommendations,
+    })
+}
+
+fn web_graph_rag_eval_summary(conn: &Connection) -> Result<WebGraphRagEvalSummary> {
+    let total_cases: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM eval_cases \
+         WHERE lower(name || ' ' || query || ' ' || expected) LIKE '%graph%' \
+            OR lower(name || ' ' || query || ' ' || expected) LIKE '%relationship%' \
+            OR lower(name || ' ' || query || ' ' || expected) LIKE '% related%' \
+            OR lower(name || ' ' || query || ' ' || expected) LIKE '% link%'",
+        [],
+        |row| row.get(0),
+    )?;
+    let memory_ids = "SELECT id FROM memories WHERE status IN ('active', 'uncertain')";
+    let mut stmt = conn.prepare(&format!(
+        "SELECT kind, COUNT(*) FROM memory_links \
+         WHERE target IN ({memory_ids}) \
+         GROUP BY kind ORDER BY kind"
+    ))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+    })?;
+    let mut relationship_kinds = std::collections::BTreeMap::new();
+    let mut memory_relationship_edges = 0usize;
+    for row in rows {
+        let (kind, count) = row?;
+        memory_relationship_edges += count;
+        relationship_kinds.insert(kind, count);
+    }
+    let total_cases = total_cases.max(0) as usize;
+    let status = if total_cases == 0 && memory_relationship_edges == 0 {
+        "optional"
+    } else if total_cases > 0 && memory_relationship_edges > 0 {
+        "ready"
+    } else {
+        "attention"
+    }
+    .to_string();
+    let detail = if status == "ready" {
+        "graph eval cases and memory-to-memory relationships are present"
+    } else if total_cases == 0 {
+        "no graph-focused eval cases are stored"
+    } else {
+        "graph-focused eval cases exist but memory-to-memory relationships are missing"
+    }
+    .to_string();
+    Ok(WebGraphRagEvalSummary {
+        status,
+        total_cases,
+        memory_relationship_edges,
+        relationship_kinds,
+        detail,
     })
 }
 
@@ -12517,6 +13572,13 @@ fn auto_supersede_confidence(candidate: &MergeCandidate) -> f64 {
         0.0
     };
     (0.86_f64 + title_bonus).min(0.96)
+}
+
+fn actionable_duplicate_candidate_count(candidates: &[MergeCandidate]) -> usize {
+    candidates
+        .iter()
+        .filter(|candidate| auto_supersede_confidence(candidate) >= AUTO_SUPERSEDE_SAFE_CONFIDENCE)
+        .count()
 }
 
 fn memory_title_exists(conn: &Connection, memory_type: &str, title: &str) -> Result<bool> {
@@ -12739,6 +13801,16 @@ pub(crate) fn print_memory_diff_review(
     }
     println!("Memory Diff Review");
     println!("changed_files: {}", report.changed_files.len());
+    println!(
+        "git: branch={} head={} basis={}",
+        report.git.branch.as_deref().unwrap_or("detached"),
+        report.git.head_commit.as_deref().unwrap_or("unknown"),
+        report.git.temporal_basis
+    );
+    println!(
+        "impact: severity={} candidates={} write_ready={}",
+        report.impact.severity, report.impact.candidate_count, report.impact.write_ready_count
+    );
     for item in &report.suggested_memory {
         println!("suggest: {item}");
     }
@@ -12754,13 +13826,14 @@ pub(crate) fn memory_diff_review_report(
     apply: bool,
 ) -> Result<MemoryDiffReviewReport> {
     let diff = project_diff_report(conn, root, true)?;
+    let git = diff.git.clone();
     let mut suggested_memory = Vec::new();
     let mut candidate_cards = Vec::new();
     for file in diff.changed_files.iter().take(10) {
         suggested_memory.push(format!(
             "review durable task_state/design_note for changed file {file}"
         ));
-        candidate_cards.push(memory_diff_candidate_for_file(file));
+        candidate_cards.push(memory_diff_candidate_for_file(file, &git));
     }
     if diff.changed_files.is_empty() {
         suggested_memory.push("no changed files detected; no memory write suggested".to_string());
@@ -12770,6 +13843,13 @@ pub(crate) fn memory_diff_review_report(
         .filter(|candidate| candidate.confidence >= 0.85)
         .cloned()
         .collect::<Vec<_>>();
+    let impact = memory_diff_impact_summary(
+        &diff.impact,
+        candidate_cards.len(),
+        write_ready.len(),
+        diff.drift.stale_active.len(),
+        diff.conflicts,
+    );
     let stale_memory_ids = diff
         .drift
         .stale_active
@@ -12784,6 +13864,8 @@ pub(crate) fn memory_diff_review_report(
             serde_json::to_string_pretty(&json!({
                 "version": 1,
                 "changed_files": &diff.changed_files,
+                "git": &git,
+                "impact": &impact,
                 "suggested_memory": &suggested_memory,
                 "candidate_cards": &candidate_cards,
                 "write_ready": &write_ready,
@@ -12803,6 +13885,8 @@ pub(crate) fn memory_diff_review_report(
         root: diff.root,
         applied: apply,
         changed_files: diff.changed_files,
+        git,
+        impact,
         suggested_memory,
         candidate_cards,
         write_ready,
@@ -12813,7 +13897,46 @@ pub(crate) fn memory_diff_review_report(
     })
 }
 
-fn memory_diff_candidate_for_file(file: &str) -> MemoryDiffCandidate {
+fn memory_diff_impact_summary(
+    project: &ProjectDiffImpactSummary,
+    candidate_count: usize,
+    write_ready_count: usize,
+    stale_memory_count: usize,
+    conflict_count: usize,
+) -> MemoryDiffImpactSummary {
+    let severity = if conflict_count > 0 || stale_memory_count > 0 {
+        "high"
+    } else if write_ready_count > 0 || !project.unlinked_changed_files.is_empty() {
+        "medium"
+    } else if candidate_count > 0 {
+        "low"
+    } else {
+        "none"
+    }
+    .to_string();
+    let suggested_action = if conflict_count > 0 || stale_memory_count > 0 {
+        "resolve stale or conflicting memory before applying new diff notes".to_string()
+    } else if write_ready_count > 0 {
+        "review write_ready candidates and apply only durable project facts".to_string()
+    } else if candidate_count > 0 {
+        "review candidates; skip writes for transient code churn".to_string()
+    } else {
+        "no memory write suggested for this diff".to_string()
+    };
+    MemoryDiffImpactSummary {
+        changed_files: project.changed_files,
+        candidate_count,
+        write_ready_count,
+        stale_memory_count,
+        conflict_count,
+        unlinked_changed_files: project.unlinked_changed_files.clone(),
+        affected_memory_ids: project.affected_memory_ids.clone(),
+        severity,
+        suggested_action,
+    }
+}
+
+fn memory_diff_candidate_for_file(file: &str, git: &GitWorktreeContext) -> MemoryDiffCandidate {
     let memory_type = if file.ends_with("Cargo.toml")
         || file.ends_with("Cargo.lock")
         || file.ends_with("README.md")
@@ -12841,6 +13964,11 @@ fn memory_diff_candidate_for_file(file: &str) -> MemoryDiffCandidate {
         confidence,
         link: format!("file:{file}"),
         reason: "changed file may carry reusable project context".to_string(),
+        worktree_root: git.worktree_root.clone(),
+        branch: git.branch.clone(),
+        base_commit: git.head_commit.clone(),
+        observed_at: git.observed_at,
+        temporal_basis: git.temporal_basis.clone(),
     }
 }
 
@@ -13013,7 +14141,9 @@ pub(crate) fn sync_latency_report(
         .zip(target_read_ms)
         .map(|(write, read)| write.saturating_add(read));
     let mut issues = Vec::new();
-    if measured_roundtrip.is_some_and(|ms| ms > 800) || remote.estimated_roundtrip_ms > 800 {
+    if measured_roundtrip.is_some_and(|ms| ms > 800)
+        || (target.is_some() && remote.estimated_roundtrip_ms > 800)
+    {
         issues.push("remote sync latency is high for interactive reads".to_string());
     }
     let recommended_mode = if issues.is_empty() {
@@ -13459,7 +14589,46 @@ pub(crate) fn autonomy_control_center_report(
     let watch = watch_control_report(db, &root, 3600, "com.dukememory.autonomous-loop", false)?;
     let diff_review = memory_diff_review_report(conn, &root, false)?;
     let remote_sync = remote_sync_v2_report(conn, db, &root, None, since_days, false)?;
+    let required_checks = vec![
+        ReleaseGateCheck {
+            name: "memory_qa".to_string(),
+            ok: qa.ok,
+            required: true,
+            detail: format!("score {:.1}", qa.score),
+        },
+        ReleaseGateCheck {
+            name: "ranking".to_string(),
+            ok: ranking.ok,
+            required: true,
+            detail: format!("selected {}", ranking.selected_profile),
+        },
+        ReleaseGateCheck {
+            name: "local_watch".to_string(),
+            ok: watch.ok,
+            required: true,
+            detail: format!("installed={} running={}", watch.installed, watch.running),
+        },
+        ReleaseGateCheck {
+            name: "memory_diff".to_string(),
+            ok: diff_review.ok,
+            required: true,
+            detail: format!("changed_files={}", diff_review.changed_files.len()),
+        },
+    ];
+    let optional_checks = vec![ReleaseGateCheck {
+        name: "remote_sync".to_string(),
+        ok: remote_sync.ok,
+        required: false,
+        detail: if remote_sync.ok {
+            "optional encrypted sync is configured".to_string()
+        } else {
+            "optional; no remote target is required for local autonomy".to_string()
+        },
+    }];
     let mut issues = qa.issues.clone();
+    if !ranking.ok {
+        issues.push("local ranking policy needs attention".to_string());
+    }
     if !watch.ok {
         issues.extend(watch.issues.iter().cloned());
     }
@@ -13469,23 +14638,38 @@ pub(crate) fn autonomy_control_center_report(
     let mut recommendations = qa.recommendations.clone();
     recommendations.extend(ranking.reasons.iter().cloned());
     recommendations.extend(watch.recommendations.iter().cloned());
-    recommendations.extend(remote_sync.recommendations.iter().cloned());
     recommendations.sort();
     recommendations.dedup();
-    let ok = issues.is_empty();
+    let optional_issues = if remote_sync.ok {
+        Vec::new()
+    } else {
+        remote_sync.blockers.clone()
+    };
+    let mut optional_recommendations = remote_sync.recommendations.clone();
+    optional_recommendations.sort();
+    optional_recommendations.dedup();
+    let local_ready = required_checks.iter().all(|check| check.ok);
+    let optional_sync_ready = optional_checks.iter().all(|check| check.ok);
+    let ok = local_ready;
     Ok(AutonomyControlCenterReport {
-        version: 1,
+        version: 2,
         ok,
         status: if ok { "ready" } else { "attention" }.to_string(),
         root: root.display().to_string(),
         since_days,
+        local_ready,
+        optional_sync_ready,
+        required_checks,
+        optional_checks,
         qa,
         ranking,
         watch,
         diff_review,
         remote_sync,
         issues,
+        optional_issues,
         recommendations,
+        optional_recommendations,
     })
 }
 
@@ -13651,6 +14835,7 @@ fn agent_required_commands() -> &'static [&'static str] {
         "memory-test-harness",
         "agent-audit-v2",
         "memory-control-center-v2",
+        "memory-control-center",
         "auto-supersede-v2",
         "memory-diff-apply",
         "recall-benchmark-suite",
@@ -13663,12 +14848,16 @@ fn agent_required_commands() -> &'static [&'static str] {
         "autonomous-loop-v2",
         "governance-enforce",
         "memory-quality-ci",
+        "eval rag",
+        "eval rag --write-baseline",
+        "eval graph-rag",
         "fleet-dashboard-v2",
         "remote-sync-apply-flow",
         "mcp-tool-surface-v2",
         "mcp-tool-surface-v3",
         "autopilot-v3",
         "self-learning-retrieval",
+        "auto-ranking-tune",
         "project-role-profile",
         "inbox-ai-reviewer",
         "web-control-center-v3",
@@ -13715,6 +14904,7 @@ fn agent_required_commands() -> &'static [&'static str] {
         "fleet-supervisor-watch-install",
         "web-control-center-v11",
         "web-control-center-v12",
+        "web-control-center",
         "intelligence-dashboard",
         "project-diff",
         "remote-sync-dry-run",
@@ -13959,9 +15149,21 @@ pub(crate) fn print_project_diff(
     println!("Project Intelligence Diff");
     println!("ok: {}", report.ok);
     println!("changed_files: {}", report.changed_files.len());
+    println!(
+        "git: branch={} head={} basis={}",
+        report.git.branch.as_deref().unwrap_or("detached"),
+        report.git.head_commit.as_deref().unwrap_or("unknown"),
+        report.git.temporal_basis
+    );
     println!("missing_links: {}", report.missing_links);
     println!("conflicts: {}", report.conflicts);
     println!("stale_active: {}", report.stale_active);
+    println!(
+        "impact: severity={} linked_memories={} unlinked_changed_files={}",
+        report.impact.severity,
+        report.impact.linked_memory_count,
+        report.impact.unlinked_changed_files.len()
+    );
     for file in &report.changed_files {
         println!("changed: {file}");
     }
@@ -13977,6 +15179,7 @@ pub(crate) fn project_diff_report(
     changed_only: bool,
 ) -> Result<ProjectDiffReport> {
     let drift = drift_report(conn, root, changed_only)?;
+    let git = git_worktree_context(root, !drift.changed_files.is_empty());
     let since_ms = now_ms().saturating_sub(86_400_000);
     let mut stmt = conn.prepare(
         "SELECT id FROM memories WHERE updated_at >= ?1 ORDER BY updated_at DESC LIMIT 20",
@@ -13984,6 +15187,7 @@ pub(crate) fn project_diff_report(
     let new_or_changed_memory_ids = stmt
         .query_map(params![since_ms], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let impact = project_diff_impact_summary(conn, &drift, &new_or_changed_memory_ids)?;
     let mut recommendations = Vec::new();
     if !drift.missing_links.is_empty() {
         recommendations.push("repair or remove memory links pointing at missing files".to_string());
@@ -14003,13 +15207,239 @@ pub(crate) fn project_diff_report(
         root: drift.root.clone(),
         changed_only,
         changed_files: drift.changed_files.clone(),
+        git,
         missing_links: drift.missing_links.len(),
         conflicts: drift.conflicts.len(),
         stale_active: drift.stale_active.len(),
         new_or_changed_memory_ids,
+        impact,
         drift,
         recommendations,
     })
+}
+
+fn git_worktree_context(root: &Path, dirty: bool) -> GitWorktreeContext {
+    let observed_at = now_ms();
+    let fallback_root = root
+        .canonicalize()
+        .unwrap_or_else(|_| root.to_path_buf())
+        .display()
+        .to_string();
+    let git_value = |args: &[&str]| -> Option<String> {
+        let output = ProcessCommand::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (!value.is_empty()).then_some(value)
+    };
+    let worktree_root = git_value(&["rev-parse", "--show-toplevel"]);
+    let Some(worktree_root) = worktree_root else {
+        return GitWorktreeContext {
+            available: false,
+            worktree_root: fallback_root,
+            common_git_dir: String::new(),
+            branch: None,
+            head_commit: None,
+            head_committed_at: None,
+            detached: false,
+            dirty,
+            observed_at,
+            temporal_basis: "filesystem_observation".to_string(),
+        };
+    };
+    let worktree_path = PathBuf::from(&worktree_root);
+    let common_git_dir = git_value(&["rev-parse", "--git-common-dir"])
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                worktree_path.join(path)
+            }
+        })
+        .map(|path| path.canonicalize().unwrap_or(path))
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let branch = git_value(&["branch", "--show-current"]);
+    let head_commit = git_value(&["rev-parse", "HEAD"]);
+    let head_committed_at = git_value(&["show", "-s", "--format=%cI", "HEAD"]);
+    GitWorktreeContext {
+        available: true,
+        worktree_root,
+        common_git_dir,
+        detached: branch.is_none() && head_commit.is_some(),
+        branch,
+        head_commit,
+        head_committed_at,
+        dirty,
+        observed_at,
+        temporal_basis: if dirty {
+            "worktree_after_head"
+        } else {
+            "head_commit"
+        }
+        .to_string(),
+    }
+}
+
+#[cfg(test)]
+mod git_worktree_context_tests {
+    use super::*;
+
+    fn git(root: &Path, args: &[&str]) {
+        let output = ProcessCommand::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?}: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn git_context_distinguishes_linked_worktree_and_observation_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let worktree = dir.path().join("feature-worktree");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        std::fs::write(repo.join("README.md"), "initial\n").unwrap();
+        git(&repo, &["add", "README.md"]);
+        git(
+            &repo,
+            &[
+                "-c",
+                "user.name=DukeMemory Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "initial",
+            ],
+        );
+        let worktree_text = worktree.display().to_string();
+        git(&repo, &["worktree", "add", "-b", "feature", &worktree_text]);
+        std::fs::write(worktree.join("README.md"), "changed\n").unwrap();
+
+        let context = git_worktree_context(&worktree, true);
+        assert!(context.available);
+        assert_eq!(context.branch.as_deref(), Some("feature"));
+        assert!(context.head_commit.is_some());
+        assert!(context.dirty);
+        assert_eq!(context.temporal_basis, "worktree_after_head");
+        assert_eq!(
+            Path::new(&context.worktree_root).canonicalize().unwrap(),
+            worktree.canonicalize().unwrap()
+        );
+        assert!(context.observed_at > 0);
+    }
+}
+
+fn project_diff_impact_summary(
+    conn: &Connection,
+    drift: &DriftReport,
+    new_or_changed_memory_ids: &[String],
+) -> Result<ProjectDiffImpactSummary> {
+    let mut affected_memory_ids = Vec::new();
+    let mut changed_files_with_memory = HashSet::new();
+    if !drift.changed_files.is_empty() {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT l.memory_id, l.target FROM memory_links l \
+             JOIN memories m ON m.id = l.memory_id \
+             WHERE m.status IN ('active', 'uncertain') \
+             ORDER BY l.memory_id, l.target",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (memory_id, target) = row?;
+            for file in &drift.changed_files {
+                if project_diff_link_matches_file(&target, file) {
+                    changed_files_with_memory.insert(file.clone());
+                    if !affected_memory_ids.iter().any(|id| id == &memory_id) {
+                        affected_memory_ids.push(memory_id.clone());
+                    }
+                }
+            }
+        }
+    }
+    affected_memory_ids.truncate(20);
+    let unlinked_changed_files = drift
+        .changed_files
+        .iter()
+        .filter(|file| !changed_files_with_memory.contains(*file))
+        .take(20)
+        .cloned()
+        .collect::<Vec<_>>();
+    let severity = if !drift.missing_links.is_empty()
+        || !drift.conflicts.is_empty()
+        || !drift.stale_active.is_empty()
+    {
+        "high"
+    } else if !drift.changed_files.is_empty() && !unlinked_changed_files.is_empty() {
+        "medium"
+    } else if !drift.changed_files.is_empty() || !new_or_changed_memory_ids.is_empty() {
+        "low"
+    } else {
+        "none"
+    }
+    .to_string();
+    let suggested_action = if severity == "high" {
+        "resolve memory drift before release".to_string()
+    } else if !unlinked_changed_files.is_empty() {
+        "run memory-diff-review and save only durable changed-file knowledge".to_string()
+    } else if !drift.changed_files.is_empty() {
+        "review affected memory ids for stale facts".to_string()
+    } else {
+        "no diff-linked memory action required".to_string()
+    };
+    Ok(ProjectDiffImpactSummary {
+        changed_files: drift.changed_files.len(),
+        changed_files_with_memory: changed_files_with_memory.len(),
+        unlinked_changed_files,
+        linked_memory_count: affected_memory_ids.len(),
+        affected_memory_ids,
+        new_or_changed_memory_count: new_or_changed_memory_ids.len(),
+        missing_links: drift.missing_links.len(),
+        conflicts: drift.conflicts.len(),
+        stale_active: drift.stale_active.len(),
+        severity,
+        suggested_action,
+    })
+}
+
+fn project_diff_link_matches_file(target: &str, file: &str) -> bool {
+    let target = project_diff_normalized_link_target(target);
+    let file = project_diff_normalized_link_target(file);
+    target == file || target.ends_with(&format!("/{file}"))
+}
+
+fn project_diff_normalized_link_target(target: &str) -> String {
+    let mut value = target.trim().trim_start_matches("file:").replace('\\', "/");
+    if let Some(stripped) = value.strip_prefix("./") {
+        value = stripped.to_string();
+    }
+    if let Some((path, suffix)) = value.rsplit_once(':') {
+        let line_suffix = suffix.chars().all(|ch| ch.is_ascii_digit() || ch == '-');
+        if line_suffix {
+            value = path.to_string();
+        }
+    }
+    value
 }
 
 pub(crate) fn print_intelligence_dashboard(
@@ -14386,14 +15816,16 @@ pub(crate) fn release_gate_report(
     let autonomous_loop =
         autonomous_loop_report(conn, db, &root, since_days, AutonomousLevel::Normal, false)?;
     let usefulness_engine = usefulness_engine_report(conn, &root, since_days, false)?;
-    let sync_latency = sync_latency_report(conn, db, &root, None, 1)?;
+    let sync_target = std::env::var_os("DUKEMEMORY_SYNC_TARGET").map(PathBuf::from);
+    let sync_required = sync_target.is_some();
+    let sync_latency = sync_latency_report(conn, db, &root, sync_target.as_deref(), 1)?;
     let action_journal = action_journal_report(conn, since_days, 30)?;
     let sync_profile = sync_profile_report(
         conn,
         db,
         &root,
         SyncProfileMode::LocalFirstBackup,
-        None,
+        sync_target.as_deref(),
         false,
         false,
     )?;
@@ -14452,11 +15884,14 @@ pub(crate) fn release_gate_report(
             ok: project_diff.ok,
             required: true,
             detail: format!(
-                "changed={} missing_links={} conflicts={} stale={}",
+                "changed={} missing_links={} conflicts={} stale={} impact={} linked_memories={} unlinked_changed={}",
                 project_diff.changed_files.len(),
                 project_diff.missing_links,
                 project_diff.conflicts,
-                project_diff.stale_active
+                project_diff.stale_active,
+                project_diff.impact.severity,
+                project_diff.impact.linked_memory_count,
+                project_diff.impact.unlinked_changed_files.len()
             ),
         },
         ReleaseGateCheck {
@@ -14473,9 +15908,13 @@ pub(crate) fn release_gate_report(
         },
         ReleaseGateCheck {
             name: "sync_latency".to_string(),
-            ok: sync_latency.ok,
-            required: true,
-            detail: sync_latency.recommended_mode.clone(),
+            ok: !sync_required || sync_latency.ok,
+            required: sync_required,
+            detail: if sync_required {
+                sync_latency.recommended_mode.clone()
+            } else {
+                "optional: DUKEMEMORY_SYNC_TARGET is not configured".to_string()
+            },
         },
         ReleaseGateCheck {
             name: "action_journal".to_string(),
@@ -14488,11 +15927,13 @@ pub(crate) fn release_gate_report(
         },
         ReleaseGateCheck {
             name: "sync_profile".to_string(),
-            ok: sync_profile.ok
-                || (sync_profile.blockers.len() == 1
-                    && sync_profile.blockers[0] == "sync profile needs --target PATH"),
-            required: true,
-            detail: sync_profile.profile.clone(),
+            ok: !sync_required || sync_profile.ok,
+            required: sync_required,
+            detail: if sync_required {
+                sync_profile.profile.clone()
+            } else {
+                "optional: local-only deployment".to_string()
+            },
         },
         ReleaseGateCheck {
             name: "agent_enforce".to_string(),
@@ -14666,8 +16107,9 @@ pub(crate) fn quality_report(
     since_days: i64,
     limit: usize,
 ) -> Result<QualityReport> {
-    let since_ms = now_ms().saturating_sub(since_days.max(0).saturating_mul(86_400_000));
-    let fresh_cutoff = now_ms().saturating_sub(FRESH_MEMORY_GRACE_MS);
+    let now = now_ms();
+    let since_ms = now.saturating_sub(since_days.max(0).saturating_mul(86_400_000));
+    let fresh_cutoff = now.saturating_sub(FRESH_MEMORY_GRACE_MS);
     let request_counts = memory_request_counts_since(conn, Some(since_ms))?;
     let feedback = memory_feedback_counts(conn, since_ms)?;
     let rows = query_memories(
@@ -14687,72 +16129,85 @@ pub(crate) fn quality_report(
         let links = get_links(conn, &memory.id)?.len();
         let body_chars = memory.body.chars().count();
         let fresh = memory.updated_at >= fresh_cutoff;
+        let age_days = now
+            .saturating_sub(memory.updated_at)
+            .saturating_div(86_400_000);
         let broad_history = quality_broad_history_task_state(&memory);
         let scored_request_count = if broad_history {
             request_count.min(3)
         } else {
             request_count
         };
-        let mut usefulness_score = 20.0 + (scored_request_count.min(10) as f64 * 4.0);
-        usefulness_score += positive_feedback.min(10) as f64 * 5.0;
-        usefulness_score -= negative_feedback.min(10) as f64 * 6.0;
+        let mut usefulness_score = 55.0 + (scored_request_count.min(8) as f64 * 3.0);
+        usefulness_score += positive_feedback.min(5) as f64 * 4.0;
+        usefulness_score -= negative_feedback.min(5) as f64 * 10.0;
         usefulness_score += match memory.memory_type.as_str() {
-            "decision" | "constraint" | "user_preference" | "product_goal" => 12.0,
-            "known_issue" | "command" | "design_note" => 8.0,
+            "decision" | "constraint" | "user_preference" | "product_goal" => 10.0,
+            "known_issue" | "command" | "design_note" => 6.0,
             "task_state" => 4.0,
             _ => 2.0,
         };
         if memory.status == "uncertain" {
-            usefulness_score -= 8.0;
+            usefulness_score -= 10.0;
+        }
+        if fresh {
+            usefulness_score += 5.0;
         }
         let mut token_saving_score = if body_chars <= 600 {
-            18.0
+            15.0
         } else if body_chars <= 1200 {
-            10.0
+            8.0
         } else {
-            -10.0
+            -8.0
         };
         if request_count > 0 {
-            token_saving_score += 8.0;
+            token_saving_score += 5.0;
         }
         if links > 0 {
-            token_saving_score += 6.0;
+            token_saving_score += 8.0;
         }
-        let mut risk_score = 5.0;
+        let evidence_required = matches!(
+            memory.memory_type.as_str(),
+            "decision"
+                | "constraint"
+                | "user_preference"
+                | "product_goal"
+                | "known_issue"
+                | "command"
+        );
+        let evidence_state = if links > 0 {
+            "linked"
+        } else if evidence_required {
+            "unlinked_required"
+        } else {
+            "unlinked_optional"
+        };
+        let mut risk_score = 0.0;
         if matches!(
             memory.memory_type.as_str(),
             "decision" | "constraint" | "user_preference" | "product_goal"
         ) {
-            risk_score += 25.0;
+            risk_score += 5.0;
         }
         if memory.status == "uncertain" {
-            risk_score += 10.0;
+            risk_score += 8.0;
         }
-        if links == 0 {
+        if links == 0 && evidence_required {
             risk_score += 8.0;
         }
         if body_chars > 1200 {
-            risk_score += 5.0;
+            risk_score += 10.0;
         }
         if broad_history && request_count >= 8 && positive_feedback == 0 {
-            risk_score += 18.0;
+            risk_score += 15.0;
         }
         let mut reasons = Vec::new();
         if request_count > 0 {
             reasons.push(format!("used {request_count} time(s) recently"));
         } else if fresh {
-            usefulness_score += 10.0;
             reasons.push("fresh; waiting for use".to_string());
         } else {
-            reasons.push("unused recently".to_string());
-            if !broad_history {
-                suggestions.push(UsefulnessSuggestion {
-                    action: "review_unused".to_string(),
-                    id: Some(memory.id.clone()),
-                    detail: "low quality score because no recent retrieval used this card"
-                        .to_string(),
-                });
-            }
+            reasons.push("dormant; no recent reads but not automatically low quality".to_string());
         }
         if links == 0 {
             reasons.push("no evidence links".to_string());
@@ -14768,6 +16223,59 @@ pub(crate) fn quality_report(
                 "feedback +{positive_feedback} -{negative_feedback}"
             ));
         }
+        let (classification, recommended_action) = if negative_feedback > positive_feedback {
+            (
+                "noisy",
+                Some("review negative feedback and suppress only with evidence".to_string()),
+            )
+        } else if body_chars > 1200 {
+            (
+                "oversized",
+                Some("compact into one bounded evidence-linked summary".to_string()),
+            )
+        } else if memory.status == "uncertain" && age_days >= 30 {
+            (
+                "stale",
+                Some("confirm, supersede, or reject the uncertain card".to_string()),
+            )
+        } else if memory.memory_type == "task_state"
+            && !broad_history
+            && age_days >= 30
+            && request_count == 0
+        {
+            (
+                "obsolete",
+                Some("supersede the completed task state with the current state".to_string()),
+            )
+        } else if matches!(
+            memory.memory_type.as_str(),
+            "known_issue" | "command" | "design_note"
+        ) && age_days >= 180
+            && request_count == 0
+        {
+            (
+                "stale",
+                Some("verify the fact against current project evidence".to_string()),
+            )
+        } else if links == 0 && evidence_required {
+            (
+                "needs_evidence",
+                Some("attach a file, symbol, command, or source link".to_string()),
+            )
+        } else if fresh && request_count == 0 {
+            ("fresh", None)
+        } else if request_count == 0 {
+            ("dormant", None)
+        } else {
+            ("healthy", None)
+        };
+        if let Some(action) = &recommended_action {
+            suggestions.push(UsefulnessSuggestion {
+                action: format!("review_{classification}"),
+                id: Some(memory.id.clone()),
+                detail: action.clone(),
+            });
+        }
         let score = (usefulness_score + token_saving_score - risk_score).clamp(0.0, 100.0);
         items.push(MemoryQuality {
             id: memory.id,
@@ -14782,6 +16290,10 @@ pub(crate) fn quality_report(
             negative_feedback,
             body_chars,
             links,
+            age_days,
+            classification: classification.to_string(),
+            evidence_state: evidence_state.to_string(),
+            recommended_action,
             reasons,
         });
     }
@@ -14803,11 +16315,23 @@ pub(crate) fn quality_report(
     } else {
         items.iter().map(|item| item.score).sum::<f64>() / items.len() as f64
     };
+    let mut classifications = BTreeMap::new();
+    for item in &items {
+        *classifications
+            .entry(item.classification.clone())
+            .or_insert(0) += 1;
+    }
+    let actionable_count = items
+        .iter()
+        .filter(|item| item.recommended_action.is_some())
+        .count();
     Ok(QualityReport {
-        version: 1,
+        version: 2,
         since_days,
         total: items.len(),
         average_score,
+        actionable_count,
+        classifications,
         strongest,
         weakest,
         items: items.into_iter().take(limit).collect(),
@@ -15142,37 +16666,32 @@ pub(crate) fn project_profile_snapshot(
 }
 
 pub(crate) fn read_project_embedding_config(root: &Path) -> (String, String, String) {
-    let default = (
+    let mut effective = (
         DEFAULT_EMBED_PROVIDER.to_string(),
         DEFAULT_EMBED_ENDPOINT.to_string(),
         DEFAULT_EMBED_MODEL.to_string(),
     );
-    let Ok(raw) = fs::read_to_string(root.join(".agent/config.toml")) else {
-        return default;
-    };
-    let Ok(value) = raw.parse::<toml::Value>() else {
-        return default;
-    };
-    let Some(embeddings) = value.get("embeddings") else {
-        return default;
-    };
-    (
-        embeddings
+    if let Ok(raw) = fs::read_to_string(root.join(".agent/config.toml"))
+        && let Ok(value) = raw.parse::<toml::Value>()
+        && let Some(embeddings) = value.get("embeddings")
+    {
+        effective.0 = embeddings
             .get("provider")
             .and_then(toml::Value::as_str)
             .unwrap_or(DEFAULT_EMBED_PROVIDER)
-            .to_string(),
-        embeddings
+            .to_string();
+        effective.1 = embeddings
             .get("endpoint")
             .and_then(toml::Value::as_str)
             .unwrap_or(DEFAULT_EMBED_ENDPOINT)
-            .to_string(),
-        embeddings
+            .to_string();
+        effective.2 = embeddings
             .get("model")
             .and_then(toml::Value::as_str)
             .unwrap_or(DEFAULT_EMBED_MODEL)
-            .to_string(),
-    )
+            .to_string();
+    }
+    effective
 }
 
 pub(crate) fn app_project_root_for_db(db: &Path) -> Option<PathBuf> {
@@ -15466,6 +16985,7 @@ pub(crate) fn dashboard_repair_history_report(
             db: db.display().to_string(),
             memories: 0,
             pending_inbox: 0,
+            actionable_pending_inbox: 0,
             quality_average: None,
             autonomous_ok: None,
             autonomous_age_secs: None,
@@ -15862,7 +17382,7 @@ fn run_dashboard_autonomous_repair(
 fn compact_autonomous_repair_detail(report: &AutonomousReport) -> String {
     let mut parts = vec![format!("ok={} actions={}", report.ok, report.actions.len())];
     for kind in [
-        "inferred_feedback",
+        "inferred_feedback_preview",
         "gap_inbox",
         "gap_inbox_resolved",
         "live_eval_snapshot",
@@ -16054,6 +17574,8 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
             .ok();
             let (memories, pending_inbox) = app_project_counts(&db).unwrap_or((0, 0));
             let embedding_missing = embedding.as_ref().map(|status| status.missing);
+            let actionable_pending_inbox =
+                actionable_pending_inbox_count(&conn).unwrap_or_else(|_| pending_inbox.max(0) as usize);
             let repair_loop =
                 ops_repair_loop_status(&conn, 30).unwrap_or_else(|_| empty_repair_loop_status());
             let gap_inbox = dashboard_gap_inbox_status(&conn).unwrap_or_default();
@@ -16188,15 +17710,15 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                     embed_repair_command(&db),
                 );
             }
-            if pending_inbox > 0 {
+            if actionable_pending_inbox > 0 {
                 attention_reasons.push("pending_inbox".to_string());
-                recommendations.push("review pending memory inbox".to_string());
+                recommendations.push("review actionable pending memory inbox".to_string());
                 push_repair_action(
                     &mut repair_actions,
                     "review_inbox",
                     "pending_inbox",
                     false,
-                    "Review pending inbox suggestions before accepting them.",
+                    "Review actionable pending inbox suggestions before accepting them.",
                     inbox_review_command(&db),
                 );
             }
@@ -16239,6 +17761,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
                 db: db.display().to_string(),
                 memories,
                 pending_inbox,
+                actionable_pending_inbox,
                 quality_average: quality.map(|quality| quality.average_score),
                 autonomous_ok: autonomous.as_ref().map(|status| status.ok),
                 autonomous_age_secs,
@@ -16307,7 +17830,7 @@ pub(crate) fn dashboard_report(default_db: &Path) -> Result<DashboardReport> {
             project.autonomous_ok == Some(true)
                 && project.autonomous_fresh != Some(false)
                 && project.embedding_missing.unwrap_or(0) == 0
-                && project.pending_inbox == 0
+                && project.actionable_pending_inbox == 0
                 && project.recommendations.is_empty()
         })
         .count();
@@ -16595,13 +18118,21 @@ pub(crate) fn memory_qa_report(
         ));
         recommendations.push("compact long cards into bounded summaries".to_string());
     }
-    if usefulness.duplicate_candidates.len() > 3 {
+    let duplicate_candidates = usefulness.duplicate_candidates.len();
+    let actionable_duplicate_candidates =
+        actionable_duplicate_candidate_count(&usefulness.duplicate_candidates);
+    if actionable_duplicate_candidates > 3 {
         issues.push(format!(
-            "{} duplicate candidates detected",
-            usefulness.duplicate_candidates.len()
+            "{} actionable duplicate candidates detected",
+            actionable_duplicate_candidates
         ));
         recommendations.push(
-            "let autonomous supersede safe duplicates or review merge-candidates".to_string(),
+            "review auto-supersede-v2 candidates, then apply safe reversible supersedes"
+                .to_string(),
+        );
+    } else if duplicate_candidates > 3 {
+        recommendations.push(
+            format!("{duplicate_candidates} ambiguous duplicate candidates need manual review; no safe auto-supersede candidates met the confidence threshold"),
         );
     }
     if let Some(embedding) = &embedding {
@@ -16650,9 +18181,29 @@ pub(crate) fn memory_qa_report(
     recommendations.sort();
     recommendations.dedup();
     let mut score = 100.0;
-    score -= usefulness.unused.len().min(10) as f64 * 2.0;
+    score -= quality
+        .classifications
+        .get("noisy")
+        .copied()
+        .unwrap_or(0)
+        .min(5) as f64
+        * 5.0;
+    score -= quality
+        .classifications
+        .get("obsolete")
+        .copied()
+        .unwrap_or(0)
+        .min(5) as f64
+        * 2.0;
+    score -= quality
+        .classifications
+        .get("stale")
+        .copied()
+        .unwrap_or(0)
+        .min(5) as f64
+        * 3.0;
     score -= usefulness.too_long.len().min(10) as f64 * 3.0;
-    score -= usefulness.duplicate_candidates.len().min(10) as f64 * 2.0;
+    score -= actionable_duplicate_candidates.min(10) as f64 * 2.0;
     score -= embedding
         .as_ref()
         .map(|item| item.missing + item.stale)
@@ -16697,7 +18248,8 @@ pub(crate) fn memory_qa_report(
         unused: usefulness.unused.len(),
         stale: usefulness.stale.len(),
         too_long: usefulness.too_long.len(),
-        duplicate_candidates: usefulness.duplicate_candidates.len(),
+        duplicate_candidates,
+        actionable_duplicate_candidates,
         embedding_missing: embedding.as_ref().map(|item| item.missing).unwrap_or(0),
         embedding_stale: embedding.as_ref().map(|item| item.stale).unwrap_or(0),
         autonomous_ok: autonomous.map(|status| status.ok),
@@ -16731,10 +18283,11 @@ pub(crate) fn print_ops_status(
             report.effectiveness.token_saving_estimate
         );
         println!(
-            "quality: avg={:.1} weak={} duplicates={} reversible_cleanup={}",
+            "quality: avg={:.1} weak={} duplicates={} actionable_duplicates={} reversible_cleanup={}",
             report.quality_loop.average_score,
             report.quality_loop.weakest_cards,
             report.quality_loop.duplicate_candidates,
+            report.quality_loop.actionable_duplicate_candidates,
             report.quality_loop.reversible_cleanup_ready
         );
         println!(
@@ -16982,6 +18535,8 @@ pub(crate) fn ops_status_report(
     let repair_loop = ops_repair_loop_status(conn, since_days)?;
     let gap_inbox = dashboard_gap_inbox_status(conn).unwrap_or_default();
 
+    let actionable_duplicate_candidates =
+        actionable_duplicate_candidate_count(&usefulness.duplicate_candidates);
     let quality_loop = OpsQualityLoopStatus {
         average_score: quality.average_score,
         total_cards: quality.total,
@@ -16990,6 +18545,7 @@ pub(crate) fn ops_status_report(
         stale_cards: usefulness.stale.len(),
         too_long_cards: usefulness.too_long.len(),
         duplicate_candidates: usefulness.duplicate_candidates.len(),
+        actionable_duplicate_candidates,
         reversible_cleanup_ready: rollback_ready || status_file.exists(),
     };
 
@@ -17056,10 +18612,11 @@ pub(crate) fn ops_status_report(
                 .to_string(),
         );
     }
-    if storage.pressure == "warn" {
+    if storage.pressure != "ok" {
         issues.push(format!(
-            "local memory storage is growing: .agent={} bytes",
-            storage.agent_bytes
+            "local memory storage exceeds policy: pressure={} over_quota={}",
+            storage.pressure,
+            storage.over_quota.join(",")
         ));
         recommendations.push(
             "run dukememory autonomous run-once --level normal to refresh retention".to_string(),
@@ -17130,10 +18687,10 @@ pub(crate) fn ops_status_report(
                 .unwrap_or("health check failed")
         ));
     }
-    if quality_loop.duplicate_candidates > 8 {
+    if quality_loop.actionable_duplicate_candidates > 8 {
         blockers.push(format!(
-            "{} duplicate candidates should be resolved before sharing",
-            quality_loop.duplicate_candidates
+            "{} safe duplicate candidates should be resolved before sharing",
+            quality_loop.actionable_duplicate_candidates
         ));
     }
     if !qa.ok {
@@ -17155,7 +18712,7 @@ pub(crate) fn ops_status_report(
     if !blockers.is_empty() {
         score -= blockers.len().min(5) as f64 * 3.0;
     }
-    if storage.pressure == "warn" {
+    if storage.pressure != "ok" {
         score -= 4.0;
     }
     if repair_loop.failed_actions > 0 {
@@ -17163,8 +18720,11 @@ pub(crate) fn ops_status_report(
     }
     score = score.clamp(0.0, 100.0);
 
-    let ok = score >= 70.0 && blockers.len() <= 2;
-    let status = if ok {
+    let storage_ready = storage.pressure == "ok" && storage.retention_ready;
+    let ok = score >= 70.0 && blockers.len() <= 2 && storage_ready;
+    let status = if storage.pressure == "critical" {
+        "blocked"
+    } else if ok {
         "ready"
     } else if score >= 50.0 {
         "needs-attention"
@@ -17366,6 +18926,15 @@ fn dashboard_gap_inbox_status(conn: &Connection) -> Result<DashboardGapInboxStat
     Ok(status)
 }
 
+fn actionable_pending_inbox_count(conn: &Connection) -> Result<usize> {
+    Ok(inbox_v2_report(conn, usize::MAX, false)?
+        .groups
+        .into_iter()
+        .filter(|group| group.recommendation != "keep_pending")
+        .map(|group| group.count)
+        .sum())
+}
+
 fn active_dashboard_memory_gap_count(
     live_eval: Option<&LiveEvalReport>,
     gap_inbox: &DashboardGapInboxStatus,
@@ -17470,10 +19039,38 @@ fn ops_storage_status(conn: &Connection, db: &Path, root: &Path) -> Result<OpsSt
     let install_backups_count = count_named_files(&install_backup_dir, |name| {
         name.starts_with("dukememory") && name.ends_with(".bak")
     })?;
+    let agent_quota_bytes = storage_quota_bytes("DUKEMEMORY_AGENT_QUOTA_BYTES", 512 * 1024 * 1024);
+    let backups_quota_bytes =
+        storage_quota_bytes("DUKEMEMORY_BACKUP_QUOTA_BYTES", 256 * 1024 * 1024);
+    let rollback_quota_bytes =
+        storage_quota_bytes("DUKEMEMORY_ROLLBACK_QUOTA_BYTES", 128 * 1024 * 1024);
+    let install_backups_quota_bytes = install_backup_quota_bytes();
+    let mut over_quota = Vec::new();
+    for (name, bytes, quota) in [
+        ("agent", agent_bytes, agent_quota_bytes),
+        ("backups", backups_bytes, backups_quota_bytes),
+        ("rollbacks", rollback_bytes, rollback_quota_bytes),
+        (
+            "install_backups",
+            install_backups_bytes,
+            install_backups_quota_bytes,
+        ),
+    ] {
+        if bytes > quota {
+            over_quota.push(name.to_string());
+        }
+    }
     let retention_ready = backups_count <= 10
         && rollback_count <= 10
-        && install_backups_count <= DEFAULT_INSTALL_BACKUP_KEEP;
-    let pressure = if agent_bytes > 512 * 1024 * 1024
+        && install_backups_count <= DEFAULT_INSTALL_BACKUP_KEEP
+        && over_quota.is_empty();
+    let critical = agent_bytes > agent_quota_bytes.saturating_mul(5) / 4
+        || backups_bytes > backups_quota_bytes.saturating_mul(5) / 4
+        || rollback_bytes > rollback_quota_bytes.saturating_mul(5) / 4
+        || install_backups_bytes > install_backups_quota_bytes.saturating_mul(5) / 4;
+    let pressure = if critical {
+        "critical"
+    } else if !over_quota.is_empty()
         || backups_count > 20
         || rollback_count > 20
         || install_backups_count > 20
@@ -17496,9 +19093,22 @@ fn ops_storage_status(conn: &Connection, db: &Path, root: &Path) -> Result<OpsSt
         rollback_count,
         install_backups_bytes,
         install_backups_count,
+        agent_quota_bytes,
+        backups_quota_bytes,
+        rollback_quota_bytes,
+        install_backups_quota_bytes,
+        over_quota,
         retention_ready,
         pressure,
     })
+}
+
+fn storage_quota_bytes(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
 }
 
 fn sqlite_i64_pragma(conn: &Connection, sql: &str) -> Result<i64> {

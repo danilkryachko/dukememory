@@ -1,0 +1,52 @@
+[
+  {
+    "name": "stateless_discovery",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "server/discover",
+      "params": {
+        "_meta": {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientInfo": {"name": "fixture", "version": "1"},
+          "io.modelcontextprotocol/clientCapabilities": {"extensions": {"io.modelcontextprotocol/tasks": {}}}
+        }
+      }
+    },
+    "expected_pointer": "/result/supportedVersions/0",
+    "expected": "2026-07-28"
+  },
+  {
+    "name": "modern_metadata_is_required",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "method": "server/discover",
+      "params": {
+        "_meta": {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+        }
+      }
+    },
+    "expected_pointer": "/error/code",
+    "expected": -32602
+  },
+  {
+    "name": "tasks_extension_must_be_negotiated",
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "method": "tasks/get",
+      "params": {
+        "taskId": "fixture-task",
+        "_meta": {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientInfo": {"name": "fixture", "version": "1"},
+          "io.modelcontextprotocol/clientCapabilities": {"extensions": {}}
+        }
+      }
+    },
+    "expected_pointer": "/error/code",
+    "expected": -32003
+  }
+]

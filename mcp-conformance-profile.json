@@ -1,0 +1,22 @@
+{
+  "profile_version": 1,
+  "suite": "@modelcontextprotocol/conformance",
+  "suite_version": "0.1.16",
+  "protocol_version": "2026-07-28",
+  "release_status": "preview_until_2026-07-28",
+  "transport": "streamable-http",
+  "generic_scenarios": [
+    "server-initialize",
+    "ping",
+    "tools-list",
+    "resources-list",
+    "dns-rebinding-protection"
+  ],
+  "fixture_bound_scenarios_not_claimed": [
+    "completion-complete",
+    "json-schema-2020-12",
+    "resources-read-text",
+    "tools-call-simple-text"
+  ],
+  "fixture_exclusion_reason": "These suite scenarios require conformance-owned fixture names and payloads that are not product capabilities. Product tool/resource calls are covered by the Rust integration matrix."
+}

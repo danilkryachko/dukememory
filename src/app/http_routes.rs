@@ -1,10 +1,19 @@
+use super::route_auth::{
+    http_required_scope, mcp_required_scope, with_insufficient_scope_challenge,
+};
 use super::*;
 
 pub(super) fn handle_http_request(
-    db: &Path,
+    state: &HttpAppState,
     stream: &mut TcpStream,
-    auth_token: Option<&str>,
+    request_meta: &mut HttpRequestMeta,
 ) -> Result<HttpResponse> {
+    let db = &state.default_db;
+    let auth_policy = &state.auth_policy;
+    let security_policy = &state.security_policy;
+    let rate_limiter = &state.rate_limiter;
+    let concurrency_limiter = &state.concurrency_limiter;
+    let mcp_http = &state.mcp_http;
     let buffer = read_http_request(stream)?;
     let raw = String::from_utf8_lossy(&buffer);
     let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((raw.as_ref(), ""));
@@ -14,37 +23,140 @@ pub(super) fn handle_http_request(
     let method = parts.first().copied().unwrap_or("");
     let raw_path = parts.get(1).copied().unwrap_or("/");
     let (path, query) = split_query(raw_path);
+    request_meta.method = method.to_string();
+    request_meta.path = path.to_string();
     let headers = lines
         .filter_map(|line| {
             let (name, value) = line.split_once(':')?;
             Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
         })
         .collect::<HashMap<_, _>>();
-    if let Some(expected) = auth_token
-        && !matches!(
+    let _concurrency_permit = if let Ok(peer) = stream.peer_addr() {
+        let client = match security_policy.client_ip(peer.ip(), &headers) {
+            Ok(client) => client,
+            Err(_) => {
+                return Ok(HttpResponse::bad_request(
+                    "invalid forwarded client address from trusted proxy",
+                ));
+            }
+        };
+        request_meta.client = client.to_string();
+        if let Some(retry_after) = rate_limiter.retry_after_seconds(client)? {
+            return Ok(HttpResponse::too_many_requests(retry_after));
+        }
+        match concurrency_limiter.try_acquire(client)? {
+            Some(permit) => Some(permit),
+            None => {
+                return Ok(HttpResponse::service_unavailable(
+                    "HTTP concurrency limit exceeded; retry the request later",
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    if !security_policy.host_allowed(headers.get("host").map(String::as_str)) {
+        return Ok(HttpResponse::forbidden(
+            "request Host is not allowed for this listener",
+        ));
+    }
+    let oauth_metadata_endpoint =
+        method == "GET" && auth_policy.resource_metadata_path_matches(path);
+    let public_endpoint = oauth_metadata_endpoint
+        || matches!(
             (method, path),
-            ("GET", "/") | ("GET", "/ui") | ("GET", "/health")
-        )
-    {
+            ("GET", "/")
+                | ("GET", "/ui")
+                | ("GET", "/ui.css")
+                | ("GET", "/ui.js")
+                | ("GET", "/health")
+        );
+    let authorization = if public_endpoint {
+        security::HttpAuthContext::public()
+    } else {
         let provided = headers
             .get("authorization")
             .and_then(|value| value.strip_prefix("Bearer ").map(str::trim))
             .or_else(|| headers.get("x-dukememory-token").map(String::as_str));
-        if !provided.is_some_and(|provided| security::token_matches(expected, provided)) {
-            return Ok(HttpResponse::unauthorized());
+        let authorization = auth_policy.authorize_request(
+            provided,
+            stream.peer_addr().ok().map(|address| address.ip()),
+            &headers,
+            security_policy,
+        );
+        let Some(authorization) = authorization? else {
+            let response = auth_policy.resource_metadata_url().map_or_else(
+                HttpResponse::unauthorized,
+                |resource_metadata| {
+                    HttpResponse::unauthorized().with_header(
+                        "WWW-Authenticate",
+                        format!(
+                            "Bearer resource_metadata=\"{resource_metadata}\", scope=\"memory:read\""
+                        ),
+                    )
+                },
+            );
+            return Ok(response);
+        };
+        authorization
+    };
+    if path != "/mcp" && !authorization.allows(http_required_scope(method, path)) {
+        let required_scope = http_required_scope(method, path);
+        return Ok(with_insufficient_scope_challenge(
+            HttpResponse::forbidden("bearer token lacks the operation-specific scope"),
+            auth_policy,
+            required_scope,
+        ));
+    }
+    if matches!(method, "POST" | "PUT" | "PATCH" | "DELETE") {
+        if headers
+            .get("sec-fetch-site")
+            .is_some_and(|value| value.eq_ignore_ascii_case("cross-site"))
+        {
+            return Ok(HttpResponse::forbidden(
+                "cross-site state-changing requests are not allowed",
+            ));
+        }
+        if let Some(origin) = headers.get("origin")
+            && !security_policy.origin_allowed(origin)
+        {
+            return Ok(HttpResponse::forbidden(
+                "cross-origin state-changing requests are not allowed",
+            ));
         }
     }
-    if matches!(method, "POST" | "PUT" | "PATCH" | "DELETE")
-        && let Some(origin) = headers.get("origin")
-        && !security::origin_allowed(origin, headers.get("host").map(String::as_str))
-    {
-        return Ok(HttpResponse::forbidden(
-            "cross-origin state-changing requests are not allowed",
-        ));
+    if path == "/mcp" {
+        return route_mcp_http(
+            db,
+            mcp_http,
+            method,
+            &headers,
+            body,
+            &authorization,
+            auth_policy,
+        );
+    }
+    if oauth_metadata_endpoint {
+        return Ok(auth_policy
+            .protected_resource_metadata()
+            .map(HttpResponse::ok)
+            .unwrap_or_else(HttpResponse::not_found));
     }
     match (method, path) {
         ("GET", "/") | ("GET", "/ui") => {
             return Ok(HttpResponse::html(memory_ui_html()));
+        }
+        ("GET", "/ui.css") => {
+            return Ok(HttpResponse::asset(
+                "text/css; charset=utf-8",
+                memory_ui_css().as_bytes().to_vec(),
+            ));
+        }
+        ("GET", "/ui.js") => {
+            return Ok(HttpResponse::asset(
+                "text/javascript; charset=utf-8",
+                memory_ui_javascript().as_bytes().to_vec(),
+            ));
         }
         ("GET", "/health") => {
             return Ok(HttpResponse::ok(
@@ -53,98 +165,329 @@ pub(super) fn handle_http_request(
         }
         _ => {}
     }
-    let conn = open_db(db)?;
+    let selection_body = (!body.trim().is_empty())
+        .then(|| serde_json::from_str::<Value>(body).ok())
+        .flatten();
+    let selected_project = selected_project_key(query, selection_body.as_ref());
+    let request_context = project_context(db, selected_project.as_deref())?;
+    let conn = open_db(&request_context.db)?;
+    let memory_app = MemoryApplication::new(MemoryStore::new(&conn));
+    if let Some(response) =
+        super::ingest_routes::route_ingest_operation(db, &conn, method, path, query, body)?
+    {
+        return Ok(response);
+    }
+    if let Some(response) = route_memory_operation(&conn, &memory_app, method, path, query, body)? {
+        return Ok(response);
+    }
     let response = match (method, path) {
         ("GET", "/projects") => HttpResponse::ok(json!({"projects": discover_projects(db)?})),
+        ("GET", "/agent-sessions") => {
+            let params = parse_query(query);
+            if let Some(id) = params.get("id") {
+                HttpResponse::ok(json!({"session": get_agent_session(&conn, id)?}))
+            } else {
+                let policy = agent_session_config_for_root(&request_context.root)?;
+                let limit = params
+                    .get("limit")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(policy.default_page_size);
+                let offset = params
+                    .get("offset")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let statuses = session_filter_values(params.get("status"));
+                let outcomes = session_filter_values(params.get("outcome"));
+                let page = list_agent_sessions_page(&conn, &statuses, &outcomes, offset, limit)?;
+                HttpResponse::ok(json!({
+                    "sessions": page.sessions,
+                    "pagination": {
+                        "version": page.version,
+                        "total": page.total,
+                        "offset": page.offset,
+                        "limit": page.limit,
+                        "has_more": page.has_more,
+                        "statuses": page.statuses,
+                        "outcomes": page.outcomes,
+                    }
+                }))
+            }
+        }
+        ("GET", "/agent-sessions/trace") => {
+            let params = parse_query(query);
+            let id = params
+                .get("id")
+                .ok_or_else(|| anyhow::anyhow!("missing agent session id"))?;
+            HttpResponse::ok(json!({"trace": agent_session_trace(&conn, id)?}))
+        }
+        ("GET", "/agent-sessions/recover") => {
+            let params = parse_query(query);
+            let stale_after_secs = params
+                .get("stale_after_secs")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(300);
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(20);
+            HttpResponse::ok(json!({
+                "sessions": recoverable_agent_sessions(&conn, stale_after_secs, limit)?
+            }))
+        }
+        ("GET", "/agent-sessions/cleanup") => {
+            let params = parse_query(query);
+            let older_than_days = params
+                .get("older_than_days")
+                .and_then(|value| value.parse::<i64>().ok());
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(100);
+            let statuses = session_filter_values(params.get("status"));
+            let policy = agent_session_config_for_root(&request_context.root)?;
+            HttpResponse::ok(json!({
+                "cleanup": cleanup_agent_sessions_with_policy(
+                    &conn,
+                    &policy,
+                    &statuses,
+                    older_than_days,
+                    limit,
+                    false,
+                )?
+            }))
+        }
+        ("POST", "/agent-sessions/cleanup") => {
+            let value = parse_json_body(body)?;
+            let statuses = value
+                .get("statuses")
+                .or_else(|| value.get("status"))
+                .map(|value| match value {
+                    Value::Array(values) => values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>(),
+                    Value::String(value) => value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                        .collect(),
+                    _ => Vec::new(),
+                })
+                .unwrap_or_default();
+            let policy = agent_session_config_for_root(&request_context.root)?;
+            HttpResponse::ok(json!({
+                "cleanup": cleanup_agent_sessions_with_policy(
+                    &conn,
+                    &policy,
+                    &statuses,
+                    value.get("older_than_days").and_then(Value::as_i64),
+                    value.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize,
+                    value.get("apply").and_then(Value::as_bool).unwrap_or(false),
+                )?
+            }))
+        }
+        ("POST", "/agent-sessions/recover") => {
+            let value = parse_json_body(body)?;
+            let owner = value
+                .get("owner")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing lease owner"))?;
+            HttpResponse::ok(json!({
+                "claims": claim_recoverable_agent_sessions(
+                    &conn,
+                    value.get("stale_after_secs").and_then(Value::as_u64).unwrap_or(300),
+                    value.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize,
+                    owner,
+                    value.get("lease_secs").and_then(Value::as_u64).unwrap_or(120),
+                )?
+            }))
+        }
+        ("POST", "/agent-sessions/start") => {
+            let value = parse_json_body(body)?;
+            let task = value
+                .get("task")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing task"))?;
+            let scope = value
+                .get("scope")
+                .and_then(Value::as_str)
+                .unwrap_or("project");
+            validate_scope(scope)?;
+            HttpResponse::ok(json!({"session": start_agent_session(
+                &conn,
+                task,
+                value.get("target").and_then(Value::as_str),
+                scope,
+                value.get("runner_profile").and_then(Value::as_str),
+                &request_context.root,
+            )?}))
+        }
+        ("POST", "/agent-sessions/context") => {
+            let value = parse_json_body(body)?;
+            let id = value
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing agent session id"))?;
+            HttpResponse::ok(json!({"context": agent_session_context(
+                &conn,
+                id,
+                value.get("limit").and_then(Value::as_u64).unwrap_or(12) as usize,
+                value.get("max_chars").and_then(Value::as_u64).unwrap_or(4000) as usize,
+                value.get("provider").and_then(Value::as_str).unwrap_or(DEFAULT_EMBED_PROVIDER),
+                value.get("endpoint").and_then(Value::as_str).unwrap_or(DEFAULT_EMBED_ENDPOINT),
+                value.get("model").and_then(Value::as_str).unwrap_or(DEFAULT_EMBED_MODEL),
+                value.get("owner").and_then(Value::as_str),
+                value.get("lease_token").and_then(Value::as_str),
+            )?}))
+        }
+        ("POST", "/agent-sessions/claim") => {
+            let value = parse_json_body(body)?;
+            let id = value
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing agent session id"))?;
+            let owner = value
+                .get("owner")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing lease owner"))?;
+            HttpResponse::ok(json!({
+                "claim": claim_agent_session(
+                    &conn,
+                    id,
+                    owner,
+                    value.get("lease_secs").and_then(Value::as_u64).unwrap_or(120),
+                    false,
+                )?
+            }))
+        }
+        ("POST", "/agent-sessions/renew") => {
+            let value = parse_json_body(body)?;
+            let id = value
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing agent session id"))?;
+            let owner = value
+                .get("owner")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing lease owner"))?;
+            let lease_token = value
+                .get("lease_token")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing lease token"))?;
+            HttpResponse::ok(json!({
+                "claim": renew_agent_session_lease(
+                    &conn,
+                    id,
+                    owner,
+                    lease_token,
+                    value.get("lease_secs").and_then(Value::as_u64).unwrap_or(120),
+                )?
+            }))
+        }
+        ("POST", "/agent-sessions/release") => {
+            let value = parse_json_body(body)?;
+            let id = value
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing agent session id"))?;
+            let owner = value
+                .get("owner")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing lease owner"))?;
+            let lease_token = value
+                .get("lease_token")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing lease token"))?;
+            HttpResponse::ok(json!({
+                "session": release_agent_session_lease(&conn, id, owner, lease_token)?
+            }))
+        }
+        ("POST", "/agent-sessions/event") => {
+            let value = parse_json_body(body)?;
+            let id = value
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing agent session id"))?;
+            let event_type = value
+                .get("event_type")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing event_type"))?;
+            let detail = value.get("detail").cloned().unwrap_or_else(|| json!({}));
+            HttpResponse::ok(json!({
+                "session": record_agent_session_event(
+                    &conn,
+                    id,
+                    event_type,
+                    &detail,
+                    value.get("event_id").and_then(Value::as_str),
+                    value.get("owner").and_then(Value::as_str),
+                    value.get("lease_token").and_then(Value::as_str),
+                )?
+            }))
+        }
+        ("POST", "/agent-sessions/finish") => {
+            let value = parse_json_body(body)?;
+            let id = value
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing agent session id"))?;
+            let summary = value
+                .get("summary")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing summary"))?;
+            let outcome = match value.get("outcome").and_then(Value::as_str) {
+                Some("success") => AgentSessionOutcome::Success,
+                Some("failed") => AgentSessionOutcome::Failed,
+                Some("partial") => AgentSessionOutcome::Partial,
+                Some("abandoned") => AgentSessionOutcome::Abandoned,
+                _ => bail!("invalid outcome: expected success, failed, partial, or abandoned"),
+            };
+            let changed_files = value
+                .get("changed_files")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            let validations = value
+                .get("validations")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            HttpResponse::ok(json!({"finish": finish_agent_session(
+                &conn,
+                id,
+                outcome,
+                summary,
+                &changed_files,
+                &validations,
+                value.get("commit").and_then(Value::as_str),
+                value.get("owner").and_then(Value::as_str),
+                value.get("lease_token").and_then(Value::as_str),
+            )?}))
+        }
+        ("GET", "/runner-profiles") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            HttpResponse::ok(json!({"profiles": runner_profiles_status(&ctx.root)?}))
+        }
         ("GET", "/metrics") => HttpResponse::ok(http_metrics(&conn)?),
-        ("GET", "/audit") => HttpResponse::ok(json!({"events": audit_events(&conn, 50)?})),
+        ("GET", "/audit") => HttpResponse::ok(json!({
+            "integrity": audit_integrity_report(&conn)?,
+            "events": audit_events(&conn, 50)?
+        })),
         ("GET", "/snapshot") => HttpResponse::ok(http_snapshot(&conn)?),
         ("GET", "/doctrine") => {
             HttpResponse::ok(json!({"doctrine": doctrine_report(&conn, None)?}))
         }
-        ("GET", "/memory") => {
-            let conn = open_selected_db(db, query, None)?;
-            let params = parse_query(query);
-            let q = params
-                .get("q")
-                .map(String::as_str)
-                .filter(|value| !value.is_empty());
-            let scope = params
-                .get("scope")
-                .map(String::as_str)
-                .filter(|value| !value.is_empty());
-            let types = params
-                .get("type")
-                .filter(|value| !value.is_empty() && value.as_str() != "all")
-                .cloned()
-                .into_iter()
-                .collect::<Vec<_>>();
-            let statuses = params
-                .get("status")
-                .filter(|value| !value.is_empty() && value.as_str() != "all")
-                .cloned()
-                .into_iter()
-                .collect::<Vec<_>>();
-            let limit = params
-                .get("limit")
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(100)
-                .min(500);
-            let usage = params.get("usage").map(String::as_str).unwrap_or("all");
-            let sort = params
-                .get("sort")
-                .map(String::as_str)
-                .unwrap_or("updated_desc");
-            let stale_days = params
-                .get("stale_days")
-                .and_then(|value| value.parse::<i64>().ok())
-                .unwrap_or(30);
-            let rows = if let Some(query) = q {
-                search_rows_with_semantic_fallback(
-                    &conn,
-                    SearchRowsRequest {
-                        query,
-                        types: &types,
-                        statuses: &statuses,
-                        scope,
-                        limit: if usage != "all" || sort != "updated_desc" {
-                            500
-                        } else {
-                            limit
-                        },
-                        budget: 1_200,
-                        provider: DEFAULT_EMBED_PROVIDER,
-                        endpoint: DEFAULT_EMBED_ENDPOINT,
-                        model: DEFAULT_EMBED_MODEL,
-                    },
-                )?
-                .0
-            } else {
-                query_memories(
-                    &conn,
-                    None,
-                    &types,
-                    &statuses,
-                    scope,
-                    if usage != "all" || sort != "updated_desc" {
-                        500
-                    } else {
-                        limit
-                    },
-                )?
-            };
-            let rows = if let Some(query) = q {
-                let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
-                filter_query_useless_memories(rows, query, &quality_signals)
-            } else {
-                rows
-            };
-            HttpResponse::ok(
-                json!({"memories": filter_sort_memory_rows(&conn, rows, usage, sort, stale_days, limit)?}),
-            )
-        }
         ("GET", "/usefulness") => {
-            let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
             let since_days = params
                 .get("since_days")
@@ -163,7 +506,6 @@ pub(super) fn handle_http_request(
             )
         }
         ("GET", "/quality") => {
-            let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
             let since_days = params
                 .get("since_days")
@@ -176,7 +518,6 @@ pub(super) fn handle_http_request(
             HttpResponse::ok(json!({"quality": quality_report(&conn, since_days, limit)?}))
         }
         ("GET", "/budget-plan") => {
-            let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
             let task = params
                 .get("task")
@@ -189,7 +530,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             HttpResponse::ok(
                 json!({"profile": project_profile_snapshot(&conn, &ctx.root, "project")?}),
             )
@@ -212,7 +552,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -230,7 +569,6 @@ pub(super) fn handle_http_request(
         ("POST", "/autonomous-loop/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             let level = parse_autonomous_level(value.get("level").and_then(Value::as_str));
             HttpResponse::ok(json!({"loop": autonomous_loop_report(
@@ -281,7 +619,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let task = params
                 .get("task")
                 .map(String::as_str)
@@ -313,7 +650,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -328,7 +664,6 @@ pub(super) fn handle_http_request(
         ("POST", "/auto-ranking-tune/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"tune": auto_ranking_tune_report(
                 &conn,
@@ -341,7 +676,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -357,7 +691,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let query_text = params
                 .get("q")
                 .map(String::as_str)
@@ -377,14 +710,12 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             HttpResponse::ok(json!({"intent_map": project_intent_map_report(&conn, &ctx.root)?}))
         }
         ("GET", "/memory-test-harness") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -404,7 +735,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -415,27 +745,28 @@ pub(super) fn handle_http_request(
                 since_days,
             )?}))
         }
-        ("GET", "/memory-control-center-v2") => {
+        ("GET", "/memory-control-center") | ("GET", "/memory-control-center-v2") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
                 .unwrap_or(7);
-            HttpResponse::ok(json!({"control_v2": memory_control_center_v2_report(
-                &conn,
-                &ctx.db,
-                &ctx.root,
-                since_days,
-            )?}))
+            let report = memory_control_center_v2_report(&conn, &ctx.db, &ctx.root, since_days)?;
+            if path == "/memory-control-center" {
+                HttpResponse::ok(json!({
+                    "control": report,
+                    "current_version": "v2",
+                }))
+            } else {
+                HttpResponse::ok(json!({"control_v2": report}))
+            }
         }
         ("GET", "/auto-supersede-v2") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -450,7 +781,6 @@ pub(super) fn handle_http_request(
         ("POST", "/auto-supersede-v2/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"supersede": auto_supersede_v2_report(
                 &conn,
@@ -463,7 +793,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -483,7 +812,6 @@ pub(super) fn handle_http_request(
         ("POST", "/recall-benchmark-suite/baseline") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(8) as usize;
             HttpResponse::ok(json!({"benchmark": recall_benchmark_suite_report(
@@ -501,7 +829,6 @@ pub(super) fn handle_http_request(
                 .get("strict")
                 .is_some_and(|value| value == "1" || value == "true");
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -518,7 +845,6 @@ pub(super) fn handle_http_request(
         ("POST", "/release-gate-v2/run") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             let strict = value
                 .get("strict")
@@ -537,7 +863,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let since_days = params
                 .get("since_days")
@@ -555,7 +880,6 @@ pub(super) fn handle_http_request(
         ("POST", "/remote-sync-wizard/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let target = value
                 .get("target")
                 .and_then(Value::as_str)
@@ -591,7 +915,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -607,7 +930,6 @@ pub(super) fn handle_http_request(
         ("POST", "/autonomous-loop-v2/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"loop_v2": autonomous_loop_v2_report(
                 &conn,
@@ -621,7 +943,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -636,7 +957,6 @@ pub(super) fn handle_http_request(
         ("POST", "/governance-enforce/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"enforce": governance_enforce_report(
                 &conn,
@@ -649,7 +969,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -677,7 +996,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let since_days = params
                 .get("since_days")
@@ -695,7 +1013,6 @@ pub(super) fn handle_http_request(
         ("POST", "/remote-sync-apply-flow/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let target = value
                 .get("target")
                 .and_then(Value::as_str)
@@ -717,7 +1034,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let since_days = params
                 .get("since_days")
@@ -735,7 +1051,6 @@ pub(super) fn handle_http_request(
         ("POST", "/autopilot-v3/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let target = value
                 .get("target")
                 .and_then(Value::as_str)
@@ -754,7 +1069,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -769,7 +1083,6 @@ pub(super) fn handle_http_request(
         ("POST", "/self-learning-retrieval/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"learning": self_learning_retrieval_report(
                 &conn,
@@ -807,7 +1120,6 @@ pub(super) fn handle_http_request(
         }
         ("GET", "/inbox-ai-reviewer") => {
             let params = parse_query(query);
-            let conn = open_selected_db(db, query, None)?;
             let limit = params
                 .get("limit")
                 .and_then(|value| value.parse::<usize>().ok())
@@ -820,7 +1132,6 @@ pub(super) fn handle_http_request(
         }
         ("POST", "/inbox-ai-reviewer/apply") => {
             let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
             let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
             HttpResponse::ok(json!({"reviewer": inbox_ai_reviewer_report(
                 &conn,
@@ -832,7 +1143,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let since_days = params
                 .get("since_days")
@@ -850,7 +1160,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let since_days = params
                 .get("since_days")
@@ -868,7 +1177,6 @@ pub(super) fn handle_http_request(
         ("POST", "/remote-sync-apply/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let target = value
                 .get("target")
                 .and_then(Value::as_str)
@@ -890,7 +1198,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let since_days = params
                 .get("since_days")
@@ -908,7 +1215,6 @@ pub(super) fn handle_http_request(
         ("POST", "/remote-sync-control/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let target = value
                 .get("target")
                 .and_then(Value::as_str)
@@ -927,7 +1233,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let since_days = params
                 .get("since_days")
@@ -945,7 +1250,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let since_days = params
                 .get("since_days")
@@ -963,7 +1267,6 @@ pub(super) fn handle_http_request(
         ("POST", "/vds-sync-pack/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let target = value
                 .get("target")
                 .and_then(Value::as_str)
@@ -982,7 +1285,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let since_days = params
                 .get("since_days")
@@ -1000,7 +1302,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -1016,7 +1317,6 @@ pub(super) fn handle_http_request(
         ("POST", "/quality-autopilot-v31/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"quality_autopilot": quality_autopilot_v31_report(
                 &conn,
@@ -1045,7 +1345,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -1062,7 +1361,6 @@ pub(super) fn handle_http_request(
         ("POST", "/benchmark-profiles/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             let write_baseline = value
                 .get("write_baseline")
@@ -1098,7 +1396,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -1113,7 +1410,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let task = params
                 .get("task")
                 .map(String::as_str)
@@ -1130,7 +1426,6 @@ pub(super) fn handle_http_request(
         ("POST", "/auto-context-budgeter-v2/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let task = value
                 .get("task")
                 .and_then(Value::as_str)
@@ -1148,7 +1443,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             HttpResponse::ok(json!({"contract_v2": memory_contract_v2_report(
                 &conn,
                 &ctx.root,
@@ -1158,7 +1452,6 @@ pub(super) fn handle_http_request(
         ("POST", "/memory-contract-v2/write") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             HttpResponse::ok(json!({"contract_v2": memory_contract_v2_report(
                 &conn,
                 &ctx.root,
@@ -1198,7 +1491,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -1218,7 +1510,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let since_days = params
                 .get("since_days")
@@ -1236,7 +1527,6 @@ pub(super) fn handle_http_request(
         ("POST", "/vds-sync-hardening/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let target = value
                 .get("target")
                 .and_then(Value::as_str)
@@ -1255,7 +1545,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -1271,7 +1560,6 @@ pub(super) fn handle_http_request(
         ("POST", "/install-quality/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"install_quality": install_quality_report(
                 &conn,
@@ -1285,7 +1573,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let task = params
                 .get("task")
@@ -1308,7 +1595,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let question = params
                 .get("q")
                 .map(String::as_str)
@@ -1330,7 +1616,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -1346,7 +1631,6 @@ pub(super) fn handle_http_request(
         ("POST", "/connect-codex/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"connect_codex": connect_codex_report(
                 &conn,
@@ -1363,7 +1647,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -1378,143 +1661,10 @@ pub(super) fn handle_http_request(
                 write_baseline,
             )?}))
         }
-        ("POST", "/import-review/apply") => {
-            let value = parse_json_body(body)?;
-            let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
-            let input = value
-                .get("input")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .unwrap_or_else(|| ctx.root.join("README.md"));
-            let scope = value
-                .get("scope")
-                .and_then(Value::as_str)
-                .unwrap_or("project");
-            let apply = value.get("apply").and_then(Value::as_bool).unwrap_or(false);
-            HttpResponse::ok(json!({"import_review": import_review_report(
-                &conn,
-                &ctx.root,
-                &input,
-                scope,
-                apply,
-            )?}))
-        }
-        ("POST", "/memory-upload") => {
-            let value = parse_json_body(body)?;
-            let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
-            let input = value
-                .get("input")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .with_context(|| "memory-upload requires input")?;
-            let scope = value
-                .get("scope")
-                .and_then(Value::as_str)
-                .unwrap_or("project");
-            let apply = value.get("apply").and_then(Value::as_bool).unwrap_or(false);
-            HttpResponse::ok(json!({"memory_upload": memory_upload_report(
-                &conn,
-                &ctx.root,
-                &input,
-                scope,
-                apply,
-            )?}))
-        }
-        ("POST", "/rag-ingest") => {
-            let value = parse_json_body(body)?;
-            let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
-            let input = value
-                .get("input")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .with_context(|| "rag-ingest requires input")?;
-            let scope = value
-                .get("scope")
-                .and_then(Value::as_str)
-                .unwrap_or("project");
-            let apply = value.get("apply").and_then(Value::as_bool).unwrap_or(false);
-            let embed = value.get("embed").and_then(Value::as_bool).unwrap_or(false);
-            let provider = value
-                .get("provider")
-                .and_then(Value::as_str)
-                .unwrap_or(DEFAULT_EMBED_PROVIDER);
-            let endpoint = value
-                .get("endpoint")
-                .and_then(Value::as_str)
-                .unwrap_or(DEFAULT_EMBED_ENDPOINT);
-            let model = value
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or(DEFAULT_EMBED_MODEL);
-            HttpResponse::ok(
-                json!({"rag_ingest": crate::app::rag_ingest::rag_ingest_report(
-                &conn,
-                crate::app::rag_ingest::RagIngestRequest {
-                    root: &ctx.root,
-                    input: &input,
-                    scope,
-                    apply,
-                    embed,
-                    provider,
-                    endpoint,
-                    model,
-                    chunk_chars: value
-                        .get("chunk_chars")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(900) as usize,
-                    overlap_chars: value
-                        .get("overlap_chars")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(140) as usize,
-                    max_file_bytes: value
-                        .get("max_file_bytes")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(200_000) as usize,
-                    max_files: value
-                        .get("max_files")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(128) as usize,
-                    json: true,
-                },
-            )?}),
-            )
-        }
-        ("GET", "/rag-sources") => {
-            let params = parse_query(query);
-            let selected = params.get("project").map(String::as_str);
-            let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
-            let provider = params
-                .get("provider")
-                .map(String::as_str)
-                .unwrap_or(DEFAULT_EMBED_PROVIDER);
-            let endpoint = params
-                .get("endpoint")
-                .map(String::as_str)
-                .unwrap_or(DEFAULT_EMBED_ENDPOINT);
-            let model = params
-                .get("model")
-                .map(String::as_str)
-                .unwrap_or(DEFAULT_EMBED_MODEL);
-            HttpResponse::ok(
-                json!({"rag_sources": crate::app::rag_ingest::rag_sources_report(
-                &conn,
-                &ctx.root,
-                provider,
-                endpoint,
-                model,
-            )?}),
-            )
-        }
         ("GET", "/memanto-gap-report") => {
-            let conn = open_selected_db(db, query, None)?;
             HttpResponse::ok(json!({"memanto_gap": memanto_gap_report(&conn)?}))
         }
         ("GET", "/memory-timeline") => {
-            let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
             let id = params
                 .get("id")
@@ -1528,7 +1678,6 @@ pub(super) fn handle_http_request(
             HttpResponse::ok(json!({"memory_timeline": memory_timeline_report(&conn, id, limit)?}))
         }
         ("GET", "/memory-conflict-review") => {
-            let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
             let stale_days = params
                 .get("stale_days")
@@ -1546,7 +1695,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let task = params
                 .get("task")
@@ -1569,7 +1717,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -1586,7 +1733,6 @@ pub(super) fn handle_http_request(
         ("POST", "/autonomous-usefulness/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(
                 json!({"autonomous_usefulness": autonomous_usefulness_report(
@@ -1601,7 +1747,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -1620,7 +1765,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let task = params
                 .get("task")
@@ -1643,7 +1787,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -1659,7 +1802,6 @@ pub(super) fn handle_http_request(
         ("POST", "/autonomous-supervisor/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"supervisor": autonomous_supervisor_report(
                 &conn,
@@ -1673,7 +1815,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let task = params
                 .get("task")
@@ -1709,7 +1850,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let task = params
                 .get("task")
@@ -1763,7 +1903,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let task = params
                 .get("task")
@@ -1786,7 +1925,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -1801,7 +1939,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -1818,7 +1955,6 @@ pub(super) fn handle_http_request(
         ("POST", "/recall-benchmark-baselines/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(
                 json!({"recall_baselines": recall_benchmark_baselines_report(
@@ -1830,7 +1966,6 @@ pub(super) fn handle_http_request(
             )
         }
         ("GET", "/memory-conflict-apply") => {
-            let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
             let stale_days = params
                 .get("stale_days")
@@ -1847,10 +1982,8 @@ pub(super) fn handle_http_request(
                 false,
             )?}))
         }
-        ("POST", "/memory-conflict-apply/apply") | ("POST", "/memory-conflict-apply") => {
+        ("POST", "/memory-conflict-apply/apply") => {
             let value = parse_json_body(body)?;
-            let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let stale_days = value
                 .get("stale_days")
                 .and_then(Value::as_i64)
@@ -1868,6 +2001,25 @@ pub(super) fn handle_http_request(
                 apply,
             )?}))
         }
+        ("POST", "/memory-conflict-apply") => {
+            let value = parse_json_body(body)?;
+            let stale_days = value
+                .get("stale_days")
+                .and_then(Value::as_i64)
+                .unwrap_or(30);
+            let limit = value
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map(|value| value as usize)
+                .unwrap_or(20);
+            let apply = value.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            HttpResponse::ok(json!({"conflict_apply": memory_conflict_apply_report(
+                &conn,
+                stale_days,
+                limit,
+                apply,
+            )?}))
+        }
         ("GET", "/mcp-tool-surface-v3") => {
             HttpResponse::ok(json!({"surface": mcp_tool_surface_v3_report()}))
         }
@@ -1875,7 +2027,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -1891,7 +2042,6 @@ pub(super) fn handle_http_request(
         ("POST", "/mcp-discipline-v3/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"discipline_v3": mcp_discipline_v3_report(
                 &conn,
@@ -1909,11 +2059,85 @@ pub(super) fn handle_http_request(
                 .unwrap_or(7);
             HttpResponse::ok(json!({"fleet_quality": fleet_quality_report(db, since_days)?}))
         }
+        ("GET", "/evidence-autopilot") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let limit = params
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(20);
+            HttpResponse::ok(json!({"evidence_autopilot": evidence_autopilot_report(
+                &conn,
+                &ctx.root,
+                limit,
+                false,
+                &[],
+            )?}))
+        }
+        ("POST", "/evidence-autopilot/apply") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+            HttpResponse::ok(json!({"evidence_autopilot": evidence_autopilot_report(
+                &conn,
+                &ctx.root,
+                limit,
+                true,
+                &[],
+            )?}))
+        }
+        ("POST", "/evidence-autopilot/rollback") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            let Some(items) = value.get("observation_ids").and_then(Value::as_array) else {
+                return Ok(HttpResponse::bad_request("missing observation_ids"));
+            };
+            let observation_ids = items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            if observation_ids.is_empty() || observation_ids.len() != items.len() {
+                return Ok(HttpResponse::bad_request(
+                    "observation_ids must be a non-empty string array",
+                ));
+            }
+            HttpResponse::ok(json!({"evidence_autopilot": evidence_autopilot_report(
+                &conn,
+                &ctx.root,
+                20,
+                false,
+                &observation_ids,
+            )?}))
+        }
+        ("GET", "/deployment-profile") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let mode = DeploymentMode::parse(params.get("mode").map(String::as_str))?;
+            let host = params
+                .get("host")
+                .map(String::as_str)
+                .unwrap_or("127.0.0.1");
+            let token_file = params.get("token_file").map(PathBuf::from);
+            let public_origin = params.get("public_origin").map(String::as_str);
+            let sync_target = params.get("sync_target").map(PathBuf::from);
+            HttpResponse::ok(json!({"deployment_profile": deployment_profile_report(
+                DeploymentProfileRequest {
+                    root: &ctx.root,
+                    mode,
+                    host,
+                    token_file: token_file.as_deref(),
+                    public_origin,
+                    sync_target: sync_target.as_deref(),
+                }
+            )}))
+        }
         ("GET", "/release-gate-v3") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -1921,61 +2145,149 @@ pub(super) fn handle_http_request(
             let strict = params
                 .get("strict")
                 .is_some_and(|value| value == "true" || value == "1");
-            HttpResponse::ok(json!({"release_gate_v3": release_gate_v3_report(
+            let rag_profile =
+                ReleaseRagProfile::parse(params.get("rag_profile").map(String::as_str))?;
+            let profile = ReleaseGateProfile::parse(params.get("profile").map(String::as_str))?;
+            HttpResponse::ok(
+                json!({"release_gate_v3": release_gate_v3_report_with_profile(
                 &conn,
                 &ctx.db,
                 &ctx.root,
-                since_days,
-                strict,
-                false,
-            )?}))
+                ReleaseGateV3Options {
+                    since_days,
+                    strict,
+                    run: false,
+                    rag_profile,
+                    profile,
+                },
+            )?}),
+            )
         }
         ("POST", "/release-gate-v3/run") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             let strict = value
                 .get("strict")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            HttpResponse::ok(json!({"release_gate_v3": release_gate_v3_report(
+            let rag_profile =
+                ReleaseRagProfile::parse(value.get("rag_profile").and_then(Value::as_str))?;
+            let profile = ReleaseGateProfile::parse(value.get("profile").and_then(Value::as_str))?;
+            HttpResponse::ok(
+                json!({"release_gate_v3": release_gate_v3_report_with_profile(
                 &conn,
                 &ctx.db,
                 &ctx.root,
-                since_days,
-                strict,
-                true,
-            )?}))
+                ReleaseGateV3Options {
+                    since_days,
+                    strict,
+                    run: true,
+                    rag_profile,
+                    profile,
+                },
+            )?}),
+            )
         }
-        ("GET", "/web-control-center-v12") => {
+        ("GET", "/rag-eval") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
+            HttpResponse::ok(json!({"rag_eval": rag_eval_report_with_baseline(
+                &conn,
+                None,
+                8,
+                3_000,
+                DEFAULT_EMBED_PROVIDER,
+                DEFAULT_EMBED_ENDPOINT,
+                DEFAULT_EMBED_MODEL,
+                Some(&ctx.root),
+                false,
+            )?}))
+        }
+        ("POST", "/rag-eval/baseline") => {
+            let value = parse_json_body(body)?;
+            let ctx = selected_project_from_body(db, &value)?;
+            HttpResponse::ok(json!({"rag_eval": rag_eval_report_with_baseline(
+                &conn,
+                None,
+                8,
+                3_000,
+                DEFAULT_EMBED_PROVIDER,
+                DEFAULT_EMBED_ENDPOINT,
+                DEFAULT_EMBED_MODEL,
+                Some(&ctx.root),
+                true,
+            )?}))
+        }
+        ("GET", "/graph-rag-eval") => {
+            let gen_config = crate::runtime_config::GenerationConfig {
+                provider: "mock".to_string(),
+                endpoint: "local".to_string(),
+                model: "extractive-fallback".to_string(),
+            };
+            HttpResponse::ok(json!({"graph_rag_eval": graph_rag_eval_report(
+                &conn,
+                None,
+                8,
+                3_000,
+                &gen_config,
+                DEFAULT_EMBED_PROVIDER,
+                DEFAULT_EMBED_ENDPOINT,
+                DEFAULT_EMBED_MODEL,
+            )?}))
+        }
+        ("GET", "/advanced-eval") => {
+            HttpResponse::ok(json!({"advanced_eval": advanced_eval_report(&conn)?}))
+        }
+        ("GET", "/web-control-center") | ("GET", "/web-control-center-v12") => {
+            let params = parse_query(query);
+            let selected = params.get("project").map(String::as_str);
+            let ctx = project_context(db, selected)?;
+            let since_days = params
+                .get("since_days")
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(7);
+            let details = params.get("view").is_some_and(|value| value == "details");
+            if path == "/web-control-center" && !details {
+                return Ok(HttpResponse::ok(serde_json::to_value(
+                    control_snapshot_report(&conn, &ctx.db, &ctx.root, since_days)?,
+                )?));
+            }
             let target = params.get("target").map(PathBuf::from);
             let task = params
                 .get("task")
                 .map(String::as_str)
                 .unwrap_or("project memory");
-            let since_days = params
-                .get("since_days")
-                .and_then(|value| value.parse::<i64>().ok())
-                .unwrap_or(7);
-            HttpResponse::ok(json!({"control_v12": web_control_center_v12_report(
+            let report = web_control_center_v12_report(
                 &conn,
                 &ctx.db,
                 &ctx.root,
                 target.as_deref(),
                 task,
                 since_days,
-            )?}))
+            )?;
+            if path == "/web-control-center" {
+                HttpResponse::ok(json!({
+                    "control_v12": report,
+                    "current_version": "stable-v1",
+                    "compatibility": {
+                        "canonical_endpoint": "/web-control-center",
+                        "legacy_alias": "/web-control-center-v12",
+                    }
+                }))
+            } else {
+                HttpResponse::ok(json!({
+                    "control_v12": report,
+                    "deprecated": true,
+                    "canonical_endpoint": "/web-control-center?view=details",
+                }))
+            }
         }
         ("GET", "/mcp-discipline-v2") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -1991,7 +2303,6 @@ pub(super) fn handle_http_request(
         ("POST", "/mcp-discipline-v2/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"discipline": mcp_discipline_v2_report(
                 &conn,
@@ -2005,7 +2316,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -2020,7 +2330,6 @@ pub(super) fn handle_http_request(
         ("POST", "/feedback-loop-v2/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"feedback_loop": feedback_loop_v2_report(
                 &conn,
@@ -2083,7 +2392,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -2099,7 +2407,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -2114,7 +2421,6 @@ pub(super) fn handle_http_request(
         ("POST", "/usefulness-engine/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"engine": usefulness_engine_report(
                 &conn,
@@ -2127,7 +2433,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let samples = params
                 .get("samples")
                 .and_then(|value| value.parse::<usize>().ok())
@@ -2145,7 +2450,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let profile = parse_sync_profile(params.get("profile").map(String::as_str));
             let target = params.get("target").map(PathBuf::from);
             HttpResponse::ok(json!({"profile": sync_profile_report(
@@ -2161,7 +2465,6 @@ pub(super) fn handle_http_request(
         ("POST", "/sync-profile/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let profile = parse_sync_profile(value.get("profile").and_then(Value::as_str));
             let target = value
                 .get("target")
@@ -2185,7 +2488,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -2201,7 +2503,6 @@ pub(super) fn handle_http_request(
         ("POST", "/agent-enforce/fix") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"enforce": agent_enforce_report(
                 &conn,
@@ -2267,7 +2568,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -2280,7 +2580,6 @@ pub(super) fn handle_http_request(
             )?}))
         }
         ("GET", "/roi-report") => {
-            let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
             let since_days = params
                 .get("since_days")
@@ -2289,7 +2588,6 @@ pub(super) fn handle_http_request(
             HttpResponse::ok(json!({"roi": roi_report(&conn, since_days)?}))
         }
         ("GET", "/agent-audit") => {
-            let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
             let since_days = params
                 .get("since_days")
@@ -2298,7 +2596,6 @@ pub(super) fn handle_http_request(
             HttpResponse::ok(json!({"agent_audit": agent_audit_report(&conn, since_days)?}))
         }
         ("GET", "/decision-trace") => {
-            let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
             let since_days = params
                 .get("since_days")
@@ -2311,7 +2608,6 @@ pub(super) fn handle_http_request(
             HttpResponse::ok(json!({"trace": decision_trace_report(&conn, since_days, limit)?}))
         }
         ("GET", "/memory-replay") => {
-            let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
             let since_days = params
                 .get("since_days")
@@ -2324,7 +2620,6 @@ pub(super) fn handle_http_request(
             HttpResponse::ok(json!({"replay": memory_replay_report(&conn, since_days, limit)?}))
         }
         ("GET", "/auto-feedback") => {
-            let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
             let since_days = params
                 .get("since_days")
@@ -2343,12 +2638,17 @@ pub(super) fn handle_http_request(
         }
         ("POST", "/auto-feedback") => {
             let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             let limit = value.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
-            let apply = !value
-                .get("dry_run")
+            let apply = value
+                .get("apply")
                 .and_then(Value::as_bool)
+                .or_else(|| {
+                    value
+                        .get("dry_run")
+                        .and_then(Value::as_bool)
+                        .map(|dry_run| !dry_run)
+                })
                 .unwrap_or(false);
             HttpResponse::ok(json!({"auto_feedback": auto_feedback_v2_report(
                 &conn,
@@ -2358,7 +2658,6 @@ pub(super) fn handle_http_request(
             )?}))
         }
         ("GET", "/cost-guard") => {
-            let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
             let since_days = params
                 .get("since_days")
@@ -2370,7 +2669,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -2389,7 +2687,6 @@ pub(super) fn handle_http_request(
                 .get("changed_only")
                 .is_some_and(|value| value == "1" || value == "true");
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             HttpResponse::ok(json!({"project_diff": project_diff_report(
                 &conn,
                 &ctx.root,
@@ -2400,33 +2697,28 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             HttpResponse::ok(json!({"review": memory_diff_review_report(&conn, &ctx.root, false)?}))
         }
         ("POST", "/memory-diff-review/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             HttpResponse::ok(json!({"review": memory_diff_review_report(&conn, &ctx.root, true)?}))
         }
         ("GET", "/memory-diff-apply") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             HttpResponse::ok(json!({"apply": memory_diff_apply_report(&conn, &ctx.root, false)?}))
         }
         ("POST", "/memory-diff-apply/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             HttpResponse::ok(json!({"apply": memory_diff_apply_report(&conn, &ctx.root, true)?}))
         }
         ("GET", "/remote-sync-v2") => {
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let target = params.get("target").map(PathBuf::from);
             let since_days = params
                 .get("since_days")
@@ -2444,7 +2736,6 @@ pub(super) fn handle_http_request(
         ("POST", "/remote-sync-v2/apply") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let target = value
                 .get("target")
                 .and_then(Value::as_str)
@@ -2463,7 +2754,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -2479,7 +2769,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -2495,7 +2784,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -2511,7 +2799,6 @@ pub(super) fn handle_http_request(
         ("POST", "/doctor-project/fix") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             HttpResponse::ok(json!({"doctor": project_doctor_report(
                 &conn,
@@ -2528,7 +2815,6 @@ pub(super) fn handle_http_request(
                 .get("strict")
                 .is_some_and(|value| value == "1" || value == "true");
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -2545,7 +2831,6 @@ pub(super) fn handle_http_request(
         ("POST", "/release-gate/run") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = value.get("since_days").and_then(Value::as_i64).unwrap_or(7);
             let strict = value
                 .get("strict")
@@ -2561,7 +2846,6 @@ pub(super) fn handle_http_request(
             )?}))
         }
         ("GET", "/eval-live") => {
-            let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
             let since_days = params
                 .get("since_days")
@@ -2570,7 +2854,6 @@ pub(super) fn handle_http_request(
             HttpResponse::ok(json!({"eval": live_eval_report(&conn, since_days)?}))
         }
         ("GET", "/recall") => {
-            let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
             let q = params
                 .get("q")
@@ -2614,12 +2897,10 @@ pub(super) fn handle_http_request(
             })?}))
         }
         ("GET", "/inbox-v2") => {
-            let conn = open_selected_db(db, query, None)?;
             HttpResponse::ok(json!({"inbox_v2": inbox_v2_report(&conn, 100, false)?}))
         }
         ("POST", "/inbox-v2/auto-apply") => {
             let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
             let dry_run = value
                 .get("dry_run")
                 .and_then(Value::as_bool)
@@ -2628,7 +2909,6 @@ pub(super) fn handle_http_request(
         }
         ("POST", "/policy-tune") => {
             let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
             let dry_run = value
                 .get("dry_run")
                 .and_then(Value::as_bool)
@@ -2643,7 +2923,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let since_days = params
                 .get("since_days")
                 .and_then(|value| value.parse::<i64>().ok())
@@ -2654,13 +2933,11 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             HttpResponse::ok(json!({"contract": memory_contract_report(&conn, &ctx.root, false)?}))
         }
         ("POST", "/upgrade-project") => {
             let value = parse_json_body(body)?;
             let ctx = selected_project_from_body(db, &value)?;
-            let conn = open_db(&ctx.db)?;
             let dry_run = value
                 .get("dry_run")
                 .and_then(Value::as_bool)
@@ -2713,7 +2990,6 @@ pub(super) fn handle_http_request(
         }
         ("POST", "/feedback") => {
             let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
             let ids = value
                 .get("ids")
                 .and_then(Value::as_array)
@@ -2753,18 +3029,14 @@ pub(super) fn handle_http_request(
             log_event(&conn, "memory_feedback", None, &detail)?;
             HttpResponse::ok(json!({"ok": true, "feedback": feedback_summary(&conn, 30)?}))
         }
-        ("GET", "/embed-status") => {
-            let conn = open_selected_db(db, query, None)?;
-            HttpResponse::ok(json!({"embedding": embeddings::embed_status(
+        ("GET", "/embed-status") => HttpResponse::ok(json!({"embedding": embeddings::embed_status(
                 &conn,
                 DEFAULT_EMBED_PROVIDER,
                 DEFAULT_EMBED_ENDPOINT,
                 DEFAULT_EMBED_MODEL,
-            )?}))
-        }
+            )?})),
         ("POST", "/embed-index") => {
             let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
             let provider = value
                 .get("provider")
                 .and_then(Value::as_str)
@@ -2782,7 +3054,6 @@ pub(super) fn handle_http_request(
             HttpResponse::ok(json!({"embedding": report}))
         }
         ("GET", "/inbox") => {
-            let conn = open_selected_db(db, query, None)?;
             let params = parse_query(query);
             let status = params
                 .get("status")
@@ -2800,7 +3071,6 @@ pub(super) fn handle_http_request(
             let params = parse_query(query);
             let selected = params.get("project").map(String::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let report = autopilot_report(
                 &conn,
                 AutopilotReportRequest {
@@ -2837,7 +3107,6 @@ pub(super) fn handle_http_request(
             let value = parse_json_body(body)?;
             let selected = value.get("project").and_then(Value::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             fs::create_dir_all(ctx.root.join(".agent").join("sessions"))?;
             fs::create_dir_all(ctx.root.join(".agent").join("backups"))?;
             run_daemon(
@@ -2867,7 +3136,6 @@ pub(super) fn handle_http_request(
             let value = parse_json_body(body)?;
             let selected = value.get("project").and_then(Value::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let report = autopilot_repair(
                 &conn,
                 &ctx.db,
@@ -2890,7 +3158,6 @@ pub(super) fn handle_http_request(
             let value = parse_json_body(body)?;
             let selected = value.get("project").and_then(Value::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let report = autopilot_report(
                 &conn,
                 AutopilotReportRequest {
@@ -2924,7 +3191,6 @@ pub(super) fn handle_http_request(
             let value = parse_json_body(body)?;
             let selected = value.get("project").and_then(Value::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let level = parse_autonomous_level(value.get("level").and_then(Value::as_str));
             let provider = value
                 .get("provider")
@@ -2960,140 +3226,14 @@ pub(super) fn handle_http_request(
             let value = parse_json_body(body)?;
             let selected = value.get("project").and_then(Value::as_str);
             let ctx = project_context(db, selected)?;
-            let conn = open_db(&ctx.db)?;
             let status_file = ctx.root.join(".agent").join("autonomous-status.json");
             let report = read_autonomous_status(&status_file)?;
             let rollback = autonomous_rollback(&conn, &report)?;
             write_autonomous_status(&status_file, &rollback)?;
             HttpResponse::ok(json!({"report": rollback}))
         }
-        ("POST", "/remember") => {
-            let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
-            let text = value
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if text.is_empty() {
-                HttpResponse::bad_request("missing text")
-            } else {
-                let id = add_memory(
-                    &conn,
-                    AddMemory {
-                        id: None,
-                        memory_type: value
-                            .get("type")
-                            .and_then(Value::as_str)
-                            .unwrap_or("note")
-                            .to_string(),
-                        title: truncate_words(text, 8),
-                        body: text.to_string(),
-                        scope: value
-                            .get("scope")
-                            .and_then(Value::as_str)
-                            .unwrap_or("project")
-                            .to_string(),
-                        status: "active".to_string(),
-                        source: Some("http".to_string()),
-                        supersedes: None,
-                        confidence: 0.8,
-                        layer: value
-                            .get("layer")
-                            .and_then(Value::as_str)
-                            .map(ToOwned::to_owned),
-                        links: Vec::new(),
-                    },
-                )?;
-                HttpResponse::ok(json!({"id": id}))
-            }
-        }
-        ("POST", "/memory/status") => {
-            let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
-            let id = value.get("id").and_then(Value::as_str).unwrap_or_default();
-            let status = value
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if id.is_empty() || status.is_empty() {
-                return Ok(HttpResponse::bad_request("missing id or status"));
-            }
-            set_status(&conn, id, status.to_string())?;
-            HttpResponse::ok(json!({"ok": true, "id": id, "status": status}))
-        }
-        ("POST", "/memory/delete") => {
-            let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
-            let id = value.get("id").and_then(Value::as_str).unwrap_or_default();
-            if id.is_empty() {
-                return Ok(HttpResponse::bad_request("missing id"));
-            }
-            delete_memory(&conn, id)?;
-            HttpResponse::ok(json!({"ok": true, "id": id}))
-        }
-        ("POST", "/memory/update") => {
-            let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
-            let id = value.get("id").and_then(Value::as_str).unwrap_or_default();
-            if id.is_empty() {
-                return Ok(HttpResponse::bad_request("missing id"));
-            }
-            let links = value
-                .get("links")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(ToOwned::to_owned)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            update_memory(
-                &conn,
-                UpdateMemory {
-                    id: id.to_string(),
-                    memory_type: value
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    title: value
-                        .get("title")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    body: value
-                        .get("body")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    scope: value
-                        .get("scope")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    status: value
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    source: value
-                        .get("source")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    confidence: value.get("confidence").and_then(Value::as_f64),
-                    layer: value
-                        .get("layer")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    links,
-                    replace_links: value
-                        .get("replace_links")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                },
-            )?;
-            HttpResponse::ok(json!({"ok": true, "memory": get_memory_with_links(&conn, id)?}))
-        }
         ("POST", "/memory/bulk") => {
             let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
             let ids = value
                 .get("ids")
                 .and_then(Value::as_array)
@@ -3110,19 +3250,19 @@ pub(super) fn handle_http_request(
             for id in ids {
                 match action {
                     "active" => {
-                        set_status(&conn, id, "active".to_string())?;
+                        memory_app.set_status(id, MemoryStatus::Active)?;
                         changed += 1;
                     }
                     "uncertain" => {
-                        set_status(&conn, id, "uncertain".to_string())?;
+                        memory_app.set_status(id, MemoryStatus::Uncertain)?;
                         changed += 1;
                     }
                     "reject" => {
-                        set_status(&conn, id, "rejected".to_string())?;
+                        memory_app.set_status(id, MemoryStatus::Rejected)?;
                         changed += 1;
                     }
                     "delete" => {
-                        delete_memory(&conn, id)?;
+                        memory_app.delete(id)?;
                         changed += 1;
                     }
                     _ => return Ok(HttpResponse::bad_request("unknown bulk action")),
@@ -3132,7 +3272,6 @@ pub(super) fn handle_http_request(
         }
         ("POST", "/context") => {
             let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
             let task = value
                 .get("task")
                 .and_then(Value::as_str)
@@ -3158,7 +3297,6 @@ pub(super) fn handle_http_request(
         }
         ("POST", "/brief") => {
             let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
             let task = value
                 .get("task")
                 .and_then(Value::as_str)
@@ -3208,7 +3346,6 @@ pub(super) fn handle_http_request(
         }
         ("POST", "/impact") => {
             let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
             let target = value
                 .get("target")
                 .and_then(Value::as_str)
@@ -3257,7 +3394,6 @@ pub(super) fn handle_http_request(
         }
         ("POST", "/drift") => {
             let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
             let changed_only = value
                 .get("changed_only")
                 .and_then(Value::as_bool)
@@ -3265,44 +3401,8 @@ pub(super) fn handle_http_request(
             let root = value.get("root").and_then(Value::as_str).unwrap_or(".");
             HttpResponse::ok(json!({"drift": drift_report(&conn, Path::new(root), changed_only)?}))
         }
-        ("POST", "/search") => {
-            let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
-            let query = value
-                .get("query")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if query.is_empty() {
-                return Ok(HttpResponse::bad_request("missing query"));
-            }
-            let limit = value
-                .get("limit")
-                .and_then(Value::as_u64)
-                .map(|value| value as usize)
-                .unwrap_or(10)
-                .min(100);
-            let (rows, _) = search_rows_with_semantic_fallback(
-                &conn,
-                SearchRowsRequest {
-                    query,
-                    types: &[],
-                    statuses: &["active".to_string(), "uncertain".to_string()],
-                    scope: None,
-                    limit,
-                    budget: 1_200,
-                    provider: DEFAULT_EMBED_PROVIDER,
-                    endpoint: DEFAULT_EMBED_ENDPOINT,
-                    model: DEFAULT_EMBED_MODEL,
-                },
-            )?;
-            let quality_signals = retrieval_feedback_signals(&conn, 30).unwrap_or_default();
-            let mut rows = filter_query_useless_memories(rows, query, &quality_signals);
-            rows.truncate(limit);
-            HttpResponse::ok(json!({"results": memory_rows_with_request_counts(&conn, rows)?}))
-        }
         ("POST", "/inbox/approve") => {
             let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
             let id = value.get("id").and_then(Value::as_str).unwrap_or_default();
             if id.is_empty() {
                 return Ok(HttpResponse::bad_request("missing id"));
@@ -3311,7 +3411,6 @@ pub(super) fn handle_http_request(
         }
         ("POST", "/inbox/reject") => {
             let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
             let id = value.get("id").and_then(Value::as_str).unwrap_or_default();
             if id.is_empty() {
                 return Ok(HttpResponse::bad_request("missing id"));
@@ -3321,7 +3420,6 @@ pub(super) fn handle_http_request(
         }
         ("POST", "/evidence") => {
             let value = parse_json_body(body)?;
-            let conn = open_selected_db(db, query, Some(&value))?;
             let id = value.get("id").and_then(Value::as_str).unwrap_or_default();
             if id.is_empty() {
                 return Ok(HttpResponse::bad_request("missing id"));
@@ -3329,31 +3427,6 @@ pub(super) fn handle_http_request(
             let evidence = evidence_report(&conn, id)?;
             let request_count = memory_request_count(&conn, id)?;
             HttpResponse::ok(json!({"evidence": evidence, "request_count": request_count}))
-        }
-        ("POST", "/auto-ingest") => {
-            let value = parse_json_body(body)?;
-            let input = value
-                .get("input")
-                .and_then(Value::as_str)
-                .unwrap_or(".agent/sessions");
-            let scope = value
-                .get("scope")
-                .and_then(Value::as_str)
-                .unwrap_or("project");
-            let dry_run = value
-                .get("dry_run")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let report = auto_ingest_sessions(
-                &conn,
-                Path::new(input),
-                scope,
-                false,
-                DEFAULT_EMBED_ENDPOINT,
-                "qwen3:14b",
-                dry_run,
-            )?;
-            HttpResponse::ok(json!({"auto_ingest": report}))
         }
         ("POST", "/doctor") => HttpResponse::ok(json!({
             "secrets": scan_secret_findings(&conn)?.len(),
@@ -3387,4 +3460,160 @@ pub(super) fn handle_http_request(
         _ => HttpResponse::not_found(),
     };
     Ok(response)
+}
+
+fn route_mcp_http(
+    db: &Path,
+    service: &mcp_server::McpHttpService,
+    method: &str,
+    headers: &HashMap<String, String>,
+    body: &str,
+    authorization: &security::HttpAuthContext,
+    auth_policy: &security::HttpAuthPolicy,
+) -> Result<HttpResponse> {
+    if method == "GET" {
+        return Ok(HttpResponse::method_not_allowed().with_header("Allow", "POST, DELETE"));
+    }
+    let session_id = headers.get("mcp-session-id").map(String::as_str);
+    if session_id.is_some_and(|value| {
+        value.is_empty()
+            || value.len() > 128
+            || !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+    }) {
+        return Ok(mcp_http_transport_error(
+            400,
+            "invalid MCP-Session-Id header",
+        ));
+    }
+    if method == "DELETE" {
+        return Ok(mcp_http_response(
+            service.delete_session(session_id, &authorization.principal)?,
+        ));
+    }
+    if method != "POST" {
+        return Ok(HttpResponse::method_not_allowed().with_header("Allow", "POST, DELETE"));
+    }
+    let content_type = headers
+        .get("content-type")
+        .and_then(|value| value.split(';').next())
+        .map(str::trim);
+    if !content_type.is_some_and(|value| value.eq_ignore_ascii_case("application/json")) {
+        return Ok(mcp_http_transport_error(
+            415,
+            "MCP POST requests require Content-Type: application/json",
+        ));
+    }
+    let request = match serde_json::from_str::<Value>(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return Ok(HttpResponse::json_rpc(
+                400,
+                "Bad Request",
+                json!({
+                    "jsonrpc":"2.0",
+                    "id":Value::Null,
+                    "error":{"code":-32700,"message":error.to_string()}
+                }),
+            ));
+        }
+    };
+    let required_scope = mcp_required_scope(&request).unwrap_or("memory:write");
+    if !authorization.allows(required_scope) {
+        return Ok(with_insufficient_scope_challenge(
+            mcp_http_transport_error(403, "bearer token lacks the MCP operation-specific scope"),
+            auth_policy,
+            required_scope,
+        ));
+    }
+    let request_method = request.get("method").and_then(Value::as_str);
+    let body_protocol_version = request
+        .get("params")
+        .and_then(|params| params.get("_meta"))
+        .and_then(|meta| meta.get("io.modelcontextprotocol/protocolVersion"))
+        .and_then(Value::as_str);
+    let header_protocol_version = headers.get("mcp-protocol-version").map(String::as_str);
+    if header_protocol_version
+        .zip(body_protocol_version)
+        .is_some_and(|(header, body)| header != body)
+    {
+        return Ok(mcp_http_transport_error(
+            400,
+            "MCP protocol version header and JSON-RPC metadata must match",
+        ));
+    }
+    let modern = header_protocol_version == Some("2026-07-28")
+        || body_protocol_version == Some("2026-07-28");
+    let method_header = headers.get("mcp-method").map(String::as_str);
+    if method_header.is_some_and(|header| Some(header) != request_method)
+        || (modern && method_header.is_none())
+    {
+        return Ok(mcp_http_transport_error(
+            400,
+            "Mcp-Method must match the JSON-RPC method",
+        ));
+    }
+    let expected_name = match request_method {
+        Some("tools/call") | Some("prompts/get") => request
+            .get("params")
+            .and_then(|params| params.get("name"))
+            .and_then(Value::as_str),
+        Some("resources/read") => request
+            .get("params")
+            .and_then(|params| params.get("uri"))
+            .and_then(Value::as_str),
+        _ => None,
+    };
+    let name_header = headers.get("mcp-name").map(String::as_str);
+    if name_header.is_some_and(|header| Some(header) != expected_name)
+        || (modern && expected_name.is_some() && name_header.is_none())
+    {
+        return Ok(mcp_http_transport_error(
+            400,
+            "Mcp-Name must match the JSON-RPC tool, prompt, or resource name",
+        ));
+    }
+    Ok(mcp_http_response(service.handle_post(
+        db,
+        request,
+        session_id,
+        headers.get("mcp-protocol-version").map(String::as_str),
+        &authorization.principal,
+    )?))
+}
+
+fn mcp_http_response(reply: mcp_server::McpHttpReply) -> HttpResponse {
+    let mut response = match (reply.status, reply.body) {
+        (200, Some(body)) => HttpResponse::json_rpc(200, "OK", body),
+        (202, _) => HttpResponse::accepted(),
+        (204, _) => HttpResponse::no_content(),
+        (400, Some(body)) => HttpResponse::json_rpc(400, "Bad Request", body),
+        (404, Some(body)) => HttpResponse::json_rpc(404, "Not Found", body),
+        (status, Some(body)) => HttpResponse::json_rpc(status, "Bad Request", body),
+        (_, None) => HttpResponse::service_unavailable("invalid MCP HTTP response state"),
+    };
+    if let Some(session_id) = reply.session_id {
+        response = response.with_header("MCP-Session-Id", session_id);
+    }
+    if let Some(protocol_version) = reply.protocol_version {
+        response = response.with_header("MCP-Protocol-Version", protocol_version);
+    }
+    response
+}
+
+fn mcp_http_transport_error(status: u16, message: &str) -> HttpResponse {
+    let reason = match status {
+        400 => "Bad Request",
+        403 => "Forbidden",
+        415 => "Unsupported Media Type",
+        _ => "Bad Request",
+    };
+    HttpResponse::json_rpc(
+        status,
+        reason,
+        json!({
+            "jsonrpc":"2.0",
+            "id":Value::Null,
+            "error":{"code":-32600,"message":message}
+        }),
+    )
 }

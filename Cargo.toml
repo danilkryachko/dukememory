@@ -1,7 +1,8 @@
 [package]
 name = "dukememory"
-version = "0.36.0"
+version = "0.43.0"
 edition = "2024"
+rust-version = "1.91"
 license = "Apache-2.0"
 description = "Local project memory for AI coding agents: durable context, SQLite, MCP, Codex skill, embeddings, and autonomous maintenance."
 repository = "https://github.com/danilkryachko/dukememory"
@@ -10,12 +11,13 @@ keywords = ["ai-agent", "memory", "mcp", "sqlite", "embeddings"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
-age = { version = "0.11", default-features = false }
+age = { version = "0.12", default-features = false }
 anyhow = "1.0"
+base64 = "0.22"
 clap = { version = "4.5", features = ["derive", "env"] }
 ctrlc = { version = "3.5", features = ["termination"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
-sqlite-vec = { version = "0.1.9", optional = true }
+rusqlite = { version = "0.39.0", default-features = false, features = ["bundled"] }
+sqlite-vec = "0.1.9"
 regex = "1.12"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rhai = { version = "1.22", default-features = false, features = ["std"] }
@@ -23,27 +25,34 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 toml = "0.8"
+time = { version = "0.3", features = ["formatting"] }
+unicode-normalization = "0.1"
 uuid = { version = "1.11", features = ["v4"] }
-tract-onnx = "0.23.3"
-tokenizers = "0.23.1"
-hf-hub = "0.5.0"
-lazy_static = "1.5.0"
-ndarray = "0.17.2"
+tract-onnx = { version = "0.23.3", optional = true }
+tokenizers = { version = "0.23.1", optional = true }
+hf-hub = { version = "0.5.0", default-features = false, features = ["ureq"], optional = true }
 encoding_rs = { version = "0.8.35", optional = true }
 llama-cpp-2 = { version = "0.1.150", optional = true, features = ["sampler"] }
 
 [features]
-default = []
-# Compatibility marker: local MiniLM embeddings are part of the default build.
-local-embeddings = []
-local-generation = ["dep:encoding_rs", "dep:llama-cpp-2"]
-# Statically registers sqlite-vec and runs semantic distance queries in SQLite.
-vec = ["dep:sqlite-vec"]
+default = ["local-embeddings"]
+# Keep the local-first default while allowing minimal builds with
+# `--no-default-features` to omit the ONNX/tokenizer download stack.
+local-embeddings = ["dep:hf-hub", "dep:tokenizers", "dep:tract-onnx"]
+local-generation = ["dep:encoding_rs", "dep:hf-hub", "dep:llama-cpp-2"]
+# The sqlite-vec module is always linked so databases created by accelerated
+# builds remain writable by minimal builds. This feature enables KNN query and
+# persistent index management; JSON fallback remains the default query path.
+vec = []
 
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
+proptest = "1.11"
 tempfile = "3.13"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # Install/update dry-runs hash large binaries. Optimizing SHA-256 keeps the
 # extended CLI compatibility matrix fast without changing application code.
@@ -52,3 +61,19 @@ opt-level = 3
 
 [profile.test.package.sha2]
 opt-level = 3
+
+# Release artifacts use one codegen unit and stripped symbols so the same
+# locked toolchain/input set produces compact, byte-comparable binaries.
+[profile.release]
+codegen-units = 1
+incremental = false
+lto = "thin"
+panic = "abort"
+strip = "symbols"
+
+# Opt-in footprint profile for servers that use FTS or external embeddings.
+[profile.release-minimal]
+inherits = "release"
+codegen-units = 1
+lto = "fat"
+opt-level = "z"

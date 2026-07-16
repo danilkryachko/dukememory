@@ -1344,19 +1344,26 @@ pub(crate) fn autonomous_run_once(
             ),
             memory_id: None,
         });
-        let inferred_feedback = materialize_inferred_feedback(conn, 7, 100)?;
+        let live_eval = live_eval_report(conn, 7)?;
+        let inferred_feedback = InferredFeedbackReport {
+            version: 1,
+            since_days: 7,
+            scanned: live_eval.reads,
+            written: 0,
+            useful: live_eval.inferred_useful,
+            missing: live_eval.inferred_missing,
+            skipped: live_eval.reads.saturating_sub(
+                live_eval
+                    .inferred_useful
+                    .saturating_add(live_eval.inferred_missing),
+            ),
+        };
         report.actions.push(AutonomousAction {
-            kind: "inferred_feedback".to_string(),
-            status: if inferred_feedback.written == 0 {
-                "skipped"
-            } else {
-                "ok"
-            }
-            .to_string(),
+            kind: "inferred_feedback_preview".to_string(),
+            status: "review".to_string(),
             detail: format!(
-                "scanned={} written={} useful={} missing={} skipped={}",
+                "scanned={} written=0 useful_candidates={} missing_candidates={} skipped={}; explicit auto-feedback is required",
                 inferred_feedback.scanned,
-                inferred_feedback.written,
                 inferred_feedback.useful,
                 inferred_feedback.missing,
                 inferred_feedback.skipped
@@ -1364,7 +1371,6 @@ pub(crate) fn autonomous_run_once(
             memory_id: None,
         });
         report.inferred_feedback = Some(inferred_feedback);
-        let live_eval = live_eval_report(conn, 7)?;
         report.actions.push(AutonomousAction {
             kind: "live_eval_snapshot".to_string(),
             status: "ok".to_string(),
@@ -1557,8 +1563,12 @@ pub(crate) fn autonomous_run_once(
     let install_backup_dir = autonomous_project_root_for_db(request.db)
         .join(".agent")
         .join("install-backups");
-    let install_pruned =
-        prune_autonomous_install_backups(&install_backup_dir, DEFAULT_INSTALL_BACKUP_KEEP)?;
+    let install_backup_quota_bytes = install_backup_quota_bytes();
+    let install_pruned = prune_autonomous_install_backups(
+        &install_backup_dir,
+        DEFAULT_INSTALL_BACKUP_KEEP,
+        install_backup_quota_bytes,
+    )?;
     report.actions.push(AutonomousAction {
         kind: "install_backup_retention".to_string(),
         status: if install_pruned.is_empty() {
@@ -1568,8 +1578,9 @@ pub(crate) fn autonomous_run_once(
         }
         .to_string(),
         detail: format!(
-            "keep={} pruned={}",
+            "keep={} quota_bytes={} pruned={}",
             DEFAULT_INSTALL_BACKUP_KEEP,
+            install_backup_quota_bytes,
             install_pruned.len()
         ),
         memory_id: None,
@@ -1700,21 +1711,28 @@ fn list_autonomous_rollback_backups(rollback_dir: &Path) -> Result<Vec<Autonomou
 struct AutonomousInstallBackup {
     path: PathBuf,
     modified: SystemTime,
+    bytes: u64,
 }
 
-fn prune_autonomous_install_backups(backup_dir: &Path, keep: usize) -> Result<Vec<String>> {
-    let backups = list_autonomous_install_backups(backup_dir)?;
-    let kept = backups
+fn prune_autonomous_install_backups(
+    backup_dir: &Path,
+    keep: usize,
+    quota_bytes: u64,
+) -> Result<Vec<String>> {
+    let mut backups = list_autonomous_install_backups(backup_dir)?;
+    let keep_from = backups.len().saturating_sub(keep);
+    let mut kept = backups.split_off(keep_from);
+    let mut prune_items = backups;
+    let mut kept_bytes = kept
         .iter()
-        .rev()
-        .take(keep)
-        .map(|item| item.path.clone())
-        .collect::<HashSet<_>>();
+        .fold(0_u64, |total, item| total.saturating_add(item.bytes));
+    while kept_bytes > quota_bytes && kept.len() > 1 {
+        let oldest = kept.remove(0);
+        kept_bytes = kept_bytes.saturating_sub(oldest.bytes);
+        prune_items.push(oldest);
+    }
     let mut pruned = Vec::new();
-    for item in backups {
-        if kept.contains(&item.path) {
-            continue;
-        }
+    for item in prune_items {
         if item.path.exists() {
             fs::remove_file(&item.path)
                 .with_context(|| format!("failed to remove {}", item.path.display()))?;
@@ -1737,10 +1755,14 @@ fn list_autonomous_install_backups(backup_dir: &Path) -> Result<Vec<AutonomousIn
         if !path.is_file() || !is_autonomous_install_backup(&path) {
             continue;
         }
-        let modified = fs::metadata(&path)
-            .and_then(|meta| meta.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        backups.push(AutonomousInstallBackup { path, modified });
+        let metadata =
+            fs::metadata(&path).with_context(|| format!("failed to inspect {}", path.display()))?;
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        backups.push(AutonomousInstallBackup {
+            path,
+            modified,
+            bytes: metadata.len(),
+        });
     }
     backups.sort_by(|left, right| {
         left.modified
@@ -2333,16 +2355,17 @@ fn autonomous_compact_release_history(
         conn,
         AddMemory {
             id: None,
-            memory_type: "task_state".to_string(),
+            memory_type: MemoryType::TaskState,
             title: format!("Autonomous compacted {scope} release history"),
             body: render_release_history_body(&rows),
-            scope: scope.to_string(),
-            status: "active".to_string(),
+            scope: scope.parse()?,
+            status: MemoryStatus::Active,
             source: Some("autonomous_release_compact".to_string()),
             supersedes: None,
             confidence: 0.9,
             layer: None,
             links,
+            allow_sensitive: false,
         },
     )?;
     report
@@ -2905,16 +2928,17 @@ fn autonomous_compact_operational(
         conn,
         AddMemory {
             id: None,
-            memory_type: "task_state".to_string(),
+            memory_type: MemoryType::TaskState,
             title: format!("Autonomous compacted {scope} operational memory"),
             body,
-            scope: scope.to_string(),
-            status: "active".to_string(),
+            scope: scope.parse()?,
+            status: MemoryStatus::Active,
             source: Some("autonomous_compact".to_string()),
             supersedes: None,
             confidence: 0.9,
             layer: None,
             links,
+            allow_sensitive: false,
         },
     )?;
     report
@@ -3481,8 +3505,48 @@ fn print_autonomous_explain(report: &AutonomousReport, json_out: bool) -> Result
 pub(crate) fn read_autonomous_status(path: &Path) -> Result<AutonomousReport> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read autonomous status {}", path.display()))?;
-    serde_json::from_str(&raw)
+    let mut value: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("invalid autonomous status {}", path.display()))?;
+    normalize_autonomous_status_json(&mut value);
+    serde_json::from_value(value)
         .with_context(|| format!("invalid autonomous status {}", path.display()))
+}
+
+fn normalize_autonomous_status_json(value: &mut Value) {
+    let Some(quality) = value.get_mut("quality").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for key in ["strongest", "weakest", "items"] {
+        let Some(items) = quality.get_mut(key).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for item in items {
+            normalize_legacy_memory_quality(item);
+        }
+    }
+}
+
+fn normalize_legacy_memory_quality(value: &mut Value) {
+    let Some(item) = value.as_object_mut() else {
+        return;
+    };
+    item.entry("score").or_insert_with(|| json!(0.0));
+    item.entry("usefulness_score").or_insert_with(|| json!(0.0));
+    item.entry("token_saving_score")
+        .or_insert_with(|| json!(0.0));
+    item.entry("risk_score").or_insert_with(|| json!(0.0));
+    item.entry("request_count").or_insert_with(|| json!(0));
+    item.entry("positive_feedback").or_insert_with(|| json!(0));
+    item.entry("negative_feedback").or_insert_with(|| json!(0));
+    item.entry("body_chars").or_insert_with(|| json!(0));
+    item.entry("links").or_insert_with(|| json!(0));
+    item.entry("age_days").or_insert_with(|| json!(0));
+    item.entry("classification")
+        .or_insert_with(|| json!("legacy"));
+    item.entry("evidence_state")
+        .or_insert_with(|| json!("unknown"));
+    item.entry("recommended_action").or_insert(Value::Null);
+    item.entry("reasons").or_insert_with(|| json!([]));
 }
 
 pub(crate) fn write_autonomous_status(path: &Path, report: &AutonomousReport) -> Result<()> {
@@ -3730,10 +3794,8 @@ fn autopilot_endpoint_ok(provider: &str, endpoint: &str) -> bool {
     } else {
         format!("{}/v1/models", endpoint.trim_end_matches('/'))
     };
-    reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_millis(1500))
-        .build()
-        .and_then(|client| client.get(url).send())
+    egress::blocking_http_client(&url, std::time::Duration::from_millis(1500))
+        .and_then(|(client, url)| client.get(url).send().map_err(Into::into))
         .map(|response| response.status().is_success())
         .unwrap_or(false)
 }

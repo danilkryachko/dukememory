@@ -1,10 +1,11 @@
+use crate::application::{MaintenanceApplication, MemoryApplication, RetrievalApplication};
 use crate::build_info::BuildInfo;
+use crate::domain::{MemoryScope, MemoryStatus, MemoryType};
 use crate::http_api::HttpResponse;
+use crate::operation_catalog::*;
 use crate::runtime_config::{
-    AgentConfig, load_runtime_config, parse_agent_config_with_compat_defaults,
+    AgentConfig, AgentSessionConfig, load_runtime_config, parse_agent_config_with_compat_defaults,
 };
-use crate::services;
-use crate::services::{MaintenanceService, MemoryService, RetrievalService};
 use crate::storage::MemoryStore;
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -17,7 +18,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::fs;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -30,52 +31,84 @@ const DEFAULT_EMBED_ENDPOINT: &str = "local";
 const DEFAULT_EMBED_MODEL: &str = "paraphrase-multilingual-MiniLM-L12-v2";
 const DEFAULT_EMBED_PROVIDER: &str = "local";
 const DEFAULT_INSTALL_BACKUP_KEEP: usize = 3;
-const CURRENT_SCHEMA_VERSION: i64 = 19;
+// Native release binaries with local model support can exceed 128 MiB. Keep
+// the byte budget aligned with the three-backup retention policy.
+const DEFAULT_INSTALL_BACKUP_QUOTA_BYTES: u64 = 512 * 1024 * 1024;
+const CURRENT_SCHEMA_VERSION: i64 = 28;
 const EXPORT_VERSION: u32 = 1;
-const VALID_SCOPES: &[&str] = &["global", "user", "project", "repo", "thread", "task"];
 
+mod advanced_eval;
+mod agent_session;
+mod agent_session_ops;
 mod autonomous;
 mod cli;
+mod control_snapshot;
 mod db;
+mod deployment_profile;
 mod diagnostics;
 mod dispatch;
+mod egress;
 mod embeddings;
+mod evidence_autopilot;
 mod explain;
 mod generation;
 mod graph_rag;
+mod graph_store;
+mod http_memory_routes;
 mod http_server;
 mod local_embed;
 mod local_generation;
 mod maintenance;
 mod mcp_server;
-mod memory;
-mod model;
+mod mcp_transport;
+pub(crate) mod memory;
+mod memory_graph;
+pub(crate) mod model;
+#[cfg(any(feature = "local-embeddings", feature = "local-generation"))]
+mod model_artifact;
 mod observability;
+mod observations;
 mod onboard;
 mod ops;
+mod otlp;
 mod project;
 mod rag;
 pub(crate) mod rag_ingest;
+mod ranking;
 mod release_ops;
 mod retrieval;
+mod runner_profiles;
 mod shared;
 mod sync_planning;
 mod sync_transport;
 mod topology;
 mod vec_backend;
+use crate::rag_security::*;
+use advanced_eval::*;
+use agent_session::*;
+use agent_session_ops::*;
 use autonomous::*;
 use cli::*;
+use control_snapshot::*;
 use db::*;
+use deployment_profile::*;
 use diagnostics::*;
 pub(crate) use dispatch::run;
+use evidence_autopilot::*;
+use graph_store::*;
+use http_memory_routes::*;
 use maintenance::*;
 use memory::*;
+use memory_graph::*;
 use model::*;
 use observability::*;
+use observations::*;
 use project::*;
 use rag::*;
 use rag_ingest::*;
+use ranking::*;
 use retrieval::*;
+use runner_profiles::*;
 use shared::*;
 use sync_planning::*;
 use sync_transport::*;
@@ -351,7 +384,7 @@ fn parse_sync_input(input: &Path) -> Result<(MemoryExport, Option<SyncBundleMani
     } else {
         raw
     };
-    let value: Value = serde_json::from_slice(&plaintext)
+    let value = dukememory::protocol::parse_sync_payload_json(&plaintext)
         .with_context(|| format!("failed to parse sync bundle {}", input.display()))?;
     if value.get("kind").and_then(Value::as_str) == Some("dukememory.sync.bundle") {
         let bundle: SyncBundle = serde_json::from_value(value)?;
@@ -798,19 +831,21 @@ fn memory_request_count(conn: &Connection, memory_id: &str) -> Result<usize> {
 fn audit_events(conn: &Connection, limit: usize) -> Result<Vec<MemoryEvent>> {
     let mut stmt = conn.prepare(
         r#"
-        SELECT id, event_type, memory_id, detail, created_at
+        SELECT id, event_type, memory_id, detail, created_at, previous_hash, event_hash
         FROM memory_events
         ORDER BY created_at DESC, id DESC
         LIMIT ?1
         "#,
     )?;
-    stmt.query_map(params![limit.min(i64::MAX as usize)], |row| {
+    stmt.query_map(params![limit.min(i64::MAX as usize) as i64], |row| {
         Ok(MemoryEvent {
             id: row.get(0)?,
             event_type: row.get(1)?,
             memory_id: row.get(2)?,
             detail: row.get(3)?,
             created_at: row.get(4)?,
+            previous_hash: row.get(5)?,
+            event_hash: row.get(6)?,
         })
     })?
     .collect::<rusqlite::Result<Vec<_>>>()
@@ -820,22 +855,27 @@ fn audit_events(conn: &Connection, limit: usize) -> Result<Vec<MemoryEvent>> {
 fn memory_events(conn: &Connection, memory_id: &str, limit: usize) -> Result<Vec<MemoryEvent>> {
     let mut stmt = conn.prepare(
         r#"
-        SELECT id, event_type, memory_id, detail, created_at
+        SELECT id, event_type, memory_id, detail, created_at, previous_hash, event_hash
         FROM memory_events
         WHERE memory_id = ?1
         ORDER BY created_at DESC, id DESC
         LIMIT ?2
         "#,
     )?;
-    stmt.query_map(params![memory_id, limit.min(i64::MAX as usize)], |row| {
-        Ok(MemoryEvent {
-            id: row.get(0)?,
-            event_type: row.get(1)?,
-            memory_id: row.get(2)?,
-            detail: row.get(3)?,
-            created_at: row.get(4)?,
-        })
-    })?
+    stmt.query_map(
+        params![memory_id, limit.min(i64::MAX as usize) as i64],
+        |row| {
+            Ok(MemoryEvent {
+                id: row.get(0)?,
+                event_type: row.get(1)?,
+                memory_id: row.get(2)?,
+                detail: row.get(3)?,
+                created_at: row.get(4)?,
+                previous_hash: row.get(5)?,
+                event_hash: row.get(6)?,
+            })
+        },
+    )?
     .collect::<rusqlite::Result<Vec<_>>>()
     .map_err(Into::into)
 }
@@ -2246,22 +2286,20 @@ fn remember_text(
         .map(|s| s.title)
         .unwrap_or_else(|| truncate_words(text, 8));
     reject_sensitive(&title, text, allow_sensitive)?;
-    let id = add_memory(
-        conn,
-        AddMemory {
-            id: None,
-            memory_type: kind,
-            title,
-            body: text.to_string(),
-            scope: scope.to_string(),
-            status: "active".to_string(),
-            source: Some("remember".to_string()),
-            supersedes: None,
-            confidence: 0.8,
-            layer: None,
-            links: Vec::new(),
-        },
-    )?;
+    let id = MemoryApplication::new(MemoryStore::new(conn)).create(AddMemory {
+        id: None,
+        memory_type: kind.parse()?,
+        title,
+        body: text.to_string(),
+        scope: scope.parse()?,
+        status: MemoryStatus::Active,
+        source: Some("remember".to_string()),
+        supersedes: None,
+        confidence: 0.8,
+        layer: None,
+        links: Vec::new(),
+        allow_sensitive,
+    })?;
     println!("{id}");
     Ok(())
 }
@@ -2501,8 +2539,33 @@ fn install_binary(to: &str, force: bool) -> Result<()> {
             dest.display()
         );
     }
-    fs::copy(&exe, &dest)
-        .with_context(|| format!("failed to copy {} to {}", exe.display(), dest.display()))?;
+    let temp = dest_dir.join(format!(
+        ".dukememory-install-{}.tmp",
+        Uuid::new_v4().simple()
+    ));
+    let install_result = (|| -> Result<()> {
+        fs::copy(&exe, &temp)
+            .with_context(|| format!("failed to copy {} to {}", exe.display(), temp.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&temp)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&temp, perms)?;
+        }
+        #[cfg(windows)]
+        if dest.exists() {
+            fs::remove_file(&dest)
+                .with_context(|| format!("failed to replace {}", dest.display()))?;
+        }
+        fs::rename(&temp, &dest)
+            .with_context(|| format!("failed to atomically install {}", dest.display()))?;
+        Ok(())
+    })();
+    if install_result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    install_result?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -2686,11 +2749,13 @@ Use `dukememory memory-test-harness --json` to run lightweight retrieval probes 
 
 Use `dukememory agent-audit-v2 --json` to audit read discipline, semantic effectiveness, write pressure, feedback, and explainability.
 
-Use `dukememory memory-control-center-v2 --json` to aggregate health, intent, probes, audit, recall explanations, and autonomy.
+Use `dukememory memory-control-center --json` to aggregate health, intent, probes, audit, recall explanations, and autonomy; `memory-control-center-v2` remains available for pinned clients.
 
 Use `dukememory auto-supersede-v2 --json` to safely supersede duplicate/obsolete cards; use `--apply` only for high-confidence reversible status changes.
 
 Use `dukememory memory-diff-apply --json` to write high-confidence changed-file memory candidates after review.
+
+Use `dukememory memory-graph-links --json` to infer high-confidence memory-to-memory graph links; use `--apply` only after reviewing safe candidates.
 
 Use `dukememory recall-benchmark-suite --json` to detect retrieval regressions; use `--write-baseline` after reviewing stable probes.
 
@@ -2712,6 +2777,10 @@ Use `dukememory governance-enforce --json` to enforce autonomous memory governan
 
 Use `dukememory memory-quality-ci --json` to run a CI-friendly memory quality gate.
 
+Use `dukememory eval rag --json` to run grounded RAG eval with matrix, retrieval tuning, and baseline comparison; use `dukememory eval rag --write-baseline --json` only after reviewing stable results.
+
+Use `dukememory eval graph-rag --json` to run graph-RAG eval over memory relationships and grounded graph answers.
+
 Use `dukememory fleet-dashboard-v2 --json` to inspect all discovered project memories with V2 quality metrics.
 
 Use `dukememory remote-sync-apply-flow --json` to plan guarded remote sync apply; use `--target` and a mode-600 sync passphrase file before `--apply`.
@@ -2723,6 +2792,8 @@ Use `dukememory mcp-tool-surface-v3 --json` to inspect MCP V3 memory tool exposu
 Use `dukememory autopilot-v3 --json` to run the V3 autonomous memory autopilot across learning, role profile, inbox review, sync, web control, and MCP quality.
 
 Use `dukememory self-learning-retrieval --json` to tune retrieval from live usefulness, feedback, quality, and ranking signals.
+
+Use `dukememory auto-ranking-tune --json` to explain retrieval ranking from QA and RAG eval signals; use `--apply` only when `safe_to_apply` is true.
 
 Use `dukememory project-role-profile --json` to detect project-specific memory defaults; use `--apply` after reviewing inferred kind.
 
@@ -2852,7 +2923,7 @@ Use `dukememory usefulness-engine --json` to rank useful/noisy memory and previe
 
 Use `dukememory ranking-profile --profile balanced|strict|recall-heavy|precision-heavy --json` to inspect retrieval ranking weights; use `--apply` to make the profile durable for a project.
 
-Use `dukememory auto-ranking-tune --json` to adapt retrieval strictness from live usefulness, semantic, and quality signals.
+Use `dukememory auto-ranking-tune --json` to adapt retrieval strictness from live usefulness, semantic, quality, and RAG eval signals; use `--apply` only when `safe_to_apply` is true.
 
 Use `dukememory project-template --kind rust-cli|frontend-app|game-mod|electronics-cad|docs-research --json` to seed project-type memory defaults.
 
@@ -2912,9 +2983,10 @@ dukememory explain-recall "query" --json
 dukememory project-intent-map --json
 dukememory memory-test-harness --json
 dukememory agent-audit-v2 --json
-dukememory memory-control-center-v2 --json
+dukememory memory-control-center --json
 dukememory auto-supersede-v2 --json
 dukememory memory-diff-apply --json
+dukememory memory-graph-links --json
 dukememory recall-benchmark-suite --json
 dukememory release-gate-v2 --json
 dukememory memory-effectiveness-v2 --json
@@ -2925,6 +2997,9 @@ dukememory memory-governance-policy --json
 dukememory autonomous-loop-v2 --json
 dukememory governance-enforce --json
 dukememory memory-quality-ci --json
+dukememory eval rag --json
+dukememory eval rag --write-baseline --json
+dukememory eval graph-rag --json
 dukememory fleet-dashboard-v2 --json
 dukememory remote-sync-apply-flow --json
 dukememory mcp-tool-surface-v2 --json
@@ -3158,10 +3233,14 @@ fn update_install(
         pruned_backups = retention.pruned;
         kept_backups = retention.kept;
     } else if backup_dir.exists() {
-        kept_backups = list_install_backups(backup_dir)?
+        let (kept, _) = plan_install_backup_retention(
+            list_install_backups(backup_dir)?,
+            backup_keep,
+            install_backup_quota_bytes(),
+        );
+        kept_backups = kept
             .into_iter()
             .rev()
-            .take(backup_keep)
             .map(|item| item.path.display().to_string())
             .collect();
     }
@@ -3186,6 +3265,7 @@ fn update_install(
 struct InstallBackupItem {
     path: PathBuf,
     modified: SystemTime,
+    bytes: u64,
 }
 
 struct InstallBackupRetention {
@@ -3194,21 +3274,19 @@ struct InstallBackupRetention {
 }
 
 fn prune_install_backups(backup_dir: &Path, keep: usize) -> Result<InstallBackupRetention> {
-    let backups = list_install_backups(backup_dir)?;
-    let kept = backups
+    let (kept_items, prune_items) = plan_install_backup_retention(
+        list_install_backups(backup_dir)?,
+        keep,
+        install_backup_quota_bytes(),
+    );
+    let kept = kept_items
         .iter()
         .rev()
-        .take(keep)
         .map(|item| item.path.display().to_string())
         .collect::<Vec<_>>();
-    let prune_paths = backups
-        .into_iter()
-        .rev()
-        .skip(keep)
-        .map(|item| item.path)
-        .collect::<Vec<_>>();
     let mut pruned = Vec::new();
-    for path in prune_paths {
+    for item in prune_items {
+        let path = item.path;
         if path.exists() {
             fs::remove_file(&path)
                 .with_context(|| format!("failed to remove {}", path.display()))?;
@@ -3216,6 +3294,33 @@ fn prune_install_backups(backup_dir: &Path, keep: usize) -> Result<InstallBackup
         pruned.push(path.display().to_string());
     }
     Ok(InstallBackupRetention { kept, pruned })
+}
+
+fn plan_install_backup_retention(
+    mut backups: Vec<InstallBackupItem>,
+    keep: usize,
+    quota_bytes: u64,
+) -> (Vec<InstallBackupItem>, Vec<InstallBackupItem>) {
+    let keep_from = backups.len().saturating_sub(keep);
+    let mut kept = backups.split_off(keep_from);
+    let mut pruned = backups;
+    let mut kept_bytes = kept
+        .iter()
+        .fold(0_u64, |total, item| total.saturating_add(item.bytes));
+    while kept_bytes > quota_bytes && kept.len() > 1 {
+        let oldest = kept.remove(0);
+        kept_bytes = kept_bytes.saturating_sub(oldest.bytes);
+        pruned.push(oldest);
+    }
+    (kept, pruned)
+}
+
+fn install_backup_quota_bytes() -> u64 {
+    std::env::var("DUKEMEMORY_INSTALL_BACKUP_QUOTA_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_INSTALL_BACKUP_QUOTA_BYTES)
 }
 
 fn list_install_backups(backup_dir: &Path) -> Result<Vec<InstallBackupItem>> {
@@ -3230,10 +3335,14 @@ fn list_install_backups(backup_dir: &Path) -> Result<Vec<InstallBackupItem>> {
         if !path.is_file() || !is_install_backup_file(&path) {
             continue;
         }
-        let modified = fs::metadata(&path)
-            .and_then(|meta| meta.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        backups.push(InstallBackupItem { path, modified });
+        let metadata =
+            fs::metadata(&path).with_context(|| format!("failed to inspect {}", path.display()))?;
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        backups.push(InstallBackupItem {
+            path,
+            modified,
+            bytes: metadata.len(),
+        });
     }
     backups.sort_by(|left, right| {
         left.modified
@@ -3397,8 +3506,17 @@ fn print_vec_index(conn: &Connection, rebuild: bool, json_out: bool) -> Result<(
     }
     for index in report.indexes {
         println!(
-            "{} {}d source={} indexed={} table={}",
-            index.kind, index.dimensions, index.source_rows, index.indexed_rows, index.table_name
+            "{} {}d source={} indexed={} missing={} orphaned={} triggers={}/4 version={}/{} table={}",
+            index.kind,
+            index.dimensions,
+            index.source_rows,
+            index.indexed_rows,
+            index.missing_rows,
+            index.orphaned_rows,
+            index.trigger_count,
+            index.trigger_version,
+            index.expected_trigger_version,
+            index.table_name
         );
     }
     Ok(())
@@ -3408,8 +3526,9 @@ fn print_completions(shell: CompletionShell) {
     let _ = Cli::command();
     let commands = [
         "init",
-        "add",
-        "remember",
+        "operations",
+        CLI_ADD,
+        CLI_REMEMBER,
         "what-do-we-know",
         "what-next",
         "forget",
@@ -3422,11 +3541,11 @@ fn print_completions(shell: CompletionShell) {
         "doctor",
         "policy-check",
         "policy-apply",
-        "search",
+        CLI_SEARCH,
         "list",
-        "get",
-        "update",
-        "delete",
+        CLI_GET,
+        CLI_UPDATE,
+        CLI_DELETE,
         "review",
         "stale",
         "conflicts",
@@ -3468,8 +3587,10 @@ fn print_completions(shell: CompletionShell) {
         "memory-test-harness",
         "agent-audit-v2",
         "memory-control-center-v2",
+        "memory-control-center",
         "auto-supersede-v2",
         "memory-diff-apply",
+        "memory-graph-links",
         "recall-benchmark-suite",
         "release-gate-v2",
         "memory-effectiveness-v2",
@@ -3532,6 +3653,7 @@ fn print_completions(shell: CompletionShell) {
         "fleet-supervisor-watch-install",
         "web-control-center-v11",
         "web-control-center-v12",
+        "web-control-center",
         "feedback",
         "budget-plan",
         "project-profile",
@@ -3621,6 +3743,7 @@ fn print_manpage() {
     println!("SYNOPSIS");
     println!("  dukememory <command> [options]");
     println!("AGENT-NATIVE COMMANDS");
+    println!("  operations --json             stable CLI/MCP/HTTP operation catalog");
     println!("  remember TEXT                 store durable memory");
     println!("  what-do-we-know QUERY         search memory");
     println!("  what-next                     print current next actions");
@@ -3666,9 +3789,10 @@ fn print_manpage() {
     println!("  project-intent-map --json     summarize goals, constraints, tasks");
     println!("  memory-test-harness --json    run retrieval quality probes");
     println!("  agent-audit-v2 --json         stricter agent memory behavior audit");
-    println!("  memory-control-center-v2      aggregate health, recall, tests, autonomy");
+    println!("  memory-control-center         aggregate health, recall, tests, autonomy");
     println!("  auto-supersede-v2 --json      safely supersede duplicate memory");
     println!("  memory-diff-apply --json      write high-confidence diff memory cards");
+    println!("  memory-graph-links --json     infer safe memory-to-memory graph links");
     println!("  recall-benchmark-suite        compare retrieval probes against baseline");
     println!("  release-gate-v2 --json        release gate with memory health checks");
     println!("  remote-sync-wizard --json     guided local-first remote sync setup");
@@ -3683,18 +3807,15 @@ fn print_manpage() {
     println!("  self-learning-retrieval       tune retrieval from live usefulness signals");
     println!("  project-role-profile --apply  detect/apply project-specific memory profile");
     println!("  inbox-ai-reviewer --json      explain and safely process inbox suggestions");
-    println!("  web-control-center-v3         Health/Autonomy/Projects/Sync control model");
     println!("  remote-sync-apply --json      guarded local-first remote sync apply surface");
     println!("  mcp-quality-tools --json      inspect MCP helper tools for memory discipline");
     println!("  remote-sync-control --json    local-first VDS sync control and dry-runs");
-    println!("  web-control-center-v4         actionable UI control model with apply endpoints");
     println!("  mcp-discipline-v2 --json      enforce startup/write/after-task memory discipline");
     println!(
         "  feedback-loop-v2 --json       autonomous usefulness, supersede, diff, benchmark loop"
     );
     println!("  upgrade-all-projects-v2       richer all-project upgrade/version summary");
     println!("  vds-sync-pack --json          local-first VDS sync pack with verify commands");
-    println!("  web-control-center-v5         0.24 UI control model and release surfaces");
     println!("  quality-autopilot-v31         safe quality/cost/health autopilot");
     println!("  memory-router-v2 QUERY        cross-project router with current-write guardrails");
     println!("  benchmark-profiles --json     project-aware retrieval benchmark profile");
@@ -3706,7 +3827,6 @@ fn print_manpage() {
     println!("  agent-trace --json            recent memory influence and writes");
     println!("  vds-sync-hardening --json     VDS target/latency/dry-run/rollback checks");
     println!("  install-quality --json        install, skill, AGENTS, doctor readiness");
-    println!("  web-control-center-v6         0.25 effectiveness and trace control model");
     println!("  answer QUESTION --json        grounded memory answer with citations");
     println!("  connect-codex --apply         one-command Codex memory connection check");
     println!("  memory-type-guide --json      explain memory types, filters, guardrails");
@@ -3716,16 +3836,11 @@ fn print_manpage() {
     println!("  memanto-gap-report --json     compare Memanto-style capability coverage");
     println!("  memory-timeline ID --json     show card events and real read influence");
     println!("  memory-conflict-review --json review duplicate/stale/contradiction groups");
-    println!("  web-control-center-v7         0.26 answer/connect/eval/import control model");
     println!("  autonomous-usefulness --json  plan autonomous usefulness improvements");
     println!("  benchmark-polish --json       polished local benchmark evidence");
-    println!("  web-control-center-v8         0.27 answer/usefulness/benchmark control model");
     println!("  autonomous-supervisor --json  safe autonomous repair sequence");
-    println!("  web-control-center-v9         0.28 supervisor control model");
     println!("  fleet-supervisor --json       safe autonomous repair across projects");
-    println!("  web-control-center-v10        0.29 fleet supervisor control model");
     println!("  fleet-supervisor-watch-install preview/install periodic fleet repair");
-    println!("  web-control-center-v11        0.30 fleet watch control model");
     println!("  memory-effectiveness-v2       V2 influence, waste, and semantic usefulness");
     println!("  recall-benchmark-baselines    inspect/write guarded recall baselines");
     println!("  memory-conflict-apply --json  dry-run guarded reversible conflict actions");
@@ -3733,7 +3848,7 @@ fn print_manpage() {
     println!("  mcp-discipline-v3 --json      verify V3 memory discipline");
     println!("  fleet-quality --json          V3 quality across discovered projects");
     println!("  release-gate-v3 --json        release gate with effectiveness and MCP V3");
-    println!("  web-control-center-v12        0.33 effectiveness/release control model");
+    println!("  web-control-center            stable cached CLI/MCP/HTTP/UI control snapshot");
     println!("  feedback --id ID --rating useful|useless|missing");
     println!("  budget-plan TASK --json       choose smallest useful memory budget");
     println!("  project-profile --json        structured project memory profile");
@@ -3808,6 +3923,14 @@ fn print_build_info(runtime: &crate::runtime_config::RuntimeConfig) {
     println!("vec_feature: {}", info.vec_feature);
     println!("target: {}", info.os);
     println!("arch: {}", info.arch);
+    println!("sqlite_version: {}", info.sqlite_version);
+    println!("sqlite_version_number: {}", info.sqlite_version_number);
+    println!("sqlite_minimum_safe: {}", info.sqlite_minimum_safe);
+    println!("sqlite_safe: {}", info.sqlite_safe);
+    let durability = db::SqliteDurabilityProfile::from_environment()
+        .map(|profile| profile.as_str())
+        .unwrap_or("invalid");
+    println!("sqlite_durability: {durability}");
     println!("config: {}", runtime.config_path.display());
     println!("embed_provider: {}", runtime.config.embeddings.provider);
     println!("embed_endpoint: {}", runtime.config.embeddings.endpoint);

@@ -11,3 +11,9 @@
 /fix_inbox.py
 /dummy_pdf.py
 /test.pdf
+/dukememory.cdx.json*
+/dist/
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/coverage/
+/lcov.info

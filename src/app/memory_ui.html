@@ -22,6 +22,7 @@
       --shadow: 0 12px 34px rgba(24, 32, 44, .07);
     }
     * { box-sizing: border-box; }
+    .hidden { display: none !important; }
     body {
       margin: 0;
       font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -407,7 +408,7 @@
         <div id="tab-edit" class="tab-panel">
           <h2 data-i18n="editMemory">Редактировать</h2>
           <div id="editEmpty" class="empty"></div>
-          <div id="editForm" class="edit-form" style="display:none">
+          <div id="editForm" class="edit-form hidden">
             <label><span>Title</span><input id="editTitle"></label>
             <label><span>Type</span><select id="editType">
               <option value="decision" data-type-label="decision">decision</option>
@@ -566,7 +567,8 @@
       evalStory: null, memantoGap: null, webControlV7: null, autonomousUsefulness: null, benchmarkPolish: null, webControlV8: null,
       autonomousSupervisor: null, webControlV9: null, fleetSupervisor: null, webControlV10: null,
       fleetWatchInstall: null, webControlV11: null, effectivenessV2: null, recallBaselines: null, conflictApply: null,
-      mcpSurfaceV3: null, mcpDisciplineV3: null, fleetQuality: null, releaseGateV3: null, webControlV12: null
+      mcpSurfaceV3: null, mcpDisciplineV3: null, fleetQuality: null, releaseGateV3: null, webControlV12: null,
+      agentSessions: [], runnerProfiles: [], sessionCleanup: null, intelligenceRequestBudget: null, intelligenceDetailsLoaded: false
     };
     const $ = (id) => document.getElementById(id);
     const t = (key) => i18n[state.lang][key] || i18n.en[key] || key;
@@ -876,205 +878,49 @@
       const params = new URLSearchParams({ since_days: "7" });
       if (state.project) params.set("project", state.project);
       const taskQuery = $("q")?.value || "memory task";
-      const [roi, audit, remote, trace, autoFeedback, costGuard, projectDiff, intelligence, remoteSync, doctor, releaseGate, replay, watch, loop, journal, engine, latency, syncProfile, enforce, watchInstall, rankingProfile, projectTemplate, diffReview, contextGovernor, memoryRouter, autoRanking, watchControl, autonomyCenter, remoteSyncV2, memoryHealth, explainRecall, intentMap, memoryHarness, agentAuditV2, controlCenterV2, autoSupersedeV2, memoryDiffApply, recallBenchmark, releaseGateV2, remoteSyncWizard, governancePolicy, autonomousLoopV2, governanceEnforce, qualityCi, fleetV2, remoteApplyFlow, mcpSurfaceV2, autopilotV3, selfLearning, roleProfile, inboxReviewer, webControlV3, remoteApply, mcpQuality, remoteSyncControl, webControlV4, mcpDisciplineV2, feedbackLoopV2, upgradeAllV2, vdsSyncPack, webControlV5, qualityAutopilotV31, memoryRouterV2, benchmarkProfiles, installPolish, effectivenessLab, contextBudgeterV2, contractV2, crossProjectLearning, agentTrace, vdsHardening, installQuality, webControlV6, answer, connectCodex, typeGuide, evalStory, memantoGap, webControlV7, autonomousUsefulness, benchmarkPolish, webControlV8, autonomousSupervisor, webControlV9, fleetSupervisor, webControlV10, fleetWatchInstall, webControlV11, effectivenessV2, recallBaselines, conflictApply, mcpSurfaceV3, mcpDisciplineV3, fleetQuality, releaseGateV3, webControlV12] = await Promise.all([
-        api(`/roi-report?${params.toString()}`),
-        api(`/agent-audit?${params.toString()}`),
-        api(`/remote-status?${params.toString()}`),
-        api(`/decision-trace?${params.toString()}&limit=12`),
-        api(`/auto-feedback?${params.toString()}&limit=100`),
-        api(`/cost-guard?${params.toString()}`),
-        api(`/project-diff?${params.toString()}&changed_only=true`),
-        api(`/intelligence-dashboard?${params.toString()}`),
-        api(`/remote-sync-dry-run?${params.toString()}`),
-        api(`/doctor-project?${params.toString()}`),
-        api(`/release-gate?${params.toString()}`),
-        api(`/memory-replay?${params.toString()}&limit=12`),
-        api(`/project-watch?${params.toString()}`),
-        api(`/autonomous-loop?${params.toString()}`),
-        api(`/action-journal?${params.toString()}&limit=12`),
-        api(`/usefulness-engine?${params.toString()}`),
-        api(`/sync-latency?${params.toString()}`),
-        api(`/sync-profile?${params.toString()}&profile=local_first_backup`),
-        api(`/agent-enforce?${params.toString()}`),
-        api(`/autonomous-watch-install?${params.toString()}`),
-        api(`/ranking-profile?${params.toString()}&profile=balanced`),
-        api(`/project-template?${params.toString()}&kind=rust-cli`),
-        api(`/memory-diff-review?${params.toString()}`),
-        api(`/context-governor?${params.toString()}&task=${encodeURIComponent(taskQuery)}`),
-        api(`/memory-router?${params.toString()}&q=${encodeURIComponent(taskQuery)}&include_siblings=true`),
-        api(`/auto-ranking-tune?${params.toString()}`),
-        api(`/watch-control?${params.toString()}`),
-        api(`/autonomy-control-center?${params.toString()}`),
-        api(`/remote-sync-v2?${params.toString()}`),
-        api(`/memory-health-score?${params.toString()}`),
-        api(`/explain-recall?${params.toString()}&q=${encodeURIComponent(taskQuery)}&limit=8`),
-        api(`/project-intent-map?${params.toString()}`),
-        api(`/memory-test-harness?${params.toString()}&limit=8`),
-        api(`/agent-audit-v2?${params.toString()}`),
-        api(`/memory-control-center-v2?${params.toString()}`),
-        api(`/auto-supersede-v2?${params.toString()}`),
-        api(`/memory-diff-apply?${params.toString()}`),
-        api(`/recall-benchmark-suite?${params.toString()}&limit=8`),
-        api(`/release-gate-v2?${params.toString()}`),
-        api(`/remote-sync-wizard?${params.toString()}`),
-        api(`/memory-governance-policy?${params.toString()}`),
-        api(`/autonomous-loop-v2?${params.toString()}`),
-        api(`/governance-enforce?${params.toString()}`),
-        api(`/memory-quality-ci?${params.toString()}&minimal=true`),
-        api(`/fleet-dashboard-v2?${params.toString()}`),
-        api(`/remote-sync-apply-flow?${params.toString()}`),
-        api(`/mcp-tool-surface-v2?${params.toString()}`),
-        api(`/autopilot-v3?${params.toString()}`),
-        api(`/self-learning-retrieval?${params.toString()}`),
-        api(`/project-role-profile?${params.toString()}`),
-        api(`/inbox-ai-reviewer?${params.toString()}`),
-        api(`/web-control-center-v3?${params.toString()}`),
-        api(`/remote-sync-apply?${params.toString()}`),
-        api(`/mcp-quality-tools?${params.toString()}`),
-        api(`/remote-sync-control?${params.toString()}`),
-        api(`/web-control-center-v4?${params.toString()}`),
-        api(`/mcp-discipline-v2?${params.toString()}`),
-        api(`/feedback-loop-v2?${params.toString()}`),
-        api(`/upgrade-all-projects-v2?${params.toString()}`),
-        api(`/vds-sync-pack?${params.toString()}`),
-        api(`/web-control-center-v5?${params.toString()}`),
-        api(`/quality-autopilot-v31?${params.toString()}`),
-        api(`/memory-router-v2?${params.toString()}&q=${encodeURIComponent(taskQuery)}&include_siblings=true`),
-        api(`/benchmark-profiles?${params.toString()}`),
-        api(`/install-polish?${params.toString()}`),
-        api(`/memory-effectiveness-lab?${params.toString()}`),
-        api(`/auto-context-budgeter-v2?${params.toString()}&task=${encodeURIComponent(taskQuery)}`),
-        api(`/memory-contract-v2?${params.toString()}`),
-        api(`/cross-project-learning?${params.toString()}&q=${encodeURIComponent(taskQuery)}`),
-        api(`/agent-trace?${params.toString()}&limit=12`),
-        api(`/vds-sync-hardening?${params.toString()}`),
-        api(`/install-quality?${params.toString()}`),
-        api(`/web-control-center-v6?${params.toString()}&task=${encodeURIComponent(taskQuery)}`),
-        api(`/answer?${params.toString()}&q=${encodeURIComponent(taskQuery)}&limit=8`),
-        api(`/connect-codex?${params.toString()}`),
-        api(`/memory-type-guide?${params.toString()}`),
-        api(`/memory-eval-story?${params.toString()}`),
-        api(`/memanto-gap-report?${params.toString()}`),
-        api(`/web-control-center-v7?${params.toString()}&task=${encodeURIComponent(taskQuery)}`),
-        api(`/autonomous-usefulness?${params.toString()}`),
-        api(`/benchmark-polish?${params.toString()}`),
-        api(`/web-control-center-v8?${params.toString()}&task=${encodeURIComponent(taskQuery)}`),
-        api(`/autonomous-supervisor?${params.toString()}`),
-        api(`/web-control-center-v9?${params.toString()}&task=${encodeURIComponent(taskQuery)}`),
-        api(`/fleet-supervisor?${params.toString()}`),
-        api(`/web-control-center-v10?${params.toString()}&task=${encodeURIComponent(taskQuery)}`),
-        api(`/fleet-supervisor-watch-install?${params.toString()}`),
-        api(`/web-control-center-v11?${params.toString()}&task=${encodeURIComponent(taskQuery)}`),
-        api(`/memory-effectiveness-v2?${params.toString()}`),
-        api(`/recall-benchmark-baselines?${params.toString()}`),
-        api(`/memory-conflict-apply?${params.toString()}`),
-        api(`/mcp-tool-surface-v3?${params.toString()}`),
-        api(`/mcp-discipline-v3?${params.toString()}`),
-        api(`/fleet-quality?${params.toString()}`),
-        api(`/release-gate-v3?${params.toString()}`),
-        api(`/web-control-center-v12?${params.toString()}&task=${encodeURIComponent(taskQuery)}`)
-      ]);
-      state.roi = roi.roi;
-      state.agentAudit = audit.agent_audit;
-      state.remote = remote.remote;
-      state.trace = trace.trace;
-      state.autoFeedback = autoFeedback.auto_feedback;
-      state.costGuard = costGuard.cost_guard;
-      state.projectDiff = projectDiff.project_diff;
-      state.intelligence = intelligence.intelligence;
-      state.remoteSync = remoteSync.remote_sync;
-      state.doctor = doctor.doctor;
-      state.releaseGate = releaseGate.release_gate;
-      state.replay = replay.replay;
-      state.watch = watch.watch;
-      state.loop = loop.loop;
-      state.journal = journal.journal;
-      state.engine = engine.engine;
-      state.latency = latency.latency;
-      state.syncProfile = syncProfile.profile;
-      state.enforce = enforce.enforce;
-      state.watchInstall = watchInstall.install;
-      state.rankingProfile = rankingProfile.ranking;
-      state.projectTemplate = projectTemplate.template;
-      state.diffReview = diffReview.review;
-      state.contextGovernor = contextGovernor.governor;
-      state.memoryRouter = memoryRouter.router;
-      state.autoRanking = autoRanking.tune;
-      state.watchControl = watchControl.watch_control;
-      state.autonomyCenter = autonomyCenter.control;
-      state.remoteSyncV2 = remoteSyncV2.remote_sync_v2;
-      state.memoryHealth = memoryHealth.health;
-      state.explainRecall = explainRecall.explain;
-      state.intentMap = intentMap.intent_map;
-      state.memoryHarness = memoryHarness.harness;
-      state.agentAuditV2 = agentAuditV2.audit_v2;
-      state.controlCenterV2 = controlCenterV2.control_v2;
-      state.autoSupersedeV2 = autoSupersedeV2.supersede;
-      state.memoryDiffApply = memoryDiffApply.apply;
-      state.recallBenchmark = recallBenchmark.benchmark;
-      state.releaseGateV2 = releaseGateV2.release_gate_v2;
-      state.remoteSyncWizard = remoteSyncWizard.wizard;
-      state.governancePolicy = governancePolicy.governance;
-      state.autonomousLoopV2 = autonomousLoopV2.loop_v2;
-      state.governanceEnforce = governanceEnforce.enforce;
-      state.qualityCi = qualityCi.ci;
-      state.fleetV2 = fleetV2.fleet;
-      state.remoteApplyFlow = remoteApplyFlow.flow;
-      state.mcpSurfaceV2 = mcpSurfaceV2.mcp;
-      state.autopilotV3 = autopilotV3.autopilot_v3;
-      state.selfLearning = selfLearning.learning;
-      state.roleProfile = roleProfile.role;
-      state.inboxReviewer = inboxReviewer.reviewer;
-      state.webControlV3 = webControlV3.control_v3;
-      state.remoteApply = remoteApply.remote_apply;
-      state.mcpQuality = mcpQuality.mcp_quality;
-      state.remoteSyncControl = remoteSyncControl.remote_sync_control;
-      state.webControlV4 = webControlV4.control_v4;
-      state.mcpDisciplineV2 = mcpDisciplineV2.discipline;
-      state.feedbackLoopV2 = feedbackLoopV2.feedback_loop;
-      state.upgradeAllV2 = upgradeAllV2.upgrade_all_v2;
-      state.vdsSyncPack = vdsSyncPack.vds_sync_pack;
-      state.webControlV5 = webControlV5.control_v5;
-      state.qualityAutopilotV31 = qualityAutopilotV31.quality_autopilot;
-      state.memoryRouterV2 = memoryRouterV2.router_v2;
-      state.benchmarkProfiles = benchmarkProfiles.benchmark_profiles;
-      state.installPolish = installPolish.install_polish;
-      state.effectivenessLab = effectivenessLab.effectiveness;
-      state.contextBudgeterV2 = contextBudgeterV2.budgeter;
-      state.contractV2 = contractV2.contract_v2;
-      state.crossProjectLearning = crossProjectLearning.cross_project;
-      state.agentTrace = agentTrace.agent_trace;
-      state.vdsHardening = vdsHardening.vds_hardening;
-      state.installQuality = installQuality.install_quality;
-      state.webControlV6 = webControlV6.control_v6;
-      state.answer = answer.answer;
-      state.connectCodex = connectCodex.connect_codex;
-      state.typeGuide = typeGuide.type_guide;
-      state.evalStory = evalStory.eval_story;
-      state.memantoGap = memantoGap.memanto_gap;
-      state.webControlV7 = webControlV7.control_v7;
-      state.autonomousUsefulness = autonomousUsefulness.autonomous_usefulness;
-      state.benchmarkPolish = benchmarkPolish.benchmark_polish;
-      state.webControlV8 = webControlV8.control_v8;
-      state.autonomousSupervisor = autonomousSupervisor.supervisor;
-      state.webControlV9 = webControlV9.control_v9;
-      state.fleetSupervisor = fleetSupervisor.fleet;
-      state.webControlV10 = webControlV10.control_v10;
-      state.fleetWatchInstall = fleetWatchInstall.install;
-      state.webControlV11 = webControlV11.control_v11;
-      state.effectivenessV2 = effectivenessV2.effectiveness_v2;
-      state.recallBaselines = recallBaselines.recall_baselines;
-      state.conflictApply = conflictApply.conflict_apply;
-      state.mcpSurfaceV3 = mcpSurfaceV3.surface;
-      state.mcpDisciplineV3 = mcpDisciplineV3.discipline_v3;
-      state.fleetQuality = fleetQuality.fleet_quality;
-      state.releaseGateV3 = releaseGateV3.release_gate_v3;
-      state.webControlV12 = webControlV12.control_v12;
+      const data = await api(`/web-control-center?${params.toString()}&task=${encodeURIComponent(taskQuery)}`);
+      state.webControlV12 = data.control || null;
+      state.controlSnapshot = data;
+      state.agentSessions = data.agent_sessions || [];
+      state.runnerProfiles = data.runner_profiles || [];
+      state.coreSummary = data.summary || {};
+      state.intelligenceRequestBudget = data.request_budget || null;
+      state.intelligenceDetailsLoaded = false;
+      renderSettings();
+    }
+
+    async function loadIntelligenceDetails() {
+      const detailParams = new URLSearchParams({ since_days: "7", view: "details" });
+      if (state.project) detailParams.set("project", state.project);
+      const detailTaskQuery = $("q")?.value || "memory task";
+      const detailData = await api(`/web-control-center?${detailParams.toString()}&task=${encodeURIComponent(detailTaskQuery)}`);
+      state.controlDetails = detailData.control_v12 || detailData;
+      state.webControlV12 = state.controlDetails;
+      state.intelligenceDetailsLoaded = true;
       renderSettings();
     }
 
     async function intelligenceAction(action) {
-      if (action === "doctor-fix") {
+      if (action === "load-details") {
+        await loadIntelligenceDetails();
+        setToast("intelligence details loaded");
+        return;
+      } else if (action === "session-cleanup-preview") {
+        const params = new URLSearchParams({ older_than_days: "30", limit: "100" });
+        if (state.project) params.set("project", state.project);
+        const data = await api(`/agent-sessions/cleanup?${params.toString()}`);
+        state.sessionCleanup = data.cleanup || null;
+        renderSettings();
+        setToast("session cleanup preview loaded");
+        return;
+      } else if (action === "session-cleanup-apply") {
+        if (!window.confirm("Delete completed agent sessions older than 30 days?")) return;
+        const data = await api("/agent-sessions/cleanup", { method: "POST", body: JSON.stringify(withProject({ older_than_days: 30, limit: 100, apply: true })) });
+        state.sessionCleanup = data.cleanup || null;
+        await loadIntelligence();
+        setToast("session retention cleanup applied");
+        return;
+      } else if (action === "doctor-fix") {
         await api("/doctor-project/fix", { method: "POST", body: JSON.stringify(withProject({ since_days: 7 })) });
       } else if (action === "release-run") {
         await api("/release-gate/run", { method: "POST", body: JSON.stringify(withProject({ since_days: 7, strict: false })) });
@@ -1293,8 +1139,8 @@
     }
 
     function fillEditor(memory) {
-      $("editEmpty").style.display = "none";
-      $("editForm").style.display = "grid";
+      $("editEmpty").classList.add("hidden");
+      $("editForm").classList.remove("hidden");
       $("editTitle").value = memory.title || "";
       $("editType").value = memory.type || "note";
       $("editScope").value = memory.scope || "project";
@@ -1309,9 +1155,9 @@
       state.selected = null;
       state.evidence = null;
       $("detail").innerHTML = `<div class="empty">${escapeHtml(t("selectMemoryCard"))}</div>`;
-      $("editEmpty").style.display = "block";
+      $("editEmpty").classList.remove("hidden");
       $("editEmpty").textContent = t("selectForEdit");
-      $("editForm").style.display = "none";
+      $("editForm").classList.add("hidden");
     }
 
     async function setStatus(id, status) {
@@ -1460,7 +1306,7 @@
     function renderSettings() {
       const usefulness = state.usefulness || {};
       const embedding = state.embedding || {};
-      const quality = state.quality || {};
+      const quality = state.coreSummary?.quality || state.quality || {};
       const profile = state.profile || {};
       const budget = state.budget || {};
       const qa = state.qa || {};
@@ -1560,6 +1406,11 @@
       const fleetQuality = state.fleetQuality || {};
       const releaseGateV3 = state.releaseGateV3 || {};
       const webControlV12 = state.webControlV12 || {};
+      const agentSessions = state.agentSessions || [];
+      const runnerProfiles = state.runnerProfiles || [];
+      const sessionCleanup = state.sessionCleanup || {};
+      const coreSummary = state.coreSummary || {};
+      const intelligenceRequestBudget = state.intelligenceRequestBudget || {};
       const contract = state.contract || {};
       const ops = state.ops || {};
       const effectiveness = ops.effectiveness || {};
@@ -1571,6 +1422,41 @@
       const storage = ops.storage || {};
       const multiDevice = ops.multi_device || {};
       const opsDaemonEmbeddings = opsAutonomous.daemon_embedding_skipped == null ? "-" : opsAutonomous.daemon_embedding_skipped ? "skipped" : opsAutonomous.daemon_embedding_repaired_at ? `repaired ${escapeHtml(formatTimestamp(opsAutonomous.daemon_embedding_repaired_at))}` : "ok";
+      if (!state.intelligenceDetailsLoaded) {
+        const activeSessions = agentSessions.filter((session) => session.status === "active");
+        const leasedSessions = activeSessions.filter((session) => session.lease_owner && Number(session.lease_expires_at || 0) > Date.now());
+        const benchmark = coreSummary.recall || webControlV12.baselines?.benchmark || webControlV12.baselines || {};
+        const coreHealth = coreSummary.health || ops;
+        const localAutonomy = coreSummary.autonomy || {};
+        const qualityActions = (quality.items || []).filter((item) => item.recommended_action).slice(0, 5);
+        $("settingsPanel").innerHTML = `<h2>DukeMemory control</h2>
+        <div class="stat-grid">
+          <div class="stat"><strong>${Number(coreHealth.score || 0).toFixed(1)}</strong><span>Health ${escapeHtml(coreHealth.status || "-")}</span></div>
+          <div class="stat"><strong>${Number(benchmark.current_score ?? benchmark.score ?? 0).toFixed(1)}</strong><span>Recall</span></div>
+          <div class="stat"><strong>${localAutonomy.local_ready ? "ready" : "attention"}</strong><span>Local autonomy</span></div>
+          <div class="stat"><strong>${activeSessions.length}</strong><span>Sessions · ${leasedSessions.length} leased</span></div>
+        </div>
+        <div class="card"><div class="title">Quality v2</div><div class="body">average ${Number(quality.average_score || 0).toFixed(1)} · actionable ${Number(quality.actionable_count || 0)}<br>${Object.entries(quality.classifications || {}).map(([name, count]) => `${escapeHtml(name)} ${Number(count)}`).join(" · ") || "classifications pending"}<br>${qualityActions.length ? qualityActions.map((item) => `${escapeHtml(item.classification)} ${escapeHtml(item.title)}: ${escapeHtml(item.recommended_action)}`).join("<br>") : "no actionable card issues"}</div></div>
+        <div class="card"><div class="title">Local-first autonomy</div><div class="body">local ${localAutonomy.local_ready ? "ready" : "attention"}<br>optional sync ${localAutonomy.optional_sync_ready ? "ready" : "not configured"}<br>remote sync is optional and does not block local readiness</div></div>
+        <div class="card"><div class="title">Agent sessions</div><div class="body">${agentSessions.length ? agentSessions.slice(0, 8).map((session) => `${escapeHtml(session.status)} ${escapeHtml(session.task)} · attempts ${Number(session.attempt_count || 0)} · events ${Number(session.last_event_sequence || 0)}`).join("<br>") : "no sessions"}<br>${sessionCleanup.candidate_count == null ? "retention preview not loaded" : `${Number(sessionCleanup.candidate_count)} cleanup candidates / ${Number(sessionCleanup.candidate_events || 0)} events`}</div><div class="actions"><button data-intelligence="session-cleanup-preview">Preview 30-day cleanup</button><button class="danger" data-intelligence="session-cleanup-apply">Apply 30-day cleanup</button></div></div>
+        <div class="card"><div class="title">Diagnostics</div><div class="body">Detailed reports stay unloaded until requested.</div><div class="actions"><button class="primary" data-intelligence="load-details">Load diagnostic details</button></div></div>`;
+        return;
+      }
+      if (state.controlDetails) {
+        const details = state.controlDetails || {};
+        const panels = details.panels || [];
+        const controls = details.controls || [];
+        $("settingsPanel").innerHTML = `<h2>DukeMemory diagnostics</h2>
+        <div class="stat-grid">
+          <div class="stat"><strong>${escapeHtml(details.status || "-")}</strong><span>stable control</span></div>
+          <div class="stat"><strong>${Number(panels.length)}</strong><span>diagnostic panels</span></div>
+          <div class="stat"><strong>${Number(controls.length)}</strong><span>guarded controls</span></div>
+          <div class="stat"><strong>1</strong><span>details request</span></div>
+        </div>
+        ${panels.map((panel) => `<div class="card"><div class="title">${escapeHtml(panel.name)}</div><div class="body">${escapeHtml(panel.status)} · ${escapeHtml(panel.headline)}</div></div>`).join("")}
+        <div class="card"><div class="title">Compatibility</div><div class="body">Canonical endpoint: /web-control-center<br>Legacy v3-v12 aliases remain available for pinned clients.</div></div>`;
+        return;
+      }
       $("settingsPanel").innerHTML = `<h2>${escapeHtml(t("opsStatus"))}</h2>
       <div class="stat-grid">
         <div class="stat"><strong>${Number(ops.score || 0).toFixed(1)}</strong><span>${escapeHtml(ops.status || "-")}</span></div>
@@ -1691,7 +1577,14 @@
         <div class="stat"><strong>${Number(fleetQuality.ready_projects || 0)}/${Number(fleetQuality.total_projects || 0)}</strong><span>fleet quality</span></div>
         <div class="stat"><strong>${escapeHtml(releaseGateV3.status || "-")}</strong><span>release v3</span></div>
         <div class="stat"><strong>${escapeHtml(webControlV12.status || "-")}</strong><span>control v12</span></div>
+        <div class="stat"><strong>${Number(intelligenceRequestBudget.initial_requests || 0)}</strong><span>initial requests</span></div>
+        <div class="stat"><strong>${agentSessions.filter((session) => session.status === "active").length}</strong><span>active sessions</span></div>
+        <div class="stat"><strong>${agentSessions.filter((session) => session.status === "active" && session.lease_owner && Number(session.lease_expires_at || 0) > Date.now()).length}</strong><span>leased workers</span></div>
+        <div class="stat"><strong>${runnerProfiles.filter((profile) => profile.available).length}/${runnerProfiles.length}</strong><span>runner profiles</span></div>
       </div>
+      <div class="card"><div class="title">agent sessions</div><div class="body">${agentSessions.length ? agentSessions.slice(0, 8).map((session) => { const leaseState = !session.lease_owner ? "unclaimed" : Number(session.lease_expires_at || 0) > Date.now() ? "leased" : "recoverable"; return `${escapeHtml(session.status)} ${escapeHtml(session.task)} (${escapeHtml(session.runner_profile || "default")})<br><span class="muted">${escapeHtml(leaseState)}${session.lease_owner ? ` by ${escapeHtml(session.lease_owner)}` : ""} · attempt ${Number(session.attempt_count || 0)} · events ${Number(session.last_event_sequence || 0)} · heartbeat ${escapeHtml(formatTimestamp(session.last_heartbeat_at))}</span>`; }).join("<br><br>") : "no sessions"}</div></div>
+      <div class="card"><div class="title">runner profiles</div><div class="body">${runnerProfiles.length ? runnerProfiles.map((profile) => `${profile.available ? "ready" : "missing"} ${escapeHtml(profile.name)}: ${escapeHtml(profile.command)} / ${escapeHtml(profile.role)}`).join("<br>") : "-"}</div></div>
+      <div class="card"><div class="title">control request budget</div><div class="body">initial ${Number(intelligenceRequestBudget.initial_requests || 0)} / details ${escapeHtml(intelligenceRequestBudget.details || "-")} / loaded ${state.intelligenceDetailsLoaded ? "yes" : "no"}</div><div class="actions"><button class="primary" data-intelligence="load-details">Load diagnostic details</button></div></div>
       <div class="card"><div class="title">doctor project</div><div class="body">status ${escapeHtml(doctor.status || "-")}<br>qa ${Number(doctor.memory_qa?.score || 0).toFixed(1)}<br>embedding ${doctor.embedding ? `${Number(doctor.embedding.missing || 0)} missing / ${Number(doctor.embedding.stale || 0)} stale` : "-"}<br>${doctor.checks?.length ? doctor.checks.slice(0, 6).map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}</div></div>
       <div class="card"><div class="title">release gate</div><div class="body">status ${escapeHtml(releaseGate.status || "-")}<br>strict ${releaseGate.strict ? "yes" : "no"}<br>${releaseGate.checks?.length ? releaseGate.checks.map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}`).join("<br>") : "-"}<br>${releaseGate.issues?.length ? releaseGate.issues.map(escapeHtml).join("<br>") : "issues -"}</div></div>
       <div class="card"><div class="title">release gate v3</div><div class="body">status ${escapeHtml(releaseGateV3.status || "-")}<br>checks ${Number(releaseGateV3.checks?.length || 0)} / issues ${Number(releaseGateV3.issues?.length || 0)}<br>${releaseGateV3.checks?.length ? releaseGateV3.checks.slice(0, 10).map((check) => `${check.ok ? "ok" : "warn"} ${escapeHtml(check.name)}: ${escapeHtml(check.detail)}`).join("<br>") : "-"}<br>${releaseGateV3.issues?.length ? releaseGateV3.issues.slice(0, 6).map(escapeHtml).join("<br>") : "issues -"}</div></div>

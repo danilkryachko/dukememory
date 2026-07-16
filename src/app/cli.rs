@@ -24,9 +24,13 @@ pub(crate) enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Print the stable operation contract shared by CLI, MCP, and HTTP.
+    Operations {
+        #[arg(long)]
+        json: bool,
+    },
     /// Add a typed memory card.
     Add {
-        #[arg(value_enum)]
         memory_type: MemoryType,
         title: String,
         body: String,
@@ -34,7 +38,7 @@ pub(crate) enum Command {
         id: Option<String>,
         #[arg(long, default_value = "project")]
         scope: String,
-        #[arg(long, value_enum, default_value_t = MemoryStatus::Active)]
+        #[arg(long, default_value_t = MemoryStatus::Active)]
         status: MemoryStatus,
         #[arg(long)]
         source: Option<String>,
@@ -58,7 +62,7 @@ pub(crate) enum Command {
     /// Update fields on an existing card.
     Update {
         id: String,
-        #[arg(long = "type", value_enum)]
+        #[arg(long = "type")]
         memory_type: Option<MemoryType>,
         #[arg(long)]
         title: Option<String>,
@@ -66,7 +70,7 @@ pub(crate) enum Command {
         body: Option<String>,
         #[arg(long)]
         scope: Option<String>,
-        #[arg(long, value_enum)]
+        #[arg(long)]
         status: Option<MemoryStatus>,
         #[arg(long)]
         source: Option<String>,
@@ -117,11 +121,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Change memory status.
-    Status {
-        id: String,
-        #[arg(value_enum)]
-        status: MemoryStatus,
-    },
+    Status { id: String, status: MemoryStatus },
     /// Return a small relevant memory pack.
     ContextPack {
         task: String,
@@ -306,6 +306,16 @@ pub(crate) enum Command {
         #[arg(long)]
         allow_sensitive: bool,
     },
+    /// Run an evidence-backed agent work session.
+    AgentSession {
+        #[command(subcommand)]
+        command: AgentSessionCommand,
+    },
+    /// Inspect and validate named external runner profiles.
+    RunnerProfile {
+        #[command(subcommand)]
+        command: RunnerProfileCommand,
+    },
     /// Copy the release/debug binary to a directory.
     Install {
         #[arg(long, default_value = "~/.local/bin")]
@@ -348,6 +358,15 @@ pub(crate) enum Command {
     ServeMcp {
         #[arg(long)]
         content_length: bool,
+        #[arg(
+            long,
+            env = "DUKEMEMORY_MCP_PROFILE",
+            default_value = "core",
+            value_parser = ["core", "standard", "full"]
+        )]
+        profile: String,
+        #[arg(long, env = "DUKEMEMORY_MCP_PAGE_SIZE", default_value_t = 0)]
+        page_size: usize,
     },
     /// Print a compact project briefing.
     ProjectSummary {
@@ -455,7 +474,7 @@ pub(crate) enum Command {
     /// Remember plain user text as a typed memory card.
     Remember {
         text: String,
-        #[arg(long = "type", value_enum)]
+        #[arg(long = "type")]
         memory_type: Option<MemoryType>,
         #[arg(long, default_value = "project")]
         scope: String,
@@ -579,6 +598,32 @@ pub(crate) enum Command {
         endpoint: String,
         #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
         model: String,
+        /// Number of measured queries.
+        #[arg(long, default_value_t = 25)]
+        iterations: usize,
+        /// Warmup queries excluded from measurements.
+        #[arg(long, default_value_t = 3)]
+        warmup: usize,
+        /// Benchmark at most this many indexed vectors.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Read or write a JSON performance baseline.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        /// Write the current report as the baseline instead of comparing it.
+        #[arg(long)]
+        write_baseline: bool,
+        /// Fail when p95 latency or QPS regresses by more than this percentage.
+        #[arg(long, default_value_t = 25.0)]
+        max_regression_percent: f64,
+        /// Fail when the selected backend's p95 latency exceeds this value.
+        #[arg(long)]
+        max_p95_ms: Option<f64>,
+        /// Fail when the selected backend processes fewer queries per second.
+        #[arg(long)]
+        min_qps: Option<f64>,
+        #[arg(long)]
+        json: bool,
     },
     /// Show embedding freshness and indexed vector counts.
     EmbedStatus {
@@ -615,6 +660,9 @@ pub(crate) enum Command {
     Audit {
         #[arg(long, default_value_t = 50)]
         limit: usize,
+        /// Verify the event/checkpoint hash chains.
+        #[arg(long)]
+        verify: bool,
         #[arg(long)]
         json: bool,
     },
@@ -1020,7 +1068,17 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Aggregate the next-generation memory control center.
+    #[command(hide = true)]
     MemoryControlCenterV2 {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Aggregate the current stable memory control center (currently V2).
+    MemoryControlCenter {
         #[arg(long, default_value = ".")]
         root: PathBuf,
         #[arg(long, default_value_t = 7)]
@@ -1048,6 +1106,34 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Infer/apply high-confidence memory-to-memory graph links.
+    MemoryGraphLinks {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Turn explicit durable-id references into bitemporal evidence (dry-run by default).
+    EvidenceAutopilot {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        apply: bool,
+        #[arg(
+            long = "rollback-observation-id",
+            value_name = "ID",
+            conflicts_with = "apply"
+        )]
+        rollback_observation_ids: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Run recall probes and optionally store a benchmark baseline.
     RecallBenchmarkSuite {
         #[arg(long, default_value = ".")]
@@ -1062,6 +1148,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Release gate with memory-health, recall benchmark, and audit v2 checks.
+    #[command(hide = true)]
     ReleaseGateV2 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1097,6 +1184,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Run the V2 autonomous memory loop with governance and quality gates.
+    #[command(hide = true)]
     AutonomousLoopV2 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1130,6 +1218,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Inspect all discovered project memories with V2 health metrics.
+    #[command(hide = true)]
     FleetDashboardV2 {
         #[arg(long, default_value_t = 7)]
         since_days: i64,
@@ -1150,6 +1239,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Inspect MCP exposure for V2 memory control tools.
+    #[command(hide = true)]
     McpToolSurfaceV2 {
         #[arg(long)]
         json: bool,
@@ -1199,6 +1289,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the simplified V3 web control model: Health, Autonomy, Projects, Sync.
+    #[command(hide = true)]
     WebControlCenterV3 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1241,6 +1332,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V4 web control model with actionable controls.
+    #[command(hide = true)]
     WebControlCenterV4 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1252,6 +1344,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Enforce MCP memory discipline for startup, write decisions, and after-task cleanup.
+    #[command(hide = true)]
     McpDisciplineV2 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1274,6 +1367,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Upgrade all discovered project memories with richer version/action summaries.
+    #[command(hide = true)]
     UpgradeAllProjectsV2 {
         #[arg(long)]
         from: Option<PathBuf>,
@@ -1300,6 +1394,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V5 web control model with 0.24 control surfaces.
+    #[command(hide = true)]
     WebControlCenterV5 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1377,6 +1472,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render or write the second-generation compact project memory contract.
+    #[command(hide = true)]
     MemoryContractV2 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1431,6 +1527,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V6 web control model with 0.25 memory effectiveness surfaces.
+    #[command(hide = true)]
     WebControlCenterV6 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1497,6 +1594,48 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Compare hybrid retrieval with an FTS-only shadow strategy.
+    RagShadow {
+        question: String,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        #[arg(long)]
+        budget: Option<usize>,
+        #[arg(long, value_enum)]
+        budget_profile: Option<BudgetProfile>,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        model: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Assemble an auditable decision context with evidence, risks, and trust lanes.
+    DecisionCapsule {
+        question: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        #[arg(long)]
+        budget: Option<usize>,
+        #[arg(long, value_enum)]
+        budget_profile: Option<BudgetProfile>,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        model: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Index text/code files as chunked RAG sources.
     RagIngest {
         input: PathBuf,
@@ -1506,6 +1645,9 @@ pub(crate) enum Command {
         scope: String,
         #[arg(long)]
         apply: bool,
+        /// Mark the exact indexed content hash as operator-reviewed.
+        #[arg(long, requires = "apply")]
+        reviewed: bool,
         #[arg(long)]
         embed: bool,
         #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
@@ -1522,6 +1664,26 @@ pub(crate) enum Command {
         max_file_bytes: usize,
         #[arg(long, default_value_t = 128)]
         max_files: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Detect and optionally refresh stale indexed RAG sources.
+    RagRefresh {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        apply: bool,
+        /// Remove indexed source rows whose files no longer exist (previewed unless --apply is set).
+        #[arg(long)]
+        prune_missing: bool,
+        #[arg(long)]
+        embed: bool,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        model: String,
         #[arg(long)]
         json: bool,
     },
@@ -1544,6 +1706,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Run Graph RAG on the project memory.
+    #[command(name = "graph-rag")]
     GraphRag {
         query: String,
         #[arg(long)]
@@ -1630,6 +1793,75 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Record an evidence-backed bitemporal observation for a memory card.
+    Observe {
+        id: String,
+        #[arg(
+            long,
+            value_parser = [
+                "asserted",
+                "verified",
+                "contradicted",
+                "superseded",
+                "file_changed",
+                "retrieved",
+                "outcome",
+                "causes",
+                "depends_on",
+                "blocks",
+                "enables",
+                "prevents"
+            ]
+        )]
+        kind: String,
+        #[arg(long)]
+        statement: String,
+        #[arg(
+            long,
+            help = "Evidence type; use `file` to capture a project-contained file with exact SHA-256"
+        )]
+        evidence_kind: String,
+        #[arg(long)]
+        evidence_ref: String,
+        #[arg(long)]
+        target_memory_id: Option<String>,
+        #[arg(long, default_value_t = 1.0)]
+        confidence: f64,
+        #[arg(long)]
+        valid_from: Option<i64>,
+        #[arg(long)]
+        valid_to: Option<i64>,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List evidence observations as-of valid and knowledge time.
+    Observations {
+        id: String,
+        #[arg(long)]
+        valid_at: Option<i64>,
+        #[arg(long)]
+        known_at: Option<i64>,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render the memory graph as-of valid and knowledge time.
+    TemporalGraph {
+        #[arg(long)]
+        valid_at: Option<i64>,
+        #[arg(long)]
+        known_at: Option<i64>,
+        /// Reconstruct knowledge at the latest evidence event for this exact commit.
+        #[arg(long, conflicts_with = "known_at")]
+        commit: Option<String>,
+        #[arg(long, default_value_t = 500)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
     /// Show one memory card timeline: facts, audit events, and real read influence.
     MemoryTimeline {
         id: String,
@@ -1648,6 +1880,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V7 web control model with answer/connect/eval/import surfaces.
+    #[command(hide = true)]
     WebControlCenterV7 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1683,6 +1916,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V8 web control model with answer/usefulness/benchmark panels.
+    #[command(hide = true)]
     WebControlCenterV8 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1707,6 +1941,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V9 web control model with autonomous supervisor panels.
+    #[command(hide = true)]
     WebControlCenterV9 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1729,6 +1964,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V10 web control model with fleet supervisor panels.
+    #[command(hide = true)]
     WebControlCenterV10 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1755,6 +1991,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V11 web control model with fleet watch installation.
+    #[command(hide = true)]
     WebControlCenterV11 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1827,6 +2064,10 @@ pub(crate) enum Command {
         root: PathBuf,
         #[arg(long, default_value_t = 7)]
         since_days: i64,
+        #[arg(long, value_enum, default_value = "deployment")]
+        rag_profile: ReleaseRagProfile,
+        #[arg(long, value_enum, default_value = "all")]
+        profile: ReleaseGateProfile,
         #[arg(long)]
         strict: bool,
         #[arg(long)]
@@ -1835,6 +2076,7 @@ pub(crate) enum Command {
         json: bool,
     },
     /// Render the V12 web control model with effectiveness and release panels.
+    #[command(hide = true)]
     WebControlCenterV12 {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -1844,6 +2086,22 @@ pub(crate) enum Command {
         task: String,
         #[arg(long, default_value_t = 7)]
         since_days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render the stable cached control snapshot shared by CLI, MCP, HTTP, and UI.
+    WebControlCenter {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        target: Option<PathBuf>,
+        #[arg(long, default_value = "project memory")]
+        task: String,
+        #[arg(long, default_value_t = 7)]
+        since_days: i64,
+        /// Render the legacy full V12 diagnostic tree instead of the stable snapshot.
+        #[arg(long)]
+        details: bool,
         #[arg(long)]
         json: bool,
     },
@@ -2060,6 +2318,23 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: AutonomousCommand,
     },
+    /// Validate a local or reverse-proxy deployment profile without exposing secrets.
+    DeploymentProfile {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, value_enum, default_value_t = DeploymentMode::Local)]
+        mode: DeploymentMode,
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, env = "DUKEMEMORY_HTTP_TOKEN_FILE")]
+        auth_token_file: Option<PathBuf>,
+        #[arg(long, env = "DUKEMEMORY_PUBLIC_ORIGIN")]
+        public_origin: Option<String>,
+        #[arg(long)]
+        sync_target: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Serve the local HTTP API; external binds require an auth token.
     ServeHttp {
         #[arg(long, default_value = "127.0.0.1")]
@@ -2072,6 +2347,15 @@ pub(crate) enum Command {
         auth_token: Option<String>,
         #[arg(long, env = "DUKEMEMORY_HTTP_TOKEN_FILE")]
         auth_token_file: Option<PathBuf>,
+        #[arg(
+            long,
+            env = "DUKEMEMORY_MCP_PROFILE",
+            default_value = "core",
+            value_parser = ["core", "standard", "full"]
+        )]
+        mcp_profile: String,
+        #[arg(long, env = "DUKEMEMORY_MCP_PAGE_SIZE", default_value_t = 0)]
+        mcp_page_size: usize,
     },
     /// Validate JSON fallback storage or the bundled sqlite-vec search backend.
     #[command(alias = "vec-migrate")]
@@ -2489,6 +2773,233 @@ pub(crate) enum FeedbackRating {
     Missing,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum, Serialize)]
+#[value(rename_all = "snake_case")]
+pub(crate) enum AgentSessionOutcome {
+    Success,
+    Failed,
+    Partial,
+    Abandoned,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, Serialize)]
+#[value(rename_all = "snake_case")]
+pub(crate) enum AgentSessionEventKind {
+    Heartbeat,
+    RunnerSelected,
+    RunnerStarted,
+    RunnerCompleted,
+    RunnerFailed,
+    Validation,
+    Recovery,
+}
+
+impl fmt::Display for AgentSessionEventKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Heartbeat => "heartbeat",
+            Self::RunnerSelected => "runner_selected",
+            Self::RunnerStarted => "runner_started",
+            Self::RunnerCompleted => "runner_completed",
+            Self::RunnerFailed => "runner_failed",
+            Self::Validation => "validation",
+            Self::Recovery => "recovery",
+        };
+        f.write_str(value)
+    }
+}
+
+impl fmt::Display for AgentSessionOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Success => "success",
+            Self::Failed => "failed",
+            Self::Partial => "partial",
+            Self::Abandoned => "abandoned",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Subcommand)]
+pub(crate) enum AgentSessionCommand {
+    /// Start a durable agent session and return its id.
+    Start {
+        task: String,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, default_value = "project")]
+        scope: String,
+        #[arg(long)]
+        runner_profile: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Load brief, impact, and doctrine for a session in one audited read.
+    Context {
+        id: String,
+        #[arg(long, default_value_t = 12)]
+        limit: usize,
+        #[arg(long, default_value_t = 4000)]
+        max_chars: usize,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        embed_provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        embed_endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        embed_model: String,
+        #[arg(long)]
+        owner: Option<String>,
+        #[arg(long)]
+        lease_token: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Atomically claim an active session lease for one worker attempt.
+    Claim {
+        id: String,
+        #[arg(long)]
+        owner: String,
+        #[arg(long, default_value_t = 120)]
+        lease_secs: u64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Renew an unexpired lease owned by the current worker attempt.
+    Renew {
+        id: String,
+        #[arg(long)]
+        owner: String,
+        #[arg(long)]
+        lease_token: String,
+        #[arg(long, default_value_t = 120)]
+        lease_secs: u64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Release a lease without finishing the active session.
+    Release {
+        id: String,
+        #[arg(long)]
+        owner: String,
+        #[arg(long)]
+        lease_token: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Record a bounded lifecycle event and refresh the session heartbeat.
+    Event {
+        id: String,
+        #[arg(long, value_enum)]
+        event_type: AgentSessionEventKind,
+        #[arg(long, default_value = "{}")]
+        detail: String,
+        #[arg(long)]
+        event_id: Option<String>,
+        #[arg(long)]
+        owner: Option<String>,
+        #[arg(long)]
+        lease_token: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List active sessions whose heartbeat is old enough to resume.
+    Recover {
+        #[arg(long, default_value_t = 300)]
+        stale_after_secs: u64,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        owner: Option<String>,
+        #[arg(long, default_value_t = 120)]
+        lease_secs: u64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Finish once; successful feedback requires explicit evidence.
+    Finish {
+        id: String,
+        #[arg(long, value_enum)]
+        outcome: AgentSessionOutcome,
+        #[arg(long)]
+        summary: String,
+        #[arg(long = "changed-file")]
+        changed_files: Vec<String>,
+        #[arg(long = "validation")]
+        validations: Vec<String>,
+        #[arg(long)]
+        commit: Option<String>,
+        #[arg(long)]
+        owner: Option<String>,
+        #[arg(long)]
+        lease_token: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one session, or recent sessions when no id is supplied.
+    Status {
+        id: Option<String>,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        #[arg(long = "status")]
+        statuses: Vec<String>,
+        #[arg(long = "outcome")]
+        outcomes: Vec<String>,
+        #[arg(long)]
+        page: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the causal chain from recalled cards to validation and outcome.
+    Trace {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Preview or delete completed sessions older than the retention window.
+    Cleanup {
+        #[arg(long)]
+        older_than_days: Option<i64>,
+        #[arg(long = "status")]
+        statuses: Vec<String>,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum RunnerProfileCommand {
+    /// List built-in profiles and local overrides.
+    List {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check whether configured runner commands are available on PATH.
+    Doctor {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Preview or write .agent/runner-profiles.toml.
+    Init {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Subcommand)]
 pub(crate) enum SchemaCommand {
     Status,
@@ -2808,6 +3319,12 @@ pub(crate) enum EvalCommand {
         expected: String,
         #[arg(long, default_value_t = 4000)]
         budget: usize,
+        #[arg(
+            long,
+            default_value = "development",
+            value_parser = ["development", "holdout"]
+        )]
+        split: String,
     },
     Run {
         #[arg(long)]
@@ -2828,6 +3345,31 @@ pub(crate) enum EvalCommand {
         endpoint: String,
         #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
         model: String,
+        #[arg(long)]
+        write_baseline: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(name = "graph-rag")]
+    GraphRag {
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+        #[arg(long)]
+        budget: Option<usize>,
+        #[arg(long, value_enum)]
+        budget_profile: Option<BudgetProfile>,
+        #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
+        provider: String,
+        #[arg(long, default_value = DEFAULT_EMBED_ENDPOINT, env = "DUKEMEMORY_EMBED_ENDPOINT")]
+        endpoint: String,
+        #[arg(long, default_value = DEFAULT_EMBED_MODEL, env = "DUKEMEMORY_EMBED_MODEL")]
+        model: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Advanced {
         #[arg(long)]
         json: bool,
     },
@@ -2853,58 +3395,4 @@ pub(crate) enum InboxV2Command {
         #[arg(long)]
         json: bool,
     },
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-#[value(rename_all = "snake_case")]
-pub(crate) enum MemoryType {
-    ProductGoal,
-    UserPreference,
-    Decision,
-    DesignNote,
-    KnownIssue,
-    Command,
-    TaskState,
-    DomainFact,
-    Constraint,
-    Note,
-}
-
-impl fmt::Display for MemoryType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = match self {
-            Self::ProductGoal => "product_goal",
-            Self::UserPreference => "user_preference",
-            Self::Decision => "decision",
-            Self::DesignNote => "design_note",
-            Self::KnownIssue => "known_issue",
-            Self::Command => "command",
-            Self::TaskState => "task_state",
-            Self::DomainFact => "domain_fact",
-            Self::Constraint => "constraint",
-            Self::Note => "note",
-        };
-        f.write_str(value)
-    }
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-#[value(rename_all = "snake_case")]
-pub(crate) enum MemoryStatus {
-    Active,
-    Superseded,
-    Rejected,
-    Uncertain,
-}
-
-impl fmt::Display for MemoryStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = match self {
-            Self::Active => "active",
-            Self::Superseded => "superseded",
-            Self::Rejected => "rejected",
-            Self::Uncertain => "uncertain",
-        };
-        f.write_str(value)
-    }
 }

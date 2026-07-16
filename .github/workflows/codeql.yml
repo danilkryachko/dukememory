@@ -1,0 +1,43 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  schedule:
+    - cron: "23 2 * * 4"
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Initialize CodeQL for Rust
+        uses: github/codeql-action/init@f52b05f4acaaa234e44466e66d29050e135ea9ef # v4.36.0
+        with:
+          languages: rust
+          build-mode: none
+      - name: Analyze
+        uses: github/codeql-action/analyze@f52b05f4acaaa234e44466e66d29050e135ea9ef # v4.36.0
+        with:
+          category: /language:rust
+
+  codeql-gate:
+    if: always()
+    needs: [rust]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require CodeQL analysis
+        env:
+          CODEQL_RESULT: ${{ needs.rust.result }}
+        run: test "${CODEQL_RESULT}" = success

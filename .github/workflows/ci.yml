@@ -2,13 +2,15 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -17,53 +19,173 @@ env:
   DUKEMEMORY_GEN_PROVIDER: mock
 
 jobs:
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@ad7910d95e317a4b12a9a3dfad520f4b409b3ec0 # 1.91.0
+      - name: Check declared minimum Rust version
+        run: cargo check --locked
+
+  platform:
+    name: Platform (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Check minimal cross-platform build
+        run: cargo check --locked --all-targets --no-default-features
+      - name: Test cross-platform core
+        run: cargo test --locked --no-default-features --bin dukememory
+      - name: Check release sqlite-vec feature set
+        run: cargo check --locked --all-targets --features vec
+
   quality:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
+      - name: Cache Cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
       - name: Format
         run: cargo fmt --all -- --check
+      - name: Enforce architecture growth budgets
+        run: scripts/architecture-budget.sh
+      - name: Enforce dependency growth budgets
+        run: scripts/dependency-budget.sh
+      - name: Check minimal feature build
+        run: cargo check --locked --all-targets --no-default-features
       - name: Check all targets
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Test default features
         run: >-
-          cargo test --
+          cargo test --locked --
           --skip v14_6_local_memory_ui_and_http_actions
           --skip v14_9_autonomous_memory_runs_and_rolls_back
+      - name: Run performance regression gate
+        run: cargo test --locked --test performance -- --ignored --nocapture
       - name: Test sqlite-vec native backend
         run: |
-          cargo test --features vec --bin dukememory
-          cargo test --features vec --test cli review_conflicts_links_session_and_vec_status -- --exact
-          cargo test --features vec --test cli sqlite_vec_backend_runs_knn_and_matches_json_fallback -- --exact
-          cargo test --features vec --test cli sqlite_vec_persists_rag_chunk_index -- --exact
+          cargo test --locked --features vec --bin dukememory
+          cargo test --locked --features vec --test cli review_conflicts_links_session_and_vec_status -- --exact
+          cargo test --locked --features vec --test cli sqlite_vec_backend_runs_knn_and_matches_json_fallback -- --exact
+          cargo test --locked --features vec --test cli sqlite_vec_persists_rag_chunk_index -- --exact
       - name: Smoke-test installed vec-enabled binary
         run: |
-          cargo build --features vec
+          cargo build --locked --features vec
           scripts/release-smoke.sh target/debug/dukememory
       - name: Check local generation build
-        run: cargo check --features local-embeddings,local-generation
+        run: cargo check --locked --features local-embeddings,local-generation
 
   extended-http:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Cache Cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
       - name: Test extended HTTP compatibility matrix
         run: >-
-          cargo test --test cli
+          cargo test --locked --test cli
           v14_6_local_memory_ui_and_http_actions -- --exact
+
+  mcp-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Cache Cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+      - name: Build minimal MCP server
+        run: cargo build --locked --no-default-features
+      - name: Run official MCP Streamable HTTP conformance scenarios
+        run: scripts/mcp-conformance.sh target/debug/dukememory
 
   extended-autonomy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Cache Cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
       - name: Test autonomous maintenance and rollback matrix
         run: >-
-          cargo test --test cli
+          cargo test --locked --test cli
           v14_9_autonomous_memory_runs_and_rolls_back -- --exact
+
+  release-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Cache Cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+      - name: Build offline release evidence binary
+        run: cargo build --locked --no-default-features
+      - name: Run reproducible deployment evidence gate
+        run: scripts/release-evidence-gate.sh target/debug/dukememory
+
+  ci-gate:
+    if: always()
+    needs:
+      - msrv
+      - platform
+      - quality
+      - extended-http
+      - mcp-conformance
+      - extended-autonomy
+      - release-evidence
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every CI job
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<<"${NEEDS_JSON}"

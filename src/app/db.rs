@@ -1,9 +1,11 @@
 use super::*;
 
+static INITIALIZED_DATABASES: std::sync::OnceLock<std::sync::Mutex<HashSet<PathBuf>>> =
+    std::sync::OnceLock::new();
+
 const SCHEMA: &str = r#"
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
 PRAGMA temp_store = MEMORY;
 PRAGMA cache_size = -20000;
 PRAGMA mmap_size = 268435456;
@@ -40,6 +42,45 @@ CREATE TABLE IF NOT EXISTS memory_links (
     FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS memory_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    provenance TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    valid_from INTEGER NOT NULL DEFAULT 0,
+    valid_to INTEGER,
+    observed_at INTEGER NOT NULL DEFAULT 0,
+    observation_id TEXT,
+    UNIQUE (source_id, target_id, kind),
+    CHECK (source_id <> target_id),
+    CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    FOREIGN KEY (source_id) REFERENCES memories(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS memory_observations (
+    id TEXT PRIMARY KEY,
+    memory_id TEXT NOT NULL,
+    target_memory_id TEXT,
+    kind TEXT NOT NULL CHECK (kind IN ('asserted','verified','contradicted','superseded','file_changed','retrieved','outcome','causes','depends_on','blocks','enables','prevents')),
+    statement TEXT NOT NULL,
+    evidence_kind TEXT NOT NULL,
+    evidence_ref TEXT NOT NULL,
+    confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    valid_from INTEGER NOT NULL,
+    valid_to INTEGER,
+    observed_at INTEGER NOT NULL,
+    branch TEXT,
+    commit_hash TEXT,
+    worktree_root TEXT,
+    FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_memory_id) REFERENCES memories(id) ON DELETE SET NULL,
+    CHECK (valid_to IS NULL OR valid_to >= valid_from)
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     title,
     body,
@@ -73,6 +114,8 @@ CREATE INDEX IF NOT EXISTS idx_memories_updated_at ON memories(updated_at);
 CREATE INDEX IF NOT EXISTS idx_memories_superseded_by ON memories(superseded_by);
 CREATE INDEX IF NOT EXISTS idx_memories_status_scope_updated_at ON memories(status, scope, updated_at);
 CREATE INDEX IF NOT EXISTS idx_memory_links_memory_id ON memory_links(memory_id);
+CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(source_id);
+CREATE INDEX IF NOT EXISTS idx_memory_edges_target ON memory_edges(target_id);
 
 CREATE TABLE IF NOT EXISTS memory_embeddings (
     memory_id TEXT NOT NULL,
@@ -153,11 +196,24 @@ CREATE TABLE IF NOT EXISTS memory_events (
     event_type TEXT NOT NULL,
     memory_id TEXT,
     detail TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    previous_hash TEXT NOT NULL DEFAULT '',
+    event_hash TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_memory_events_created_at ON memory_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_events_memory_id ON memory_events(memory_id);
 CREATE INDEX IF NOT EXISTS idx_memory_events_created_id ON memory_events(created_at, id);
+
+CREATE TABLE IF NOT EXISTS audit_checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at INTEGER NOT NULL,
+    deleted_through_id INTEGER NOT NULL,
+    deleted_count INTEGER NOT NULL,
+    first_retained_id INTEGER,
+    anchor_hash TEXT NOT NULL,
+    previous_checkpoint_hash TEXT NOT NULL,
+    checkpoint_hash TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS memory_read_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,10 +224,53 @@ CREATE TABLE IF NOT EXISTS memory_read_events (
     result_count INTEGER NOT NULL DEFAULT 0,
     budget INTEGER NOT NULL DEFAULT 0,
     elapsed_ms INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    session_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_memory_read_events_created_at ON memory_read_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_read_events_command ON memory_read_events(command);
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id TEXT PRIMARY KEY,
+    task TEXT NOT NULL,
+    target TEXT,
+    scope TEXT NOT NULL DEFAULT 'project',
+    runner_profile TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    outcome TEXT,
+    summary TEXT,
+    changed_files TEXT NOT NULL DEFAULT '[]',
+    validation_commands TEXT NOT NULL DEFAULT '[]',
+    commit_hash TEXT,
+    memory_ids TEXT NOT NULL DEFAULT '[]',
+    feedback_written INTEGER NOT NULL DEFAULT 0,
+    lease_owner TEXT,
+    lease_token TEXT,
+    current_attempt_id TEXT,
+    lease_expires_at INTEGER,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_event_sequence INTEGER NOT NULL DEFAULT 0,
+    last_heartbeat_at INTEGER,
+    started_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    finished_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_status_updated_at
+    ON agent_sessions(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS agent_session_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    event_id TEXT,
+    sequence INTEGER NOT NULL DEFAULT 0,
+    attempt_id TEXT,
+    event_type TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_agent_session_events_session_created
+    ON agent_session_events(session_id, created_at, id);
 
 CREATE TABLE IF NOT EXISTS memory_locks (
     name TEXT PRIMARY KEY,
@@ -180,20 +279,45 @@ CREATE TABLE IF NOT EXISTS memory_locks (
     expires_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS mcp_tasks (
+    task_id TEXT PRIMARY KEY,
+    owner_key TEXT NOT NULL,
+    protocol_version TEXT NOT NULL,
+    lifecycle TEXT NOT NULL CHECK (lifecycle IN ('legacy', 'extension')),
+    operation_name TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('working', 'input_required', 'completed', 'cancelled', 'failed')),
+    status_message TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_updated_at TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    last_updated_at_ms INTEGER NOT NULL,
+    ttl_ms INTEGER NOT NULL,
+    poll_interval_ms INTEGER NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    result_json TEXT,
+    error_json TEXT,
+    cancellation_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancellation_requested IN (0, 1))
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_tasks_owner_updated
+    ON mcp_tasks(owner_key, last_updated_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_mcp_tasks_expires
+    ON mcp_tasks(expires_at_ms);
+
 CREATE TABLE IF NOT EXISTS eval_cases (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     query TEXT NOT NULL,
     expected TEXT NOT NULL,
     budget INTEGER NOT NULL DEFAULT 4000,
+    split TEXT NOT NULL DEFAULT 'development' CHECK (split IN ('development', 'holdout')),
     created_at INTEGER NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS memory_sources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     status TEXT NOT NULL,
+    trust_status TEXT NOT NULL DEFAULT 'unreviewed' CHECK (trust_status IN ('unreviewed', 'reviewed')),
     suggestions INTEGER NOT NULL DEFAULT 0,
     ingested_at INTEGER NOT NULL,
     UNIQUE(path, content_hash)
@@ -245,59 +369,470 @@ CREATE TRIGGER IF NOT EXISTS rag_chunks_au AFTER UPDATE ON rag_chunks BEGIN
 END;
 "#;
 
+// Indexes that depend on columns introduced by migrations must be installed only
+// after those migrations. Keeping them in SCHEMA makes SQLite evaluate them
+// against legacy tables before `ensure_column` has upgraded the table shape.
+const POST_MIGRATION_SCHEMA: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_memory_edges_temporal ON memory_edges(valid_from, valid_to, observed_at);
+CREATE INDEX IF NOT EXISTS idx_memory_observations_memory_time ON memory_observations(memory_id, valid_from, observed_at);
+CREATE INDEX IF NOT EXISTS idx_memory_observations_target ON memory_observations(target_memory_id);
+CREATE INDEX IF NOT EXISTS idx_eval_cases_split_created ON eval_cases(split, created_at);
+"#;
+
+const SQLITE_DURABILITY_ENV: &str = "DUKEMEMORY_SQLITE_DURABILITY";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SqliteDurabilityProfile {
+    Balanced,
+    Strict,
+}
+
+impl SqliteDurabilityProfile {
+    pub(crate) fn from_environment() -> Result<Self> {
+        match std::env::var(SQLITE_DURABILITY_ENV)
+            .unwrap_or_else(|_| "balanced".to_string())
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "balanced" | "normal" => Ok(Self::Balanced),
+            "strict" | "full" => Ok(Self::Strict),
+            other => bail!(
+                "unsupported {SQLITE_DURABILITY_ENV} value `{other}`; expected balanced or strict"
+            ),
+        }
+    }
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Balanced => "balanced",
+            Self::Strict => "strict",
+        }
+    }
+
+    fn configure(self, conn: &Connection) -> Result<()> {
+        match self {
+            Self::Balanced => conn.execute_batch(
+                r#"
+                PRAGMA synchronous = NORMAL;
+                PRAGMA fullfsync = OFF;
+                PRAGMA checkpoint_fullfsync = OFF;
+                "#,
+            )?,
+            Self::Strict => conn.execute_batch(
+                r#"
+                PRAGMA synchronous = FULL;
+                PRAGMA fullfsync = ON;
+                PRAGMA checkpoint_fullfsync = ON;
+                "#,
+            )?,
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn open_db(path: &Path) -> Result<Connection> {
     register_sqlite_vec()?;
     if let Some(parent) = path.parent() {
+        let parent_existed = parent.exists();
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
+        harden_database_parent_permissions(parent, parent_existed)?;
     }
     let conn =
         Connection::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    harden_database_file_permissions(path)?;
     conn.busy_timeout(std::time::Duration::from_secs(15))?;
+    let durability = SqliteDurabilityProfile::from_environment()?;
     conn.execute_batch(
         r#"
         PRAGMA foreign_keys = ON;
-        PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = NORMAL;
+        PRAGMA secure_delete = FAST;
         PRAGMA temp_store = MEMORY;
         PRAGMA cache_size = -20000;
         PRAGMA mmap_size = 268435456;
+        PRAGMA wal_autocheckpoint = 1000;
         "#,
     )?;
-    conn.execute_batch(SCHEMA)?;
-    run_migrations(&conn)?;
-    initialize_sqlite_vec_indexes(&conn)?;
+    durability.configure(&conn)?;
+    let key = database_registry_key(path);
+    let initialized = INITIALIZED_DATABASES.get_or_init(|| std::sync::Mutex::new(HashSet::new()));
+    let mut initialized = initialized
+        .lock()
+        .map_err(|_| anyhow::anyhow!("database initialization registry is poisoned"))?;
+    let schema_is_current = conn
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_versions",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .is_ok_and(|version| version == CURRENT_SCHEMA_VERSION);
+    if !initialized.contains(&key) || !schema_is_current {
+        conn.execute_batch(SCHEMA)?;
+        run_migrations(&conn)?;
+        conn.execute_batch(POST_MIGRATION_SCHEMA)?;
+        verify_schema(&conn)?;
+        initialize_sqlite_vec_indexes(&conn)?;
+        initialized.insert(key);
+    }
+    harden_database_file_permissions(path)?;
     Ok(conn)
 }
 
-fn run_migrations(conn: &Connection) -> Result<()> {
-    ensure_column(conn, "memories", "superseded_by", "TEXT")?;
-    ensure_column(conn, "memories", "confidence", "REAL NOT NULL DEFAULT 1.0")?;
-    ensure_column(conn, "memories", "layer", "TEXT")?;
-    ensure_column(conn, "memory_inbox", "layer", "TEXT")?;
-    ensure_column(
-        conn,
-        "vector_index_registry",
-        "trigger_version",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
-    let version: Option<i64> =
-        conn.query_row("SELECT MAX(version) FROM schema_versions", [], |row| {
-            row.get::<_, Option<i64>>(0)
-        })?;
-    if version.unwrap_or(0) < 1 {
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_versions (version, applied_at, description) VALUES (1, ?1, 'Initial production schema')",
-            params![now_ms()],
-        )?;
+fn harden_database_parent_permissions(path: &Path, existed: bool) -> Result<()> {
+    #[cfg(unix)]
+    if !existed {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(path, permissions)?;
     }
-    for migration in migrations() {
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_versions (version, applied_at, description) VALUES (?1, ?2, ?3)",
-            params![migration.version, now_ms(), migration.name],
+    #[cfg(not(unix))]
+    let _ = (path, existed);
+    Ok(())
+}
+
+fn harden_database_file_permissions(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut paths = vec![path.to_path_buf()];
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = path.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            paths.push(PathBuf::from(sidecar));
+        }
+        for file in paths.into_iter().filter(|file| file.exists()) {
+            let mut permissions = fs::metadata(&file)?.permissions();
+            permissions.set_mode(0o600);
+            fs::set_permissions(&file, permissions)?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+fn run_migrations(conn: &Connection) -> Result<()> {
+    transactional(conn, "schema_migrations", || {
+        let mut version = conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_versions",
+            [],
+            |row| row.get::<_, i64>(0),
         )?;
+        if version < 1 {
+            conn.execute(
+                "INSERT INTO schema_versions (version, applied_at, description) VALUES (1, ?1, 'Initial production schema')",
+                params![now_ms()],
+            )?;
+            version = 1;
+        }
+        for migration in migrations()
+            .iter()
+            .filter(|migration| migration.version > version)
+        {
+            apply_migration(conn, migration.version)?;
+            conn.execute(
+                "INSERT INTO schema_versions (version, applied_at, description) VALUES (?1, ?2, ?3)",
+                params![migration.version, now_ms(), migration.name],
+            )?;
+        }
+        Ok(())
+    })
+}
+
+fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
+    match version {
+        2 => {
+            ensure_column(conn, "memories", "superseded_by", "TEXT")?;
+            ensure_column(conn, "memories", "confidence", "REAL NOT NULL DEFAULT 1.0")?;
+        }
+        16 => {
+            ensure_column(conn, "memories", "layer", "TEXT")?;
+            ensure_column(conn, "memory_inbox", "layer", "TEXT")?;
+        }
+        19 => ensure_column(
+            conn,
+            "vector_index_registry",
+            "trigger_version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?,
+        20 => {}
+        21 => migrate_agent_session_leases(conn)?,
+        22 => conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS memory_edges (\
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                 source_id TEXT NOT NULL,\
+                 target_id TEXT NOT NULL,\
+                 kind TEXT NOT NULL,\
+                 confidence REAL NOT NULL,\
+                 provenance TEXT NOT NULL,\
+                 created_at INTEGER NOT NULL,\
+                 UNIQUE (source_id, target_id, kind),\
+                 CHECK (source_id <> target_id),\
+                 CHECK (confidence >= 0.0 AND confidence <= 1.0),\
+                 FOREIGN KEY (source_id) REFERENCES memories(id) ON DELETE CASCADE,\
+                 FOREIGN KEY (target_id) REFERENCES memories(id) ON DELETE CASCADE\
+             );\
+             CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(source_id);\
+             CREATE INDEX IF NOT EXISTS idx_memory_edges_target ON memory_edges(target_id);",
+        )?,
+        23 => {
+            ensure_column(
+                conn,
+                "eval_cases",
+                "split",
+                "TEXT NOT NULL DEFAULT 'development' CHECK (split IN ('development', 'holdout'))",
+            )?;
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_eval_cases_split_created ON eval_cases(split, created_at)",
+                [],
+            )?;
+        }
+        24 => {
+            ensure_column(
+                conn,
+                "memory_edges",
+                "valid_from",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(conn, "memory_edges", "valid_to", "INTEGER")?;
+            ensure_column(
+                conn,
+                "memory_edges",
+                "observed_at",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(conn, "memory_edges", "observation_id", "TEXT")?;
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS memory_observations (\
+                     id TEXT PRIMARY KEY,\
+                     memory_id TEXT NOT NULL,\
+                     target_memory_id TEXT,\
+                     kind TEXT NOT NULL CHECK (kind IN ('asserted','verified','contradicted','superseded','file_changed','retrieved','outcome')),\
+                     statement TEXT NOT NULL,\
+                     evidence_kind TEXT NOT NULL,\
+                     evidence_ref TEXT NOT NULL,\
+                     confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),\
+                     valid_from INTEGER NOT NULL,\
+                     valid_to INTEGER,\
+                     observed_at INTEGER NOT NULL,\
+                     branch TEXT,\
+                     commit_hash TEXT,\
+                     worktree_root TEXT,\
+                     FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE,\
+                     FOREIGN KEY (target_memory_id) REFERENCES memories(id) ON DELETE SET NULL,\
+                     CHECK (valid_to IS NULL OR valid_to >= valid_from)\
+                 );\
+                 CREATE INDEX IF NOT EXISTS idx_memory_edges_temporal ON memory_edges(valid_from, valid_to, observed_at);\
+                 CREATE INDEX IF NOT EXISTS idx_memory_observations_memory_time ON memory_observations(memory_id, valid_from, observed_at);\
+                 CREATE INDEX IF NOT EXISTS idx_memory_observations_target ON memory_observations(target_memory_id);",
+            )?;
+        }
+        25 => conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS mcp_tasks (\
+                 task_id TEXT PRIMARY KEY,\
+                 owner_key TEXT NOT NULL,\
+                 protocol_version TEXT NOT NULL,\
+                 lifecycle TEXT NOT NULL CHECK (lifecycle IN ('legacy', 'extension')),\
+                 operation_name TEXT NOT NULL,\
+                 status TEXT NOT NULL CHECK (status IN ('working', 'input_required', 'completed', 'cancelled', 'failed')),\
+                 status_message TEXT NOT NULL,\
+                 created_at TEXT NOT NULL,\
+                 last_updated_at TEXT NOT NULL,\
+                 created_at_ms INTEGER NOT NULL,\
+                 last_updated_at_ms INTEGER NOT NULL,\
+                 ttl_ms INTEGER NOT NULL,\
+                 poll_interval_ms INTEGER NOT NULL,\
+                 expires_at_ms INTEGER NOT NULL,\
+                 result_json TEXT,\
+                 error_json TEXT,\
+                 cancellation_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancellation_requested IN (0, 1))\
+             );\
+             CREATE INDEX IF NOT EXISTS idx_mcp_tasks_owner_updated \
+                 ON mcp_tasks(owner_key, last_updated_at_ms DESC);\
+             CREATE INDEX IF NOT EXISTS idx_mcp_tasks_expires \
+                 ON mcp_tasks(expires_at_ms);",
+        )?,
+        26 => ensure_column(
+            conn,
+            "memory_sources",
+            "trust_status",
+            "TEXT NOT NULL DEFAULT 'unreviewed' CHECK (trust_status IN ('unreviewed', 'reviewed'))",
+        )?,
+        27 => migrate_audit_integrity_ledger(conn)?,
+        28 => migrate_causal_observation_kinds(conn)?,
+        _ => {}
     }
     Ok(())
+}
+
+fn migrate_agent_session_leases(conn: &Connection) -> Result<()> {
+    ensure_column(conn, "memory_read_events", "session_id", "TEXT")?;
+    ensure_column(conn, "agent_sessions", "lease_owner", "TEXT")?;
+    ensure_column(conn, "agent_sessions", "lease_token", "TEXT")?;
+    ensure_column(conn, "agent_sessions", "current_attempt_id", "TEXT")?;
+    ensure_column(conn, "agent_sessions", "lease_expires_at", "INTEGER")?;
+    ensure_column(
+        conn,
+        "agent_sessions",
+        "attempt_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "agent_sessions",
+        "last_event_sequence",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(conn, "agent_sessions", "last_heartbeat_at", "INTEGER")?;
+    ensure_column(conn, "agent_session_events", "event_id", "TEXT")?;
+    ensure_column(
+        conn,
+        "agent_session_events",
+        "sequence",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(conn, "agent_session_events", "attempt_id", "TEXT")?;
+    conn.execute(
+        "UPDATE agent_session_events SET sequence = id WHERE sequence = 0",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE agent_sessions SET last_event_sequence = COALESCE((SELECT MAX(sequence) FROM agent_session_events WHERE session_id = agent_sessions.id), 0)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_read_events_session_id ON memory_read_events(session_id)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_sessions_lease_expiry ON agent_sessions(status, lease_expires_at)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_session_events_event_id ON agent_session_events(session_id, event_id) WHERE event_id IS NOT NULL",
+        [],
+    )?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_session_events_sequence ON agent_session_events(session_id, sequence)",
+        [],
+    )?;
+    Ok(())
+}
+
+fn migrate_audit_integrity_ledger(conn: &Connection) -> Result<()> {
+    ensure_column(
+        conn,
+        "memory_events",
+        "previous_hash",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        conn,
+        "memory_events",
+        "event_hash",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS audit_checkpoints (\
+             id INTEGER PRIMARY KEY AUTOINCREMENT,\
+             created_at INTEGER NOT NULL,\
+             deleted_through_id INTEGER NOT NULL,\
+             deleted_count INTEGER NOT NULL,\
+             first_retained_id INTEGER,\
+             anchor_hash TEXT NOT NULL,\
+             previous_checkpoint_hash TEXT NOT NULL,\
+             checkpoint_hash TEXT NOT NULL\
+         );",
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT id, event_type, memory_id, detail, created_at FROM memory_events ORDER BY id ASC",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    let mut previous_hash = "genesis".to_string();
+    for (id, event_type, memory_id, detail, created_at) in rows {
+        let event_hash = audit_event_hash(
+            id,
+            &event_type,
+            memory_id.as_deref(),
+            &detail,
+            created_at,
+            &previous_hash,
+        );
+        conn.execute(
+            "UPDATE memory_events SET previous_hash = ?1, event_hash = ?2 WHERE id = ?3",
+            params![previous_hash, event_hash, id],
+        )?;
+        previous_hash = event_hash;
+    }
+    Ok(())
+}
+
+fn migrate_causal_observation_kinds(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        ALTER TABLE memory_observations RENAME TO memory_observations_v27;
+        CREATE TABLE memory_observations (
+            id TEXT PRIMARY KEY,
+            memory_id TEXT NOT NULL,
+            target_memory_id TEXT,
+            kind TEXT NOT NULL CHECK (kind IN ('asserted','verified','contradicted','superseded','file_changed','retrieved','outcome','causes','depends_on','blocks','enables','prevents')),
+            statement TEXT NOT NULL,
+            evidence_kind TEXT NOT NULL,
+            evidence_ref TEXT NOT NULL,
+            confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+            valid_from INTEGER NOT NULL,
+            valid_to INTEGER,
+            observed_at INTEGER NOT NULL,
+            branch TEXT,
+            commit_hash TEXT,
+            worktree_root TEXT,
+            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+            FOREIGN KEY (target_memory_id) REFERENCES memories(id) ON DELETE SET NULL,
+            CHECK (valid_to IS NULL OR valid_to >= valid_from)
+        );
+        INSERT INTO memory_observations (
+            id, memory_id, target_memory_id, kind, statement, evidence_kind,
+            evidence_ref, confidence, valid_from, valid_to, observed_at,
+            branch, commit_hash, worktree_root
+        )
+        SELECT
+            id, memory_id, target_memory_id, kind, statement, evidence_kind,
+            evidence_ref, confidence, valid_from, valid_to, observed_at,
+            branch, commit_hash, worktree_root
+        FROM memory_observations_v27;
+        DROP TABLE memory_observations_v27;
+        CREATE INDEX IF NOT EXISTS idx_memory_observations_memory_time
+            ON memory_observations(memory_id, valid_from, observed_at);
+        CREATE INDEX IF NOT EXISTS idx_memory_observations_target
+            ON memory_observations(target_memory_id);
+        "#,
+    )?;
+    Ok(())
+}
+
+fn database_registry_key(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        }
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -380,6 +915,42 @@ fn migrations() -> &'static [Migration] {
             version: 19,
             name: "Production v19 persistent sqlite-vec index registry",
         },
+        Migration {
+            version: 20,
+            name: "Production v20 agent session control plane",
+        },
+        Migration {
+            version: 21,
+            name: "Production v21 leased idempotent agent orchestration",
+        },
+        Migration {
+            version: 22,
+            name: "Production v22 typed memory graph edges",
+        },
+        Migration {
+            version: 23,
+            name: "Production v23 RAG eval development and holdout splits",
+        },
+        Migration {
+            version: 24,
+            name: "Production v24 bitemporal evidence observations and graph edges",
+        },
+        Migration {
+            version: 25,
+            name: "Production v25 durable MCP task lifecycle",
+        },
+        Migration {
+            version: 26,
+            name: "Production v26 explicit RAG source trust promotion",
+        },
+        Migration {
+            version: 27,
+            name: "Production v27 tamper-evident audit integrity ledger",
+        },
+        Migration {
+            version: 28,
+            name: "Production v28 evidence-backed causal observation kinds",
+        },
     ]
 }
 
@@ -432,6 +1003,8 @@ pub(crate) fn verify_schema(conn: &Connection) -> Result<()> {
     for table in [
         "memories",
         "memory_links",
+        "memory_edges",
+        "memory_observations",
         "memory_embeddings",
         "rag_chunk_embeddings",
         "vector_index_registry",
@@ -439,9 +1012,12 @@ pub(crate) fn verify_schema(conn: &Connection) -> Result<()> {
         "memory_inbox",
         "memory_events",
         "memory_read_events",
+        "agent_sessions",
+        "agent_session_events",
         "embedding_provider_health",
         "memory_locks",
         "eval_cases",
+        "mcp_tasks",
         "memory_sources",
         "rag_chunks",
         "rag_chunks_fts",
@@ -453,6 +1029,107 @@ pub(crate) fn verify_schema(conn: &Connection) -> Result<()> {
         )?;
         if exists == 0 {
             bail!("missing table: {table}");
+        }
+    }
+    verify_columns(
+        conn,
+        "memories",
+        &[
+            "id",
+            "type",
+            "scope",
+            "title",
+            "body",
+            "status",
+            "superseded_by",
+            "confidence",
+            "layer",
+        ],
+    )?;
+    verify_columns(
+        conn,
+        "memory_edges",
+        &[
+            "source_id",
+            "target_id",
+            "kind",
+            "confidence",
+            "provenance",
+            "created_at",
+            "valid_from",
+            "valid_to",
+            "observed_at",
+            "observation_id",
+        ],
+    )?;
+    verify_columns(
+        conn,
+        "agent_sessions",
+        &[
+            "lease_owner",
+            "lease_token",
+            "current_attempt_id",
+            "lease_expires_at",
+            "last_event_sequence",
+        ],
+    )?;
+    verify_columns(conn, "eval_cases", &["split"])?;
+    verify_columns(
+        conn,
+        "mcp_tasks",
+        &[
+            "task_id",
+            "owner_key",
+            "protocol_version",
+            "lifecycle",
+            "operation_name",
+            "status",
+            "expires_at_ms",
+            "result_json",
+            "error_json",
+            "cancellation_requested",
+        ],
+    )?;
+    for (object_type, name) in [
+        ("index", "idx_memory_edges_source"),
+        ("index", "idx_memory_edges_target"),
+        ("index", "idx_memory_edges_temporal"),
+        ("index", "idx_memory_observations_memory_time"),
+        ("index", "idx_eval_cases_split_created"),
+        ("index", "idx_agent_session_events_event_id"),
+        ("index", "idx_mcp_tasks_owner_updated"),
+        ("index", "idx_mcp_tasks_expires"),
+        ("trigger", "memories_ai"),
+        ("trigger", "memories_ad"),
+        ("trigger", "memories_au"),
+        ("trigger", "rag_chunks_ai"),
+        ("trigger", "rag_chunks_ad"),
+        ("trigger", "rag_chunks_au"),
+    ] {
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = ?1 AND name = ?2",
+            params![object_type, name],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            bail!("missing {object_type}: {name}");
+        }
+    }
+    let version = schema_version(conn)?;
+    if version != CURRENT_SCHEMA_VERSION {
+        bail!("schema version mismatch: current={version} expected={CURRENT_SCHEMA_VERSION}");
+    }
+    Ok(())
+}
+
+fn verify_columns(conn: &Connection, table: &str, expected: &[&str]) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
+    for column in expected {
+        if !columns.contains(*column) {
+            bail!("missing column: {table}.{column}");
         }
     }
     Ok(())
@@ -550,4 +1227,225 @@ pub(crate) fn optimize_db_report(conn: &Connection, vacuum: bool) -> Result<Opti
         page_count: conn.query_row("PRAGMA page_count", [], |row| row.get(0))?,
         freelist_count: conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrations_are_versioned_and_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        run_migrations(&conn).unwrap();
+        let first_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_versions", [], |row| row.get(0))
+            .unwrap();
+        run_migrations(&conn).unwrap();
+        let second_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_versions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), CURRENT_SCHEMA_VERSION);
+        assert_eq!(first_count, second_count);
+        assert_eq!(first_count, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn legacy_v22_tables_migrate_before_current_indexes_are_created() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("legacy-v22.db");
+        let legacy = Connection::open(&path).unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE schema_versions (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL, description TEXT NOT NULL);\
+                 INSERT INTO schema_versions VALUES (22, 1, 'legacy v22');\
+                 CREATE TABLE memory_edges (\
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                     source_id TEXT NOT NULL,\
+                     target_id TEXT NOT NULL,\
+                     kind TEXT NOT NULL,\
+                     confidence REAL NOT NULL,\
+                     provenance TEXT NOT NULL,\
+                     created_at INTEGER NOT NULL,\
+                     UNIQUE (source_id, target_id, kind)\
+                 );\
+                 CREATE TABLE eval_cases (\
+                     id TEXT PRIMARY KEY,\
+                     name TEXT NOT NULL,\
+                     query TEXT NOT NULL,\
+                     expected TEXT NOT NULL,\
+                     budget INTEGER NOT NULL DEFAULT 4000,\
+                     created_at INTEGER NOT NULL\
+                 );\
+                 CREATE TABLE agent_session_events (\
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                     session_id TEXT NOT NULL,\
+                     event_id TEXT,\
+                     sequence INTEGER NOT NULL DEFAULT 0,\
+                     attempt_id TEXT,\
+                     event_type TEXT NOT NULL,\
+                     detail TEXT NOT NULL,\
+                     created_at INTEGER NOT NULL\
+                 );\
+                 CREATE UNIQUE INDEX idx_agent_session_events_event_id \
+                     ON agent_session_events(session_id, event_id) WHERE event_id IS NOT NULL;",
+            )
+            .unwrap();
+        drop(legacy);
+
+        let migrated = open_db(&path).unwrap();
+        assert_eq!(schema_version(&migrated).unwrap(), CURRENT_SCHEMA_VERSION);
+        verify_schema(&migrated).unwrap();
+        let migrated_columns: i64 = migrated
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM pragma_table_info('memory_edges') WHERE name = 'valid_from') +\
+                        (SELECT COUNT(*) FROM pragma_table_info('eval_cases') WHERE name = 'split')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(migrated_columns, 2);
+    }
+
+    #[test]
+    fn schema_verification_checks_structural_objects() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        run_migrations(&conn).unwrap();
+        verify_schema(&conn).unwrap();
+        conn.execute_batch("DROP INDEX idx_memory_edges_target")
+            .unwrap();
+        let error = verify_schema(&conn).unwrap_err().to_string();
+        assert!(error.contains("idx_memory_edges_target"));
+    }
+
+    #[test]
+    fn sqlite_durability_profiles_select_reviewed_sync_modes() {
+        let conn = Connection::open_in_memory().unwrap();
+        SqliteDurabilityProfile::Balanced.configure(&conn).unwrap();
+        let balanced: i64 = conn
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(balanced, 1, "balanced profile must use NORMAL sync");
+
+        SqliteDurabilityProfile::Strict.configure(&conn).unwrap();
+        let strict: i64 = conn
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(strict, 2, "strict profile must use FULL sync");
+    }
+
+    #[test]
+    fn concurrent_writers_and_checkpoints_preserve_wal_integrity() {
+        const WRITERS: usize = 4;
+        const ROWS_PER_WRITER: usize = 64;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("wal-concurrency.db");
+        let conn = open_db(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE wal_concurrency_fixture (\
+                 id INTEGER PRIMARY KEY,\
+                 writer INTEGER NOT NULL,\
+                 payload TEXT NOT NULL\
+             );",
+        )
+        .unwrap();
+        drop(conn);
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(WRITERS + 1));
+        let mut workers = Vec::new();
+        for writer in 0..WRITERS {
+            let path = path.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || -> Result<()> {
+                let conn = open_db(&path)?;
+                barrier.wait();
+                for row in 0..ROWS_PER_WRITER {
+                    let id = writer * ROWS_PER_WRITER + row;
+                    conn.execute(
+                        "INSERT INTO wal_concurrency_fixture (id, writer, payload) \
+                         VALUES (?1, ?2, ?3)",
+                        params![
+                            id as i64,
+                            writer as i64,
+                            format!("writer-{writer}-row-{row}")
+                        ],
+                    )?;
+                }
+                Ok(())
+            }));
+        }
+
+        let checkpoint_path = path.clone();
+        let checkpoint_barrier = std::sync::Arc::clone(&barrier);
+        let checkpoint = std::thread::spawn(move || -> Result<()> {
+            let conn = open_db(&checkpoint_path)?;
+            checkpoint_barrier.wait();
+            for _ in 0..64 {
+                let _: (i64, i64, i64) =
+                    conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })?;
+                std::thread::yield_now();
+            }
+            Ok(())
+        });
+
+        for worker in workers {
+            worker.join().expect("WAL writer thread panicked").unwrap();
+        }
+        checkpoint
+            .join()
+            .expect("WAL checkpoint thread panicked")
+            .unwrap();
+
+        let conn = open_db(&path).unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wal_concurrency_fixture", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, (WRITERS * ROWS_PER_WRITER) as i64);
+        assert_eq!(integrity, "ok");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_files_and_new_parent_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join(".agent");
+        let db = parent.join("memory.db");
+        let conn = open_db(&db).unwrap();
+        let secure_delete: i64 = conn
+            .query_row("PRAGMA secure_delete", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(secure_delete, 2, "SQLite FAST secure-delete mode");
+        assert_eq!(
+            fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&db).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = db.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            let sidecar = PathBuf::from(sidecar);
+            if sidecar.exists() {
+                assert_eq!(
+                    fs::metadata(sidecar).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+        }
+    }
 }

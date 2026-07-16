@@ -1,5 +1,4 @@
 use super::*;
-use sha2::{Digest, Sha256};
 
 pub(crate) fn write_bundle(
     conn: &Connection,
@@ -36,7 +35,7 @@ struct ReleaseBundleManifest {
     binary_sha256: String,
     config_template: String,
     database: String,
-    memory_stats: services::MemoryStats,
+    memory_stats: crate::application::MemoryStats,
 }
 
 pub(crate) fn write_release_bundle(conn: &Connection, db: &Path, output: &Path) -> Result<()> {
@@ -65,7 +64,7 @@ pub(crate) fn write_release_bundle(conn: &Connection, db: &Path, output: &Path) 
     }
 
     let store = MemoryStore::new(conn);
-    let service = MemoryService::new(store);
+    let service = MemoryApplication::new(store);
     let manifest = ReleaseBundleManifest {
         name: "dukememory".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -83,23 +82,6 @@ pub(crate) fn write_release_bundle(conn: &Connection, db: &Path, output: &Path) 
     )?;
     println!("{}", output.display());
     Ok(())
-}
-
-fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = fs::File::open(path)
-        .with_context(|| format!("failed to open {} for hashing", path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 #[derive(Debug, Serialize)]
@@ -120,14 +102,14 @@ struct BenchReport {
 
 pub(crate) fn print_bench(conn: &Connection, db: &Path, json_out: bool) -> Result<()> {
     let store = MemoryStore::new(conn);
-    let service = MemoryService::new(store);
+    let service = MemoryApplication::new(store);
 
     let stats_start = std::time::Instant::now();
     let stats = service.stats()?;
     let stats_ms = stats_start.elapsed().as_millis();
 
     let fts_start = std::time::Instant::now();
-    let retrieval = RetrievalService::new(service.store());
+    let retrieval = RetrievalApplication::new(service.store());
     let fts_probe_rows = retrieval.fts_probe("memory", 25)?;
     let fts_probe_ms = fts_start.elapsed().as_millis();
 
@@ -229,7 +211,7 @@ pub(crate) fn self_host_memory(conn: &Connection, force: bool) -> Result<()> {
         added += 1;
     }
     let maintenance_store = MemoryStore::new(conn);
-    let maintenance = MaintenanceService::new(&maintenance_store);
+    let maintenance = MaintenanceApplication::new(&maintenance_store);
     let report = SelfHostReport {
         added,
         skipped,

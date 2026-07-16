@@ -1,0 +1,67 @@
+name: Mutation testing
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "11 1 * * 6"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  critical-security-code:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DUKEMEMORY_EMBED_PROVIDER: mock
+      DUKEMEMORY_GEN_PROVIDER: mock
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install pinned cargo-mutants
+        run: cargo install cargo-mutants --version 27.1.0 --locked
+      - name: Mutate bounded critical modules
+        run: >-
+          cargo mutants
+          -f src/protocol.rs
+          -f src/rag_security.rs
+          -f src/app/http_security.rs
+          --timeout 120
+          -- --features vec
+      - name: Upload mutation details
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mutants-${{ github.sha }}
+          path: mutants.out
+          if-no-files-found: ignore
+
+  route-authorization:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DUKEMEMORY_EMBED_PROVIDER: mock
+      DUKEMEMORY_GEN_PROVIDER: mock
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install pinned cargo-mutants
+        run: cargo install cargo-mutants --version 27.1.0 --locked
+      - name: Mutate route authorization decisions
+        run: >-
+          cargo mutants
+          -f src/app/http_authorization.rs
+          -F 'http_read_only_request_allowed|mcp_read_only_request_allowed|with_insufficient_scope_challenge'
+          --timeout 120
+          -- --features vec
+      - name: Upload route mutation details
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: route-mutants-${{ github.sha }}
+          path: mutants.out
+          if-no-files-found: ignore

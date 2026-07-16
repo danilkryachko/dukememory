@@ -50,10 +50,13 @@ For every new chat or coding task in this repository:
 - To inspect goals, decisions, constraints, commands, risks, active tasks, and the compact contract, run `dukememory project-intent-map --json`.
 - To run lightweight retrieval quality probes against durable memory, run `dukememory memory-test-harness --json`.
 - To audit read discipline, semantic effectiveness, write pressure, feedback, and explainability, run `dukememory agent-audit-v2 --json`.
-- To aggregate health, intent, probes, audit, recall explanations, and autonomy, run `dukememory memory-control-center-v2 --json`.
+- To aggregate health, intent, probes, audit, recall explanations, and autonomy, run `dukememory memory-control-center --json`; `memory-control-center-v2` remains available for pinned clients.
 - To safely supersede duplicate/obsolete cards, run `dukememory auto-supersede-v2 --json`; use `--apply` only for high-confidence reversible status changes.
 - To write high-confidence changed-file memory candidates, run `dukememory memory-diff-apply --json`; use `--apply` only after reviewing write-ready cards.
+- To infer high-confidence memory-to-memory graph links, run `dukememory memory-graph-links --json`; use `--apply` only after reviewing safe candidates.
 - To detect retrieval regressions, run `dukememory recall-benchmark-suite --json`; use `--write-baseline` after reviewing stable probes.
+- Recall probes follow explicit `superseded_by` chains to the active successor; rewrite a benchmark baseline only after reviewing a reported stale probe set.
+- Quality Score v2 separates dormant history from actionable stale, obsolete, noisy, oversized, and evidence-missing cards; inspect `dukememory quality-report --json` before cleanup.
 - To gate releases with health, recall benchmark, audit v2, and control-center checks, run `dukememory release-gate-v2 --json`.
 - To measure memory usefulness with influence, wasted reads, and semantic-read signals, run `dukememory memory-effectiveness-v2 --json`.
 - To inspect or write guarded recall benchmark baselines, run `dukememory recall-benchmark-baselines --json`; use `--apply` only after reviewing stable probes.
@@ -63,12 +66,15 @@ For every new chat or coding task in this repository:
 - To run the V2 autonomous memory loop with governance and quality gates, run `dukememory autonomous-loop-v2 --json`; use `--apply` only when governance is ready.
 - To enforce autonomous memory governance, run `dukememory governance-enforce --json`; use `--apply` to log a clean enforcement pass.
 - To run a CI-friendly memory quality gate, run `dukememory memory-quality-ci --json`.
+- To run grounded RAG eval with matrix, retrieval tuning, and baseline comparison, run `dukememory eval rag --json`; write a reviewed baseline with `dukememory eval rag --write-baseline --json`.
+- To run graph-RAG eval over memory relationships, run `dukememory eval graph-rag --json`.
 - To inspect all discovered project memories with V2 quality metrics, run `dukememory fleet-dashboard-v2 --json`.
 - To plan guarded remote sync apply, run `dukememory remote-sync-apply-flow --json`; use `--target` and a mode-600 sync passphrase file before `--apply`.
 - To inspect MCP V2 memory tool exposure, run `dukememory mcp-tool-surface-v2 --json`.
 - To inspect MCP V3 memory tool exposure, run `dukememory mcp-tool-surface-v3 --json`.
 - To run the V3 autonomous memory autopilot, run `dukememory autopilot-v3 --json`; use `--apply` for guarded reversible actions.
 - To tune retrieval from live usefulness, run `dukememory self-learning-retrieval --json`; use `--apply` to write the selected ranking profile.
+- To explain/apply retrieval ranking from QA and RAG eval signals, run `dukememory auto-ranking-tune --json`; use `--apply` only when `safe_to_apply` is true.
 - To detect/apply project-specific memory defaults, run `dukememory project-role-profile --json`; use `--apply` after reviewing inferred kind.
 - To review inbox suggestions with confidence explanations, run `dukememory inbox-ai-reviewer --json`; use `--apply` only for safe high-confidence groups.
 - To inspect the simplified web control model, run `dukememory web-control-center-v3 --json`.
@@ -112,7 +118,17 @@ For every new chat or coding task in this repository:
 - To inspect the 0.29 web control model, run `dukememory web-control-center-v10 --json`.
 - To preview periodic fleet maintenance, run `dukememory fleet-supervisor-watch-install --dry-run --json`; omit `--dry-run` to write the launchd plist.
 - To inspect the 0.30 web control model, run `dukememory web-control-center-v11 --json`.
-- To inspect the 0.33 web control model, run `dukememory web-control-center-v12 --json`.
+- To inspect the current stable web control model, run `dukememory web-control-center --json`; `web-control-center-v12` remains available for pinned clients.
+- To run an evidence-backed agent loop, use `dukememory agent-session start`,
+  `claim`, `context`, `renew`, retry-safe `event --event-id`, `release`,
+  `recover`, `finish`, `status`, and `trace`; pass the current owner and lease
+  token after claim, never recover a live lease, and remember that automatic
+  positive feedback requires an explicit successful result with recorded
+  evidence.
+- To preview completed evidence-session retention, run `dukememory agent-session cleanup --older-than-days 30 --json`; add `--apply` only after reviewing candidate ids and event counts.
+- To inspect or initialize named external runner profiles, run
+  `dukememory runner-profile list|doctor|init --json`; initialization writes
+  `.agent/runner-profiles.toml` only with `--apply`.
 - To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`; use `--recent`, `--as-of YYYY-MM-DD`, `--as-of-days-ago N`, `--changed-since YYYY-MM-DD`, or `--changed-since-days N` for temporal recall.
 - To inspect one memory card's facts, audit events, and real agent read influence, run `dukememory memory-timeline <memory-id> --json`.
 - To review duplicate, stale, active-superseded, and contradiction-prone memory groups without mutating memory, run `dukememory memory-conflict-review --json`.
@@ -136,6 +152,7 @@ For every new chat or coding task in this repository:
 - To seed project-type defaults, run `dukememory project-template --kind rust-cli|frontend-app|game-mod|electronics-cad|docs-research --json`; use `--apply` only after review.
 - To inspect or enable the autonomous watch loop, run `dukememory watch-control --json`; use `--apply` only when launchd should be updated.
 - To inspect the autonomy cockpit, run `dukememory autonomy-control-center --json`.
+- Local autonomy readiness uses required local checks; remote/VDS sync is reported separately as optional and must not block a local-only project.
 - To measure local/VDS sync latency while keeping reads local-first, run `dukememory sync-latency --json`.
 - To choose a safe sync mode, run `dukememory sync-profile --profile local-first-backup --run-dry-run --json` before push/pull.
 - To enforce memory wiring for future chats, run `dukememory agent-enforce --json` or `dukememory agent-enforce --fix --json`.

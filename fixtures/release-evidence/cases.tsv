@@ -1,0 +1,13 @@
+# id|split|name|query|expected
+releaseev01|development|CLI evidence workflow|dukememory CLI evidence_cli_01|evidence_cli_01
+releaseev02|development|MCP evidence workflow|MCP memory tool evidence_mcp_02|evidence_mcp_02
+releaseev03|development|HTTP evidence workflow|HTTP endpoint evidence_http_03|evidence_http_03
+releaseev04|development|Memory card evidence|durable memory card evidence_memory_04|evidence_memory_04
+releaseev05|development|Source chunk evidence|indexed source chunk evidence_source_05|evidence_source_05
+releaseev06|development|Temporal evidence|temporal observation evidence_temporal_06|evidence_temporal_06
+releaseev07|holdout|Release holdout seven|untouched release holdout evidence_holdout_07|evidence_holdout_07
+releaseev08|holdout|Release holdout eight|untouched release holdout evidence_holdout_08|evidence_holdout_08
+releaseev09|holdout|Release holdout nine|untouched release holdout evidence_holdout_09|evidence_holdout_09
+releaseev10|holdout|Release holdout ten|untouched release holdout evidence_holdout_10|evidence_holdout_10
+releaseev11|holdout|Release holdout eleven|untouched release holdout evidence_holdout_11|evidence_holdout_11
+releaseev12|development|Missing evidence label|missing evidence abstention evidence_negative_12|evidence_negative_12

@@ -106,16 +106,17 @@ pub(crate) fn onboard_project(
             &conn,
             AddMemory {
                 id: None,
-                memory_type: "product_goal".to_string(),
+                memory_type: MemoryType::ProductGoal,
                 title,
                 body: "Project memory was onboarded automatically; future agents should keep recall token-light and save only durable decisions, constraints, commands, risks, and task state.".to_string(),
-                scope: "project".to_string(),
-                status: "active".to_string(),
+                scope: MemoryScope::Project,
+                status: MemoryStatus::Active,
                 source: Some("onboard".to_string()),
                 supersedes: None,
                 confidence: 0.8,
                 layer: None,
                 links: Vec::new(),
+                allow_sensitive: false,
             },
         )?;
         actions.push("seed_project_goal".to_string());
@@ -348,16 +349,17 @@ fn upsert_memory_contract_card(conn: &Connection, content: &str) -> Result<Strin
             conn,
             AddMemory {
                 id: None,
-                memory_type: "design_note".to_string(),
+                memory_type: MemoryType::DesignNote,
                 title: "Project memory contract".to_string(),
                 body: content.to_string(),
-                scope: "project".to_string(),
-                status: "active".to_string(),
+                scope: MemoryScope::Project,
+                status: MemoryStatus::Active,
                 source: Some("memory_contract".to_string()),
                 supersedes: None,
                 confidence: 0.95,
                 layer: None,
                 links: vec!["file:.agent/MEMORY_CONTRACT.md".to_string()],
+                allow_sensitive: false,
             },
         )
     }
@@ -669,9 +671,10 @@ For every new chat or coding task in this repository:
 - To inspect goals, decisions, constraints, commands, risks, active tasks, and the compact contract, run `dukememory project-intent-map --json`.
 - To run lightweight retrieval quality probes against durable memory, run `dukememory memory-test-harness --json`.
 - To audit read discipline, semantic effectiveness, write pressure, feedback, and explainability, run `dukememory agent-audit-v2 --json`.
-- To aggregate health, intent, probes, audit, recall explanations, and autonomy, run `dukememory memory-control-center-v2 --json`.
+- To aggregate health, intent, probes, audit, recall explanations, and autonomy, run `dukememory memory-control-center --json`; `memory-control-center-v2` remains available for pinned clients.
 - To safely supersede duplicate/obsolete cards, run `dukememory auto-supersede-v2 --json`; use `--apply` only for high-confidence reversible status changes.
 - To write high-confidence changed-file memory candidates, run `dukememory memory-diff-apply --json`; use `--apply` only after reviewing write-ready cards.
+- To infer high-confidence memory-to-memory graph links, run `dukememory memory-graph-links --json`; use `--apply` only after reviewing safe candidates.
 - To detect retrieval regressions, run `dukememory recall-benchmark-suite --json`; use `--write-baseline` after reviewing stable probes.
 - To gate releases with health, recall benchmark, audit v2, and control-center checks, run `dukememory release-gate-v2 --json`.
 - To measure memory usefulness with influence, wasted reads, and semantic-read signals, run `dukememory memory-effectiveness-v2 --json`.
@@ -682,12 +685,15 @@ For every new chat or coding task in this repository:
 - To run the V2 autonomous memory loop with governance and quality gates, run `dukememory autonomous-loop-v2 --json`; use `--apply` only when governance is ready.
 - To enforce autonomous memory governance, run `dukememory governance-enforce --json`; use `--apply` to log a clean enforcement pass.
 - To run a CI-friendly memory quality gate, run `dukememory memory-quality-ci --json`.
+- To run grounded RAG eval with matrix, retrieval tuning, and baseline comparison, run `dukememory eval rag --json`; write a reviewed baseline with `dukememory eval rag --write-baseline --json`.
+- To run graph-RAG eval over memory relationships, run `dukememory eval graph-rag --json`.
 - To inspect all discovered project memories with V2 quality metrics, run `dukememory fleet-dashboard-v2 --json`.
 - To plan guarded remote sync apply, run `dukememory remote-sync-apply-flow --json`; use `--target` and a mode-600 sync passphrase file before `--apply`.
 - To inspect MCP V2 memory tool exposure, run `dukememory mcp-tool-surface-v2 --json`.
 - To inspect MCP V3 memory tool exposure, run `dukememory mcp-tool-surface-v3 --json`.
 - To run the V3 autonomous memory autopilot, run `dukememory autopilot-v3 --json`; use `--apply` for guarded reversible actions.
 - To tune retrieval from live usefulness, run `dukememory self-learning-retrieval --json`; use `--apply` to write the selected ranking profile.
+- To explain/apply retrieval ranking from QA and RAG eval signals, run `dukememory auto-ranking-tune --json`; use `--apply` only when `safe_to_apply` is true.
 - To detect/apply project-specific memory defaults, run `dukememory project-role-profile --json`; use `--apply` after reviewing inferred kind.
 - To review inbox suggestions with confidence explanations, run `dukememory inbox-ai-reviewer --json`; use `--apply` only for safe high-confidence groups.
 - To inspect the simplified web control model, run `dukememory web-control-center-v3 --json`.
@@ -731,7 +737,7 @@ For every new chat or coding task in this repository:
 - To inspect the 0.29 web control model, run `dukememory web-control-center-v10 --json`.
 - To preview periodic fleet maintenance, run `dukememory fleet-supervisor-watch-install --dry-run --json`; omit `--dry-run` to write the launchd plist.
 - To inspect the 0.30 web control model, run `dukememory web-control-center-v11 --json`.
-- To inspect the 0.33 web control model, run `dukememory web-control-center-v12 --json`.
+- To inspect the current stable web control model, run `dukememory web-control-center --json`; `web-control-center-v12` remains available for pinned clients.
 - To get compressed token-light recall, run `dukememory recall "<task>" --max-chars 1200`; use `--recent`, `--as-of YYYY-MM-DD`, `--as-of-days-ago N`, `--changed-since YYYY-MM-DD`, or `--changed-since-days N` for temporal recall.
 - To inspect one memory card's facts, audit events, and real agent read influence, run `dukememory memory-timeline <memory-id> --json`.
 - To review duplicate, stale, active-superseded, and contradiction-prone memory groups without mutating memory, run `dukememory memory-conflict-review --json`.

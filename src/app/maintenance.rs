@@ -350,7 +350,8 @@ pub(crate) fn auto_ingest_sessions(
     dry_run: bool,
 ) -> Result<AutoIngestReport> {
     validate_scope(scope)?;
-    let files = collect_session_files(input)?;
+    let input = input.canonicalize().unwrap_or_else(|_| input.to_path_buf());
+    let files = collect_session_files(&input)?;
     let mut report = AutoIngestReport {
         scanned: files.len(),
         ingested: 0,
@@ -474,9 +475,8 @@ pub(crate) fn suggest_from_llm(
         "Extract durable project memory from this transcript. Return lines only in this format: type|title|body. Valid types: product_goal,user_preference,decision,design_note,known_issue,command,task_state,domain_fact,constraint,note.\n\n{text}"
     );
     let url = format!("{}/api/generate", endpoint.trim_end_matches('/'));
-    let value: Value = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(180))
-        .build()?
+    let (client, url) = egress::blocking_http_client(&url, std::time::Duration::from_secs(60))?;
+    let value: Value = client
         .post(url)
         .json(&json!({"model": model, "prompt": prompt, "stream": false}))
         .send()?
@@ -691,7 +691,10 @@ pub(crate) fn list_inbox(conn: &Connection, status: &str, limit: usize) -> Resul
         LIMIT ?2
         "#,
     )?;
-    let rows = stmt.query_map(params![status, limit.min(i64::MAX as usize)], row_to_inbox)?;
+    let rows = stmt.query_map(
+        params![status, limit.min(i64::MAX as usize) as i64],
+        row_to_inbox,
+    )?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }
@@ -737,16 +740,17 @@ pub(crate) fn approve_inbox(conn: &Connection, id: &str, allow_sensitive: bool) 
             conn,
             AddMemory {
                 id: None,
-                memory_type: item.memory_type,
+                memory_type: item.memory_type.parse()?,
                 title: item.title,
                 body: item.body,
-                scope: item.scope,
-                status: "active".to_string(),
+                scope: item.scope.parse()?,
+                status: MemoryStatus::Active,
                 source: item.source.or_else(|| Some("inbox".to_string())),
                 supersedes: None,
                 confidence: item.confidence,
                 layer: item.layer,
                 links: Vec::new(),
+                allow_sensitive: false,
             },
         )?;
         conn.execute(
@@ -881,16 +885,17 @@ pub(crate) fn compact_task_state(
         conn,
         AddMemory {
             id: None,
-            memory_type: "task_state".to_string(),
+            memory_type: MemoryType::TaskState,
             title: format!("Compacted {scope} task state"),
             body,
-            scope: scope.to_string(),
-            status: "active".to_string(),
+            scope: scope.parse()?,
+            status: MemoryStatus::Active,
             source: Some("compact".to_string()),
             supersedes: None,
             confidence: 0.9,
             layer: None,
             links: Vec::new(),
+            allow_sensitive: false,
         },
     )?;
     for row in rows {
@@ -942,16 +947,17 @@ pub(crate) fn compact_v2(
             conn,
             AddMemory {
                 id: None,
-                memory_type: "task_state".to_string(),
+                memory_type: MemoryType::TaskState,
                 title: format!("Compacted v2 {scope} operational memory"),
                 body: body.clone(),
-                scope: scope.to_string(),
-                status: "active".to_string(),
+                scope: scope.parse()?,
+                status: MemoryStatus::Active,
                 source: Some("compact_v2".to_string()),
                 supersedes: None,
                 confidence: 0.9,
                 layer: None,
                 links: Vec::new(),
+                allow_sensitive: false,
             },
         )?;
         for row in &rows {

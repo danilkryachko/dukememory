@@ -12,6 +12,10 @@ pub(crate) fn run() -> Result<()> {
     )?;
 
     match cli.command {
+        Command::Operations { json } => {
+            print_operation_catalog(json)?;
+            return Ok(());
+        }
         Command::Restore {
             input,
             force,
@@ -51,9 +55,11 @@ pub(crate) fn run() -> Result<()> {
     }
 
     let conn = open_db(&cli.db)?;
+    let memory_app = MemoryApplication::new(MemoryStore::new(&conn));
 
     match cli.command {
         Command::Init { config, force } => init_project(&conn, &cli.db, &config, force)?,
+        Command::Operations { .. } => unreachable!("handled before database open"),
         Command::Add {
             memory_type,
             title,
@@ -70,26 +76,24 @@ pub(crate) fn run() -> Result<()> {
         } => {
             validate_scope(&scope)?;
             reject_sensitive(&title, &body, allow_sensitive)?;
-            let id = add_memory(
-                &conn,
-                AddMemory {
-                    id,
-                    memory_type: memory_type.to_string(),
-                    title,
-                    body,
-                    scope,
-                    status: status.to_string(),
-                    source,
-                    supersedes,
-                    confidence,
-                    layer,
-                    links,
-                },
-            )?;
+            let id = memory_app.create(AddMemory {
+                id,
+                memory_type,
+                title,
+                body,
+                scope: scope.parse()?,
+                status,
+                source,
+                supersedes,
+                confidence,
+                layer,
+                links,
+                allow_sensitive,
+            })?;
             println!("{id}");
         }
         Command::Get { id, json } => {
-            let memory = get_memory_with_links(&conn, &id)?;
+            let memory = memory_app.get_with_links(&id)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&memory)?);
             } else {
@@ -116,24 +120,26 @@ pub(crate) fn run() -> Result<()> {
             if let Some(body) = &body {
                 reject_sensitive(title.as_deref().unwrap_or_default(), body, allow_sensitive)?;
             }
-            update_memory(
-                &conn,
-                UpdateMemory {
-                    id,
-                    memory_type: memory_type.map(|v| v.to_string()),
-                    title,
-                    body,
-                    scope,
-                    status: status.map(|v| v.to_string()),
-                    source,
-                    confidence,
-                    layer,
-                    links,
-                    replace_links,
-                },
-            )?;
+            memory_app.update(UpdateMemory {
+                id: id.clone(),
+                memory_type,
+                title,
+                body,
+                scope: scope.map(|value| value.parse()).transpose()?,
+                status,
+                source,
+                confidence,
+                layer,
+                links,
+                replace_links,
+                allow_sensitive,
+            })?;
+            println!("{id}");
         }
-        Command::Delete { id } => delete_memory(&conn, &id)?,
+        Command::Delete { id } => {
+            memory_app.delete(&id)?;
+            println!("{id}");
+        }
         Command::Search {
             query,
             memory_type,
@@ -212,7 +218,10 @@ pub(crate) fn run() -> Result<()> {
             )?;
             print_rows(&conn, &rows, json)?;
         }
-        Command::Status { id, status } => set_status(&conn, &id, status.to_string())?,
+        Command::Status { id, status } => {
+            memory_app.set_status(&id, status)?;
+            println!("{id}");
+        }
         Command::ContextPack {
             task,
             memory_type,
@@ -458,24 +467,32 @@ pub(crate) fn run() -> Result<()> {
             validate_scope(&scope)?;
             let body = render_session_body(&summary, &next);
             reject_sensitive(&title, &body, allow_sensitive)?;
-            let id = add_memory(
-                &conn,
-                AddMemory {
-                    id: None,
-                    memory_type: "task_state".to_string(),
-                    title,
-                    body,
-                    scope,
-                    status: "active".to_string(),
-                    source,
-                    supersedes: None,
-                    confidence: 1.0,
-                    layer: None,
-                    links: Vec::new(),
-                },
-            )?;
+            let id = memory_app.create(AddMemory {
+                id: None,
+                memory_type: MemoryType::TaskState,
+                title,
+                body,
+                scope: scope.parse()?,
+                status: MemoryStatus::Active,
+                source,
+                supersedes: None,
+                confidence: 1.0,
+                layer: None,
+                links: Vec::new(),
+                allow_sensitive,
+            })?;
             println!("{id}");
         }
+        Command::AgentSession { command } => handle_agent_session(
+            &conn,
+            command,
+            &runner_profile_root(&cli.db),
+            &runtime.config.embeddings.provider,
+            &runtime.config.embeddings.endpoint,
+            &runtime.config.embeddings.model,
+            &runtime.config.agent_sessions,
+        )?,
+        Command::RunnerProfile { command } => handle_runner_profile(command)?,
         Command::Install { to, force } => install_binary(&to, force)?,
         Command::InstallSkill { path, force } => install_codex_skill(&expand_tilde(&path), force)?,
         Command::UpdateInstall {
@@ -495,7 +512,11 @@ pub(crate) fn run() -> Result<()> {
         )?,
         Command::VecStatus => print_vec_status(&conn),
         Command::VecIndex { rebuild, json } => print_vec_index(&conn, rebuild, json)?,
-        Command::ServeMcp { content_length } => mcp_server::serve_mcp(&cli.db, content_length)?,
+        Command::ServeMcp {
+            content_length,
+            profile,
+            page_size,
+        } => mcp_server::serve_mcp(&cli.db, content_length, &profile, page_size)?,
         Command::ProjectSummary { max_chars, json } => {
             print_project_summary(&conn, max_chars, json)?
         }
@@ -663,7 +684,32 @@ pub(crate) fn run() -> Result<()> {
             provider,
             endpoint,
             model,
-        } => embeddings::print_vector_bench(&conn, &provider, &endpoint, &model)?,
+            iterations,
+            warmup,
+            limit,
+            baseline,
+            write_baseline,
+            max_regression_percent,
+            max_p95_ms,
+            min_qps,
+            json,
+        } => embeddings::print_vector_bench(
+            &conn,
+            embeddings::VectorBenchOptions {
+                provider: &provider,
+                endpoint: &endpoint,
+                model: &model,
+                iterations,
+                warmup,
+                limit,
+                baseline: baseline.as_deref(),
+                write_baseline,
+                max_regression_percent,
+                max_p95_ms,
+                min_qps,
+                json_out: json,
+            },
+        )?,
         Command::EmbedStatus {
             provider,
             endpoint,
@@ -679,7 +725,11 @@ pub(crate) fn run() -> Result<()> {
         } => embeddings::embed_watch(&conn, &provider, &endpoint, &model, interval_secs, once)?,
         Command::Completions { shell } => print_completions(shell),
         Command::Man => print_manpage(),
-        Command::Audit { limit, json } => print_audit(&conn, limit, json)?,
+        Command::Audit {
+            limit,
+            verify,
+            json,
+        } => print_audit(&conn, limit, verify, json)?,
         Command::UsageReport {
             since_days,
             limit,
@@ -967,6 +1017,11 @@ pub(crate) fn run() -> Result<()> {
             since_days,
             json,
         } => print_memory_control_center_v2(&conn, &cli.db, &root, since_days, json)?,
+        Command::MemoryControlCenter {
+            root,
+            since_days,
+            json,
+        } => print_memory_control_center_v2(&conn, &cli.db, &root, since_days, json)?,
         Command::AutoSupersedeV2 {
             root,
             since_days,
@@ -976,6 +1031,19 @@ pub(crate) fn run() -> Result<()> {
         Command::MemoryDiffApply { root, apply, json } => {
             print_memory_diff_apply(&conn, &root, apply, json)?
         }
+        Command::MemoryGraphLinks {
+            root,
+            limit,
+            apply,
+            json,
+        } => print_memory_graph_links(&conn, &root, limit, apply, json)?,
+        Command::EvidenceAutopilot {
+            root,
+            limit,
+            apply,
+            rollback_observation_ids,
+            json,
+        } => print_evidence_autopilot(&conn, &root, limit, apply, &rollback_observation_ids, json)?,
         Command::RecallBenchmarkSuite {
             root,
             since_days,
@@ -1336,11 +1404,84 @@ pub(crate) fn run() -> Result<()> {
             ),
             json,
         )?,
+        Command::RagShadow {
+            question,
+            scope,
+            limit,
+            budget,
+            budget_profile,
+            provider,
+            endpoint,
+            model,
+            json,
+        } => print_memory_rag_shadow(
+            &conn,
+            &question,
+            scope.as_deref(),
+            limit,
+            budget
+                .or_else(|| budget_profile_chars(budget_profile))
+                .unwrap_or(3000),
+            select_cli_or_config(
+                &provider,
+                DEFAULT_EMBED_PROVIDER,
+                &runtime.config.embeddings.provider,
+            ),
+            select_cli_or_config(
+                &endpoint,
+                DEFAULT_EMBED_ENDPOINT,
+                &runtime.config.embeddings.endpoint,
+            ),
+            select_cli_or_config(
+                &model,
+                DEFAULT_EMBED_MODEL,
+                &runtime.config.embeddings.model,
+            ),
+            json,
+        )?,
+        Command::DecisionCapsule {
+            question,
+            root,
+            scope,
+            limit,
+            budget,
+            budget_profile,
+            provider,
+            endpoint,
+            model,
+            json,
+        } => print_decision_capsule(
+            &conn,
+            &root,
+            &question,
+            scope.as_deref(),
+            limit,
+            budget
+                .or_else(|| budget_profile_chars(budget_profile))
+                .unwrap_or(3000),
+            select_cli_or_config(
+                &provider,
+                DEFAULT_EMBED_PROVIDER,
+                &runtime.config.embeddings.provider,
+            ),
+            select_cli_or_config(
+                &endpoint,
+                DEFAULT_EMBED_ENDPOINT,
+                &runtime.config.embeddings.endpoint,
+            ),
+            select_cli_or_config(
+                &model,
+                DEFAULT_EMBED_MODEL,
+                &runtime.config.embeddings.model,
+            ),
+            json,
+        )?,
         Command::RagIngest {
             input,
             root,
             scope,
             apply,
+            reviewed,
             embed,
             provider,
             endpoint,
@@ -1357,6 +1498,7 @@ pub(crate) fn run() -> Result<()> {
                 input: &input,
                 scope: &scope,
                 apply,
+                reviewed,
                 embed,
                 provider: select_cli_or_config(
                     &provider,
@@ -1377,6 +1519,40 @@ pub(crate) fn run() -> Result<()> {
                 overlap_chars,
                 max_file_bytes,
                 max_files,
+                json,
+            },
+        )?,
+        Command::RagRefresh {
+            root,
+            apply,
+            prune_missing,
+            embed,
+            provider,
+            endpoint,
+            model,
+            json,
+        } => print_rag_refresh(
+            &conn,
+            RagRefreshRequest {
+                root: &root,
+                apply,
+                prune_missing,
+                embed,
+                provider: select_cli_or_config(
+                    &provider,
+                    DEFAULT_EMBED_PROVIDER,
+                    &runtime.config.embeddings.provider,
+                ),
+                endpoint: select_cli_or_config(
+                    &endpoint,
+                    DEFAULT_EMBED_ENDPOINT,
+                    &runtime.config.embeddings.endpoint,
+                ),
+                model: select_cli_or_config(
+                    &model,
+                    DEFAULT_EMBED_MODEL,
+                    &runtime.config.embeddings.model,
+                ),
                 json,
             },
         )?,
@@ -1450,6 +1626,15 @@ pub(crate) fn run() -> Result<()> {
                 println!(
                     "status: {} confidence: {} ({:.2})",
                     report.status, report.confidence, report.confidence_score
+                );
+                println!(
+                    "graph: {} nodes={} seeds={} expanded={} edges={} isolated={}",
+                    report.graph_summary.status,
+                    report.graph_summary.node_count,
+                    report.graph_summary.seed_count,
+                    report.graph_summary.expanded_count,
+                    report.graph_summary.edge_count,
+                    report.graph_summary.isolated_node_count
                 );
                 println!("{}", report.answer);
                 if !report.missing_evidence.is_empty() {
@@ -1544,6 +1729,56 @@ pub(crate) fn run() -> Result<()> {
             json,
         } => print_memory_upload(&conn, &root, &input, &scope, apply, json)?,
         Command::MemantoGapReport { json } => print_memanto_gap_report(&conn, json)?,
+        Command::Observe {
+            id,
+            kind,
+            statement,
+            evidence_kind,
+            evidence_ref,
+            target_memory_id,
+            confidence,
+            valid_from,
+            valid_to,
+            root,
+            json,
+        } => {
+            let observation = record_memory_observation(
+                &conn,
+                &root,
+                &MemoryObservationRequest {
+                    memory_id: &id,
+                    target_memory_id: target_memory_id.as_deref(),
+                    kind: &kind,
+                    statement: &statement,
+                    evidence_kind: &evidence_kind,
+                    evidence_ref: &evidence_ref,
+                    confidence,
+                    valid_from,
+                    valid_to,
+                },
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&observation)?);
+            } else {
+                println!("{}", observation.id);
+            }
+        }
+        Command::Observations {
+            id,
+            valid_at,
+            known_at,
+            limit,
+            json,
+        } => print_memory_observations(&conn, &id, valid_at, known_at, limit, json)?,
+        Command::TemporalGraph {
+            valid_at,
+            known_at,
+            commit,
+            limit,
+            json,
+        } => {
+            print_temporal_memory_graph(&conn, valid_at, known_at, commit.as_deref(), limit, json)?
+        }
         Command::MemoryTimeline { id, limit, json } => {
             print_memory_timeline(&conn, &id, limit, json)?
         }
@@ -1694,10 +1929,22 @@ pub(crate) fn run() -> Result<()> {
         Command::ReleaseGateV3 {
             root,
             since_days,
+            rag_profile,
+            profile,
             strict,
             run,
             json,
-        } => print_release_gate_v3(&conn, &cli.db, &root, since_days, strict, run, json)?,
+        } => print_release_gate_v3(
+            &conn,
+            &cli.db,
+            &root,
+            since_days,
+            strict,
+            run,
+            rag_profile,
+            profile,
+            json,
+        )?,
         Command::WebControlCenterV12 {
             root,
             target,
@@ -1713,6 +1960,28 @@ pub(crate) fn run() -> Result<()> {
             since_days,
             json,
         )?,
+        Command::WebControlCenter {
+            root,
+            target,
+            task,
+            since_days,
+            details,
+            json,
+        } => {
+            if details {
+                print_web_control_center_v12(
+                    &conn,
+                    &cli.db,
+                    &root,
+                    target.as_deref(),
+                    &task,
+                    since_days,
+                    json,
+                )?;
+            } else {
+                print_control_snapshot(&conn, &cli.db, &root, since_days, json)?;
+            }
+        }
         Command::ProjectTemplate {
             root,
             kind,
@@ -1858,18 +2127,47 @@ pub(crate) fn run() -> Result<()> {
         )?,
         Command::Autopilot { command } => handle_autopilot(&conn, &cli.db, command)?,
         Command::Autonomous { command } => handle_autonomous(&conn, &cli.db, command)?,
+        Command::DeploymentProfile {
+            root,
+            mode,
+            host,
+            auth_token_file,
+            public_origin,
+            sync_target,
+            json,
+        } => print_deployment_profile(
+            DeploymentProfileRequest {
+                root: &root,
+                mode,
+                host: &host,
+                token_file: auth_token_file.as_deref(),
+                public_origin: public_origin.as_deref(),
+                sync_target: sync_target.as_deref(),
+            },
+            json,
+        )?,
         Command::ServeHttp {
             host,
             port,
             once,
             auth_token,
             auth_token_file,
+            mcp_profile,
+            mcp_page_size,
         } => {
             let auth_token = http_server::resolve_http_auth_token(
                 auth_token.as_deref(),
                 auth_token_file.as_deref(),
             )?;
-            http_server::serve_http(&cli.db, &host, port, once, auth_token.as_deref())?;
+            http_server::serve_http(
+                &cli.db,
+                &host,
+                port,
+                once,
+                auth_token.as_deref(),
+                &mcp_profile,
+                mcp_page_size,
+            )?;
         }
         Command::VecValidate { backend } => vec_validate(&conn, backend)?,
         Command::MergeCandidates { limit, json } => print_merge_candidates(&conn, limit, json)?,
@@ -1938,7 +2236,10 @@ pub(crate) fn run() -> Result<()> {
                 audit_read: true,
             },
         )?,
-        Command::Eval { command } => handle_eval(&conn, command)?,
+        Command::Eval { command } => {
+            let eval_root = app_project_root_for_db(&cli.db).unwrap_or_else(|| PathBuf::from("."));
+            handle_eval(&conn, command, &runtime.config.generation, &eval_root)?
+        }
         Command::BuildInfo => print_build_info(&runtime),
         Command::ReleaseBundle { output } => {
             release_ops::write_release_bundle(&conn, &cli.db, &output)?
