@@ -1673,6 +1673,9 @@ pub(crate) enum Command {
         root: PathBuf,
         #[arg(long)]
         apply: bool,
+        /// Remove indexed source rows whose files no longer exist (previewed unless --apply is set).
+        #[arg(long)]
+        prune_missing: bool,
         #[arg(long)]
         embed: bool,
         #[arg(long, default_value = DEFAULT_EMBED_PROVIDER, env = "DUKEMEMORY_EMBED_PROVIDER")]
@@ -1802,7 +1805,12 @@ pub(crate) enum Command {
                 "superseded",
                 "file_changed",
                 "retrieved",
-                "outcome"
+                "outcome",
+                "causes",
+                "depends_on",
+                "blocks",
+                "enables",
+                "prevents"
             ]
         )]
         kind: String,

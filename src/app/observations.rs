@@ -8,6 +8,11 @@ pub(crate) const OBSERVATION_KINDS: &[&str] = &[
     "file_changed",
     "retrieved",
     "outcome",
+    "causes",
+    "depends_on",
+    "blocks",
+    "enables",
+    "prevents",
 ];
 const MAX_OBSERVATION_EVIDENCE_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -566,6 +571,11 @@ fn observation_edge_kind(kind: &str) -> &'static str {
         "contradicted" => "contradicts",
         "superseded" => "supersedes",
         "verified" => "supports",
+        "causes" => "causes",
+        "depends_on" => "depends_on",
+        "blocks" => "blocks",
+        "enables" => "enables",
+        "prevents" => "prevents",
         _ => "evidence_for",
     }
 }
@@ -812,6 +822,43 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("outside project root"), "{error}");
+    }
+
+    #[test]
+    fn causal_observations_create_evidence_backed_causal_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db(&dir.path().join("memory.db")).unwrap();
+        let source = test_memory(&conn, MemoryType::Decision, "Causal source");
+        let target = test_memory(&conn, MemoryType::Constraint, "Causal target");
+        let observation = record_memory_observation(
+            &conn,
+            dir.path(),
+            &MemoryObservationRequest {
+                memory_id: &source,
+                target_memory_id: Some(&target),
+                kind: "causes",
+                statement: "The source causes the target under the recorded evidence",
+                evidence_kind: "test",
+                evidence_ref: "cargo test causal_observations",
+                confidence: 0.9,
+                valid_from: None,
+                valid_to: None,
+            },
+        )
+        .unwrap();
+        let graph = temporal_memory_graph_report(
+            &conn,
+            Some(observation.valid_from),
+            Some(observation.observed_at),
+            10,
+        )
+        .unwrap();
+        assert_eq!(graph.edge_count, 1);
+        assert_eq!(graph.edges[0].kind, "causes");
+        assert_eq!(
+            graph.edges[0].observation_id.as_deref(),
+            Some(observation.id.as_str())
+        );
     }
 
     fn test_memory(conn: &Connection, memory_type: MemoryType, title: &str) -> String {

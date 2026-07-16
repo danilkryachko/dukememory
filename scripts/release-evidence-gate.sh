@@ -54,6 +54,28 @@ done <"${fixture_root}/cases.tsv"
 
 (
   cd "${work_root}"
+  "${binary}" observe releaseev01 \
+    --kind causes \
+    --statement "The reviewed CLI evidence causes the MCP workflow requirement" \
+    --evidence-kind test \
+    --evidence-ref "release-evidence:causal-01" \
+    --target-memory-id releaseev02 \
+    --confidence 1.0 \
+    --root "${work_root}" \
+    --json >/dev/null
+  "${binary}" observe releaseev02 \
+    --kind enables \
+    --statement "The reviewed MCP evidence enables the HTTP workflow requirement" \
+    --evidence-kind test \
+    --evidence-ref "release-evidence:causal-02" \
+    --target-memory-id releaseev03 \
+    --confidence 1.0 \
+    --root "${work_root}" \
+    --json >/dev/null
+)
+
+(
+  cd "${work_root}"
   "${binary}" rag-ingest "${work_root}/evidence/source.md" \
     --root "${work_root}" \
     --apply \
@@ -84,6 +106,7 @@ done <"${fixture_root}/cases.tsv"
     --profile deployment \
     --rag-profile offline \
     --json >"${work_root}/release-gate.json"
+  "${binary}" eval advanced --json >"${work_root}/advanced-eval.json"
 )
 
 jq '{
@@ -104,6 +127,24 @@ jq '{
     .failed_required_checks[]
   ]
 }' "${work_root}/release-gate.json"
+
+jq -e '
+  .poisoning.memory_provenance_coverage >= 80 and
+  .poisoning.generated_output_guard_passed == .poisoning.generated_output_guard_total and
+  .poisoning.generated_output_false_accepts == 0 and
+  .causal.causal_edges >= 2 and
+  .causal.evidence_coverage == 100 and
+  .temporal.status == "ready"
+' "${work_root}/advanced-eval.json" >/dev/null
+
+jq '{
+  advanced_status: .status,
+  memory_provenance: .poisoning.memory_provenance_coverage,
+  generated_output_guard: "\(.poisoning.generated_output_guard_passed)/\(.poisoning.generated_output_guard_total)",
+  causal_edges: .causal.causal_edges,
+  causal_evidence_coverage: .causal.evidence_coverage,
+  temporal_status: .temporal.status
+}' "${work_root}/advanced-eval.json"
 
 jq -e '
   .ok == true and

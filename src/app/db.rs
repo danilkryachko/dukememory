@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS memory_observations (
     id TEXT PRIMARY KEY,
     memory_id TEXT NOT NULL,
     target_memory_id TEXT,
-    kind TEXT NOT NULL CHECK (kind IN ('asserted','verified','contradicted','superseded','file_changed','retrieved','outcome')),
+    kind TEXT NOT NULL CHECK (kind IN ('asserted','verified','contradicted','superseded','file_changed','retrieved','outcome','causes','depends_on','blocks','enables','prevents')),
     statement TEXT NOT NULL,
     evidence_kind TEXT NOT NULL,
     evidence_ref TEXT NOT NULL,
@@ -661,6 +661,7 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
             "TEXT NOT NULL DEFAULT 'unreviewed' CHECK (trust_status IN ('unreviewed', 'reviewed'))",
         )?,
         27 => migrate_audit_integrity_ledger(conn)?,
+        28 => migrate_causal_observation_kinds(conn)?,
         _ => {}
     }
     Ok(())
@@ -776,6 +777,49 @@ fn migrate_audit_integrity_ledger(conn: &Connection) -> Result<()> {
         )?;
         previous_hash = event_hash;
     }
+    Ok(())
+}
+
+fn migrate_causal_observation_kinds(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+        ALTER TABLE memory_observations RENAME TO memory_observations_v27;
+        CREATE TABLE memory_observations (
+            id TEXT PRIMARY KEY,
+            memory_id TEXT NOT NULL,
+            target_memory_id TEXT,
+            kind TEXT NOT NULL CHECK (kind IN ('asserted','verified','contradicted','superseded','file_changed','retrieved','outcome','causes','depends_on','blocks','enables','prevents')),
+            statement TEXT NOT NULL,
+            evidence_kind TEXT NOT NULL,
+            evidence_ref TEXT NOT NULL,
+            confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+            valid_from INTEGER NOT NULL,
+            valid_to INTEGER,
+            observed_at INTEGER NOT NULL,
+            branch TEXT,
+            commit_hash TEXT,
+            worktree_root TEXT,
+            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+            FOREIGN KEY (target_memory_id) REFERENCES memories(id) ON DELETE SET NULL,
+            CHECK (valid_to IS NULL OR valid_to >= valid_from)
+        );
+        INSERT INTO memory_observations (
+            id, memory_id, target_memory_id, kind, statement, evidence_kind,
+            evidence_ref, confidence, valid_from, valid_to, observed_at,
+            branch, commit_hash, worktree_root
+        )
+        SELECT
+            id, memory_id, target_memory_id, kind, statement, evidence_kind,
+            evidence_ref, confidence, valid_from, valid_to, observed_at,
+            branch, commit_hash, worktree_root
+        FROM memory_observations_v27;
+        DROP TABLE memory_observations_v27;
+        CREATE INDEX IF NOT EXISTS idx_memory_observations_memory_time
+            ON memory_observations(memory_id, valid_from, observed_at);
+        CREATE INDEX IF NOT EXISTS idx_memory_observations_target
+            ON memory_observations(target_memory_id);
+        "#,
+    )?;
     Ok(())
 }
 
@@ -902,6 +946,10 @@ fn migrations() -> &'static [Migration] {
         Migration {
             version: 27,
             name: "Production v27 tamper-evident audit integrity ledger",
+        },
+        Migration {
+            version: 28,
+            name: "Production v28 evidence-backed causal observation kinds",
         },
     ]
 }

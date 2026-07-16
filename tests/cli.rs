@@ -4769,7 +4769,7 @@ fn v9_schema_retrieve_eval_compact_and_http_metrics() {
         .assert()
         .success()
         .stdout(contains("version:"))
-        .stdout(contains("schema: 27"));
+        .stdout(contains("schema: 28"));
 
     let install_dir = dir.path().join("install");
     let target = install_dir.join("dukememory");
@@ -5342,7 +5342,7 @@ fn v11_release_bundle_bench_and_self_host() {
 
     let bench = stdout(cmd(&db).arg("bench").arg("--json"));
     let bench_json: Value = serde_json::from_str(&bench).unwrap();
-    assert_eq!(bench_json["schema"], 27);
+    assert_eq!(bench_json["schema"], 28);
     assert_eq!(bench_json["memory_count"], 4);
     assert!(bench_json["db_bytes"].as_u64().unwrap() > 0);
 
@@ -5358,7 +5358,7 @@ fn v11_release_bundle_bench_and_self_host() {
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(bundle.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(manifest["schema"], 27);
+    assert_eq!(manifest["schema"], 28);
     assert_eq!(manifest["memory_stats"]["total"], 4);
     assert_eq!(manifest["binary_sha256"].as_str().unwrap().len(), 64);
 }
@@ -5392,7 +5392,7 @@ fn v12_always_on_operations() {
     );
     let health_json: Value = serde_json::from_str(&health).unwrap();
     assert_eq!(health_json["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(health_json["schema"], 27);
+    assert_eq!(health_json["schema"], 28);
     assert_eq!(health_json["endpoint_ok"], true);
 
     for _ in 0..3 {
@@ -5466,7 +5466,7 @@ fn v13_stabilization_integrity_optimize_and_large_http_request() {
     let integrity = stdout(cmd(&db).arg("integrity").arg("--json"));
     let integrity_json: Value = serde_json::from_str(&integrity).unwrap();
     assert_eq!(integrity_json["ok"], true);
-    assert_eq!(integrity_json["schema"], 27);
+    assert_eq!(integrity_json["schema"], 28);
     assert_eq!(integrity_json["integrity_check"], "ok");
 
     let optimized = stdout(cmd(&db).arg("optimize").arg("--vacuum").arg("--json"));

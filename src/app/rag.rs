@@ -363,6 +363,31 @@ pub(crate) struct RagGenerationGuardReport {
     pub(crate) generated_chars: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RagGeneratedAnswerGuardBenchmark {
+    pub(crate) fixture_version: u32,
+    pub(crate) passed: usize,
+    pub(crate) total: usize,
+    pub(crate) false_accepts: usize,
+    pub(crate) false_rejects: usize,
+    pub(crate) attack_vectors: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct RagGeneratedAnswerFixture {
+    version: u32,
+    cases: Vec<RagGeneratedAnswerCase>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RagGeneratedAnswerCase {
+    #[allow(dead_code)]
+    id: String,
+    vector: String,
+    answer: String,
+    expected_accept: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RagTraceEntry {
     pub(crate) rank: usize,
@@ -1858,11 +1883,19 @@ fn rag_generation_guard_report(
     ]
     .iter()
     .any(|needle| trimmed.contains(needle));
-    if prompt_fragment {
+    let prompt_injection = looks_like_prompt_injection(trimmed);
+    if prompt_fragment || prompt_injection {
         return RagGenerationGuardReport {
             answer_source: "extractive_fallback".to_string(),
             accepted_generated: false,
-            fallback_reason: Some("prompt_fragment".to_string()),
+            fallback_reason: Some(
+                if prompt_injection {
+                    "generated_prompt_injection"
+                } else {
+                    "prompt_fragment"
+                }
+                .to_string(),
+            ),
             selected_citations: rag_answer_selected_citations(trimmed, source_pack),
             prompt_fragment_detected: true,
             generated_chars,
@@ -1886,6 +1919,64 @@ fn rag_generation_guard_report(
         selected_citations,
         prompt_fragment_detected: false,
         generated_chars,
+    }
+}
+
+pub(crate) fn rag_generated_answer_guard_benchmark() -> RagGeneratedAnswerGuardBenchmark {
+    let fixture: RagGeneratedAnswerFixture =
+        serde_json::from_str(include_str!("../../fixtures/rag-generated-answers-v1.json"))
+            .expect("checked-in generated answer fixture must be valid JSON");
+    let source_pack = vec![rag_guard_fixture_source("safe-source")];
+    let mut false_accepts = 0usize;
+    let mut false_rejects = 0usize;
+    let mut vectors = BTreeSet::new();
+    for case in &fixture.cases {
+        vectors.insert(case.vector.as_str());
+        let accepted = rag_generation_guard_report(&case.answer, &source_pack).accepted_generated;
+        match (case.expected_accept, accepted) {
+            (false, true) => false_accepts += 1,
+            (true, false) => false_rejects += 1,
+            _ => {}
+        }
+    }
+    let total = fixture.cases.len();
+    RagGeneratedAnswerGuardBenchmark {
+        fixture_version: fixture.version,
+        passed: total.saturating_sub(false_accepts + false_rejects),
+        total,
+        false_accepts,
+        false_rejects,
+        attack_vectors: vectors.len(),
+    }
+}
+
+fn rag_guard_fixture_source(id: &str) -> RagSource {
+    RagSource {
+        id: id.to_string(),
+        source_kind: "memory".to_string(),
+        memory_type: "design_note".to_string(),
+        scope: "project".to_string(),
+        title: "Generated answer guard fixture".to_string(),
+        status: "active".to_string(),
+        score: 100.0,
+        utility_score: 100.0,
+        semantic_score: None,
+        confidence: 1.0,
+        reasons: vec!["fixture".to_string()],
+        summary: "Verified synthetic evidence".to_string(),
+        links: Vec::new(),
+        provenance: RagSourceProvenance {
+            origin: "fixture".to_string(),
+            trust_lane: "reviewed_memory".to_string(),
+            evidence_ref: "fixture:rag-generated-answers-v1".to_string(),
+            content_hash: "fixture".to_string(),
+            source: Some("fixture".to_string()),
+            updated_at: None,
+        },
+        path: None,
+        chunk_index: None,
+        start_line: None,
+        end_line: None,
     }
 }
 
@@ -2572,5 +2663,15 @@ mod rag_tests {
         assert!(!ids.contains(&"chunk-b"));
         assert_eq!(packing.selected_memories, 2);
         assert_eq!(packing.selected_chunks, 1);
+    }
+
+    #[test]
+    fn generated_answer_guard_fixture_has_no_false_accepts_or_rejects() {
+        let benchmark = rag_generated_answer_guard_benchmark();
+        assert_eq!(benchmark.fixture_version, 1);
+        assert_eq!(benchmark.passed, benchmark.total);
+        assert_eq!(benchmark.false_accepts, 0);
+        assert_eq!(benchmark.false_rejects, 0);
+        assert!(benchmark.attack_vectors >= 6);
     }
 }

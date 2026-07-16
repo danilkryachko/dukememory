@@ -446,13 +446,15 @@ pub(crate) fn release_gate_v3_report_with_profile(
     });
     checks.push(ReleaseGateCheck {
         name: "advanced_eval_poisoning_review".to_string(),
-        ok: matches!(
-            advanced_eval.poisoning.status.as_str(),
-            "heuristic_clean" | "unconfigured"
-        ),
-        required: false,
+        ok: advanced_eval.poisoning.status == "heuristic_clean"
+            && advanced_eval.poisoning.memory_provenance_coverage >= 80.0
+            && advanced_eval.poisoning.attack_filter_passed
+                == advanced_eval.poisoning.attack_filter_total
+            && advanced_eval.poisoning.generated_output_guard_passed
+                == advanced_eval.poisoning.generated_output_guard_total,
+        required: true,
         detail: format!(
-            "status={} risk={:.1} candidates={} duplicate_groups={} provenance={:.1}% (memory={:.1}% chunks={:.1}%) detector={}/{} attack_filter={}/{} attack_resistance={}",
+            "status={} risk={:.1} candidates={} duplicate_groups={} provenance={:.1}% (memory={:.1}% chunks={:.1}%) detector={}/{} attack_filter={}/{} output_guard={}/{} false_accepts={} false_rejects={} attack_resistance={}",
             advanced_eval.poisoning.status,
             advanced_eval.poisoning.risk_score,
             advanced_eval.poisoning.prompt_injection_candidates,
@@ -464,6 +466,10 @@ pub(crate) fn release_gate_v3_report_with_profile(
             advanced_eval.poisoning.detector_benchmark_total,
             advanced_eval.poisoning.attack_filter_passed,
             advanced_eval.poisoning.attack_filter_total,
+            advanced_eval.poisoning.generated_output_guard_passed,
+            advanced_eval.poisoning.generated_output_guard_total,
+            advanced_eval.poisoning.generated_output_false_accepts,
+            advanced_eval.poisoning.generated_output_false_rejects,
             advanced_eval.poisoning.attack_resistance_status
         ),
     });

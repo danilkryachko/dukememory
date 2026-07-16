@@ -167,6 +167,15 @@ dukememory observe <memory-id> \
   --confidence 0.95 \
   --json
 
+# Evidence-backed causal edges use the same bitemporal record.
+dukememory observe <memory-id> \
+  --kind depends_on \
+  --target-memory-id <related-memory-id> \
+  --statement "This decision depends on the reviewed constraint" \
+  --evidence-kind test \
+  --evidence-ref "cargo test reviewed_constraint" \
+  --json
+
 # File-backed evidence is captured with an exact SHA-256 and project-relative path.
 dukememory observe <memory-id> \
   --kind verified \
@@ -471,6 +480,8 @@ dukememory rag-ingest README.md --json
 dukememory rag-ingest README.md --apply --embed --json
 dukememory rag-sources --json
 dukememory rag-refresh --apply --embed --json
+dukememory rag-refresh --prune-missing --json
+dukememory rag-refresh --prune-missing --apply --json
 
 dukememory rag-debug "what changed in checkout validation?" \
   --budget-profile tiny \
@@ -547,7 +558,9 @@ chunks in place and preserves current chunk embeddings; `embed-index` remains
 the full repair command.
 `rag-refresh` is the guarded source watcher: its default is a dry-run listing
 changed files, missing chunks, and embedding drift; `--apply --embed` refreshes
-only those indexed source paths. Source reports and every RAG citation carry a
+only those indexed source paths. `--prune-missing` separately previews source
+rows whose files no longer exist; adding `--apply` removes only those rows and
+their cascading chunks and embeddings. Source reports and every RAG citation carry a
 `trust_lane`. Prompt-shaped chunks stay stored for audit under the
 `quarantined_content` lane but are filtered before both semantic and FTS
 retrieval. The versioned adversarial fixture covers direct, NFKC/full-width,

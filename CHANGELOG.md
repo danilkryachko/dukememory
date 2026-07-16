@@ -10,6 +10,8 @@
 - Schema v23 development/holdout RAG cases and schema v24 bitemporal evidence
   observations, including valid-time/knowledge-time graph queries and Git
   branch, commit, and worktree provenance through CLI and MCP.
+- Schema v28 evidence-backed causal observation kinds (`causes`, `depends_on`,
+  `blocks`, `enables`, and `prevents`) with temporal graph coverage.
 - A typed memory domain and application boundary shared by CLI, MCP, and HTTP,
   with centralized type, scope, status, confidence, sensitivity, and link
   invariants.
@@ -63,8 +65,14 @@
 - MCP framing and HTTP file-ingest routing now live in focused modules with
   independent boundary tests.
 - Legacy `tasks/result` waits are bounded; 2026 task creation is server-directed
-  and limited to effectively read-only calls, while cancellation is reported
-  as eventually consistent instead of claiming work stopped synchronously.
+  and limited to effectively read-only calls. Model generation runs in bounded
+  workers and observes cooperative MCP cancellation while network work remains
+  capped by its configured timeout.
+- RAG and graph-RAG reject generated prompt-injection markers even when the
+  output cites selected evidence, and a versioned generated-output fixture is
+  enforced alongside the pre-retrieval poisoning fixture.
+- `rag-refresh --prune-missing` previews and explicitly removes dead indexed
+  source rows together with their cascading chunks and embeddings.
 - Secret detection now shares structured provider, credential URL, auth header,
   JWT, private-key, and adjacent-assignment rules across admission, scanning,
   and redaction while recognizing explicit placeholders.

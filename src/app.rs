@@ -34,7 +34,7 @@ const DEFAULT_INSTALL_BACKUP_KEEP: usize = 3;
 // Native release binaries with local model support can exceed 128 MiB. Keep
 // the byte budget aligned with the three-backup retention policy.
 const DEFAULT_INSTALL_BACKUP_QUOTA_BYTES: u64 = 512 * 1024 * 1024;
-const CURRENT_SCHEMA_VERSION: i64 = 27;
+const CURRENT_SCHEMA_VERSION: i64 = 28;
 const EXPORT_VERSION: u32 = 1;
 
 mod advanced_eval;

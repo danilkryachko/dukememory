@@ -1525,6 +1525,7 @@ pub(crate) fn run() -> Result<()> {
         Command::RagRefresh {
             root,
             apply,
+            prune_missing,
             embed,
             provider,
             endpoint,
@@ -1535,6 +1536,7 @@ pub(crate) fn run() -> Result<()> {
             RagRefreshRequest {
                 root: &root,
                 apply,
+                prune_missing,
                 embed,
                 provider: select_cli_or_config(
                     &provider,

@@ -73,6 +73,10 @@ pub(crate) struct PoisoningEvalReport {
     pub(crate) attack_filter_total: usize,
     pub(crate) attack_filter_false_positives: usize,
     pub(crate) attack_filter_false_negatives: usize,
+    pub(crate) generated_output_guard_passed: usize,
+    pub(crate) generated_output_guard_total: usize,
+    pub(crate) generated_output_false_accepts: usize,
+    pub(crate) generated_output_false_rejects: usize,
     pub(crate) scanned_memories: usize,
     pub(crate) scanned_chunks: usize,
     pub(crate) prompt_injection_candidates: usize,
@@ -179,13 +183,15 @@ pub(crate) fn advanced_eval_report(conn: &Connection) -> Result<AdvancedEvalRepo
             configured: poisoning.scanned_memories + poisoning.scanned_chunks > 0,
             status: poisoning.status.clone(),
             evidence: format!(
-                "risk={:.1} prompt_candidates={} duplicate_groups={} provenance={:.1}% detector={}/{} attack_resistance={}",
+                "risk={:.1} prompt_candidates={} duplicate_groups={} provenance={:.1}% detector={}/{} output_guard={}/{} attack_resistance={}",
                 poisoning.risk_score,
                 poisoning.prompt_injection_candidates,
                 poisoning.duplicate_cross_source_groups,
                 poisoning.provenance_coverage,
                 poisoning.detector_benchmark_passed,
                 poisoning.detector_benchmark_total,
+                poisoning.generated_output_guard_passed,
+                poisoning.generated_output_guard_total,
                 poisoning.attack_resistance_status
             ),
         },
@@ -269,12 +275,18 @@ pub(crate) fn advanced_eval_report(conn: &Connection) -> Result<AdvancedEvalRepo
         && poisoning.provenance_coverage < MIN_POISONING_PROVENANCE_COVERAGE
     {
         recommendations.push(format!(
-            "raise active-memory provenance coverage to at least {MIN_POISONING_PROVENANCE_COVERAGE:.0}% by attaching a source or evidence observation"
+            "raise active-memory provenance coverage to at least {MIN_POISONING_PROVENANCE_COVERAGE:.0}% by attaching a source, provenance link, or evidence observation"
         ));
     }
     if poisoning.attack_filter_passed < poisoning.attack_filter_total {
         recommendations.push(
             "keep poisoned chunks quarantined and expand attack fixtures before making an end-to-end generation-resistance claim"
+                .to_string(),
+        );
+    }
+    if poisoning.generated_output_guard_passed < poisoning.generated_output_guard_total {
+        recommendations.push(
+            "fix generated-output guard regressions before accepting model answers in RAG or graph-RAG"
                 .to_string(),
         );
     }
@@ -517,7 +529,19 @@ fn poisoning_eval(
     )?;
     let attributed = scalar_count(
         conn,
-        "SELECT COUNT(*) FROM memories m WHERE m.status = 'active' AND ((m.source IS NOT NULL AND trim(m.source) <> '') OR EXISTS (SELECT 1 FROM memory_observations o WHERE o.memory_id = m.id))",
+        r#"SELECT COUNT(*)
+           FROM memories m
+           WHERE m.status = 'active'
+             AND (
+               (m.source IS NOT NULL AND trim(m.source) <> '')
+               OR EXISTS (SELECT 1 FROM memory_observations o WHERE o.memory_id = m.id)
+               OR EXISTS (
+                 SELECT 1 FROM memory_links l
+                 WHERE l.memory_id = m.id
+                   AND l.kind IN ('file', 'commit', 'tag', 'url', 'repo', 'command')
+                   AND trim(l.target) <> ''
+               )
+             )"#,
     )?;
     let attributed_chunks = scalar_count(
         conn,
@@ -550,6 +574,7 @@ fn poisoning_eval(
     );
     let detector_benchmark = poisoning_detector_benchmark();
     let attack_filter = rag_attack_filter_benchmark();
+    let output_guard = rag_generated_answer_guard_benchmark();
     let low_confidence_ratio = ratio(low_confidence, total_active);
     let unattributed_ratio = ratio(unattributed, total_active);
     let risk_score = ((prompt_candidates.min(2) as f64 * 20.0)
@@ -565,6 +590,7 @@ fn poisoning_eval(
         || duplicate_groups > 0
         || low_confidence_ratio >= 0.25
         || dominant_nodes > 0
+        || output_guard.passed < output_guard.total
     {
         "attention"
     } else if provenance_coverage < MIN_POISONING_PROVENANCE_COVERAGE {
@@ -581,10 +607,12 @@ fn poisoning_eval(
         detector_benchmark_total: detector_benchmark.total,
         detector_benchmark_coverage: percent(detector_benchmark.passed, detector_benchmark.total),
         detector_false_positives: detector_benchmark.false_positives,
-        attack_resistance_status: if attack_filter.passed == attack_filter.total {
-            "pre_retrieval_filter_passed"
+        attack_resistance_status: if attack_filter.passed == attack_filter.total
+            && output_guard.passed == output_guard.total
+        {
+            "pre_and_post_generation_fixtures_passed"
         } else {
-            "pre_retrieval_filter_failed"
+            "attack_fixture_failed"
         }
         .to_string(),
         attack_fixture_version: attack_filter.fixture_version,
@@ -593,6 +621,10 @@ fn poisoning_eval(
         attack_filter_total: attack_filter.total,
         attack_filter_false_positives: attack_filter.false_positives,
         attack_filter_false_negatives: attack_filter.false_negatives,
+        generated_output_guard_passed: output_guard.passed,
+        generated_output_guard_total: output_guard.total,
+        generated_output_false_accepts: output_guard.false_accepts,
+        generated_output_false_rejects: output_guard.false_rejects,
         scanned_memories,
         scanned_chunks,
         prompt_injection_candidates: prompt_candidates,
@@ -606,7 +638,7 @@ fn poisoning_eval(
         dominant_graph_nodes: dominant_nodes,
         candidate_ids: candidates,
         sampled: scanned_memories < total_active || scanned_chunks < total_chunks,
-        limitation: "deterministic triage plus a pre-retrieval quarantine fixture benchmark; it does not claim resistance to novel attacks or measure generated-answer behavior"
+        limitation: "deterministic triage plus versioned pre-retrieval and generated-output guard fixtures; it does not claim resistance to novel attacks or replace model-level red-team evaluation"
             .to_string(),
     })
 }
@@ -872,12 +904,27 @@ mod tests {
         assert_eq!(report.poisoning.provenance_coverage, 0.0);
         assert_eq!(
             report.poisoning.attack_resistance_status,
-            "pre_retrieval_filter_passed"
+            "pre_and_post_generation_fixtures_passed"
         );
         assert_eq!(
             report.poisoning.attack_filter_passed,
             report.poisoning.attack_filter_total
         );
+        assert_eq!(
+            report.poisoning.generated_output_guard_passed,
+            report.poisoning.generated_output_guard_total
+        );
+        assert_eq!(report.poisoning.generated_output_false_accepts, 0);
+
+        conn.execute(
+            "INSERT INTO memory_links (memory_id,kind,target) VALUES ('unattributed','file','README.md')",
+            [],
+        )
+        .unwrap();
+        let attributed = advanced_eval_report(&conn).unwrap();
+        assert_eq!(attributed.poisoning.status, "heuristic_clean");
+        assert_eq!(attributed.poisoning.memory_provenance_coverage, 100.0);
+        assert_eq!(attributed.poisoning.unattributed_active_memories, 0);
     }
 
     #[test]

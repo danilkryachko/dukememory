@@ -32,6 +32,7 @@ pub(crate) struct RagSourcesRequest<'a> {
 pub(crate) struct RagRefreshRequest<'a> {
     pub(crate) root: &'a Path,
     pub(crate) apply: bool,
+    pub(crate) prune_missing: bool,
     pub(crate) embed: bool,
     pub(crate) provider: &'a str,
     pub(crate) endpoint: &'a str,
@@ -101,7 +102,9 @@ pub(crate) struct RagRefreshReport {
     pub(crate) applied: bool,
     pub(crate) embed_requested: bool,
     pub(crate) candidates: Vec<RagRefreshCandidate>,
+    pub(crate) prune_candidates: Vec<RagPruneCandidate>,
     pub(crate) refreshed_sources: usize,
+    pub(crate) pruned_sources: usize,
     pub(crate) failures: Vec<String>,
     pub(crate) after: RagSourcesReport,
 }
@@ -111,6 +114,13 @@ pub(crate) struct RagRefreshCandidate {
     pub(crate) path: String,
     pub(crate) scope: String,
     pub(crate) reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RagPruneCandidate {
+    pub(crate) source_id: i64,
+    pub(crate) path: String,
+    pub(crate) chunks: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -277,10 +287,12 @@ pub(crate) fn print_rag_refresh(conn: &Connection, request: RagRefreshRequest<'_
     }
     println!("RAG Source Refresh");
     println!(
-        "status: {} candidates={} refreshed={} applied={}",
+        "status: {} candidates={} prune_candidates={} refreshed={} pruned={} applied={}",
         report.status,
         report.candidates.len(),
+        report.prune_candidates.len(),
         report.refreshed_sources,
+        report.pruned_sources,
         report.applied
     );
     for candidate in &report.candidates {
@@ -289,6 +301,12 @@ pub(crate) fn print_rag_refresh(conn: &Connection, request: RagRefreshRequest<'_
             candidate.path,
             candidate.scope,
             candidate.reasons.join(",")
+        );
+    }
+    for candidate in &report.prune_candidates {
+        println!(
+            "prune: {} source_id={} chunks={}",
+            candidate.path, candidate.source_id, candidate.chunks
         );
     }
     for failure in &report.failures {
@@ -337,7 +355,22 @@ pub(crate) fn rag_refresh_report(
             reasons: reasons.into_iter().collect(),
         })
         .collect::<Vec<_>>();
+    let prune_candidates = if request.prune_missing {
+        before
+            .sources
+            .iter()
+            .filter(|source| source.missing)
+            .map(|source| RagPruneCandidate {
+                source_id: source.source_id,
+                path: source.path.clone(),
+                chunks: source.chunks,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let mut refreshed_sources = 0usize;
+    let mut pruned_sources = 0usize;
     let mut failures = Vec::new();
     if request.apply {
         for candidate in &candidates {
@@ -368,6 +401,19 @@ pub(crate) fn rag_refresh_report(
                 Err(error) => failures.push(format!("{}: {error}", candidate.path)),
             }
         }
+        for candidate in &prune_candidates {
+            match conn.execute(
+                "DELETE FROM memory_sources WHERE id = ?1 AND status = 'rag_indexed'",
+                [candidate.source_id],
+            ) {
+                Ok(1) => pruned_sources += 1,
+                Ok(_) => failures.push(format!(
+                    "{}: source row was not available for pruning",
+                    candidate.path
+                )),
+                Err(error) => failures.push(format!("{}: prune failed: {error}", candidate.path)),
+            }
+        }
     }
     let after = rag_sources_report(
         conn,
@@ -379,7 +425,7 @@ pub(crate) fn rag_refresh_report(
     let ok = failures.is_empty() && (!request.apply || after.ok);
     let status = if !failures.is_empty() {
         "attention"
-    } else if !request.apply && !candidates.is_empty() {
+    } else if !request.apply && (!candidates.is_empty() || !prune_candidates.is_empty()) {
         "dry_run"
     } else if after.total_sources == 0 {
         "unconfigured"
@@ -395,7 +441,9 @@ pub(crate) fn rag_refresh_report(
         applied: request.apply,
         embed_requested: request.embed,
         candidates,
+        prune_candidates,
         refreshed_sources,
+        pruned_sources,
         failures,
         after,
     })
@@ -1773,6 +1821,7 @@ mod rag_ingest_tests {
             &RagRefreshRequest {
                 root,
                 apply: false,
+                prune_missing: false,
                 embed: true,
                 provider: "mock",
                 endpoint: "mock",
@@ -1793,6 +1842,7 @@ mod rag_ingest_tests {
             &RagRefreshRequest {
                 root,
                 apply: true,
+                prune_missing: false,
                 embed: true,
                 provider: "mock",
                 endpoint: "mock",
@@ -1805,6 +1855,77 @@ mod rag_ingest_tests {
         assert_eq!(applied.refreshed_sources, 1);
         assert_eq!(applied.after.stale_sources, 0);
         assert_eq!(applied.after.chunk_embeddings_missing, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn rag_refresh_prunes_missing_sources_only_when_explicitly_applied() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        let db = root.join(".agent").join("memory.db");
+        let conn = open_db(&db)?;
+        let input = root.join("ephemeral.md");
+        fs::write(&input, "Ephemeral indexed evidence.\n")?;
+        rag_ingest_report(
+            &conn,
+            RagIngestRequest {
+                root,
+                input: &input,
+                scope: "project",
+                apply: true,
+                reviewed: true,
+                chunk_chars: 900,
+                overlap_chars: 140,
+                max_file_bytes: 200_000,
+                max_files: 1,
+                embed: false,
+                provider: "mock",
+                endpoint: "mock",
+                model: "mock-embedding",
+                json: true,
+            },
+        )?;
+        fs::remove_file(&input)?;
+
+        let preview = rag_refresh_report(
+            &conn,
+            &RagRefreshRequest {
+                root,
+                apply: false,
+                prune_missing: true,
+                embed: false,
+                provider: "mock",
+                endpoint: "mock",
+                model: "mock-embedding",
+                json: true,
+            },
+        )?;
+        assert_eq!(preview.status, "dry_run");
+        assert_eq!(preview.prune_candidates.len(), 1);
+        assert_eq!(preview.pruned_sources, 0);
+        assert_eq!(preview.after.missing_sources, 1);
+
+        let applied = rag_refresh_report(
+            &conn,
+            &RagRefreshRequest {
+                root,
+                apply: true,
+                prune_missing: true,
+                embed: false,
+                provider: "mock",
+                endpoint: "mock",
+                model: "mock-embedding",
+                json: true,
+            },
+        )?;
+        assert_eq!(applied.pruned_sources, 1);
+        assert_eq!(applied.after.total_sources, 0);
+        assert_eq!(applied.after.total_chunks, 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM rag_chunks", [], |row| row
+                .get::<_, i64>(0))?,
+            0
+        );
         Ok(())
     }
 
